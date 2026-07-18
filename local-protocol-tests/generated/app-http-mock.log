@@ -1,0 +1,10 @@
+mode: http
+proxy name: HTTP-MOCK
+bind address: 0.0.0.0
+echo target: 192.168.3.28:56968
+mock proxy: 192.168.3.28:56969
+generated profile: local-protocol-tests/generated/app-http-mock.yaml
+
+Import that profile into the app while this process stays running.
+For native delay checks use: proxy=HTTP-MOCK, url=http://192.168.3.28:56968
+Auto-stop after 86400000 ms.

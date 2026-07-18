@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Paws proxy client"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Paws"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Paws"
+    },
+    {
+      "name": "grant_internet",
+      "value": "Paws needs network access to connect proxy servers and update subscriptions."
+    }
+  ]
+}

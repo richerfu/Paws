@@ -1,0 +1,32 @@
+[package]
+name = "hmeta_ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+doctest = false
+test = false
+
+[dependencies]
+arkit.workspace = true
+dioxus.workspace = true
+hmeta_core.workspace = true
+hmeta_model.workspace = true
+napi-derive-ohos.workspace = true
+napi-ohos.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+time.workspace = true
+tokio.workspace = true
+
+[target.'cfg(target_env = "ohos")'.dependencies]
+ohos-fileuri-binding = { path = "../../../../ohos-rs/ohos-native-bindings/crates/fileuri" }
+ohos-fileshare-binding = { path = "../../../../ohos-rs/ohos-native-bindings/crates/fileshare" }
+ohos-resource-manager-binding = { path = "../../../../ohos-rs/ohos-native-bindings/crates/resource_manager" }
+
+[build-dependencies]
+napi-build-ohos.workspace = true

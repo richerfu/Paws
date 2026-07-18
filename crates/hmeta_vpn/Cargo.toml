@@ -1,0 +1,23 @@
+[package]
+name = "hmeta_vpn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+hmeta_model.workspace = true
+libc.workspace = true
+meow-common.workspace = true
+meow-dns.workspace = true
+meow-tunnel.workspace = true
+netstack-smoltcp.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tun-rs.workspace = true
+
+[dev-dependencies]
+meow-trie.workspace = true

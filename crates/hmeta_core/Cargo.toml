@@ -1,0 +1,38 @@
+
+[package]
+name = "hmeta_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+dashmap.workspace = true
+hmeta_model.workspace = true
+hmeta_profile.workspace = true
+hmeta_vpn.workspace = true
+meow-api.workspace = true
+meow-common.workspace = true
+meow-config.workspace = true
+meow-dns.workspace = true
+meow-listener.workspace = true
+meow-proxy.workspace = true
+meow-tunnel.workspace = true
+once_cell.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+futures.workspace = true
+libc.workspace = true
+shadowsocks.workspace = true
+tokio-tungstenite.workspace = true

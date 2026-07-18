@@ -1,0 +1,9 @@
+mod activity;
+mod appearance;
+mod settings;
+mod tools;
+
+pub(super) use activity::{connections_page, requests_page};
+pub(super) use appearance::appearance_page;
+pub(super) use settings::{per_app_settings_page, settings_page};
+pub(super) use tools::{about_page, tools_page};
