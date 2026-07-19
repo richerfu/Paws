@@ -2,17 +2,15 @@ use super::*;
 use crate::notification::{use_notification_center, NotificationHost};
 use crate::platform_callbacks;
 use arkit::ohos_arkui_binding::{
-    common::node::ArkUINode,
-    component::attribute::{ArkUIAttributeBasic, ArkUIEvent},
-    types::{attribute::ArkUINodeAttributeType, event::NodeEventType},
+    common::node::ArkUINode, types::attribute::ArkUINodeAttributeType,
 };
 use arkit::prelude::*;
 use arkit::router::{use_back_handler, use_navigator, use_route, AnimatedOutlet, Router};
 use arkit::shadcn::components::{
-    Badge, BadgeVariant, BottomNavigation, BottomNavigationItem, ButtonSize, CardContent,
-    CardHeader, CardTitle, Checkbox, DialogFooter, DialogHeader, Field, FieldContent,
+    Badge, BadgeVariant, BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant,
+    CardContent, CardHeader, CardTitle, Checkbox, DialogFooter, DialogHeader, Field, FieldContent,
     FieldDescription, FieldOrientation, FieldTitle, Form, FormItem, Input, RadioGroup, Separator,
-    Spinner, Switch, Textarea,
+    Spinner, Switch, Textarea, ToggleGroup,
 };
 use arkit::shadcn::theme::{use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider};
 use std::cell::{Cell, RefCell};
@@ -458,11 +456,20 @@ fn run_command(state: Signal<State>, command: Command<Action>) {
 }
 
 fn scaffold(state: Signal<State>, page: Route, actions: Element, body: Element) -> Element {
-    scaffold_layout(state, page, actions, body, true)
+    scaffold_layout(state, page, actions, body, true, false)
 }
 
 fn fixed_scaffold(state: Signal<State>, page: Route, actions: Element, body: Element) -> Element {
-    scaffold_layout(state, page, actions, body, false)
+    scaffold_layout(state, page, actions, body, false, false)
+}
+
+fn fixed_scaffold_flush_bottom(
+    state: Signal<State>,
+    page: Route,
+    actions: Element,
+    body: Element,
+) -> Element {
+    scaffold_layout(state, page, actions, body, false, true)
 }
 
 fn scaffold_layout(
@@ -471,6 +478,7 @@ fn scaffold_layout(
     actions: Element,
     body: Element,
     scrollable: bool,
+    flush_fixed_bottom: bool,
 ) -> Element {
     let current = state.read().clone();
     let parent = page.parent();
@@ -543,7 +551,10 @@ fn scaffold_layout(
                     column {
                         layout_weight: 1.0,
                         percent_width: 1.0,
-                        padding: 16.0,
+                        padding_top: 16.0,
+                        padding_right: 16.0,
+                        padding_bottom: if flush_fixed_bottom { 0.0 } else { 16.0 },
+                        padding_left: 16.0,
                         align_items: "start",
                         justify_content: "start",
                         {body}
@@ -576,70 +587,27 @@ fn use_parent_back_handler(parent: Option<Route>) {
         use_hook(|| Rc::new(arkit::register_back_press_handler(registered_handler)));
 }
 
-fn selected_proxy_path(
-    groups: &[hmeta_model::ProxyGroup],
-    root: &hmeta_model::ProxyGroup,
-) -> Vec<String> {
-    let mut path = vec![root.name.clone()];
-    let mut current = root;
-    for _ in 0..groups.len().saturating_add(1) {
-        let Some(selected) = current.selected.as_ref() else {
-            break;
-        };
-        if path.iter().any(|part| part == selected) {
-            break;
-        }
-        path.push(selected.clone());
-        let Some(next) = groups.iter().find(|group| group.name == *selected) else {
-            break;
-        };
-        current = next;
-    }
-    path
-}
-
-fn effective_selector_group<'a>(
-    groups: &'a [hmeta_model::ProxyGroup],
-    root: &'a hmeta_model::ProxyGroup,
-) -> &'a hmeta_model::ProxyGroup {
-    let mut current = root;
-    let mut visited = vec![root.name.as_str()];
-    for _ in 0..groups.len() {
-        let Some(selected) = current.selected.as_deref() else {
-            break;
-        };
-        if visited.contains(&selected) {
-            break;
-        }
-        let Some(next) = groups.iter().find(|group| group.name == selected) else {
-            break;
-        };
-        visited.push(next.name.as_str());
-        current = next;
-    }
-    current
-}
-
 fn dashboard_page(state: Signal<State>) -> Element {
     let current = state.read().clone();
     let snapshot = current.snapshot;
     let s = strings(current.locale);
     let navigator = use_navigator();
+    let quick_item_order = use_hook(|| Rc::new(RefCell::new(Vec::<(String, String)>::new())));
     let vpn_starting = current.vpn_command_pending == Some(VpnCommandAction::Start)
         || matches!(snapshot.vpn_lifecycle, VpnLifecycle::Starting);
     let vpn_stopping = current.vpn_command_pending == Some(VpnCommandAction::Stop);
     let transitioning = vpn_starting || vpn_stopping;
     let connected = snapshot.vpn_running && !transitioning;
-    let lifecycle = if vpn_starting {
-        s.lifecycle_starting
+    let status_label = if vpn_starting {
+        tr(current.locale, "正在连接", "Connecting")
     } else if vpn_stopping {
-        tr(current.locale, "VPN 停止中", "VPN stopping")
+        tr(current.locale, "正在断开", "Disconnecting")
     } else {
         match snapshot.vpn_lifecycle {
-            VpnLifecycle::Stopped => s.lifecycle_stopped,
-            VpnLifecycle::EngineLoaded => s.lifecycle_engine_loaded,
+            VpnLifecycle::Stopped => s.dashboard_disconnected,
+            VpnLifecycle::EngineLoaded => tr(current.locale, "配置已就绪", "Ready to connect"),
             VpnLifecycle::Starting => s.lifecycle_starting,
-            VpnLifecycle::Connected => s.lifecycle_connected,
+            VpnLifecycle::Connected => s.dashboard_connected,
             VpnLifecycle::ProtectFailed => s.lifecycle_protect_failed,
             VpnLifecycle::Failed => tr(current.locale, "VPN 启动失败", "VPN failed"),
         }
@@ -650,224 +618,202 @@ fn dashboard_page(state: Signal<State>) -> Element {
         .find(|profile| snapshot.active_profile.as_deref() == Some(profile.id.as_str()))
         .map(|profile| profile.name.clone())
         .unwrap_or_else(|| s.dashboard_profile_empty.to_owned());
-    let status_color = if matches!(snapshot.vpn_lifecycle, VpnLifecycle::Failed) {
+    let status_color = if transitioning {
+        subtle()
+    } else if matches!(
+        snapshot.vpn_lifecycle,
+        VpnLifecycle::Failed | VpnLifecycle::ProtectFailed
+    ) {
         danger()
     } else if connected {
         success()
     } else {
         subtle()
     };
-    let root_group = snapshot.proxy_groups.first();
-    let current_path = root_group
-        .map(|group| selected_proxy_path(&snapshot.proxy_groups, group))
-        .unwrap_or_default();
-    let current_node = current_path
-        .last()
-        .cloned()
+    let mut quick_items = flatten_proxy_groups(&snapshot.proxy_groups, "");
+    if let Some((pending_group, pending_proxy)) = &current.proxy_selection_pending {
+        for item in &mut quick_items {
+            item.selected = item.group == *pending_group && item.name == *pending_proxy;
+        }
+    }
+    let current_node = quick_items
+        .iter()
+        .find(|item| item.selected)
+        .map(|item| item.name.clone())
         .unwrap_or_else(|| tr(current.locale, "未选择", "Unselected").to_owned());
-    let current_route = if current_path.len() > 1 {
-        current_path[..current_path.len() - 1].join(" → ")
-    } else {
-        String::new()
+    let quick_count = quick_items.len();
+    let quick_group_count = quick_items
+        .iter()
+        .map(|item| item.group.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let proxy_group_context = match current.locale {
+        UiLocale::ZhCn => format!("{quick_count} 个节点 · {quick_group_count} 个分组"),
+        UiLocale::En => format!("{quick_count} nodes · {quick_group_count} groups"),
     };
-    let preview_group = root_group
-        .map(|group| effective_selector_group(&snapshot.proxy_groups, group))
-        .cloned();
-    let proxy_group_title = preview_group
-        .as_ref()
-        .map(|group| group.name.clone())
-        .unwrap_or_else(|| tr(current.locale, "代理节点", "Proxy nodes").to_owned());
-    let proxy_group_subtitle = preview_group.as_ref().map(|group| {
-        format!(
-            "{} · {}",
-            group.group_type,
-            group
-                .selected
-                .clone()
-                .unwrap_or_else(|| tr(current.locale, "未选择", "Unselected").to_owned())
-        )
-    });
-    let mut preview_proxies = preview_group
-        .as_ref()
-        .map(|group| group.proxies.clone())
-        .unwrap_or_default();
-    preview_proxies.truncate(6);
-    let preview_count = preview_proxies.len();
-    let preview_group_name = preview_group
-        .as_ref()
-        .map(|group| group.name.clone())
-        .unwrap_or_default();
-    let proxy_rows = preview_proxies
-        .into_iter()
-        .enumerate()
-        .map(|(index, proxy)| {
-            let group = preview_group_name.clone();
-            let name = proxy.name.clone();
-            let delay = proxy
-                .delay_ms
-                .map(|value| format!("{value} ms"))
-                .unwrap_or_else(|| "—".to_owned());
-            rsx! {
-                column {
-                    key: "{proxy.name}",
-                    percent_width: 1.0,
-                    button {
-                        percent_width: 1.0,
-                        height: 58.0,
-                        background_color: surface(),
-                        border_width: 0.0,
-                        onclick: move |_| dispatch(state, Action::SelectProxy {
-                            group: group.clone(),
-                            proxy: name.clone(),
-                        }),
-                        row {
-                            percent_width: 1.0,
-                            align_items: "center",
-                            row {
-                                width: 28.0,
-                                height: 28.0,
-                                align_items: "center",
-                                justify_content: "center",
-                                {arkit::icon(if proxy.selected { "circle-check" } else { "circle" }, 18.0, if proxy.selected { success() } else { subtle() })}
-                            }
-                            column {
-                                layout_weight: 1.0,
-                                margin_left: 8.0,
-                                align_items: "start",
-                                text { content: truncate_text(&proxy.name, 34), font_size: 14.0, font_weight: 600, font_color: text_color(), max_lines: 1 }
-                                text { content: proxy.proxy_type, margin_top: 2.0, font_size: 11.0, font_color: subtle(), max_lines: 1 }
-                            }
-                            text {
-                                content: delay,
-                                margin_left: 10.0,
-                                font_size: 11.0,
-                                font_weight: 600,
-                                font_color: if proxy.delay_ms.is_some() { success() } else { subtle() },
-                            }
-                        }
-                    }
-                    if index + 1 < preview_count { Separator {} }
-                }
-            }
-        })
-        .collect::<Vec<_>>();
+    let quick_palette = VirtualProxyGridPalette {
+        surface: surface(),
+        selected_surface: muted(),
+        foreground: text_color(),
+        muted_foreground: subtle(),
+        border: line(),
+        success: success(),
+    };
+    // Preserve the first-seen order independently from selection. Selection
+    // remains a row-local visual input, so the keyed adapter only reloads the
+    // previous and next rows without moving the list or its scroll anchor.
+    let quick_list_items =
+        stabilize_proxy_items(&mut quick_item_order.borrow_mut(), quick_items.clone());
     let subscriptions_navigator = navigator.clone();
     let all_nodes_navigator = navigator.clone();
-    let quick_switch_navigator = navigator.clone();
+    let vpn_ip = if connected {
+        snapshot
+            .vpn_options
+            .addresses
+            .iter()
+            .find(|address| !address.contains(':'))
+            .or_else(|| snapshot.vpn_options.addresses.first())
+            .cloned()
+            .unwrap_or_else(|| tr(current.locale, "未分配", "Not assigned").to_owned())
+    } else {
+        tr(current.locale, "未分配", "Not assigned").to_owned()
+    };
+    let status_icon = if connected {
+        "shield-check"
+    } else if matches!(
+        snapshot.vpn_lifecycle,
+        VpnLifecycle::Failed | VpnLifecycle::ProtectFailed
+    ) {
+        "triangle-alert"
+    } else {
+        "power"
+    };
 
     let body = rsx! {
         column {
             percent_width: 1.0,
-            {card(
-                tr(current.locale, "连接状态", "Connection"),
-                Some(profile.clone()),
-                rsx! {
+            layout_weight: 1.0,
+            column {
+                percent_width: 1.0,
+                row {
+                    percent_width: 1.0,
+                    height: 52.0,
+                    align_items: "center",
+                    row {
+                        width: 42.0,
+                        height: 42.0,
+                        align_items: "center",
+                        justify_content: "center",
+                        background_color: muted(),
+                        border_radius: 10.0,
+                        if transitioning {
+                            Spinner { size: 20.0, color: Some(status_color) }
+                        } else {
+                            {arkit::icon(status_icon, 20.0, status_color)}
+                        }
+                    }
                     column {
-                        percent_width: 1.0,
-                        row {
+                        layout_weight: 1.0,
+                        margin_left: 12.0,
+                        align_items: "start",
+                        text {
+                            content: status_label,
+                            font_size: 19.0,
+                            line_height: 24.0,
+                            font_weight: 700,
+                            font_color: status_color,
+                        }
+                        text {
                             percent_width: 1.0,
-                            align_items: "center",
-                            row {
-                                align_items: "center",
-                                if transitioning {
-                                    Spinner { size: 20.0, color: Some(status_color) }
-                                    row { width: 8.0 }
-                                }
-                                text {
-                                    content: if vpn_starting {
-                                        tr(current.locale, "正在连接", "Connecting")
-                                    } else if vpn_stopping {
-                                        tr(current.locale, "正在断开", "Disconnecting")
-                                    } else if connected {
-                                        s.dashboard_connected
-                                    } else {
-                                        s.dashboard_disconnected
-                                    },
-                                    font_size: 26.0,
-                                    font_weight: 800,
-                                    font_color: status_color,
-                                }
-                            }
-                            row { layout_weight: 1.0 }
-                            {pill(lifecycle.to_owned(), status_color)}
+                            content: profile,
+                            margin_top: 1.0,
+                            font_size: 11.0,
+                            line_height: 16.0,
+                            font_color: subtle(),
+                            max_lines: 1,
+                            text_overflow: 2_i32,
                         }
-                        row { height: 16.0 }
-                        {mode_picker(state, snapshot.mode, current.locale)}
-                        row { height: 12.0 }
-                        FlatButton {
-                            variant: FlatButtonVariant::Outline,
-                            percent_width: Some(1.0),
-                            onclick: move |_| {
-                                quick_switch_navigator.push(Route::Proxies {});
-                            },
-                            {arkit::icon("git-branch", 15.0, text_color())}
-                            column {
-                                layout_weight: 1.0,
-                                margin_left: 9.0,
-                                align_items: "start",
-                                text {
-                                    content: if current_route.is_empty() {
-                                        tr(current.locale, "当前节点", "Current node").to_owned()
-                                    } else {
-                                        format!("{} · {}", tr(current.locale, "当前节点", "Current node"), truncate_text(&current_route, 28))
-                                    },
-                                    font_size: 10.0,
-                                    font_color: subtle(),
-                                    max_lines: 1,
-                                }
-                                text { content: truncate_text(&current_node, 36), margin_top: 1.0, font_size: 13.0, font_weight: 650, font_color: text_color(), max_lines: 1 }
-                            }
-                            {arkit::icon("chevron-right", 14.0, subtle())}
-                        }
-                        row { height: 12.0 }
-                        {info_row(
-                            tr(current.locale, "实时速度", "Live speed"),
-                            format!(
-                                "↓ {}  ·  ↑ {}",
-                                format_speed(snapshot.traffic.download_speed),
-                                format_speed(snapshot.traffic.upload_speed),
-                            ),
-                        )}
                     }
                 }
-            )}
+                row { height: 14.0 }
+                {mode_picker(state, snapshot.mode, current.locale)}
+                row { height: 14.0 }
+                row {
+                    percent_width: 1.0,
+                    height: 40.0,
+                    padding_left: 4.0,
+                    padding_right: 4.0,
+                    align_items: "center",
+                    row {
+                        layout_weight: 1.0,
+                        align_items: "center",
+                        clip: true,
+                        {arkit::icon("git-branch", 15.0, text_color())}
+                        column {
+                            layout_weight: 1.0,
+                            margin_left: 8.0,
+                            align_items: "start",
+                            text { content: tr(current.locale, "当前节点", "Current node"), font_size: 10.0, line_height: 14.0, font_color: subtle() }
+                            text { percent_width: 1.0, content: current_node, font_size: 13.0, line_height: 18.0, font_weight: 650, font_color: text_color(), max_lines: 1, text_overflow: 2_i32 }
+                        }
+                    }
+                    Separator { vertical_height: Some(30.0) }
+                    row {
+                        layout_weight: 1.0,
+                        padding_left: 18.0,
+                        align_items: "center",
+                        clip: true,
+                        {arkit::icon("network", 15.0, text_color())}
+                        column {
+                            layout_weight: 1.0,
+                            margin_left: 8.0,
+                            align_items: "start",
+                            text { content: "VPN IP", font_size: 10.0, line_height: 14.0, font_color: subtle() }
+                            text { percent_width: 1.0, content: vpn_ip, font_size: 13.0, line_height: 18.0, font_weight: 650, font_color: text_color(), max_lines: 1, text_overflow: 2_i32 }
+                        }
+                    }
+                }
+            }
+            row { height: 18.0 }
+            Separator {}
             row { height: 18.0 }
             row {
                 percent_width: 1.0,
                 align_items: "center",
-                text { content: tr(current.locale, "代理节点", "Proxy nodes"), font_size: 17.0, font_weight: 700, font_color: text_color() }
-                row { layout_weight: 1.0 }
-                if preview_count > 0 {
-                    FlatButton {
-                        variant: FlatButtonVariant::Ghost,
+                column {
+                    layout_weight: 1.0,
+                    align_items: "start",
+                    text { content: tr(current.locale, "快速切换", "Quick switch"), font_size: 17.0, line_height: 22.0, font_weight: 700, font_color: text_color() }
+                    text { content: proxy_group_context, margin_top: 1.0, font_size: 10.0, line_height: 14.0, font_color: subtle(), max_lines: 1 }
+                }
+                if quick_count > 0 {
+                    Button {
+                        variant: ButtonVariant::Ghost,
                         size: ButtonSize::Sm,
+                        shadow: Some(false),
                         onclick: move |_| {
                             all_nodes_navigator.push(Route::Proxies {});
                         },
-                        text { content: tr(current.locale, "查看全部", "View all"), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                        text { content: tr(current.locale, "搜索", "Search"), font_size: 12.0, font_weight: 600, font_color: text_color() }
                         {arkit::icon("chevron-right", 14.0, subtle())}
                     }
                 }
             }
-            row { height: 8.0 }
-            if preview_count == 0 {
+            row { height: 6.0 }
+            if quick_count == 0 {
                 column {
+                    layout_weight: 1.0,
                     percent_width: 1.0,
-                    height: 190.0,
-                    padding: 22.0,
                     align_items: "center",
                     justify_content: "center",
-                    background_color: surface(),
-                    border_width: 1.0,
-                    border_color: line(),
-                    border_radius: 10.0,
-                    {arkit::icon("rss", 24.0, subtle())}
-                    text { content: tr(current.locale, "尚未选择订阅", "No subscription selected"), margin_top: 12.0, font_size: 15.0, font_weight: 700, font_color: text_color() }
-                    text { content: tr(current.locale, "添加并启用订阅后即可选择代理节点", "Add and activate a subscription to choose proxy nodes"), margin_top: 5.0, font_size: 12.0, line_height: 18.0, font_color: subtle(), text_align: 1 }
-                    row { height: 14.0 }
-                    FlatButton {
-                        variant: FlatButtonVariant::Primary,
+                    {arkit::icon("rss", 21.0, subtle())}
+                    text { content: tr(current.locale, "尚未选择订阅", "No subscription selected"), margin_top: 9.0, font_size: 14.0, font_weight: 700, font_color: text_color() }
+                    text { content: tr(current.locale, "添加并启用订阅后即可选择节点", "Add and activate a subscription to choose nodes"), margin_top: 3.0, font_size: 11.0, line_height: 16.0, font_color: subtle(), text_align: 1 }
+                    row { height: 10.0 }
+                    Button {
+                        variant: ButtonVariant::Default,
                         size: ButtonSize::Sm,
+                        shadow: Some(false),
                         onclick: move |_| {
                             subscriptions_navigator.push(Route::Profiles {});
                         },
@@ -876,15 +822,24 @@ fn dashboard_page(state: Signal<State>) -> Element {
                     }
                 }
             } else {
-                {card(
-                    proxy_group_title,
-                    proxy_group_subtitle,
-                    rsx! { column { percent_width: 1.0, {proxy_rows.into_iter()} } },
-                )}
+                column {
+                    layout_weight: 1.0,
+                    percent_width: 1.0,
+                    clip: true,
+                    VirtualQuickProxyList {
+                        key: "dashboard-quick-proxy-list",
+                        items: quick_list_items,
+                        locale: current.locale,
+                        palette: quick_palette,
+                        on_select: move |(group, proxy): (String, String)| {
+                            dispatch(state, Action::SelectProxy { group, proxy });
+                        },
+                    }
+                }
             }
         }
     };
-    scaffold(state, Route::Dashboard {}, rsx! {}, body)
+    fixed_scaffold_flush_bottom(state, Route::Dashboard {}, rsx! {}, body)
 }
 
 fn mode_picker(state: Signal<State>, selected: RuntimeMode, locale: UiLocale) -> Element {
@@ -897,24 +852,17 @@ fn mode_picker(state: Signal<State>, selected: RuntimeMode, locale: UiLocale) ->
         RuntimeMode::Direct => direct.clone(),
     };
     rsx! {
-        row {
+        ToggleGroup {
+            options: vec![rule, global.clone(), direct.clone()],
+            selected: Some(vec![selected_label]),
             percent_width: 1.0,
-            padding_left: 8.0,
-            padding_right: 8.0,
-            FlatSegmented {
-                options: vec![rule, global.clone(), direct.clone()],
-                selected: selected_label,
-                on_change: move |value: String| {
-                    let mode = if value == global {
-                        RuntimeMode::Global
-                    } else if value == direct {
-                        RuntimeMode::Direct
-                    } else {
-                        RuntimeMode::Rule
-                    };
+            shadow: Some(false),
+            on_change: move |values: Vec<String>| {
+                if let Some(value) = values.first() {
+                    let mode = if value == &global { RuntimeMode::Global } else if value == &direct { RuntimeMode::Direct } else { RuntimeMode::Rule };
                     dispatch(state, Action::SetMode(mode));
-                },
-            }
+                }
+            },
         }
     }
 }
@@ -1040,6 +988,7 @@ enum ProxyLayoutMode {
     #[default]
     Grid,
     List,
+    Compact,
 }
 
 impl ProxyLayoutMode {
@@ -1047,6 +996,7 @@ impl ProxyLayoutMode {
         match self {
             Self::Grid => Self::List,
             Self::List => Self::Grid,
+            Self::Compact => Self::List,
         }
     }
 
@@ -1054,6 +1004,7 @@ impl ProxyLayoutMode {
         match self {
             Self::Grid => "list",
             Self::List => "layout-grid",
+            Self::Compact => "list",
         }
     }
 }
@@ -1144,7 +1095,7 @@ fn VirtualProxyGrid(
             state.palette,
             state.layout,
             state.selection_pending,
-            state.on_select,
+            render_state_for_adapter.clone(),
         )
     });
     let attach_handle = handle.clone();
@@ -1206,7 +1157,7 @@ fn VirtualProxyList(
             state.palette,
             state.layout,
             state.selection_pending,
-            state.on_select,
+            render_state_for_adapter.clone(),
         )
     });
     let attach_handle = handle.clone();
@@ -1223,33 +1174,113 @@ fn VirtualProxyList(
     }
 }
 
+#[component]
+fn VirtualQuickProxyList(
+    items: Vec<ProxyGridItem>,
+    locale: UiLocale,
+    palette: VirtualProxyGridPalette,
+    on_select: EventHandler<(String, String)>,
+) -> Element {
+    let item_keys = virtual_quick_proxy_item_keys(&items, locale, palette);
+    let render_state = use_hook(|| {
+        Rc::new(RefCell::new(VirtualProxyGridRenderState {
+            items: items.clone(),
+            locale,
+            palette,
+            layout: ProxyLayoutMode::Compact,
+            selection_pending: false,
+            on_select,
+        }))
+    });
+    *render_state.borrow_mut() = VirtualProxyGridRenderState {
+        items,
+        locale,
+        palette,
+        layout: ProxyLayoutMode::Compact,
+        selection_pending: false,
+        on_select,
+    };
+    let render_state_for_adapter = render_state.clone();
+    let handle = use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys, move |index| {
+        let state = render_state_for_adapter.borrow();
+        render_virtual_proxy_card(
+            &state.items[index as usize],
+            state.locale,
+            state.palette,
+            state.layout,
+            state.selection_pending,
+            render_state_for_adapter.clone(),
+        )
+    });
+    let attach_handle = handle.clone();
+    use_layout_frame_node(move |host_node, _frame| {
+        let _ = attach_handle.attach(&host_node);
+    });
+
+    rsx! {
+        list {
+            percent_width: 1.0,
+            percent_height: 1.0,
+            list_cached_count: 20_i32,
+        }
+    }
+}
+
+fn virtual_quick_proxy_item_keys(
+    items: &[ProxyGridItem],
+    locale: UiLocale,
+    palette: VirtualProxyGridPalette,
+) -> Vec<u64> {
+    items
+        .iter()
+        .map(|item| {
+            let mut hasher = DefaultHasher::new();
+            item.group.hash(&mut hasher);
+            item.group_type.hash(&mut hasher);
+            item.name.hash(&mut hasher);
+            item.proxy_type.hash(&mut hasher);
+            item.delay_ms.hash(&mut hasher);
+            item.selected.hash(&mut hasher);
+            locale.language_tag().hash(&mut hasher);
+            palette.hash(&mut hasher);
+            hasher.finish()
+        })
+        .collect()
+}
+
 fn render_virtual_proxy_card(
     item: &ProxyGridItem,
     locale: UiLocale,
     palette: VirtualProxyGridPalette,
     layout: ProxyLayoutMode,
     selection_pending: bool,
-    on_select: EventHandler<(String, String)>,
+    interaction_state: Rc<RefCell<VirtualProxyGridRenderState>>,
 ) -> arkit::ohos_arkui_binding::common::error::ArkUIResult<ArkUINode> {
+    if layout == ProxyLayoutMode::Compact {
+        return render_virtual_quick_proxy_row(
+            item,
+            locale,
+            palette,
+            selection_pending,
+            interaction_state,
+        );
+    }
     let selected_label = tr(locale, "当前", "Current");
     let delay = item
         .delay_ms
         .map(|value| format!("{value} ms"))
         .unwrap_or_else(|| strings(locale).proxies_untested.to_owned());
-    let (selected_title_limit, title_limit, group_limit, height, padding, margin) = match layout {
-        ProxyLayoutMode::Grid => (22, 24, 16, 92.0, 12.0, [0.0; 4]),
-        ProxyLayoutMode::List => (42, 44, 28, 82.0, 11.0, [0.0, 0.0, 8.0, 0.0]),
+    let (height, padding, margin) = match layout {
+        ProxyLayoutMode::Grid => (92.0, 12.0, [0.0; 4]),
+        ProxyLayoutMode::List => (82.0, 11.0, [0.0, 0.0, 8.0, 0.0]),
+        ProxyLayoutMode::Compact => unreachable!("compact rows use their dedicated renderer"),
     };
     let title = if item.selected {
-        format!("✓ {}", truncate_text(&item.name, selected_title_limit))
+        format!("✓ {}", item.name)
     } else {
-        truncate_text(&item.name, title_limit)
+        item.name.clone()
     };
-    let metadata = format!(
-        "{} · {}",
-        truncate_text(&item.group, group_limit),
-        item.proxy_type.to_ascii_uppercase(),
-    );
+    let metadata = format!("{} · {}", item.group, item.proxy_type.to_ascii_uppercase(),);
     let status = if item.selected && selection_pending {
         tr(locale, "切换中…", "Switching…").to_owned()
     } else if item.selected {
@@ -1283,7 +1314,7 @@ fn render_virtual_proxy_card(
     )?;
 
     let accessibility_text = format!("{}，{}，{}", item.name, item.group, delay);
-    let mut node = NodeBuilder::new("column")?
+    let node = NodeBuilder::new("column")?
         .percent_width(1.0)?
         .height(height)?
         .background_color(format!(
@@ -1308,13 +1339,102 @@ fn render_virtual_proxy_card(
         )?
         .child(title_node)?
         .child(metadata_node)?
-        .child(status_node)?
-        .build();
+        .child(status_node)?;
 
-    if !item.selected {
-        register_virtual_proxy_click(&mut node, item.group.clone(), item.name.clone(), on_select);
+    if item.selected {
+        return Ok(node.build());
     }
-    Ok(node)
+
+    let group = item.group.clone();
+    let proxy = item.name.clone();
+    Ok(node
+        .on_click(move || {
+            // Virtual rows outlive an individual Dioxus render. Resolve the
+            // current handler at click time instead of retaining a stale
+            // listener from the render that originally created this node.
+            let on_select = interaction_state.borrow().on_select;
+            on_select.call((group.clone(), proxy.clone()));
+        })?
+        .build())
+}
+
+fn render_virtual_quick_proxy_row(
+    item: &ProxyGridItem,
+    locale: UiLocale,
+    palette: VirtualProxyGridPalette,
+    _selection_pending: bool,
+    interaction_state: Rc<RefCell<VirtualProxyGridRenderState>>,
+) -> arkit::ohos_arkui_binding::common::error::ArkUIResult<ArkUINode> {
+    let delay = item
+        .delay_ms
+        .map(|value| format!("{value} ms"))
+        .unwrap_or_else(|| strings(locale).proxies_untested.to_owned());
+    let detail = format!(
+        "{} · {} · {delay}",
+        item.group,
+        item.proxy_type.to_ascii_uppercase()
+    );
+    let title_node = virtual_proxy_text(
+        item.name.clone(),
+        13.0,
+        if item.selected { 6 } else { 4 },
+        if item.selected {
+            palette.success
+        } else {
+            palette.foreground
+        },
+        18.0,
+    )?;
+    let detail_node = virtual_proxy_text(detail, 10.0, 3, palette.muted_foreground, 15.0)?;
+    let accessibility_text = format!("{}，{}，{}", item.name, item.group, delay);
+    let selection_marker = NodeBuilder::new("column")?
+        .width(3.0)?
+        .height(28.0)?
+        .margin([0.0, 8.0, 0.0, 0.0])?
+        .background_color(format!(
+            "#{:08x}",
+            if item.selected {
+                palette.success
+            } else {
+                0x00000000
+            }
+        ))?
+        .attr(ArkUINodeAttributeType::BorderRadius, vec![2.0; 4])?
+        .build();
+    let content = NodeBuilder::new("column")?
+        .attr(ArkUINodeAttributeType::LayoutWeight, 1.0_f32)?
+        .attr(ArkUINodeAttributeType::ColumnAlignItems, 0_i32)?
+        .attr(ArkUINodeAttributeType::ColumnJustifyContent, 2_i32)?
+        .child(title_node)?
+        .child(detail_node)?
+        .build();
+    let node = NodeBuilder::new("row")?
+        .percent_width(1.0)?
+        .height(56.0)?
+        .background_color(format!("#{:08x}", palette.surface))?
+        .padding([7.0, 10.0, 7.0, 7.0])?
+        .attr(
+            ArkUINodeAttributeType::BorderWidth,
+            vec![0.0, 0.0, 1.0, 0.0],
+        )?
+        .attr(ArkUINodeAttributeType::BorderColor, palette.border)?
+        .attr(ArkUINodeAttributeType::Clip, true)?
+        .attr(ArkUINodeAttributeType::RowAlignItems, 1_i32)?
+        .attr(
+            ArkUINodeAttributeType::AccessibilityText,
+            accessibility_text,
+        )?
+        .child(selection_marker)?
+        .child(content)?;
+
+    let group = item.group.clone();
+    let proxy = item.name.clone();
+    Ok(node
+        .on_click(move || {
+            let on_select = interaction_state.borrow().on_select;
+            on_select.call((group.clone(), proxy.clone()));
+        })?
+        .build())
 }
 
 fn virtual_proxy_text(
@@ -1336,33 +1456,6 @@ fn virtual_proxy_text(
         .build())
 }
 
-fn register_virtual_proxy_click(
-    node: &mut ArkUINode,
-    group: String,
-    proxy: String,
-    on_select: EventHandler<(String, String)>,
-) {
-    struct EventNode<'a>(&'a mut ArkUINode);
-    impl ArkUIAttributeBasic for EventNode<'_> {
-        fn raw(&self) -> &ArkUINode {
-            self.0
-        }
-
-        fn borrow_mut(&mut self) -> &mut ArkUINode {
-            self.0
-        }
-    }
-    impl ArkUIEvent for EventNode<'_> {}
-
-    let mut event_node = EventNode(node);
-    // Match Arkit's native renderer exactly: API 18 needs OnClickEvent to
-    // activate the channel, while the action is dispatched from OnClick.
-    event_node.on_event(NodeEventType::OnClickEvent, |_| {});
-    event_node.on_event_no_param(NodeEventType::OnClick, move || {
-        on_select.call((group.clone(), proxy.clone()));
-    });
-}
-
 fn profiles_page(state: Signal<State>) -> Element {
     let mut query = use_signal(String::new);
     let mut import_open = use_signal(|| false);
@@ -1377,13 +1470,21 @@ fn profiles_page(state: Signal<State>) -> Element {
     let current = state.read().clone();
 
     use_effect(move || {
-        let feedback = state.read();
-        if import_submitted() && !feedback.profile_import_loading {
-            if feedback.profile_import_error.is_none() {
-                import_open.set(false);
-                import_url.set(String::new());
-                import_name.set(String::new());
-            }
+        let (succeeded, loading, failed) = {
+            let feedback = state.read();
+            (
+                feedback.profile_import_succeeded,
+                feedback.profile_import_loading,
+                feedback.profile_import_error.is_some(),
+            )
+        };
+        if import_submitted() && succeeded {
+            import_open.set(false);
+            import_url.set(String::new());
+            import_name.set(String::new());
+            import_submitted.set(false);
+            dispatch(state, Action::ResetProfileImportFeedback);
+        } else if import_submitted() && !loading && failed {
             import_submitted.set(false);
         }
     });
@@ -2511,12 +2612,15 @@ fn profile_import_dialog(
     mut submitted: Signal<bool>,
 ) -> Element {
     let locale = current.locale;
+    let import_loading = current.profile_import_loading;
     rsx! {
         FlatDialog {
             open: open,
             on_close: move |_| {
-                open_signal.set(false);
-                dispatch(state, Action::ResetProfileImportFeedback);
+                if !import_loading {
+                    open_signal.set(false);
+                    dispatch(state, Action::ResetProfileImportFeedback);
+                }
             },
             DialogHeader {
                 title: strings(locale).profiles_import_network.to_owned(),
@@ -2529,6 +2633,7 @@ fn profile_import_dialog(
                     value: Some(url()),
                     placeholder: Some(strings(locale).profiles_import_url_label.to_owned()),
                     percent_width: Some(1.0),
+                    disabled: import_loading,
                     on_change: move |value| {
                         url.set(value);
                         dispatch(state, Action::ResetProfileImportFeedback);
@@ -2539,6 +2644,7 @@ fn profile_import_dialog(
                     value: Some(name()),
                     placeholder: Some(strings(locale).profiles_import_name_placeholder.to_owned()),
                     percent_width: Some(1.0),
+                    disabled: import_loading,
                     on_change: move |value| {
                         name.set(value);
                         dispatch(state, Action::ResetProfileImportFeedback);
@@ -2548,6 +2654,7 @@ fn profile_import_dialog(
                 FlatButton {
                     variant: FlatButtonVariant::Ghost,
                     size: ButtonSize::Sm,
+                    disabled: Some(import_loading),
                     onclick: move |_| dispatch(state, Action::ImportLocalProfile),
                     {arkit::icon("file-up", 14.0, text_color())}
                     text { content: tr(locale, "从本地文件导入", "Import from local file"), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
@@ -2560,17 +2667,23 @@ fn profile_import_dialog(
                 FlatButton {
                     variant: FlatButtonVariant::Primary,
                     percent_width: 1.0,
-                    disabled: Some(current.profile_import_loading),
+                    disabled: Some(import_loading),
                     onclick: move |_| {
-                        submitted.set(true);
-                        dispatch(state, Action::ImportProfileFromUrl {
-                            url: url(),
-                            name: name(),
-                        });
+                        if !import_loading {
+                            submitted.set(true);
+                            dispatch(state, Action::ImportProfileFromUrl {
+                                url: url(),
+                                name: name(),
+                            });
+                        }
                     },
-                    {arkit::icon("download", 16.0, primary_text())}
+                    if import_loading {
+                        Spinner { size: 16.0, color: Some(primary_text()) }
+                    } else {
+                        {arkit::icon("download", 16.0, primary_text())}
+                    }
                     text {
-                        content: if current.profile_import_loading { strings(locale).profiles_import_loading } else { strings(locale).profiles_import_submit },
+                        content: if import_loading { strings(locale).profiles_import_loading } else { strings(locale).profiles_import_submit },
                         margin_left: 8.0,
                         font_size: 14.0,
                         font_weight: 600,

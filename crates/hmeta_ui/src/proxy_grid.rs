@@ -1,6 +1,6 @@
 use crate::proxy_filter::matches_proxy_query;
 use hmeta_model::ProxyGroup;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A presentation item for Arkit's virtual Grid. Keeping this model flat means
 /// the native adapter can address every node by index without eagerly building
@@ -56,6 +56,42 @@ pub(crate) fn flatten_proxy_groups(groups: &[ProxyGroup], query: &str) -> Vec<Pr
     }
 
     items
+}
+
+/// Preserve the first-seen identity order while refreshing each item's latest
+/// metadata. Runtime selector snapshots may return groups in a different
+/// order after a selection; a visible quick-switch list must not follow that
+/// incidental reordering.
+pub(crate) fn stabilize_proxy_items(
+    previous_order: &mut Vec<(String, String)>,
+    items: Vec<ProxyGridItem>,
+) -> Vec<ProxyGridItem> {
+    let incoming_order = items
+        .iter()
+        .map(|item| (item.group.clone(), item.name.clone()))
+        .collect::<Vec<_>>();
+    let mut by_identity = items
+        .into_iter()
+        .map(|item| ((item.group.clone(), item.name.clone()), item))
+        .collect::<BTreeMap<_, _>>();
+    let mut stable = Vec::with_capacity(by_identity.len());
+
+    for identity in previous_order.iter() {
+        if let Some(item) = by_identity.remove(identity) {
+            stable.push(item);
+        }
+    }
+    for identity in incoming_order {
+        if let Some(item) = by_identity.remove(&identity) {
+            stable.push(item);
+        }
+    }
+
+    *previous_order = stable
+        .iter()
+        .map(|item| (item.group.clone(), item.name.clone()))
+        .collect();
+    stable
 }
 
 /// Build the selector updates needed to make a flattened leaf node effective.

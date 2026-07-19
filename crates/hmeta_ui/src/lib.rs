@@ -125,6 +125,14 @@ fn io_to_napi(err: io::Error) -> Error {
 }
 
 #[napi]
+pub async fn prepare_vpn() -> Result<bool> {
+    hmeta_core::shared_core()
+        .prepare_active_vpn()
+        .await
+        .map_err(to_napi_error)
+}
+
+#[napi]
 pub async fn start_vpn(fd: i32, options_json: String) -> Result<()> {
     hmeta_core::shared_core()
         .start_vpn(fd, &options_json)
