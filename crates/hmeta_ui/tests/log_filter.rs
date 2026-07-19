@@ -2,7 +2,9 @@
 mod log_filter;
 
 use hmeta_model::LogEntry;
-use log_filter::{matches_log_filter, LogLevelFilter};
+use log_filter::{
+    matches_log_filter, matches_log_filter_normalized, normalize_log_query, LogLevelFilter,
+};
 
 fn log(level: &str, message: &str, timestamp: &str) -> LogEntry {
     LogEntry {
@@ -44,6 +46,25 @@ fn combines_level_and_query_filters() {
         &entry,
         LogLevelFilter::Error,
         "provider"
+    ));
+}
+
+#[test]
+fn normalized_query_can_be_reused_across_the_log_batch() {
+    let info = log("info", "Provider refresh succeeded", "103");
+    let warning = log("warning", "Provider refresh failed", "104");
+    let query = normalize_log_query("  PROVIDER  ");
+
+    assert_eq!(query, "provider");
+    assert!(matches_log_filter_normalized(
+        &info,
+        LogLevelFilter::All,
+        &query
+    ));
+    assert!(matches_log_filter_normalized(
+        &warning,
+        LogLevelFilter::Warning,
+        &query
     ));
 }
 

@@ -1,6 +1,6 @@
 import { Want } from '@kit.AbilityKit';
 
-export const HMETA_BUNDLE_NAME: string = 'com.richerfu.clash_hmeta';
+export const HMETA_BUNDLE_NAME: string = 'com.richerfu.paws';
 export const HMETA_MODULE_NAME: string = 'entry';
 export const HMETA_VPN_ABILITY: string = 'HMetaVpnExtensionAbility';
 

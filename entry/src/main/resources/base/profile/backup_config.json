@@ -1,11 +1,11 @@
 {
   "allowToBackupRestore": true,
   "includes": [
-    "/data/storage/el2/base/files/hmeta"
+    "/data/storage/el2/base/files/paws"
   ],
   "excludes": [
-    "/data/storage/el2/base/files/hmeta/runtime",
-    "/data/storage/el2/base/files/hmeta/providers",
-    "/data/storage/el2/base/files/hmeta/geodata"
+    "/data/storage/el2/base/files/paws/runtime",
+    "/data/storage/el2/base/files/paws/providers",
+    "/data/storage/el2/base/files/paws/geodata"
   ]
 }

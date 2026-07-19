@@ -3,7 +3,7 @@ use crate::activity_filter::{
 };
 use crate::installed_app_filter::matches_installed_application_query;
 use crate::l10n::{strings, UiLocale, UiStrings};
-use crate::log_filter::{matches_log_filter, LogLevelFilter};
+use crate::log_filter::{matches_log_filter_normalized, normalize_log_query, LogLevelFilter};
 use crate::mode_feedback::mode_changed_message;
 use crate::profile_filter::matches_profile_query;
 use crate::profile_refresh_feedback::{

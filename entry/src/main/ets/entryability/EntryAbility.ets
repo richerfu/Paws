@@ -285,7 +285,7 @@ export default class EntryAbility extends NativeAbility {
 
   private configureNativeHome(): void {
     try {
-      hmetaUi.configureAppHome(`${this.context.filesDir}/hmeta`);
+      hmetaUi.configureAppHome(`${this.context.filesDir}/paws`);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'configured native home');
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'configure native home failed %{public}s', describeError(err));

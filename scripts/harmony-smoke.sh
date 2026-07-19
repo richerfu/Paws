@@ -4,7 +4,7 @@ set -eu
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 HDC="${HDC:-hdc}"
 OHRS="${OHRS:-ohrs}"
-BUNDLE_NAME="${BUNDLE_NAME:-com.richerfu.clash_hmeta}"
+BUNDLE_NAME="${BUNDLE_NAME:-com.richerfu.paws}"
 ABILITY_NAME="${ABILITY_NAME:-EntryAbility}"
 HAP_PATH="${HAP_PATH:-$ROOT_DIR/entry/build/default/outputs/default/entry-default-unsigned.hap}"
 HAP_LIB_PATH="${HAP_LIB_PATH:-libs/arm64-v8a/libhmeta_ui.so}"

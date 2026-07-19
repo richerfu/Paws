@@ -113,38 +113,7 @@ pub(crate) fn connections_page(state: Signal<State>, initial_query: String) -> E
         .iter()
         .filter(|connection| matches_connection_query(connection, &query_value))
         .cloned()
-        .map(|connection| {
-            let id = connection.id.clone();
-            rsx! {
-                {card(
-                    truncate_text(&connection.host, 42),
-                    Some(format!("{} · {}", connection.network, connection.proxy)),
-                    rsx! {
-                        column {
-                            percent_width: 1.0,
-                            {info_row(tr(current.locale, "规则", "Rule"), connection.rule.clone())}
-                            {info_row(tr(current.locale, "代理链", "Chain"), if connection.chains.is_empty() { "DIRECT".to_owned() } else { connection.chains.join(" > ") })}
-                            {info_row(tr(current.locale, "流量", "Traffic"), format!("↓ {}  ↑ {}", format_total(connection.download_bytes), format_total(connection.upload_bytes)))}
-                            {info_row(tr(current.locale, "开始时间", "Started"), connection.started_at.clone())}
-                            row { height: 10.0 }
-                            FlatButton {
-                                variant: FlatButtonVariant::Destructive,
-                                percent_width: Some(1.0),
-                                onclick: move |_| dispatch(state, Action::CloseConnection(id.clone())),
-                                {arkit::icon("unplug", 16.0, primary_text())}
-                                text {
-                                    content: tr(current.locale, "断开", "Close"),
-                                    margin_left: 8.0,
-                                    font_size: 14.0,
-                                    font_weight: 600,
-                                    font_color: primary_text(),
-                                }
-                            }
-                        }
-                    }
-                )}
-            }
-        })
+        .map(|connection| compact_connection_card(state, current.locale, connection))
         .collect::<Vec<_>>();
     let empty = rows.is_empty();
     let body = rsx! {
@@ -172,4 +141,96 @@ pub(crate) fn connections_page(state: Signal<State>, initial_query: String) -> E
         destructive_icon_action("circle-x", Action::CloseAllConnections, state),
         body,
     )
+}
+
+fn compact_connection_card(
+    state: Signal<State>,
+    locale: UiLocale,
+    connection: hmeta_model::ConnectionSummary,
+) -> Element {
+    let id = connection.id.clone();
+    let chain = if connection.chains.is_empty() {
+        "DIRECT".to_owned()
+    } else {
+        connection.chains.join(" > ")
+    };
+    let routing = format!(
+        "{} · {}",
+        truncate_text(&connection.rule, 36),
+        truncate_text(&chain, 34)
+    );
+    let traffic = format!(
+        "↓ {}   ↑ {}",
+        format_total(connection.download_bytes),
+        format_total(connection.upload_bytes)
+    );
+    rsx! {
+        column {
+            percent_width: 1.0,
+            padding_top: 11.0,
+            padding_bottom: 11.0,
+            padding_left: 13.0,
+            padding_right: 10.0,
+            background_color: surface(),
+            border_width: 1.0,
+            border_color: line(),
+            border_radius: 10.0,
+            clip: true,
+            row {
+                percent_width: 1.0,
+                height: 40.0,
+                align_items: "center",
+                column {
+                    layout_weight: 1.0,
+                    align_items: "start",
+                    text {
+                        content: truncate_text(&connection.host, 52),
+                        percent_width: 1.0,
+                        font_size: 13.0,
+                        font_weight: 700,
+                        font_color: text_color(),
+                        max_lines: 1,
+                    }
+                    text {
+                        content: format!("{} · {}", connection.network.to_ascii_uppercase(), truncate_text(&connection.proxy, 30)),
+                        percent_width: 1.0,
+                        margin_top: 3.0,
+                        font_size: 10.0,
+                        font_color: subtle(),
+                        max_lines: 1,
+                    }
+                }
+                FlatButton {
+                    variant: FlatButtonVariant::Ghost,
+                    size: ButtonSize::Icon,
+                    onclick: move |_| dispatch(state, Action::CloseConnection(id.clone())),
+                    {arkit::icon("unplug", 16.0, danger())}
+                }
+            }
+            row {
+                percent_width: 1.0,
+                height: 25.0,
+                padding_right: 4.0,
+                align_items: "center",
+                row {
+                    layout_weight: 1.0,
+                    text { content: routing, percent_width: 1.0, font_size: 11.0, font_color: subtle(), max_lines: 1 }
+                }
+            }
+            row {
+                percent_width: 1.0,
+                height: 22.0,
+                padding_right: 4.0,
+                align_items: "center",
+                text { content: traffic, font_size: 11.0, font_weight: 650, font_color: text_color(), max_lines: 1 }
+                row { layout_weight: 1.0 }
+                text {
+                    content: format!("{} {}", tr(locale, "开始", "Started"), truncate_text(&connection.started_at, 18)),
+                    font_size: 10.0,
+                    font_color: subtle(),
+                    max_lines: 1,
+                }
+            }
+        }
+    }
 }

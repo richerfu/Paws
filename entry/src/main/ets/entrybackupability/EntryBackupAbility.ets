@@ -3,7 +3,7 @@ import { BackupExtensionAbility, BundleVersion } from '@kit.CoreFileKit';
 
 const DOMAIN = 0x0000;
 const LOG_TAG = 'HMetaBackup';
-const HMETA_BACKUP_ROOT = '/data/storage/el2/base/files/hmeta';
+const HMETA_BACKUP_ROOT = '/data/storage/el2/base/files/paws';
 
 export default class EntryBackupAbility extends BackupExtensionAbility {
   async onBackup() {
