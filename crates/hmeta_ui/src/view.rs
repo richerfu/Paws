@@ -1,4 +1,5 @@
 use super::*;
+use crate::notification::{use_notification_center, NotificationHost};
 use crate::platform_callbacks;
 use arkit::ohos_arkui_binding::{
     common::node::ArkUINode,
@@ -308,7 +309,8 @@ fn use_flat_dialog_overlay(open: bool, panel: Element, on_dismiss: EventHandler<
 
 #[component]
 pub(crate) fn App() -> Element {
-    let state = use_signal(State::new);
+    let notifications = use_notification_center();
+    let state = use_signal(|| State::new(notifications));
     let _state = use_context_provider(move || state);
     let theme = if state.read().theme_dark() {
         Theme::dark(ThemePreset::Zinc)
@@ -339,6 +341,7 @@ pub(crate) fn App() -> Element {
         ThemeProvider {
             theme,
             Router::<Route> {}
+            NotificationHost { center: notifications }
         }
     }
 }
@@ -383,9 +386,6 @@ fn AppShell() -> Element {
             }
             if matches!(route, Route::Dashboard {}) {
                 {vpn_floating_action(state, &current)}
-            }
-            if let Some(message) = current.toast_message.clone() {
-                {toast(message)}
             }
             if current.yaml_editor_open {
                 {yaml_editor_dialog(state, &current)}
@@ -448,9 +448,8 @@ fn dispatch(mut state: Signal<State>, action: Action) {
 fn run_command(state: Signal<State>, command: Command<Action>) {
     let runtime = arkit::tokio_handle();
     for future in command.into_futures() {
-        let state = state;
         let task = runtime.spawn(future);
-        arkit::dioxus_core::spawn(async move {
+        arkit::dioxus_core::spawn_forever(async move {
             if let Ok(action) = task.await {
                 dispatch(state, action);
             }
@@ -2640,43 +2639,6 @@ fn yaml_editor_dialog(state: Signal<State>, current: &State) -> Element {
                         onclick: move |_| dispatch(state, Action::SaveYamlEditor),
                         {arkit::icon("save", 14.0, primary_text())}
                         text { content: if current.yaml_editor_saving { strings(current.locale).profiles_yaml_saving } else { strings(current.locale).profiles_yaml_save }, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: primary_text() }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn toast(message: String) -> Element {
-    rsx! {
-        column {
-            percent_width: 1.0,
-            percent_height: 1.0,
-            padding: 18.0,
-            justify_content: "end",
-            hit_test_behavior: 1,
-            z_index: 200,
-            row {
-                percent_width: 1.0,
-                height: 64.0,
-                padding: 14.0,
-                align_items: "center",
-                background_color: surface(),
-                border_width: 1.0,
-                border_color: line(),
-                border_radius: 10.0,
-                {arkit::icon("info", 17.0, text_color())}
-                row {
-                    layout_weight: 1.0,
-                    margin_left: 10.0,
-                    text {
-                        content: message,
-                        percent_width: 1.0,
-                        font_size: 13.0,
-                        line_height: 19.0,
-                        font_weight: 550,
-                        font_color: text_color(),
-                        max_lines: 2,
                     }
                 }
             }

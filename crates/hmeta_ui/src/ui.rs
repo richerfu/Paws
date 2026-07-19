@@ -5,6 +5,7 @@ use crate::installed_app_filter::matches_installed_application_query;
 use crate::l10n::{strings, UiLocale, UiStrings};
 use crate::log_filter::{matches_log_filter, LogLevelFilter};
 use crate::mode_feedback::mode_changed_message;
+use crate::notification::NotificationCenter;
 use crate::profile_filter::matches_profile_query;
 use crate::profile_refresh_feedback::{
     profile_activation_message, profile_batch_refresh_message, profile_delete_message,
@@ -58,7 +59,6 @@ pub(crate) enum Action {
     RefreshSnapshot,
     SnapshotLoaded(RuntimeSnapshot),
     TickSnapshot(RuntimeSnapshot),
-    ClearToast(u64),
     SetLanguagePreference(LanguagePreference),
     SetThemePreference(ThemePreference),
     StartStopVpn,
@@ -184,8 +184,7 @@ pub(crate) struct State {
     vpn_command_pending: Option<VpnCommandAction>,
     proxy_selection_pending: Option<(String, String)>,
     proxy_delay_loading: bool,
-    toast_message: Option<String>,
-    toast_generation: u64,
+    notifications: NotificationCenter,
 }
 
 #[derive(Debug, Clone)]
@@ -297,7 +296,7 @@ pub(crate) struct RuleImportResult {
 }
 
 impl State {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(notifications: NotificationCenter) -> Self {
         let snapshot = hmeta_core::shared_core().snapshot().unwrap_or_default();
         let preferences = UiPreferences::load();
         let locale = preferences.language.resolve(&system_language());
@@ -323,8 +322,7 @@ impl State {
             vpn_command_pending: None,
             proxy_selection_pending: None,
             proxy_delay_loading: false,
-            toast_message: None,
-            toast_generation: 0,
+            notifications,
         }
     }
 
@@ -360,12 +358,6 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             reconcile_vpn_command(state);
             state.refresh_system_preferences();
             Command::perform(delayed_snapshot(), Action::TickSnapshot)
-        }
-        Action::ClearToast(generation) => {
-            if state.toast_generation == generation {
-                state.toast_message = None;
-            }
-            Command::none()
         }
         Action::SetLanguagePreference(preference) => {
             state.preferences.language = preference;
@@ -2266,15 +2258,8 @@ fn profile_delete_vpn_action_label(
 }
 
 fn show_toast(state: &mut State, message: String) -> Command<Action> {
-    state.toast_generation = state.toast_generation.saturating_add(1);
-    state.toast_message = Some(message);
-    let generation = state.toast_generation;
-    Command::perform(delayed_toast_clear(generation), Action::ClearToast)
-}
-
-async fn delayed_toast_clear(generation: u64) -> u64 {
-    tokio::time::sleep(Duration::from_millis(2200)).await;
-    generation
+    state.notifications.publish(message);
+    Command::none()
 }
 
 #[path = "view.rs"]

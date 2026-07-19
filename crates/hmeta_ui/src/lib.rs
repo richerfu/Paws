@@ -18,6 +18,7 @@ mod installed_app_filter;
 mod l10n;
 mod log_filter;
 mod mode_feedback;
+mod notification;
 mod platform_callbacks;
 mod profile_filter;
 mod profile_refresh_feedback;
