@@ -41,7 +41,7 @@ const PLATFORM_VPN_STATE_FILE: &str = "platform-vpn-state.json";
 const PLATFORM_VPN_TELEMETRY_FILE: &str = "platform-vpn-telemetry.json";
 const APP_VERSION: &str = "1.0.0";
 const MEOW_RS_VERSION: &str = "0.17.0";
-const ARKIT_REV: &str = "fe8f35c+local";
+const ARKIT_REV: &str = "11a69c66d5c450473054088920e49fc4de1827e0";
 const RUST_VERSION: &str = "1.89";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -156,6 +156,7 @@ impl Default for CoreState {
 
 pub struct CoreHandle {
     state: Mutex<CoreState>,
+    config_reload_lock: tokio::sync::Mutex<()>,
     vpn: TunSession,
     api_controller_enabled: bool,
     api_controller_addr_override: Option<SocketAddr>,
@@ -166,6 +167,7 @@ impl CoreHandle {
         install_runtime_log_layer();
         Self {
             state: Mutex::new(CoreState::default()),
+            config_reload_lock: tokio::sync::Mutex::new(()),
             vpn: TunSession::default(),
             api_controller_enabled: true,
             api_controller_addr_override: None,
@@ -212,6 +214,7 @@ impl CoreHandle {
                 vpn_options: VpnOptions::default(),
                 api_controller: None,
             }),
+            config_reload_lock: tokio::sync::Mutex::new(()),
             vpn: TunSession::default(),
             api_controller_enabled: false,
             api_controller_addr_override: None,
@@ -591,29 +594,12 @@ impl CoreHandle {
 
     pub async fn start_vpn(&self, fd: i32, options_json: &str) -> Result<(), HMetaError> {
         let options: VpnOptions = from_json(options_json)?;
-        let active_profile = self.snapshot()?.active_profile;
+        self.prepare_active_vpn().await?;
         let tunnel = {
             let state = self.lock_state()?;
             state.tunnel.clone()
-        };
-        let tunnel = if let Some(tunnel) = tunnel {
-            tunnel
-        } else if let Some(active) = active_profile {
-            self.reload_config(&active).await?;
-            let state = self.lock_state()?;
-            state.tunnel.clone().ok_or_else(|| {
-                HMetaError::Core("activate a profile before starting VPN".to_owned())
-            })?
-        } else {
-            return Err(HMetaError::Core(
-                "activate a profile before starting VPN".to_owned(),
-            ));
-        };
-        if tunnel.route_snapshot().proxies.is_empty() {
-            return Err(HMetaError::Core(
-                "active meow tunnel has no proxies; reload the profile first".to_owned(),
-            ));
         }
+        .ok_or_else(|| HMetaError::Core("activate a profile before starting VPN".to_owned()))?;
         self.vpn.start(fd, options.clone(), tunnel)?;
         let mut state = self.lock_state()?;
         sync_platform_vpn_state(&mut state);
@@ -626,6 +612,57 @@ impl CoreHandle {
             .push(info_log(format!("vpn started with tun fd {fd}")));
         persist_platform_vpn_state(&state)?;
         Ok(())
+    }
+
+    /// Ensure the active meow tunnel is ready before the platform supplies a
+    /// TUN descriptor. VPN Extension can run this concurrently with native
+    /// `VpnConnection::create`, removing config parsing from the serial start
+    /// path. Returns `true` when a cold config load was required.
+    pub async fn prepare_active_vpn(&self) -> Result<bool, HMetaError> {
+        let tunnel = {
+            let state = self.lock_state()?;
+            state.tunnel.clone()
+        };
+        if tunnel
+            .as_ref()
+            .is_some_and(|tunnel| !tunnel.route_snapshot().proxies.is_empty())
+        {
+            return Ok(false);
+        }
+
+        // UI bootstrap and a fast user tap can reach this path together. Let
+        // the first task finish the expensive meow config build, then reuse
+        // its tunnel instead of parsing the subscription a second time.
+        let _reload_guard = self.config_reload_lock.lock().await;
+        let (active_profile, ready) = {
+            let state = self.lock_state()?;
+            (
+                state.profiles.active_profile().map(ToOwned::to_owned),
+                state
+                    .tunnel
+                    .as_ref()
+                    .is_some_and(|tunnel| !tunnel.route_snapshot().proxies.is_empty()),
+            )
+        };
+        if ready {
+            return Ok(false);
+        }
+        let active_profile = active_profile
+            .ok_or_else(|| HMetaError::Core("activate a profile before starting VPN".to_owned()))?;
+        self.reload_config_inner(&active_profile).await?;
+        let ready = {
+            let state = self.lock_state()?;
+            state
+                .tunnel
+                .as_ref()
+                .is_some_and(|tunnel| !tunnel.route_snapshot().proxies.is_empty())
+        };
+        if !ready {
+            return Err(HMetaError::Core(
+                "active meow tunnel has no proxies; reload the profile first".to_owned(),
+            ));
+        }
+        Ok(true)
     }
 
     pub fn active_vpn_options_json(&self) -> Result<String, HMetaError> {
@@ -745,6 +782,12 @@ impl CoreHandle {
     }
 
     pub async fn reload_config(&self, profile_id: &str) -> Result<(), HMetaError> {
+        let _reload_guard = self.config_reload_lock.lock().await;
+        self.reload_config_inner(profile_id).await
+    }
+
+    async fn reload_config_inner(&self, profile_id: &str) -> Result<(), HMetaError> {
+        let reload_started = Instant::now();
         let tun_stats = self.vpn.stats();
         let (runtime_yaml, mode, vpn_options, selected_proxies, preserve_existing_order) = {
             let mut state = self.lock_state()?;
@@ -768,8 +811,10 @@ impl CoreHandle {
                 preserve_existing_order,
             )
         };
+        let yaml_ready = Instant::now();
 
         let config = load_meow_config(&runtime_yaml).await?;
+        let meow_ready = Instant::now();
         let raw_config = config.raw.clone();
         let loaded_rule_lines = raw_config.rules.clone().unwrap_or_default();
         let proxy_provider_registry = config.proxy_providers.clone();
@@ -786,6 +831,7 @@ impl CoreHandle {
         let tunnel = tunnel_from_config(config, mode);
         restore_selector_selections(&tunnel, &selected_proxies);
         let mut proxy_groups = proxy_groups_from_tunnel(&tunnel);
+        let runtime_ready = Instant::now();
         let mut state = self.lock_state()?;
         if preserve_existing_order && state.profiles.active_profile() == Some(profile_id) {
             preserve_proxy_group_member_order(&state.proxy_groups, &mut proxy_groups);
@@ -808,8 +854,12 @@ impl CoreHandle {
         state.engine_loaded = true;
         state.last_meow_traffic_sample = None;
         state.logs.push(info_log(format!(
-            "config reloaded from profile {profile_id} ({} bytes)",
-            runtime_yaml.len()
+            "config reloaded from profile {profile_id} in {} ms (YAML {} ms, meow {} ms, runtime {} ms; {} bytes)",
+            reload_started.elapsed().as_millis(),
+            yaml_ready.duration_since(reload_started).as_millis(),
+            meow_ready.duration_since(yaml_ready).as_millis(),
+            runtime_ready.duration_since(meow_ready).as_millis(),
+            runtime_yaml.len(),
         )));
         Ok(())
     }
@@ -888,7 +938,12 @@ impl CoreHandle {
             .await;
         match response {
             Ok(response) if response.status().is_success() => {
-                self.persist_selected_proxy_after_controller_update(group_name, proxy_name)?;
+                // Keep the in-process tunnel as the source of truth. The meow
+                // controller can acknowledge the PUT before its selector is
+                // observable through our cached runtime snapshot; applying
+                // the same idempotent selection locally makes the UI update
+                // immediately while preserving controller compatibility.
+                self.select_proxy(group_name, proxy_name)?;
                 let mut state = self.lock_state()?;
                 state.logs.push(info_log(format!(
                     "selected {proxy_name} in {group_name} via meow API"
@@ -1795,25 +1850,6 @@ impl CoreHandle {
         state.logs.push(info_log(format!(
             "meow external-controller listening on {addr}"
         )));
-        Ok(())
-    }
-
-    fn persist_selected_proxy_after_controller_update(
-        &self,
-        group_name: &str,
-        proxy_name: &str,
-    ) -> Result<(), HMetaError> {
-        let mut state = self.lock_state()?;
-        if let Some(profile_id) = state.profiles.active_profile().map(ToOwned::to_owned) {
-            state.profiles.set_selected_proxy(
-                &profile_id,
-                group_name.to_owned(),
-                proxy_name.to_owned(),
-            )?;
-        }
-        if let Some(tunnel) = state.tunnel.clone() {
-            refresh_proxy_groups_preserving_order(&mut state, &tunnel);
-        }
         Ok(())
     }
 
@@ -3201,6 +3237,48 @@ rules:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn vpn_prepare_reuses_an_already_loaded_tunnel() {
+        let root = std::env::temp_dir().join(format!(
+            "hmeta-core-vpn-prepare-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let core = Arc::new(CoreHandle::new_with_profile_root(root));
+        core.import_profile_from_content(
+            "Direct",
+            "test",
+            &hmeta_profile::default_runtime_yaml(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let (first_prepare, second_prepare) =
+            tokio::join!(core.prepare_active_vpn(), core.prepare_active_vpn(),);
+        assert_ne!(first_prepare.unwrap(), second_prepare.unwrap());
+        let reloads_after_cold_prepare = core
+            .snapshot()
+            .unwrap()
+            .logs
+            .iter()
+            .filter(|log| log.message.starts_with("config reloaded from profile"))
+            .count();
+
+        assert!(!core.prepare_active_vpn().await.unwrap());
+        let reloads_after_warm_prepare = core
+            .snapshot()
+            .unwrap()
+            .logs
+            .iter()
+            .filter(|log| log.message.starts_with("config reloaded from profile"))
+            .count();
+        assert_eq!(reloads_after_warm_prepare, reloads_after_cold_prepare);
+        assert_eq!(reloads_after_cold_prepare, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reload_ignores_subscription_geodata_auto_update_fields() {
         let root = std::env::temp_dir().join(format!(
             "hmeta-core-geodata-clean-test-{}",
@@ -3979,13 +4057,26 @@ rules:
         drop(listener);
 
         let core = CoreHandle::new_with_profile_root_and_controller(root, addr);
+        let yaml = format!(
+            r#"mixed-port: 7890
+external-controller: {addr}
+proxies:
+  - name: HTTP-MOCK
+    type: http
+    server: 127.0.0.1
+    port: 18080
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - DIRECT
+      - HTTP-MOCK
+rules:
+  - MATCH,Proxy
+"#
+        );
         let profile_id = core
-            .import_profile_from_content(
-                "Direct",
-                "test",
-                &hmeta_profile::default_runtime_yaml(),
-                None,
-            )
+            .import_profile_from_content("Direct", "test", &yaml, None)
             .await
             .unwrap();
         core.reload_config(&profile_id).await.unwrap();
@@ -4008,7 +4099,7 @@ rules:
             .get("proxies")
             .and_then(|value| value.get("DIRECT"))
             .is_some());
-        core.select_proxy_via_controller("Proxy", "DIRECT")
+        core.select_proxy_via_controller("Proxy", "HTTP-MOCK")
             .await
             .unwrap();
         let snapshot = core.snapshot().unwrap();
@@ -4017,8 +4108,18 @@ rules:
                 .selected_proxies
                 .get("Proxy")
                 .map(String::as_str),
-            Some("DIRECT")
+            Some("HTTP-MOCK")
         );
+        let proxy_group = snapshot
+            .proxy_groups
+            .iter()
+            .find(|group| group.name == "Proxy")
+            .unwrap();
+        assert_eq!(proxy_group.selected.as_deref(), Some("HTTP-MOCK"));
+        assert!(proxy_group
+            .proxies
+            .iter()
+            .any(|proxy| proxy.name == "HTTP-MOCK" && proxy.selected));
         let rules = wait_for_json(&format!("http://{addr}/rules")).await;
         assert!(rules
             .get("rules")

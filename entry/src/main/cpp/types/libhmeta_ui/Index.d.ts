@@ -74,6 +74,8 @@ export declare function setPlatformVpnFailed(error: string): void
 
 export declare function profileRawYaml(profileId: string): string
 
+export declare function prepareVpn(): Promise<boolean>
+
 export declare function restoreProfileBackup(profileId: string): Promise<void>
 
 export declare function setProfileDnsServers(profileId: string, dnsServersJson: string): Promise<void>

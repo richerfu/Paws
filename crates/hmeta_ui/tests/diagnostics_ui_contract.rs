@@ -7,6 +7,9 @@ fn logs_use_arkit_native_virtual_rows_and_expose_full_details() {
     assert!(
         VIEW_SOURCE.contains("use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys")
     );
+    assert!(VIEW_SOURCE.contains("use_layout_frame_node(move |host_node, _frame|"));
+    assert!(VIEW_SOURCE.contains(".on_click(move || on_open.call(item.clone()))"));
+    assert!(!VIEW_SOURCE.contains("NodeEventType::OnClick"));
     assert!(VIEW_SOURCE.contains("list_cached_count: 18_i32"));
     assert!(VIEW_SOURCE.contains("fn log_detail_dialog("));
     assert!(VIEW_SOURCE.contains("matches_log_filter_normalized"));

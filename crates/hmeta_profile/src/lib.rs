@@ -670,6 +670,9 @@ impl ProfileStore {
         if !self.profiles.contains_key(id) {
             return Err(HMetaError::ProfileNotFound(id.to_owned()));
         }
+        if self.active_profile.as_deref() == Some(id) {
+            return Ok(());
+        }
         self.active_profile = Some(id.to_owned());
         self.save()
     }

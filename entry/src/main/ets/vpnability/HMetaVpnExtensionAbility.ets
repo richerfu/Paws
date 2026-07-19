@@ -129,14 +129,24 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
       : DEFAULT_OPTIONS_JSON;
     const options = parseOptions(optionsJson);
     const config = new HMetaVpnConfig(options, trustedApplications(options), blockedApplications(options));
+    const startedAt = Date.now();
 
     try {
       this.vpnConnection = vpnExtension.createVpnConnection(this.context);
+      const nativePrepare: Promise<string> = hmetaUi.prepareVpn()
+        .then((_loaded: boolean) => '')
+        .catch((err: Error) => describeError(err) || 'prepare native vpn failed');
       this.vpnConnection
         .create(config)
         .then(async (fd: number) => {
           this.tunFd = fd;
-          hilog.info(LOG_DOMAIN, LOG_TAG, 'created tun fd %{public}d', fd);
+          hilog.info(
+            LOG_DOMAIN,
+            LOG_TAG,
+            'created tun fd %{public}d in %{public}d ms',
+            fd,
+            Date.now() - startedAt,
+          );
           try {
             await this.vpnConnection?.protectProcessNet();
             try {
@@ -154,23 +164,20 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
             }
             hilog.error(LOG_DOMAIN, LOG_TAG, 'protect process network failed %{public}s', message);
           }
-          try {
-            await hmetaUi.startVpn(fd, optionsJson);
-            this.startTelemetry();
-            this.starting = false;
-          } catch (err) {
-            const message = describeError(err) || 'start native vpn failed';
-            hilog.error(LOG_DOMAIN, LOG_TAG, 'start native vpn failed %{public}s', message);
-            await this.destroyVpnConnection();
-            this.vpnConnection = undefined;
-            this.tunFd = -1;
-            this.starting = false;
-            this.recordVpnFailure(message);
+          const prepareError = await nativePrepare;
+          if (prepareError.length > 0) {
+            throw new Error(prepareError);
           }
+          hilog.info(LOG_DOMAIN, LOG_TAG, 'native profile ready in %{public}d ms', Date.now() - startedAt);
+          await hmetaUi.startVpn(fd, optionsJson);
+          this.startTelemetry();
+          this.starting = false;
+          hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN started in %{public}d ms', Date.now() - startedAt);
         })
-        .catch((err: Error) => {
-          const message = describeError(err) || 'create vpn failed';
-          hilog.error(LOG_DOMAIN, LOG_TAG, 'create vpn failed %{public}s', message);
+        .catch(async (err: Error) => {
+          const message = describeError(err) || 'VPN startup pipeline failed';
+          hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN startup pipeline failed %{public}s', message);
+          await this.destroyVpnConnection();
           this.vpnConnection = undefined;
           this.tunFd = -1;
           this.starting = false;

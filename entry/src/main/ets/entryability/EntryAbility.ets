@@ -78,6 +78,7 @@ function describeError(err: Error | Object | string | number | boolean | null | 
 export default class EntryAbility extends NativeAbility {
   public moduleName: string | string[] = 'hmeta_ui';
   public defaultPage: boolean = false;
+  private vpnStartRequest: Promise<void> | undefined = undefined;
 
   private async pickProfileFileFromSystem(): Promise<Array<string>> {
     try {
@@ -140,9 +141,25 @@ export default class EntryAbility extends NativeAbility {
   }
 
   private async requestStartVpn(optionsJson: string): Promise<void> {
+    if (this.vpnStartRequest) {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'reusing pending VPN start request');
+      return this.vpnStartRequest;
+    }
+    const request = this.performStartVpn(optionsJson);
+    this.vpnStartRequest = request;
     try {
+      await request;
+    } finally {
+      if (this.vpnStartRequest === request) {
+        this.vpnStartRequest = undefined;
+      }
+    }
+  }
+
+  private async performStartVpn(optionsJson: string): Promise<void> {
+    try {
+      const startedAt = Date.now();
       hilog.info(LOG_DOMAIN, LOG_TAG, 'request VPN start received');
-      await this.ensureSpeedNotificationPermission();
       hmetaUi.setPlatformVpnStarting(true);
       let timeoutId: number = -1;
       const startupTimeout = new Promise<void>((_resolve, reject) => {
@@ -165,7 +182,15 @@ export default class EntryAbility extends NativeAbility {
           clearTimeout(timeoutId);
         }
       }
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN start ability resolved');
+      hilog.info(
+        LOG_DOMAIN,
+        LOG_TAG,
+        'VPN start ability resolved in %{public}d ms',
+        Date.now() - startedAt,
+      );
+      this.ensureSpeedNotificationPermission().catch((err: Error) => {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'deferred notification permission failed %{public}s', describeError(err));
+      });
       hilog.info(LOG_DOMAIN, LOG_TAG, 'requested VPN start');
     } catch (err) {
       const message = describeError(err) || 'request VPN start failed';

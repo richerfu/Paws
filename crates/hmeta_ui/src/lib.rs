@@ -18,6 +18,7 @@ mod installed_app_filter;
 mod l10n;
 mod log_filter;
 mod mode_feedback;
+mod notification;
 mod platform_callbacks;
 mod profile_filter;
 mod profile_refresh_feedback;
@@ -121,6 +122,14 @@ fn write_seed_file(dest: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(target_env = "ohos")]
 fn io_to_napi(err: io::Error) -> Error {
     Error::new(Status::GenericFailure, err.to_string())
+}
+
+#[napi]
+pub async fn prepare_vpn() -> Result<bool> {
+    hmeta_core::shared_core()
+        .prepare_active_vpn()
+        .await
+        .map_err(to_napi_error)
 }
 
 #[napi]

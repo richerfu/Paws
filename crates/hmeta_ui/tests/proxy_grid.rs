@@ -4,7 +4,7 @@ mod proxy_filter;
 mod proxy_grid;
 
 use hmeta_model::{ProxyGroup, ProxyItem};
-use proxy_grid::{flatten_proxy_groups, proxy_selection_chain};
+use proxy_grid::{flatten_proxy_groups, proxy_selection_chain, stabilize_proxy_items};
 
 fn proxy(name: String, selected: bool) -> ProxyItem {
     ProxyItem {
@@ -60,6 +60,28 @@ fn changing_selection_never_reorders_subscription_nodes() {
 
     assert_eq!(before, vec!["Hong Kong", "Singapore", "Japan"]);
     assert_eq!(after, before);
+}
+
+#[test]
+fn quick_switch_keeps_first_seen_order_when_runtime_groups_move() {
+    let item = |group: &str, name: &str| proxy_grid::ProxyGridItem {
+        group: group.to_owned(),
+        group_type: "Selector".to_owned(),
+        name: name.to_owned(),
+        proxy_type: "vless".to_owned(),
+        delay_ms: None,
+        selected: false,
+    };
+    let mut order = Vec::new();
+    let initial = stabilize_proxy_items(&mut order, vec![item("GLOBAL", "A"), item("Proxy", "B")]);
+    let refreshed =
+        stabilize_proxy_items(&mut order, vec![item("Proxy", "B"), item("GLOBAL", "A")]);
+
+    let names = |items: Vec<proxy_grid::ProxyGridItem>| {
+        items.into_iter().map(|item| item.name).collect::<Vec<_>>()
+    };
+    assert_eq!(names(initial), vec!["A", "B"]);
+    assert_eq!(names(refreshed), vec!["A", "B"]);
 }
 
 #[test]

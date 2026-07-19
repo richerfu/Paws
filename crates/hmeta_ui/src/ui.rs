@@ -5,12 +5,15 @@ use crate::installed_app_filter::matches_installed_application_query;
 use crate::l10n::{strings, UiLocale, UiStrings};
 use crate::log_filter::{matches_log_filter_normalized, normalize_log_query, LogLevelFilter};
 use crate::mode_feedback::mode_changed_message;
+use crate::notification::NotificationCenter;
 use crate::profile_filter::matches_profile_query;
 use crate::profile_refresh_feedback::{
     profile_activation_message, profile_batch_refresh_message, profile_delete_message,
 };
 use crate::provider_refresh_feedback::provider_batch_refresh_message;
-use crate::proxy_grid::{flatten_proxy_groups, proxy_selection_chain, ProxyGridItem};
+use crate::proxy_grid::{
+    flatten_proxy_groups, proxy_selection_chain, stabilize_proxy_items, ProxyGridItem,
+};
 use crate::resource_filter::{matches_geodata_query, matches_provider_query, matches_rule_query};
 use crate::rule_feedback::rule_import_message;
 use crate::settings_feedback::settings_saved_message;
@@ -58,11 +61,11 @@ pub(crate) enum Action {
     RefreshSnapshot,
     SnapshotLoaded(RuntimeSnapshot),
     TickSnapshot(RuntimeSnapshot),
-    ClearToast(u64),
     SetLanguagePreference(LanguagePreference),
     SetThemePreference(ThemePreference),
     StartStopVpn,
     VpnCommandFinished(Result<VpnCommandResult, String>),
+    VpnCommandSnapshot(RuntimeSnapshot),
     SetMode(RuntimeMode),
     ModeChanged(Result<ModeChangeResult, String>),
     SelectProxy {
@@ -170,6 +173,7 @@ pub(crate) struct State {
     snapshot: RuntimeSnapshot,
     profile_import_error: Option<String>,
     profile_import_loading: bool,
+    profile_import_succeeded: bool,
     yaml_editor_open: bool,
     yaml_editor_profile_id: Option<String>,
     yaml_editor_profile_name: String,
@@ -184,8 +188,7 @@ pub(crate) struct State {
     vpn_command_pending: Option<VpnCommandAction>,
     proxy_selection_pending: Option<(String, String)>,
     proxy_delay_loading: bool,
-    toast_message: Option<String>,
-    toast_generation: u64,
+    notifications: NotificationCenter,
 }
 
 #[derive(Debug, Clone)]
@@ -297,7 +300,7 @@ pub(crate) struct RuleImportResult {
 }
 
 impl State {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(notifications: NotificationCenter) -> Self {
         let snapshot = hmeta_core::shared_core().snapshot().unwrap_or_default();
         let preferences = UiPreferences::load();
         let locale = preferences.language.resolve(&system_language());
@@ -309,6 +312,7 @@ impl State {
             snapshot,
             profile_import_error: None,
             profile_import_loading: false,
+            profile_import_succeeded: false,
             yaml_editor_open: false,
             yaml_editor_profile_id: None,
             yaml_editor_profile_name: String::new(),
@@ -323,8 +327,7 @@ impl State {
             vpn_command_pending: None,
             proxy_selection_pending: None,
             proxy_delay_loading: false,
-            toast_message: None,
-            toast_generation: 0,
+            notifications,
         }
     }
 
@@ -360,12 +363,6 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             reconcile_vpn_command(state);
             state.refresh_system_preferences();
             Command::perform(delayed_snapshot(), Action::TickSnapshot)
-        }
-        Action::ClearToast(generation) => {
-            if state.toast_generation == generation {
-                state.toast_message = None;
-            }
-            Command::none()
         }
         Action::SetLanguagePreference(preference) => {
             state.preferences.language = preference;
@@ -409,10 +406,13 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             } else if state.snapshot.vpn_running {
                 let ui_strings = strings(state.locale);
                 state.vpn_command_pending = Some(VpnCommandAction::Stop);
-                Command::perform(
-                    stop_vpn_command_and_snapshot(ui_strings),
-                    Action::VpnCommandFinished,
-                )
+                Command::batch([
+                    Command::perform(
+                        stop_vpn_command_and_snapshot(ui_strings),
+                        Action::VpnCommandFinished,
+                    ),
+                    Command::perform(delayed_vpn_snapshot(), Action::VpnCommandSnapshot),
+                ])
             } else if let Some(profile_id) = state.snapshot.active_profile.clone().or_else(|| {
                 state
                     .snapshot
@@ -429,10 +429,13 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     .unwrap_or_else(|| profile_id.clone());
                 let ui_strings = strings(state.locale);
                 state.vpn_command_pending = Some(VpnCommandAction::Start);
-                Command::perform(
-                    start_vpn_command_and_snapshot(profile_id, profile_name, ui_strings),
-                    Action::VpnCommandFinished,
-                )
+                Command::batch([
+                    Command::perform(
+                        start_vpn_command_and_snapshot(profile_id, profile_name, ui_strings),
+                        Action::VpnCommandFinished,
+                    ),
+                    Command::perform(delayed_vpn_snapshot(), Action::VpnCommandSnapshot),
+                ])
             } else {
                 show_toast(
                     state,
@@ -463,6 +466,15 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 show_toast(state, error)
             }
         },
+        Action::VpnCommandSnapshot(snapshot) => {
+            state.snapshot = snapshot;
+            reconcile_vpn_command(state);
+            if state.vpn_command_pending.is_some() {
+                Command::perform(delayed_vpn_snapshot(), Action::VpnCommandSnapshot)
+            } else {
+                Command::none()
+            }
+        }
         Action::SetMode(mode) => Command::perform(
             async move {
                 hmeta_core::shared_core()
@@ -662,6 +674,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
         },
         Action::ResetProfileImportFeedback => {
             state.profile_import_error = None;
+            state.profile_import_succeeded = false;
             Command::none()
         }
         Action::ImportLocalProfile => {
@@ -699,6 +712,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             if state.profile_import_loading {
                 return Command::none();
             }
+            state.profile_import_succeeded = false;
             let url = url.trim().to_owned();
             if url.is_empty() {
                 state.profile_import_error = Some(
@@ -727,6 +741,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 Ok(result) => {
                     state.snapshot = result.snapshot;
                     state.profile_import_error = None;
+                    state.profile_import_succeeded = true;
                     show_toast(
                         state,
                         localized_profile_import_message(
@@ -739,6 +754,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 }
                 Err(error) => {
                     state.profile_import_error = Some(error);
+                    state.profile_import_succeeded = false;
                     Command::none()
                 }
             }
@@ -1659,9 +1675,13 @@ async fn delayed_snapshot() -> RuntimeSnapshot {
     load_snapshot().await
 }
 
+async fn delayed_vpn_snapshot() -> RuntimeSnapshot {
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    load_snapshot().await
+}
+
 async fn bootstrap_active_profile() -> RuntimeSnapshot {
     let core = hmeta_core::shared_core();
-    let _ = core.refresh_due_profiles().await;
     if let Some(profile_id) = core
         .snapshot()
         .ok()
@@ -1669,6 +1689,10 @@ async fn bootstrap_active_profile() -> RuntimeSnapshot {
     {
         let _ = core.reload_config(&profile_id).await;
     }
+    let refresh_core = core.clone();
+    tokio::spawn(async move {
+        let _ = refresh_core.refresh_due_profiles().await;
+    });
     load_snapshot().await
 }
 
@@ -1720,10 +1744,13 @@ async fn start_vpn_command_and_snapshot(
     profile_name: String,
     ui_strings: &'static UiStrings,
 ) -> Result<VpnCommandResult, String> {
-    hmeta_core::shared_core()
-        .activate_profile(&profile_id)
-        .await
-        .map_err(|error| {
+    let core = hmeta_core::shared_core();
+    let active_profile = core
+        .snapshot()
+        .map_err(|error| error.to_string())?
+        .active_profile;
+    if active_profile.as_deref() != Some(profile_id.as_str()) {
+        core.activate_profile(&profile_id).await.map_err(|error| {
             format!(
                 "{}{}{}{}",
                 ui_strings.feedback_vpn_start_profile_load_failed_prefix,
@@ -1732,18 +1759,16 @@ async fn start_vpn_command_and_snapshot(
                 error
             )
         })?;
-    let options_json = hmeta_core::shared_core()
-        .active_vpn_options_json()
-        .map_err(|error| {
-            format!(
-                "{}{}",
-                ui_strings.feedback_vpn_start_options_failed_prefix, error
-            )
-        })?;
+    }
+    let options_json = core.active_vpn_options_json().map_err(|error| {
+        format!(
+            "{}{}",
+            ui_strings.feedback_vpn_start_options_failed_prefix, error
+        )
+    })?;
     let request_error = crate::platform_callbacks::request_start_vpn(options_json)
         .err()
         .map(|error| error.to_string());
-    tokio::time::sleep(Duration::from_millis(350)).await;
     Ok(VpnCommandResult {
         snapshot: load_snapshot().await,
         action: VpnCommandAction::Start,
@@ -1770,7 +1795,6 @@ async fn stop_vpn_command_and_snapshot(
             Some(error.to_string())
         }
     };
-    tokio::time::sleep(Duration::from_millis(350)).await;
     Ok(VpnCommandResult {
         snapshot: load_snapshot().await,
         action: VpnCommandAction::Stop,
@@ -2266,15 +2290,8 @@ fn profile_delete_vpn_action_label(
 }
 
 fn show_toast(state: &mut State, message: String) -> Command<Action> {
-    state.toast_generation = state.toast_generation.saturating_add(1);
-    state.toast_message = Some(message);
-    let generation = state.toast_generation;
-    Command::perform(delayed_toast_clear(generation), Action::ClearToast)
-}
-
-async fn delayed_toast_clear(generation: u64) -> u64 {
-    tokio::time::sleep(Duration::from_millis(2200)).await;
-    generation
+    state.notifications.publish(message);
+    Command::none()
 }
 
 #[path = "view.rs"]

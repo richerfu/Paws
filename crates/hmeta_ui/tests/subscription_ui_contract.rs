@@ -50,11 +50,11 @@ fn proxy_nodes_use_arkit_native_virtual_list_and_grid() {
     assert!(page.contains("fixed_scaffold"));
     assert!(page.contains("EventHandler<(String, String)>"));
     assert!(page.contains("on_select.call"));
-    assert!(page.contains("on_event(NodeEventType::OnClickEvent"));
-    assert!(page.contains("on_event_no_param(NodeEventType::OnClick"));
+    assert!(page.contains(".on_click(move ||"));
+    assert!(!page.contains("NodeEventType::OnClick"));
     assert!(page.contains("VirtualProxyGridRenderState"));
     assert!(page.contains("selection_pending && item.selected"));
-    assert!(page.contains("if !item.selected {"));
+    assert!(page.contains("if item.selected {"));
     assert!(!page.contains("if !item.selected && !selection_pending"));
     assert!(!page.contains("mounted.adapter.detach()"));
     assert!(!page.contains("arkit::queue_ui_loop"));
@@ -123,4 +123,26 @@ fn profile_surfaces_do_not_reintroduce_shadow_attributes() {
     assert!(!VIEW.contains("shadow_radius:"));
     assert!(!VIEW.contains("shadow_color:"));
     assert!(!VIEW.contains("shadow_offset:"));
+}
+
+#[test]
+fn network_import_has_a_real_pending_and_success_lifecycle() {
+    let page = section(VIEW, "fn profiles_page", "fn profile_action_dialog");
+    let dialog = section(VIEW, "fn profile_import_dialog", "fn yaml_editor_dialog");
+
+    assert!(page.contains("profile_import_succeeded"));
+    assert!(page.contains("import_open.set(false)"));
+    assert!(dialog.contains("disabled: Some(import_loading)"));
+    assert!(dialog.contains("Spinner { size: 16.0"));
+    assert!(UI.contains("profile_import_succeeded = true"));
+}
+
+#[test]
+fn proxy_node_names_use_native_width_based_ellipsis() {
+    let page = section(VIEW, "fn proxies_page", "fn profiles_page");
+
+    assert!(page.contains("item.name.clone()"));
+    assert!(page.contains("ArkUINodeAttributeType::TextOverflow, 2_i32"));
+    assert!(!page.contains("selected_title_limit"));
+    assert!(!page.contains("title_limit"));
 }
