@@ -4,7 +4,7 @@ set -eu
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 HDC="${HDC:-hdc}"
 HDC_TARGET="${HDC_TARGET:-}"
-BUNDLE_NAME="${BUNDLE_NAME:-com.richerfu.clash_hmeta}"
+BUNDLE_NAME="${BUNDLE_NAME:-com.richerfu.paws}"
 ABILITY_NAME="${ABILITY_NAME:-EntryAbility}"
 PROFILE_URL="${PROFILE_URL:-http://10.0.2.2:8766/direct.yaml}"
 PROFILE_NAME="${PROFILE_NAME:-Meow订阅交互测试}"

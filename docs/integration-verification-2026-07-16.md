@@ -4,7 +4,7 @@
 
 本轮迁移以以下本地基线为准：
 
-- HMeta：`/Volumes/PSSD/code/harmony/clash_hmeta`
+- Paws：`/Volumes/PSSD/code/harmony/paws`
 - Meow 参考源码：`/Volumes/PSSD/code/harmony/meow`
 - Meow Android 参考包：`/Users/ranger/Downloads/meow-v1.0.1-universal.apk`
 - `meow-*` crates：`0.17.0`

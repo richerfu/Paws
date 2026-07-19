@@ -3,7 +3,8 @@ use crate::activity_filter::{
 };
 use crate::installed_app_filter::matches_installed_application_query;
 use crate::l10n::{strings, UiLocale, UiStrings};
-use crate::log_filter::{matches_log_filter, LogLevelFilter};
+use crate::log_filter::{matches_log_filter_normalized, normalize_log_query, LogLevelFilter};
+use crate::mode_feedback::mode_changed_message;
 use crate::notification::NotificationCenter;
 use crate::profile_filter::matches_profile_query;
 use crate::profile_refresh_feedback::{
@@ -200,6 +201,7 @@ pub(crate) struct ProxyDelayBatchResult {
 #[derive(Debug, Clone)]
 pub(crate) struct ModeChangeResult {
     snapshot: RuntimeSnapshot,
+    mode: RuntimeMode,
 }
 
 #[derive(Debug, Clone)]
@@ -480,6 +482,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     .map_err(|error| error.to_string())?;
                 Ok(ModeChangeResult {
                     snapshot: load_snapshot().await,
+                    mode,
                 })
             },
             Action::ModeChanged,
@@ -487,7 +490,10 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
         Action::ModeChanged(result) => match result {
             Ok(result) => {
                 state.snapshot = result.snapshot;
-                Command::none()
+                show_toast(
+                    state,
+                    mode_changed_message(result.mode, strings(state.locale)),
+                )
             }
             Err(error) => show_toast(
                 state,

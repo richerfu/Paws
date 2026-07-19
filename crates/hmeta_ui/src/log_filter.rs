@@ -31,18 +31,33 @@ impl LogLevelFilter {
 }
 
 pub(crate) fn matches_log_filter(log: &LogEntry, filter: LogLevelFilter, query: &str) -> bool {
+    let query = normalize_log_query(query);
+    matches_log_filter_normalized(log, filter, &query)
+}
+
+/// Normalize the query once per UI update instead of once for every log row.
+pub(crate) fn normalize_log_query(query: &str) -> String {
+    query.trim().to_ascii_lowercase()
+}
+
+pub(crate) fn matches_log_filter_normalized(
+    log: &LogEntry,
+    filter: LogLevelFilter,
+    normalized_query: &str,
+) -> bool {
     if let Some(level) = filter.level() {
         if !log.level.eq_ignore_ascii_case(level) {
             return false;
         }
     }
 
-    let query = query.trim();
-    if query.is_empty() {
+    if normalized_query.is_empty() {
         return true;
     }
-    let query = query.to_ascii_lowercase();
-    log.level.to_ascii_lowercase().contains(&query)
-        || log.message.to_ascii_lowercase().contains(&query)
-        || log.timestamp.to_ascii_lowercase().contains(&query)
+    log.level.to_ascii_lowercase().contains(normalized_query)
+        || log.message.to_ascii_lowercase().contains(normalized_query)
+        || log
+            .timestamp
+            .to_ascii_lowercase()
+            .contains(normalized_query)
 }

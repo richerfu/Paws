@@ -4,7 +4,7 @@
 
 对照基线：
 
-- 本项目：`/Volumes/PSSD/code/harmony/clash_hmeta`
+- 本项目：`/Volumes/PSSD/code/harmony/paws`
 - Meow Android：`madeye/meow`，`main` = `df7ab80ca3f5e8c57bb9992da85ed308a7b4a230`
 - Meow 官网说明：Flutter UI + Kotlin `VpnService` + Rust FFI + `meow-rs` + `netstack-smoltcp`
 
@@ -137,7 +137,7 @@ Meow 更像一个完整客户端产品，HMeta 当前更像一个核心链路已
 差异：
 
 - Meow 的 `ClashProfile` 包含 `url`、`yamlContent`、`yamlBackup`、`selectedProxy`、`tx/rx`、`lastUpdated`。
-- HMeta 当前 `ProfileDocument` 包含 id/name/source/raw_yaml_path/subscription_url/updated_at，并已补齐 YAML backup、selector 选择持久化、profile 级 tx/rx 累计；规则仍单独存储，Resources 页面已可查看、排序、启停、删除当前 profile 的自定义规则并 reload；Harmony 系统备份配置已收窄到 `files/hmeta` 用户数据，并排除可重建的 runtime YAML、provider cache 和 GeoData。
+- Paws 当前 `ProfileDocument` 包含 id/name/source/raw_yaml_path/subscription_url/updated_at，并已补齐 YAML backup、selector 选择持久化、profile 级 tx/rx 累计；规则仍单独存储，Resources 页面已可查看、排序、启停、删除当前 profile 的自定义规则并 reload；Harmony 系统备份配置已收窄到 `files/paws` 用户数据，并排除可重建的 runtime YAML、provider cache 和 GeoData。
 
 落地任务：
 

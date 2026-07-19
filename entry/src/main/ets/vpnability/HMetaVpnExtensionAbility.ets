@@ -105,7 +105,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
   private configureNativeHome(): void {
     try {
       setHMetaBundleName(this.context.applicationInfo.name);
-      hmetaUi.configureAppHome(`${this.context.filesDir}/hmeta`);
+      hmetaUi.configureAppHome(`${this.context.filesDir}/paws`);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'configured native home');
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'configure native home failed %{public}s', describeError(err));

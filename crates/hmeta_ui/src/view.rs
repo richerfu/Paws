@@ -2202,6 +2202,7 @@ fn traffic_page(state: Signal<State>) -> Element {
 
 fn resources_page(state: Signal<State>) -> Element {
     let mut query = use_signal(String::new);
+    let mut geodata_detail = use_signal(|| None::<hmeta_model::GeodataFileSummary>);
     let current = state.read().clone();
     let query_value = query();
     let active_profile_name = current
@@ -2290,14 +2291,58 @@ fn resources_page(state: Signal<State>) -> Element {
     let geodata = current.snapshot.geodata.iter()
         .filter(|file| matches_geodata_query(file, &query_value))
         .cloned()
-        .map(|file| {
+        .enumerate()
+        .map(|(index, file)| {
+            let detail = file.clone();
+            let status = if file.exists {
+                tr(current.locale, "可用", "Available")
+            } else {
+                tr(current.locale, "缺失", "Missing")
+            };
+            let metadata = if file.exists {
+                format!("{status} · {}", format_total(file.bytes.unwrap_or(0)))
+            } else {
+                status.to_owned()
+            };
             rsx! {
-                {info_row(
-                    file.name,
-                    if file.exists { format_total(file.bytes.unwrap_or(0)) } else { tr(current.locale, "缺失", "Missing").to_owned() }
-                )}
+                if index > 0 {
+                    Separator {}
+                }
+                button {
+                    percent_width: 1.0,
+                    height: 68.0,
+                    padding_left: 14.0,
+                    padding_right: 12.0,
+                    background_color: surface(),
+                    border_width: 0.0,
+                    border_radius: 0.0,
+                    onclick: move |_| geodata_detail.set(Some(detail.clone())),
+                    row {
+                        percent_width: 1.0,
+                        align_items: "center",
+                        row {
+                            width: 36.0,
+                            height: 36.0,
+                            align_items: "center",
+                            justify_content: "center",
+                            background_color: muted(),
+                            border_radius: 9.0,
+                            {arkit::icon("file-text", 17.0, if file.exists { success() } else { danger() })}
+                        }
+                        column {
+                            layout_weight: 1.0,
+                            margin_left: 11.0,
+                            align_items: "start",
+                            text { content: file.name, percent_width: 1.0, font_size: 13.0, font_weight: 650, font_color: text_color(), max_lines: 1 }
+                            text { content: metadata, percent_width: 1.0, margin_top: 3.0, font_size: 11.0, font_color: if file.exists { success() } else { danger() }, max_lines: 1 }
+                        }
+                        {arkit::icon("chevron-right", 15.0, subtle())}
+                    }
+                }
             }
         }).collect::<Vec<_>>();
+    let visible_geodata_count = geodata.len();
+    let selected_geodata = geodata_detail();
     let body = rsx! {
         column {
             percent_width: 1.0,
@@ -2323,7 +2368,42 @@ fn resources_page(state: Signal<State>) -> Element {
                 }
             )}
             row { height: 12.0 }
-            {card(tr(current.locale, "GeoData", "GeoData"), None, rsx! { column { percent_width: 1.0, {geodata.into_iter()} } })}
+            column {
+                percent_width: 1.0,
+                background_color: surface(),
+                border_width: 1.0,
+                border_color: line(),
+                border_radius: 10.0,
+                clip: true,
+                row {
+                    percent_width: 1.0,
+                    height: 56.0,
+                    padding_left: 14.0,
+                    padding_right: 14.0,
+                    align_items: "center",
+                    text { content: "GeoData", font_size: 14.0, font_weight: 700, font_color: text_color() }
+                    row { layout_weight: 1.0 }
+                    text {
+                        content: format!("{ready_geodata_count}/{total_geodata_count} {}", tr(current.locale, "可用", "ready")),
+                        font_size: 11.0,
+                        font_weight: 600,
+                        font_color: if ready_geodata_count == total_geodata_count && total_geodata_count > 0 { success() } else { warning() },
+                    }
+                }
+                Separator {}
+                if visible_geodata_count == 0 {
+                    row {
+                        percent_width: 1.0,
+                        height: 66.0,
+                        padding_left: 14.0,
+                        padding_right: 14.0,
+                        align_items: "center",
+                        text { content: tr(current.locale, "没有匹配的 GeoData 文件", "No matching GeoData files"), font_size: 12.0, font_color: subtle() }
+                    }
+                } else {
+                    {geodata.into_iter()}
+                }
+            }
             row { height: 12.0 }
             {section_label(tr(current.locale, "Provider", "Providers"), providers.len())}
             if providers.is_empty() {
@@ -2346,7 +2426,76 @@ fn resources_page(state: Signal<State>) -> Element {
             {icon_action("refresh-cw", Action::RefreshAllProviders, state)}
         }
     };
-    scaffold(state, Route::Resources {}, actions, body)
+    let page = scaffold(state, Route::Resources {}, actions, body);
+    rsx! {
+        {page}
+        if let Some(file) = selected_geodata {
+            {geodata_detail_dialog(current.locale, file, geodata_detail)}
+        }
+    }
+}
+
+fn geodata_detail_dialog(
+    locale: UiLocale,
+    file: hmeta_model::GeodataFileSummary,
+    mut selected: Signal<Option<hmeta_model::GeodataFileSummary>>,
+) -> Element {
+    let availability = if file.exists {
+        tr(locale, "文件可用", "File available")
+    } else {
+        tr(locale, "文件缺失", "File missing")
+    };
+    let size = file
+        .bytes
+        .map(format_total)
+        .unwrap_or_else(|| "-".to_owned());
+    let updated_at = file
+        .updated_at
+        .as_deref()
+        .and_then(time_format::format_unix_seconds)
+        .or(file.updated_at.clone())
+        .unwrap_or_else(|| "-".to_owned());
+    rsx! {
+        FlatDialog {
+            open: true,
+            on_close: move |_| selected.set(None),
+            DialogHeader {
+                title: file.name,
+                description: Some(availability.to_owned()),
+            }
+            row { height: 16.0 }
+            column {
+                percent_width: 1.0,
+                border_width: 1.0,
+                border_color: line(),
+                border_radius: 9.0,
+                padding_left: 12.0,
+                padding_right: 12.0,
+                {info_row(tr(locale, "状态", "Status"), availability)}
+                Separator {}
+                {info_row(tr(locale, "文件大小", "File size"), size)}
+                Separator {}
+                {info_row(tr(locale, "更新时间", "Updated"), updated_at)}
+            }
+            row { height: 14.0 }
+            text { content: tr(locale, "文件位置", "File location"), font_size: 11.0, font_weight: 650, font_color: subtle() }
+            row { height: 6.0 }
+            row {
+                percent_width: 1.0,
+                padding: 11.0,
+                background_color: muted(),
+                border_radius: 8.0,
+                text {
+                    content: file.path,
+                    percent_width: 1.0,
+                    font_size: 11.0,
+                    line_height: 17.0,
+                    font_color: text_color(),
+                    max_lines: 5,
+                }
+            }
+        }
+    }
 }
 
 fn rule_view(state: Signal<State>, current: &State, rule: hmeta_model::RuleSummary) -> Element {
@@ -2446,8 +2595,10 @@ fn reordered_rule_ids(
 fn logs_page(state: Signal<State>) -> Element {
     let mut log_query = use_signal(String::new);
     let mut log_filter = use_signal(|| LogLevelFilter::All);
+    let mut selected_log = use_signal(|| None::<VirtualLogRow>);
     let current = state.read().clone();
     let query_value = log_query();
+    let normalized_query = normalize_log_query(&query_value);
     let filter_value = log_filter();
     let all_label = strings(current.locale).logs_level_all.to_owned();
     let info_label = "Info".to_owned();
@@ -2468,11 +2619,12 @@ fn logs_page(state: Signal<State>) -> Element {
         LogLevelFilter::Error => error_label.clone(),
         LogLevelFilter::Debug => debug_label.clone(),
     };
+    let total_log_count = current.snapshot.logs.len();
     let logs = current
         .snapshot
         .logs
         .iter()
-        .filter(|log| matches_log_filter(log, filter_value, &query_value))
+        .filter(|log| matches_log_filter_normalized(log, filter_value, &normalized_query))
         .rev()
         .cloned()
         .map(|log| {
@@ -2488,46 +2640,21 @@ fn logs_page(state: Signal<State>) -> Element {
                     log.level.to_uppercase(),
                     time_format::format_unix_seconds(&log.timestamp).unwrap_or(log.timestamp),
                 ),
-                message: truncate_text(&log.message.replace(['\n', '\r'], " "), 120),
-                color: format!("#{color:08x}"),
+                preview: truncate_text(&log.message.replace(['\n', '\r'], " "), 150),
+                message: log.message,
+                color,
             }
         })
         .collect::<Vec<_>>();
     let empty = logs.is_empty();
-    let log_rows = logs.into_iter().enumerate().map(|(index, row)| {
-        let key = format!("log-{index}-{}", row.meta);
-        rsx! {
-            column {
-                key: "{key}",
-                percent_width: 1.0,
-                height: 82.0,
-                padding_top: 10.0,
-                padding_left: 12.0,
-                padding_right: 12.0,
-                align_items: "start",
-                justify_content: "center",
-                background_color: surface(),
-                text {
-                    content: row.meta,
-                    percent_width: 1.0,
-                    font_size: 11.0,
-                    font_color: row.color,
-                    max_lines: 1,
-                }
-                text {
-                    content: row.message,
-                    percent_width: 1.0,
-                    margin_top: 6.0,
-                    font_size: 13.0,
-                    line_height: 18.0,
-                    font_color: text_color(),
-                    max_lines: 2,
-                }
-                row { height: 9.0 }
-                Separator {}
-            }
-        }
-    });
+    let shown_log_count = logs.len();
+    let palette = VirtualLogPalette {
+        surface: surface(),
+        foreground: text_color(),
+        muted_foreground: subtle(),
+        border: line(),
+    };
+    let selected_log_value = selected_log();
     let body = rsx! {
         column {
             percent_width: 1.0,
@@ -2561,45 +2688,218 @@ fn logs_page(state: Signal<State>) -> Element {
                     },
                 }
             }
-            row { height: 14.0 }
+            row {
+                percent_width: 1.0,
+                height: 32.0,
+                align_items: "center",
+                text {
+                    content: format!("{} / {} {}", shown_log_count, total_log_count, tr(current.locale, "条日志", "logs")),
+                    font_size: 11.0,
+                    font_color: subtle(),
+                }
+                row { layout_weight: 1.0 }
+                if !empty {
+                    text { content: tr(current.locale, "点击日志查看全文", "Tap a log for details"), font_size: 11.0, font_color: subtle() }
+                }
+            }
             row {
                 layout_weight: 1.0,
                 percent_width: 1.0,
                 if empty {
                     {empty_state("scroll-text", strings(current.locale).logs_empty_title, strings(current.locale).logs_empty_subtitle)}
                 } else {
-                    scroll {
-                        percent_width: 1.0,
-                        percent_height: 1.0,
-                        scroll_bar: 0,
-                        background_color: surface(),
-                        border_width: 1.0,
-                        border_color: line(),
-                        border_radius: 10.0,
-                        clip: true,
-                        column {
-                            percent_width: 1.0,
-                            align_items: "start",
-                            {log_rows}
-                        }
+                    VirtualLogList {
+                        items: logs,
+                        palette,
+                        on_open: move |row: VirtualLogRow| selected_log.set(Some(row)),
                     }
                 }
             }
         }
     };
-    fixed_scaffold(
+    let page = fixed_scaffold(
         state,
         Route::Logs {},
         destructive_icon_action("trash-2", Action::ClearLogs, state),
         body,
-    )
+    );
+    rsx! {
+        {page}
+        if let Some(log) = selected_log_value {
+            {log_detail_dialog(current.locale, log, selected_log)}
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct VirtualLogRow {
     meta: String,
     message: String,
-    color: String,
+    preview: String,
+    color: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct VirtualLogPalette {
+    surface: u32,
+    foreground: u32,
+    muted_foreground: u32,
+    border: u32,
+}
+
+#[derive(Clone)]
+struct VirtualLogRenderState {
+    items: Vec<VirtualLogRow>,
+    palette: VirtualLogPalette,
+    on_open: EventHandler<VirtualLogRow>,
+}
+
+#[component]
+fn VirtualLogList(
+    items: Vec<VirtualLogRow>,
+    palette: VirtualLogPalette,
+    on_open: EventHandler<VirtualLogRow>,
+) -> Element {
+    let item_keys = items
+        .iter()
+        .map(|item| {
+            let mut hasher = DefaultHasher::new();
+            item.hash(&mut hasher);
+            palette.hash(&mut hasher);
+            hasher.finish()
+        })
+        .collect::<Vec<_>>();
+    let render_state = use_hook(|| {
+        Rc::new(RefCell::new(VirtualLogRenderState {
+            items: items.clone(),
+            palette,
+            on_open,
+        }))
+    });
+    *render_state.borrow_mut() = VirtualLogRenderState {
+        items,
+        palette,
+        on_open,
+    };
+    let render_state_for_adapter = render_state.clone();
+    let handle = use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys, move |index| {
+        let state = render_state_for_adapter.borrow();
+        render_virtual_log_row(&state.items[index as usize], state.palette, state.on_open)
+    });
+    let attach_handle = handle.clone();
+    use_layout_frame_node(move |host_node, _frame| {
+        let _ = attach_handle.attach(&host_node);
+    });
+
+    rsx! {
+        list {
+            percent_width: 1.0,
+            percent_height: 1.0,
+            list_cached_count: 18_i32,
+        }
+    }
+}
+
+fn render_virtual_log_row(
+    item: &VirtualLogRow,
+    palette: VirtualLogPalette,
+    on_open: EventHandler<VirtualLogRow>,
+) -> arkit::ohos_arkui_binding::common::error::ArkUIResult<ArkUINode> {
+    let meta = virtual_log_text(item.meta.clone(), 10.0, 5, item.color, 15.0, 1, 0.0)?;
+    let message = virtual_log_text(
+        item.preview.clone(),
+        12.0,
+        4,
+        palette.foreground,
+        17.0,
+        2,
+        4.0,
+    )?;
+    let node = NodeBuilder::new("column")?
+        .percent_width(1.0)?
+        .height(76.0)?
+        .background_color(format!("#{:08x}", palette.surface))?
+        .padding([9.0, 11.0, 9.0, 11.0])?
+        .margin([0.0, 0.0, 7.0, 0.0])?
+        .attr(ArkUINodeAttributeType::BorderWidth, vec![1.0; 4])?
+        .attr(ArkUINodeAttributeType::BorderColor, palette.border)?
+        .attr(ArkUINodeAttributeType::BorderRadius, vec![9.0; 4])?
+        .attr(ArkUINodeAttributeType::Clip, true)?
+        .attr(ArkUINodeAttributeType::ColumnAlignItems, 0_i32)?
+        .attr(
+            ArkUINodeAttributeType::AccessibilityText,
+            format!("{}，{}", item.meta, item.message),
+        )?
+        .child(meta)?
+        .child(message)?;
+    let item = item.clone();
+    Ok(node.on_click(move || on_open.call(item.clone()))?.build())
+}
+
+fn virtual_log_text(
+    content: String,
+    size: f32,
+    weight: i32,
+    color: u32,
+    line_height: f32,
+    max_lines: i32,
+    padding_top: f32,
+) -> arkit::ohos_arkui_binding::common::error::ArkUIResult<ArkUINode> {
+    Ok(NodeBuilder::new("text")?
+        .percent_width(1.0)?
+        .font_size(size)?
+        .font_color(format!("#{color:08x}"))?
+        .text_content(content)?
+        .padding([padding_top, 0.0, 0.0, 0.0])?
+        .attr(ArkUINodeAttributeType::FontWeight, weight)?
+        .attr(ArkUINodeAttributeType::TextLineHeight, line_height)?
+        .attr(ArkUINodeAttributeType::TextMaxLines, max_lines)?
+        .attr(ArkUINodeAttributeType::TextOverflow, 2_i32)?
+        .build())
+}
+
+fn log_detail_dialog(
+    locale: UiLocale,
+    log: VirtualLogRow,
+    mut selected: Signal<Option<VirtualLogRow>>,
+) -> Element {
+    let detail_height = match log.message.chars().count() {
+        0..=160 => 120.0,
+        161..=420 => 200.0,
+        _ => 300.0,
+    };
+    rsx! {
+        FlatDialog {
+            open: true,
+            on_close: move |_| selected.set(None),
+            DialogHeader {
+                title: tr(locale, "日志详情", "Log details").to_owned(),
+                description: Some(log.meta),
+            }
+            row { height: 14.0 }
+            scroll {
+                percent_width: 1.0,
+                height: detail_height,
+                alignment: 0,
+                scroll_bar: 0,
+                background_color: muted(),
+                border_radius: 9.0,
+                column {
+                    percent_width: 1.0,
+                    padding: 12.0,
+                    align_items: "start",
+                    justify_content: "start",
+                    text {
+                        content: log.message,
+                        percent_width: 1.0,
+                        font_size: 12.0,
+                        line_height: 19.0,
+                        font_color: text_color(),
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn profile_import_dialog(
