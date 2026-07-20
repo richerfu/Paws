@@ -160,6 +160,7 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
 
 pub(crate) fn per_app_settings_page(state: Signal<State>) -> Element {
     let mut installed_query = use_signal(String::new);
+    let mut manual_bundle = use_signal(String::new);
     let mut load_requested = use_signal(|| false);
     let current = state.read().clone();
     let (initial_mode, initial_trusted, initial_blocked) =
@@ -187,6 +188,7 @@ pub(crate) fn per_app_settings_page(state: Signal<State>) -> Element {
     });
 
     let query_value = installed_query();
+    let manual_bundle_value = manual_bundle();
     let mode_value = selected_mode();
     let trusted_value = trusted_text();
     let blocked_value = blocked_text();
@@ -204,12 +206,60 @@ pub(crate) fn per_app_settings_page(state: Signal<State>) -> Element {
     let dirty = save_mode != initial_mode
         || trusted_value != initial_trusted
         || blocked_value != initial_blocked;
+    let selected_bundles = if mode_value == PerAppMode::Bypass {
+        blocked.clone()
+    } else {
+        trusted.clone()
+    };
+    let selected_bundle_rows = selected_bundles
+        .into_iter()
+        .enumerate()
+        .map(|(index, bundle)| {
+            let bundle_to_remove = bundle.clone();
+            let trusted_source = trusted_value.clone();
+            let blocked_source = blocked_value.clone();
+            rsx! {
+                column {
+                    percent_width: 1.0,
+                    row {
+                        percent_width: 1.0,
+                        height: 48.0,
+                        align_items: "center",
+                        row {
+                            layout_weight: 1.0,
+                            text {
+                                content: bundle,
+                                percent_width: 1.0,
+                                font_size: 12.0,
+                                font_color: text_color(),
+                                max_lines: 1,
+                            }
+                        }
+                        FlatButton {
+                            variant: FlatButtonVariant::Ghost,
+                            size: ButtonSize::Icon,
+                            onclick: move |_| {
+                                if mode_value == PerAppMode::Bypass {
+                                    blocked_text.set(remove_application_from_text(&blocked_source, &bundle_to_remove));
+                                } else {
+                                    trusted_text.set(remove_application_from_text(&trusted_source, &bundle_to_remove));
+                                }
+                            },
+                            {arkit::icon("x", 15.0, subtle())}
+                        }
+                    }
+                    if index + 1 < selected_count {
+                        Separator {}
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>();
 
     let visible_apps = current
         .installed_applications
         .iter()
         .filter(|app| matches_installed_application_query(app, &query_value))
-        .take(80)
         .cloned()
         .collect::<Vec<_>>();
     let visible_names = visible_apps
@@ -224,77 +274,35 @@ pub(crate) fn per_app_settings_page(state: Signal<State>) -> Element {
         trusted_value.clone()
     };
     let deselect_source = select_source.clone();
-    let app_rows = visible_apps
+    let manual_add_source = select_source.clone();
+    let manual_add_trusted_source = trusted_value.clone();
+    let manual_add_blocked_source = blocked_value.clone();
+    let manual_add_bundle = manual_bundle_value.trim().to_owned();
+    let virtual_apps = visible_apps
         .into_iter()
-        .enumerate()
-        .map(|(index, app)| {
-            let bundle = app.bundle_name.clone();
-            let is_selected = if mode_value == PerAppMode::Bypass {
-                blocked.contains(&bundle)
+        .map(|app| {
+            let selected = if mode_value == PerAppMode::Bypass {
+                blocked.contains(&app.bundle_name)
             } else {
-                trusted.contains(&bundle)
+                trusted.contains(&app.bundle_name)
             };
-            let trusted_source = trusted_value.clone();
-            let blocked_source = blocked_value.clone();
-            rsx! {
-                column {
-                    key: "{bundle}",
-                    percent_width: 1.0,
-                    row {
-                        percent_width: 1.0,
-                        height: 64.0,
-                        padding_left: 2.0,
-                        padding_right: 2.0,
-                        align_items: "center",
-                        row {
-                            width: 36.0,
-                            height: 36.0,
-                            align_items: "center",
-                            justify_content: "center",
-                            background_color: muted(),
-                            border_radius: 9.0,
-                            {arkit::icon("app-window", 17.0, subtle())}
-                        }
-                        column {
-                            layout_weight: 1.0,
-                            margin_left: 10.0,
-                            text { content: truncate_text(&app.name, 32), font_size: 14.0, font_weight: 600, font_color: text_color(), max_lines: 1 }
-                            text { content: truncate_text(&app.bundle_name, 44), margin_top: 3.0, font_size: 11.0, font_color: subtle(), max_lines: 1 }
-                        }
-                        Checkbox {
-                            checked: Some(is_selected),
-                            on_change: move |checked| {
-                                if mode_value == PerAppMode::Bypass {
-                                    let next = if checked {
-                                        add_application_to_text(&blocked_source, &bundle)
-                                    } else {
-                                        remove_application_from_text(&blocked_source, &bundle)
-                                    };
-                                    blocked_text.set(next);
-                                    if checked {
-                                        trusted_text.set(remove_application_from_text(&trusted_source, &bundle));
-                                    }
-                                } else {
-                                    let next = if checked {
-                                        add_application_to_text(&trusted_source, &bundle)
-                                    } else {
-                                        remove_application_from_text(&trusted_source, &bundle)
-                                    };
-                                    trusted_text.set(next);
-                                    if checked {
-                                        blocked_text.set(remove_application_from_text(&blocked_source, &bundle));
-                                    }
-                                }
-                            },
-                        }
-                    }
-                    if index + 1 < current.installed_applications.len() {
-                        Separator {}
-                    }
-                }
+            VirtualInstalledApplication {
+                name: app.name,
+                bundle_name: app.bundle_name,
+                selected,
             }
         })
         .collect::<Vec<_>>();
+    let virtual_app_palette = VirtualInstalledApplicationPalette {
+        surface: surface(),
+        muted: muted(),
+        foreground: text_color(),
+        muted_foreground: subtle(),
+        border: line(),
+        success: success(),
+    };
+    let toggle_trusted_source = trusted_value.clone();
+    let toggle_blocked_source = blocked_value.clone();
 
     let proxy = tr(current.locale, "代理所选", "Proxy selected").to_owned();
     let bypass = tr(current.locale, "绕过所选", "Bypass selected").to_owned();
@@ -325,6 +333,13 @@ pub(crate) fn per_app_settings_page(state: Signal<State>) -> Element {
                 font_color: subtle(),
             }
             row { height: 14.0 }
+            text {
+                content: tr(current.locale, "从系统可见应用中选择", "Choose from system-visible applications"),
+                font_size: 12.0,
+                font_weight: 650,
+                font_color: text_color(),
+            }
+            row { height: 7.0 }
             Input {
                 value: Some(query_value.clone()),
                 placeholder: Some(tr(current.locale, "搜索应用或包名", "Search apps or bundles").to_owned()),
@@ -371,10 +386,14 @@ pub(crate) fn per_app_settings_page(state: Signal<State>) -> Element {
             if current.installed_applications_loading {
                 {empty_state("loader-circle", tr(current.locale, "正在读取应用", "Loading applications"), tr(current.locale, "请稍候…", "Please wait…"))}
             } else if let Some(error) = current.installed_applications_error.clone() {
-                {empty_state("triangle-alert", tr(current.locale, "无法读取应用", "Unable to load apps"), compact(&error))}
-            } else if app_rows.is_empty() {
+                {empty_state(
+                    "triangle-alert",
+                    tr(current.locale, "系统应用列表不可用", "System application list unavailable"),
+                    format!("{} · {}", compact(&error), tr(current.locale, "仍可使用下方包名添加", "Use bundle entry below instead")),
+                )}
+            } else if virtual_apps.is_empty() {
                 if query_value.trim().is_empty() {
-                    {empty_state("layout-grid", tr(current.locale, "未发现可选择的应用", "No applications available"), tr(current.locale, "刷新列表或检查应用读取权限", "Refresh or check application access"))}
+                    {empty_state("layout-grid", tr(current.locale, "未发现系统可见应用", "No system-visible applications"), tr(current.locale, "仍可使用下方包名添加", "Use bundle entry below instead"))}
                 } else {
                     {empty_state("layout-grid", tr(current.locale, "没有匹配的应用", "No matching apps"), tr(current.locale, "调整搜索词后重试", "Try a different search"))}
                 }
@@ -388,7 +407,90 @@ pub(crate) fn per_app_settings_page(state: Signal<State>) -> Element {
                     border_color: line(),
                     border_radius: 10.0,
                     clip: true,
-                    {app_rows.into_iter()}
+                    VirtualInstalledApplicationList {
+                        items: virtual_apps,
+                        palette: virtual_app_palette,
+                        on_toggle: move |bundle: String| {
+                            if mode_value == PerAppMode::Bypass {
+                                let selected = blocked.contains(&bundle);
+                                let next = if selected {
+                                    remove_application_from_text(&toggle_blocked_source, &bundle)
+                                } else {
+                                    add_application_to_text(&toggle_blocked_source, &bundle)
+                                };
+                                blocked_text.set(next);
+                                if !selected {
+                                    trusted_text.set(remove_application_from_text(&toggle_trusted_source, &bundle));
+                                }
+                            } else {
+                                let selected = trusted.contains(&bundle);
+                                let next = if selected {
+                                    remove_application_from_text(&toggle_trusted_source, &bundle)
+                                } else {
+                                    add_application_to_text(&toggle_trusted_source, &bundle)
+                                };
+                                trusted_text.set(next);
+                                if !selected {
+                                    blocked_text.set(remove_application_from_text(&toggle_blocked_source, &bundle));
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+            if selected_count > 0 {
+                row { height: 12.0 }
+                column {
+                    percent_width: 1.0,
+                    padding_left: 12.0,
+                    padding_right: 6.0,
+                    background_color: surface(),
+                    border_width: 1.0,
+                    border_color: line(),
+                    border_radius: 10.0,
+                    clip: true,
+                    {selected_bundle_rows.into_iter()}
+                }
+            }
+            row { height: 18.0 }
+            text {
+                content: tr(current.locale, "找不到应用？手动添加应用包名", "Can't find an app? Add its bundle name"),
+                font_size: 12.0,
+                font_weight: 650,
+                font_color: text_color(),
+            }
+            row { height: 7.0 }
+            row {
+                percent_width: 1.0,
+                align_items: "center",
+                row {
+                    layout_weight: 1.0,
+                    Input {
+                        value: Some(manual_bundle_value.clone()),
+                        placeholder: Some("com.example.app".to_owned()),
+                        percent_width: Some(1.0),
+                        on_change: move |value| manual_bundle.set(value),
+                    }
+                }
+                row { width: 8.0 }
+                FlatButton {
+                    variant: FlatButtonVariant::Outline,
+                    size: ButtonSize::Default,
+                    disabled: Some(manual_add_bundle.is_empty()),
+                    onclick: move |_| {
+                        if manual_add_bundle.is_empty() {
+                            return;
+                        }
+                        if mode_value == PerAppMode::Bypass {
+                            blocked_text.set(add_application_to_text(&manual_add_source, &manual_add_bundle));
+                            trusted_text.set(remove_application_from_text(&manual_add_trusted_source, &manual_add_bundle));
+                        } else {
+                            trusted_text.set(add_application_to_text(&manual_add_source, &manual_add_bundle));
+                            blocked_text.set(remove_application_from_text(&manual_add_blocked_source, &manual_add_bundle));
+                        }
+                        manual_bundle.set(String::new());
+                    },
+                    text { content: tr(current.locale, "添加", "Add"), font_size: 12.0, font_weight: 650, font_color: text_color() }
                 }
             }
         }
@@ -412,4 +514,183 @@ pub(crate) fn per_app_settings_page(state: Signal<State>) -> Element {
         }
     };
     scaffold(state, Route::PerApp {}, actions, body)
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct VirtualInstalledApplication {
+    name: String,
+    bundle_name: String,
+    selected: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct VirtualInstalledApplicationPalette {
+    surface: u32,
+    muted: u32,
+    foreground: u32,
+    muted_foreground: u32,
+    border: u32,
+    success: u32,
+}
+
+#[derive(Clone)]
+struct VirtualInstalledApplicationRenderState {
+    items: Vec<VirtualInstalledApplication>,
+    palette: VirtualInstalledApplicationPalette,
+    on_toggle: EventHandler<String>,
+}
+
+#[component]
+fn VirtualInstalledApplicationList(
+    items: Vec<VirtualInstalledApplication>,
+    palette: VirtualInstalledApplicationPalette,
+    on_toggle: EventHandler<String>,
+) -> Element {
+    let list_height = (items.len() as f32 * 64.0).min(384.0);
+    let item_keys = items
+        .iter()
+        .map(|item| {
+            let mut hasher = DefaultHasher::new();
+            item.hash(&mut hasher);
+            palette.hash(&mut hasher);
+            hasher.finish()
+        })
+        .collect::<Vec<_>>();
+    let render_state = use_hook(|| {
+        Rc::new(RefCell::new(VirtualInstalledApplicationRenderState {
+            items: items.clone(),
+            palette,
+            on_toggle,
+        }))
+    });
+    *render_state.borrow_mut() = VirtualInstalledApplicationRenderState {
+        items,
+        palette,
+        on_toggle,
+    };
+    let render_state_for_adapter = render_state.clone();
+    let handle = use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys, move |index| {
+        let state = render_state_for_adapter.borrow();
+        render_virtual_installed_application_row(
+            &state.items[index as usize],
+            state.palette,
+            render_state_for_adapter.clone(),
+        )
+    });
+    let attach_handle = handle.clone();
+    use_layout_frame_node(move |host_node, _frame| {
+        let _ = attach_handle.attach(&host_node);
+    });
+
+    rsx! {
+        list {
+            percent_width: 1.0,
+            height: list_height,
+            list_cached_count: 14_i32,
+        }
+    }
+}
+
+fn render_virtual_installed_application_row(
+    item: &VirtualInstalledApplication,
+    palette: VirtualInstalledApplicationPalette,
+    interaction_state: Rc<RefCell<VirtualInstalledApplicationRenderState>>,
+) -> arkit::ohos_arkui_binding::common::error::ArkUIResult<ArkUINode> {
+    let icon = NodeBuilder::new("text")?
+        .width(36.0)?
+        .height(36.0)?
+        .background_color(format!("#{:08x}", palette.muted))?
+        .font_size(17.0)?
+        .font_color(format!("#{:08x}", palette.muted_foreground))?
+        .text_content("▦")?
+        .attr(ArkUINodeAttributeType::BorderRadius, vec![9.0; 4])?
+        .attr(ArkUINodeAttributeType::TextAlign, 1_i32)?
+        .build();
+    let name = NodeBuilder::new("text")?
+        .percent_width(1.0)?
+        .font_size(14.0)?
+        .font_color(format!("#{:08x}", palette.foreground))?
+        .text_content(truncate_text(&item.name, 32))?
+        .attr(ArkUINodeAttributeType::FontWeight, 6_i32)?
+        .attr(ArkUINodeAttributeType::TextMaxLines, 1_i32)?
+        .attr(ArkUINodeAttributeType::TextOverflow, 2_i32)?
+        .build();
+    let bundle = NodeBuilder::new("text")?
+        .percent_width(1.0)?
+        .font_size(11.0)?
+        .font_color(format!("#{:08x}", palette.muted_foreground))?
+        .text_content(truncate_text(&item.bundle_name, 44))?
+        .margin([3.0, 0.0, 0.0, 0.0])?
+        .attr(ArkUINodeAttributeType::TextMaxLines, 1_i32)?
+        .attr(ArkUINodeAttributeType::TextOverflow, 2_i32)?
+        .build();
+    let labels = NodeBuilder::new("column")?
+        .attr(ArkUINodeAttributeType::LayoutWeight, 1.0_f32)?
+        .margin([0.0, 0.0, 0.0, 10.0])?
+        .attr(ArkUINodeAttributeType::ColumnAlignItems, 0_i32)?
+        .attr(ArkUINodeAttributeType::ColumnJustifyContent, 2_i32)?
+        .child(name)?
+        .child(bundle)?
+        .build();
+    let marker = NodeBuilder::new("text")?
+        .width(24.0)?
+        .height(24.0)?
+        .background_color(format!(
+            "#{:08x}",
+            if item.selected {
+                palette.success
+            } else {
+                palette.surface
+            }
+        ))?
+        .font_size(14.0)?
+        .font_color(format!("#{:08x}", palette.surface))?
+        .text_content(if item.selected { "✓" } else { "" })?
+        .attr(ArkUINodeAttributeType::BorderWidth, vec![1.0; 4])?
+        .attr(
+            ArkUINodeAttributeType::BorderColor,
+            if item.selected {
+                palette.success
+            } else {
+                palette.border
+            },
+        )?
+        .attr(ArkUINodeAttributeType::BorderRadius, vec![6.0; 4])?
+        .attr(ArkUINodeAttributeType::TextAlign, 1_i32)?
+        .build();
+    let accessibility_text = format!(
+        "{}，{}，{}",
+        item.name,
+        item.bundle_name,
+        if item.selected {
+            "selected"
+        } else {
+            "not selected"
+        }
+    );
+    let node = NodeBuilder::new("row")?
+        .percent_width(1.0)?
+        .height(64.0)?
+        .padding([0.0, 2.0, 0.0, 2.0])?
+        .background_color(format!("#{:08x}", palette.surface))?
+        .attr(
+            ArkUINodeAttributeType::BorderWidth,
+            vec![0.0, 0.0, 1.0, 0.0],
+        )?
+        .attr(ArkUINodeAttributeType::BorderColor, palette.border)?
+        .attr(ArkUINodeAttributeType::RowAlignItems, 1_i32)?
+        .attr(
+            ArkUINodeAttributeType::AccessibilityText,
+            accessibility_text,
+        )?
+        .child(icon)?
+        .child(labels)?
+        .child(marker)?;
+    let bundle_name = item.bundle_name.clone();
+    Ok(node
+        .on_click(move || {
+            let on_toggle = interaction_state.borrow().on_toggle;
+            on_toggle.call(bundle_name.clone());
+        })?
+        .build())
 }

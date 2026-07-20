@@ -1,6 +1,13 @@
 const VIEW_SOURCE: &str = include_str!("../src/view.rs");
 const ACTIVITY_SOURCE: &str = include_str!("../src/view/pages/activity.rs");
 
+fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
+    let start = source.find(start).expect("section start");
+    let tail = &source[start..];
+    let end = tail.find(end).expect("section end");
+    &tail[..end]
+}
+
 #[test]
 fn logs_use_arkit_native_virtual_rows_and_expose_full_details() {
     assert!(VIEW_SOURCE.contains("fn VirtualLogList("));
@@ -23,8 +30,55 @@ fn geodata_rows_open_file_metadata_and_paths() {
 }
 
 #[test]
-fn connection_cards_keep_the_close_action_compact() {
-    assert!(ACTIVITY_SOURCE.contains("fn compact_connection_card("));
-    assert!(ACTIVITY_SOURCE.contains("size: ButtonSize::Icon"));
-    assert!(!ACTIVITY_SOURCE.contains("variant: FlatButtonVariant::Destructive,\n                                percent_width: Some(1.0)"));
+fn activity_lists_use_compact_arkit_virtual_rows() {
+    assert!(ACTIVITY_SOURCE.contains("fn VirtualRequestList("));
+    assert!(ACTIVITY_SOURCE.contains("fn VirtualConnectionList("));
+    assert_eq!(
+        ACTIVITY_SOURCE
+            .matches("use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys")
+            .count(),
+        2,
+    );
+    assert_eq!(
+        ACTIVITY_SOURCE
+            .matches("use_layout_frame_node(move |host_node, _frame|")
+            .count(),
+        2,
+    );
+    assert_eq!(
+        ACTIVITY_SOURCE.matches("list_cached_count: 18_i32").count(),
+        2,
+    );
+    assert!(ACTIVITY_SOURCE.contains("const REQUEST_ROW_HEIGHT: f32 = 72.0;"));
+    assert!(ACTIVITY_SOURCE.contains("const CONNECTION_ROW_HEIGHT: f32 = 72.0;"));
+    assert!(!ACTIVITY_SOURCE.contains("compact_connection_card"));
+    assert!(!ACTIVITY_SOURCE.contains("{spaced(rows)}"));
+}
+
+#[test]
+fn virtual_activity_rows_keep_their_previous_actions() {
+    assert!(ACTIVITY_SOURCE.contains("on_open.call(connection_query.clone())"));
+    assert!(ACTIVITY_SOURCE.contains("on_close.call(close_id.clone())"));
+    assert!(ACTIVITY_SOURCE.contains("Action::CloseConnection(id)"));
+    assert!(ACTIVITY_SOURCE.contains("navigator.push(Route::Connections { query })"));
+}
+
+#[test]
+fn resource_rules_are_compact_and_section_titles_have_no_counts() {
+    let page = section(VIEW_SOURCE, "fn resources_page", "fn geodata_detail_dialog");
+    let rule = section(VIEW_SOURCE, "fn rule_view", "fn reordered_rule_ids");
+    let label = section(VIEW_SOURCE, "fn section_label", "fn empty_state");
+
+    assert!(page.contains("section_label(tr(current.locale, \"Provider\", \"Providers\"))"));
+    assert!(page.contains("section_label(strings(current.locale).resources_rules_title)"));
+    assert!(!page.contains("section_label(tr(current.locale, \"Provider\", \"Providers\"),"));
+    assert!(!page.contains("section_label(strings(current.locale).resources_rules_title,"));
+    assert!(page.contains("compact_rule_list(rules)"));
+
+    assert!(rule.contains("height: 88.0"));
+    assert!(rule.contains("max_lines: 2"));
+    assert!(rule.contains("fn compact_rule_action("));
+    assert!(rule.contains("width: 32.0"));
+    assert!(!rule.contains("{card("));
+    assert!(!label.contains("count.to_string()"));
 }

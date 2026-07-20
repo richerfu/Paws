@@ -813,7 +813,8 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         .activate_profile(&profile_id)
                         .await
                         .map_err(|error| error.to_string())?;
-                    let restart_error = request_vpn_restart_if_running(was_vpn_running, ui_strings);
+                    let restart_error =
+                        request_vpn_restart_if_running(was_vpn_running, ui_strings).await;
                     Ok(ProfileActivationResult {
                         snapshot: load_snapshot().await,
                         profile_name,
@@ -1457,7 +1458,8 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         )
                         .await
                         .map_err(|error| error.to_string())?;
-                    let restart_error = request_vpn_restart_if_running(was_vpn_running, ui_strings);
+                    let restart_error =
+                        request_vpn_restart_if_running(was_vpn_running, ui_strings).await;
                     Ok(SettingsSaveResult {
                         snapshot: load_snapshot().await,
                         restart_requested: was_vpn_running,
@@ -1524,7 +1526,8 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         .set_profile_dns_config(&profile_id, dns_servers, dns_fallbacks, dns_policy)
                         .await
                         .map_err(|error| error.to_string())?;
-                    let restart_error = request_vpn_restart_if_running(was_vpn_running, ui_strings);
+                    let restart_error =
+                        request_vpn_restart_if_running(was_vpn_running, ui_strings).await;
                     Ok(SettingsSaveResult {
                         snapshot: load_snapshot().await,
                         restart_requested: was_vpn_running,
@@ -1591,7 +1594,8 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         )
                         .await
                         .map_err(|error| error.to_string())?;
-                    let restart_error = request_vpn_restart_if_running(was_vpn_running, ui_strings);
+                    let restart_error =
+                        request_vpn_restart_if_running(was_vpn_running, ui_strings).await;
                     Ok(SettingsSaveResult {
                         snapshot: load_snapshot().await,
                         restart_requested: was_vpn_running,
@@ -1767,6 +1771,7 @@ async fn start_vpn_command_and_snapshot(
         )
     })?;
     let request_error = crate::platform_callbacks::request_start_vpn(options_json)
+        .await
         .err()
         .map(|error| error.to_string());
     Ok(VpnCommandResult {
@@ -1780,7 +1785,7 @@ async fn start_vpn_command_and_snapshot(
 async fn stop_vpn_command_and_snapshot(
     ui_strings: &'static UiStrings,
 ) -> Result<VpnCommandResult, String> {
-    let request_error = match crate::platform_callbacks::request_stop_vpn() {
+    let request_error = match crate::platform_callbacks::request_stop_vpn().await {
         Ok(()) => None,
         Err(error) => {
             hmeta_core::shared_core().stop_vpn().map_err(|fallback| {
@@ -1803,18 +1808,24 @@ async fn stop_vpn_command_and_snapshot(
     })
 }
 
-fn request_vpn_restart_if_running(was_vpn_running: bool, ui_strings: &UiStrings) -> Option<String> {
+async fn request_vpn_restart_if_running(
+    was_vpn_running: bool,
+    ui_strings: &UiStrings,
+) -> Option<String> {
     if !was_vpn_running {
         return None;
     }
 
     let mut errors = Vec::new();
-    if let Err(error) = crate::platform_callbacks::request_stop_vpn() {
+    if let Err(error) = crate::platform_callbacks::request_stop_vpn().await {
         match hmeta_core::shared_core().stop_vpn() {
-            Ok(()) => errors.push(format!(
-                "{}{}",
-                ui_strings.feedback_vpn_stop_fallback_applied_prefix, error
-            )),
+            Ok(()) => {
+                errors.push(format!(
+                    "{}{}",
+                    ui_strings.feedback_vpn_stop_fallback_applied_prefix, error
+                ));
+                return Some(errors.join("；"));
+            }
             Err(fallback) => {
                 errors.push(format!(
                     "{}{}{}{}",
@@ -1830,7 +1841,7 @@ fn request_vpn_restart_if_running(was_vpn_running: bool, ui_strings: &UiStrings)
 
     match hmeta_core::shared_core().active_vpn_options_json() {
         Ok(options_json) => {
-            if let Err(error) = crate::platform_callbacks::request_start_vpn(options_json) {
+            if let Err(error) = crate::platform_callbacks::request_start_vpn(options_json).await {
                 errors.push(format!(
                     "{}{}",
                     ui_strings.feedback_vpn_start_callback_failed_prefix, error
@@ -1999,7 +2010,7 @@ async fn profile_import_result(
     was_vpn_running: bool,
     ui_strings: &'static UiStrings,
 ) -> ProfileImportResult {
-    let restart_error = request_vpn_restart_if_running(was_vpn_running, ui_strings);
+    let restart_error = request_vpn_restart_if_running(was_vpn_running, ui_strings).await;
     let snapshot = load_snapshot().await;
     let profile_name = snapshot
         .profiles
@@ -2033,7 +2044,7 @@ async fn import_rules_and_snapshot(
         .err()
         .map(|error| error.to_string());
     let restart_error = if reload_error.is_none() {
-        request_vpn_restart_if_running(was_vpn_running, ui_strings)
+        request_vpn_restart_if_running(was_vpn_running, ui_strings).await
     } else {
         None
     };
@@ -2055,7 +2066,7 @@ async fn delete_profile_and_snapshot(
 ) -> Result<ProfileDeleteResult, String> {
     let mut vpn_errors = Vec::new();
     if was_active && was_vpn_running {
-        if let Err(error) = crate::platform_callbacks::request_stop_vpn() {
+        if let Err(error) = crate::platform_callbacks::request_stop_vpn().await {
             match hmeta_core::shared_core().stop_vpn() {
                 Ok(()) => vpn_errors.push(format!(
                     "{}{}",
@@ -2084,7 +2095,7 @@ async fn delete_profile_and_snapshot(
         let options_json = hmeta_core::shared_core()
             .active_vpn_options_json()
             .map_err(|error| error.to_string())?;
-        if let Err(error) = crate::platform_callbacks::request_start_vpn(options_json) {
+        if let Err(error) = crate::platform_callbacks::request_start_vpn(options_json).await {
             vpn_errors.push(format!(
                 "{}{}",
                 ui_strings.feedback_vpn_start_callback_failed_prefix, error
@@ -2224,7 +2235,7 @@ async fn reload_profile_after_rule_change(
         .activate_profile(profile_id)
         .await
         .map_err(|error| error.to_string())?;
-    let restart_error = request_vpn_restart_if_running(was_vpn_running, ui_strings);
+    let restart_error = request_vpn_restart_if_running(was_vpn_running, ui_strings).await;
     Ok(RuleChangeResult {
         snapshot: load_snapshot().await,
         restart_requested: was_vpn_running,

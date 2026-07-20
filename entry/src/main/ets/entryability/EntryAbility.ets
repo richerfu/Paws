@@ -1,4 +1,5 @@
 import { AbilityConstant, Configuration, ConfigurationConstant, Want } from '@kit.AbilityKit';
+import { osAccount } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { i18n } from '@kit.LocalizationKit';
 import { vpnExtension } from '@kit.NetworkKit';
@@ -228,21 +229,44 @@ export default class EntryAbility extends NativeAbility {
   private async listInstalledApplications(): Promise<string> {
     const result: HMetaInstalledApplication[] = [];
     try {
-      const applications = await legacyBundle.getAllApplicationInfo(legacyBundle.BundleFlag.GET_BUNDLE_DEFAULT);
-      for (const appInfo of applications) {
-        const bundleName = appInfo.name ?? '';
-        if (!bundleName || bundleName === currentHMetaBundleName()) {
-          continue;
+      const launcherWants: Want[] = [
+        {
+          action: 'action.system.home',
+          entities: ['entity.system.home'],
+        },
+        {
+          action: 'ohos.want.action.home',
+          entities: ['entity.system.home'],
+        },
+      ];
+      const seenBundles: Record<string, boolean> = {};
+      const userId = await osAccount.getAccountManager().getOsAccountLocalId();
+      for (const launcherWant of launcherWants) {
+        const launchableAbilities = await legacyBundle.queryAbilityByWant(
+          launcherWant,
+          legacyBundle.BundleFlag.GET_BUNDLE_DEFAULT,
+          userId,
+        );
+        for (const abilityInfo of launchableAbilities) {
+          const bundleName = abilityInfo.bundleName ?? '';
+          if (!bundleName || bundleName === currentHMetaBundleName()) {
+            continue;
+          }
+          if (seenBundles[bundleName]) {
+            continue;
+          }
+          seenBundles[bundleName] = true;
+          result.push({
+            bundleName,
+            name: abilityInfo.label && abilityInfo.label.length > 0 ? abilityInfo.label : bundleName,
+          });
         }
-        result.push({
-          bundleName,
-          name: appInfo.label && appInfo.label.length > 0 ? appInfo.label : bundleName,
-        });
       }
       result.sort((left: HMetaInstalledApplication, right: HMetaInstalledApplication) => {
         const nameCompare = left.name.localeCompare(right.name);
         return nameCompare !== 0 ? nameCompare : left.bundleName.localeCompare(right.bundleName);
       });
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'listed %{public}d launchable applications', result.length);
     } catch (err) {
       const message = describeError(err) || 'list installed applications failed';
       hilog.error(LOG_DOMAIN, LOG_TAG, 'list installed applications failed %{public}s', message);

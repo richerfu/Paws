@@ -8,7 +8,7 @@ use arkit::prelude::*;
 use arkit::router::{use_back_handler, use_navigator, use_route, AnimatedOutlet, Router};
 use arkit::shadcn::components::{
     Badge, BadgeVariant, BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant,
-    CardContent, CardHeader, CardTitle, Checkbox, DialogFooter, DialogHeader, Field, FieldContent,
+    CardContent, CardHeader, CardTitle, DialogFooter, DialogHeader, Field, FieldContent,
     FieldDescription, FieldOrientation, FieldTitle, Form, FormItem, Input, RadioGroup, Separator,
     Spinner, Switch, Textarea, ToggleGroup,
 };
@@ -2405,18 +2405,18 @@ fn resources_page(state: Signal<State>) -> Element {
                 }
             }
             row { height: 12.0 }
-            {section_label(tr(current.locale, "Provider", "Providers"), providers.len())}
+            {section_label(tr(current.locale, "Provider", "Providers"))}
             if providers.is_empty() {
                 {empty_state("database", tr(current.locale, "当前订阅没有 Provider", "No providers in this profile"), tr(current.locale, "分享链接订阅通常只包含节点；Provider 需由 Clash YAML 显式声明", "Share-link subscriptions usually contain nodes only; providers must be declared by Clash YAML"))}
             } else {
                 {spaced(providers)}
             }
             row { height: 14.0 }
-            {section_label(strings(current.locale).resources_rules_title, rules.len())}
+            {section_label(strings(current.locale).resources_rules_title)}
             if rules.is_empty() {
                 {empty_state("list-checks", tr(current.locale, "当前配置没有可编辑规则", "No editable rules"), tr(current.locale, "请确认已选择订阅并完成配置加载", "Select a profile and wait for configuration loading"))}
             } else {
-                {spaced(rules)}
+                {compact_rule_list(rules)}
             }
         }
     };
@@ -2517,59 +2517,112 @@ fn rule_view(state: Signal<State>, current: &State, rule: hmeta_model::RuleSumma
     let enabled = rule.enabled;
     let up = reordered_rule_ids(&current.snapshot.rules, &rule.profile_id, &rule.id, -1);
     let down = reordered_rule_ids(&current.snapshot.rules, &rule.profile_id, &rule.id, 1);
+    let toggle_action = Action::SetRuleEnabled {
+        profile_id: toggle_profile,
+        rule_id: toggle_id,
+        enabled: !enabled,
+    };
+    let delete_action = Action::DeleteRule {
+        profile_id: delete_profile,
+        rule_id: delete_id,
+    };
     rsx! {
-        {card(
-            format!("#{}", rule.order + 1),
-            Some(rule_source),
-            rsx! {
-                column {
-                    percent_width: 1.0,
-                    text { content: truncate_text(&rule.line, 180), font_size: 12.0, line_height: 18.0, font_color: text_color(), max_lines: 3 }
-                    row { height: 8.0 }
-                    if editable {
-                        row {
-                            percent_width: 1.0,
-                            row {
-                                width: 96.0,
-                                FlatButton {
-                                    variant: if enabled { FlatButtonVariant::Primary } else { FlatButtonVariant::Outline },
-                                    size: ButtonSize::Sm,
-                                    percent_width: Some(1.0),
-                                    onclick: move |_| dispatch(state, Action::SetRuleEnabled {
-                                        profile_id: toggle_profile.clone(),
-                                        rule_id: toggle_id.clone(),
-                                        enabled: !enabled,
-                                    }),
-                                    {arkit::icon(if enabled { "toggle-right" } else { "toggle-left" }, 13.0, if enabled { primary_text() } else { text_color() })}
-                                    text {
-                                        content: if enabled { tr(current.locale, "已启用", "Enabled") } else { tr(current.locale, "已停用", "Disabled") },
-                                        margin_left: 5.0,
-                                        font_size: 11.0,
-                                        font_weight: 600,
-                                        font_color: if enabled { primary_text() } else { text_color() },
-                                    }
-                                }
-                            }
-                            row { layout_weight: 1.0 }
-                            if let Some(ids) = up {
-                                row { width: 6.0 }
-                                {icon_action("arrow-up", Action::ReorderRules { profile_id: rule.profile_id.clone(), ordered_rule_ids: ids }, state)}
-                            }
-                            if let Some(ids) = down {
-                                {icon_action("arrow-down", Action::ReorderRules { profile_id: rule.profile_id.clone(), ordered_rule_ids: ids }, state)}
-                            }
-                            {destructive_icon_action("trash-2", Action::DeleteRule { profile_id: delete_profile, rule_id: delete_id }, state)}
-                        }
-                    } else {
-                        row {
-                            percent_width: 1.0,
-                            {pill(tr(current.locale, "运行中", "Effective").to_owned(), success())}
-                        }
+        column {
+            percent_width: 1.0,
+            height: 88.0,
+            padding_top: 8.0,
+            padding_right: 8.0,
+            padding_bottom: 8.0,
+            padding_left: 10.0,
+            background_color: surface(),
+            border_width: 1.0,
+            border_color: line(),
+            border_radius: 8.0,
+            clip: true,
+            row {
+                percent_width: 1.0,
+                height: 32.0,
+                align_items: "center",
+                text {
+                    content: format!("#{}", rule.order + 1),
+                    font_size: 11.0,
+                    font_weight: 700,
+                    font_color: if enabled { success() } else { subtle() },
+                    max_lines: 1,
+                }
+                row {
+                    layout_weight: 1.0,
+                    margin_left: 7.0,
+                    margin_right: 4.0,
+                    text {
+                        content: rule_source,
+                        percent_width: 1.0,
+                        font_size: 10.0,
+                        font_color: subtle(),
+                        max_lines: 1,
                     }
                 }
+                if editable {
+                    {compact_rule_action(if enabled { "toggle-right" } else { "toggle-left" }, if enabled { success() } else { subtle() }, toggle_action, state)}
+                    if let Some(ids) = up {
+                        {compact_rule_action("arrow-up", subtle(), Action::ReorderRules { profile_id: rule.profile_id.clone(), ordered_rule_ids: ids }, state)}
+                    }
+                    if let Some(ids) = down {
+                        {compact_rule_action("arrow-down", subtle(), Action::ReorderRules { profile_id: rule.profile_id.clone(), ordered_rule_ids: ids }, state)}
+                    }
+                    {compact_rule_action("trash-2", danger(), delete_action, state)}
+                } else {
+                    {pill(tr(current.locale, "运行中", "Effective").to_owned(), success())}
+                }
             }
-        )}
+            text {
+                content: truncate_text(&rule.line, 180),
+                percent_width: 1.0,
+                margin_top: 5.0,
+                font_size: 11.0,
+                line_height: 16.0,
+                font_color: text_color(),
+                max_lines: 2,
+            }
+        }
     }
+}
+
+fn compact_rule_action(
+    icon: &'static str,
+    color: u32,
+    action: Action,
+    state: Signal<State>,
+) -> Element {
+    rsx! {
+        button {
+            width: 32.0,
+            height: 32.0,
+            padding: 0.0,
+            background_color: surface(),
+            border_width: 0.0,
+            border_radius: 7.0,
+            onclick: move |_| dispatch(state, action.clone()),
+            row {
+                percent_width: 1.0,
+                percent_height: 1.0,
+                align_items: "center",
+                justify_content: "center",
+                {arkit::icon(icon, 15.0, color)}
+            }
+        }
+    }
+}
+
+fn compact_rule_list(items: Vec<Element>) -> Element {
+    let len = items.len();
+    let nodes = items.into_iter().enumerate().map(|(index, item)| {
+        rsx! {
+            {item}
+            if index + 1 < len { row { height: 6.0 } }
+        }
+    });
+    rsx! { column { percent_width: 1.0, {nodes} } }
 }
 
 fn reordered_rule_ids(
@@ -3222,15 +3275,13 @@ fn pill(label: String, color: u32) -> Element {
     }
 }
 
-fn section_label(label: impl Into<String>, count: usize) -> Element {
+fn section_label(label: impl Into<String>) -> Element {
     let label = label.into();
     rsx! {
         row {
             percent_width: 1.0,
             margin_bottom: 8.0,
-            justify_content: "space-between",
             text { content: label, font_size: 15.0, font_weight: 750, font_color: text_color() }
-            text { content: count.to_string(), font_size: 12.0, font_color: subtle() }
         }
     }
 }

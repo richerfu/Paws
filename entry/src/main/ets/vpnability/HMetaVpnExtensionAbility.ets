@@ -8,6 +8,7 @@ import {
   DEFAULT_OPTIONS_JSON,
   HMetaVpnConfig,
   parseOptions,
+  perAppMode,
   readOptionsJson,
   setHMetaBundleName,
   trustedApplications,
@@ -128,7 +129,17 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
       ? readOptionsJson(rawOptionsJson)
       : DEFAULT_OPTIONS_JSON;
     const options = parseOptions(optionsJson);
-    const config = new HMetaVpnConfig(options, trustedApplications(options), blockedApplications(options));
+    const trusted = trustedApplications(options);
+    const blocked = blockedApplications(options);
+    const config = new HMetaVpnConfig(options, trusted, blocked);
+    hilog.info(
+      LOG_DOMAIN,
+      LOG_TAG,
+      'applying per-app VPN mode %{public}s trusted %{public}d blocked %{public}d',
+      perAppMode(options),
+      trusted.length,
+      blocked.length,
+    );
     const startedAt = Date.now();
 
     try {

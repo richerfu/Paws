@@ -4,6 +4,7 @@ const ENTRY_ABILITY: &str =
 const VPN_ABILITY: &str =
     include_str!("../../../entry/src/main/ets/vpnability/HMetaVpnExtensionAbility.ets");
 const NAPI_TYPES: &str = include_str!("../../../entry/src/main/cpp/types/libhmeta_ui/Index.d.ts");
+const PLATFORM_CALLBACKS: &str = include_str!("../src/platform_callbacks.rs");
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let start = source.find(start).expect("section start");
@@ -62,4 +63,29 @@ fn native_profile_prepare_overlaps_tun_creation() {
     assert!(prepare < create);
     assert!(create < await_prepare);
     assert!(await_prepare < native_start);
+}
+
+#[test]
+fn vpn_restart_waits_for_platform_stop_before_starting_with_new_options() {
+    let restart = section(
+        UI,
+        "async fn request_vpn_restart_if_running",
+        "fn per_app_draft_from_snapshot",
+    );
+    let stop = restart
+        .find("request_stop_vpn().await")
+        .expect("awaited VPN stop");
+    let start = restart
+        .find("request_start_vpn(options_json).await")
+        .expect("awaited VPN start");
+
+    assert!(stop < start);
+    assert!(PLATFORM_CALLBACKS.contains("pub(crate) async fn request_start_vpn"));
+    assert!(PLATFORM_CALLBACKS.contains("pub(crate) async fn request_stop_vpn"));
+    assert!(PLATFORM_CALLBACKS
+        .contains("invoke_string_void_callback(tsfn, options_json, \"VPN start\").await"));
+    assert!(PLATFORM_CALLBACKS.contains("invoke_void_callback(tsfn, \"VPN stop\").await"));
+    assert!(VPN_ABILITY.contains("const trusted = trustedApplications(options)"));
+    assert!(VPN_ABILITY.contains("const blocked = blockedApplications(options)"));
+    assert!(VPN_ABILITY.contains("new HMetaVpnConfig(options, trusted, blocked)"));
 }

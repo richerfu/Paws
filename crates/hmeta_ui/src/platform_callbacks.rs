@@ -186,38 +186,24 @@ pub(crate) fn set_color_mode(color_mode: i32) -> Result<()> {
     }
 }
 
-pub(crate) fn request_start_vpn(options_json: String) -> Result<()> {
+pub(crate) async fn request_start_vpn(options_json: String) -> std::result::Result<(), String> {
     let tsfn = REQUEST_START_VPN
         .read()
-        .map_err(|_| Error::from_reason("failed to read VPN start callback"))?
+        .map_err(|_| "failed to read VPN start callback".to_owned())?
         .as_ref()
         .map(Arc::clone)
-        .ok_or_else(|| Error::from_reason("VPN start callback is not registered"))?;
-    let status = tsfn.call(options_json, ThreadsafeFunctionCallMode::NonBlocking);
-    if status == Status::Ok {
-        Ok(())
-    } else {
-        Err(Error::from_reason(format!(
-            "call VPN start callback failed with status: {status:?}"
-        )))
-    }
+        .ok_or_else(|| "VPN start callback is not registered".to_owned())?;
+    invoke_string_void_callback(tsfn, options_json, "VPN start").await
 }
 
-pub(crate) fn request_stop_vpn() -> Result<()> {
+pub(crate) async fn request_stop_vpn() -> std::result::Result<(), String> {
     let tsfn = REQUEST_STOP_VPN
         .read()
-        .map_err(|_| Error::from_reason("failed to read VPN stop callback"))?
+        .map_err(|_| "failed to read VPN stop callback".to_owned())?
         .as_ref()
         .map(Arc::clone)
-        .ok_or_else(|| Error::from_reason("VPN stop callback is not registered"))?;
-    let status = tsfn.call((), ThreadsafeFunctionCallMode::NonBlocking);
-    if status == Status::Ok {
-        Ok(())
-    } else {
-        Err(Error::from_reason(format!(
-            "call VPN stop callback failed with status: {status:?}"
-        )))
-    }
+        .ok_or_else(|| "VPN stop callback is not registered".to_owned())?;
+    invoke_void_callback(tsfn, "VPN stop").await
 }
 
 pub(crate) async fn pick_profile_text() -> std::result::Result<(String, String), String> {
@@ -345,6 +331,49 @@ async fn invoke_string_void_callback(
 ) -> std::result::Result<(), String> {
     let (tx, rx) = oneshot::channel::<Result<()>>();
     let status = tsfn.call_with_return_value(value, ThreadsafeFunctionCallMode::NonBlocking, {
+        move |result, _| {
+            match result {
+                Ok(value) => {
+                    let tx_cell = Rc::new(Cell::new(Some(tx)));
+                    let tx_in_catch = tx_cell.clone();
+                    let promise = unsafe { value.cast::<PromiseRaw<'static, ()>>() }?;
+                    promise
+                        .then(move |_ctx| {
+                            if let Some(sender) = tx_cell.replace(None) {
+                                let _ = sender.send(Ok(()));
+                            }
+                            Ok(())
+                        })?
+                        .catch(move |ctx: CallbackContext<Unknown>| {
+                            if let Some(sender) = tx_in_catch.replace(None) {
+                                let _ = sender.send(Err(ctx.value.into()));
+                            }
+                            Ok(())
+                        })?;
+                }
+                Err(err) => {
+                    let _ = tx.send(Err(err));
+                }
+            }
+            Ok(())
+        }
+    });
+    if status != Status::Ok {
+        return Err(format!(
+            "call {label} callback failed with status: {status:?}"
+        ));
+    }
+    rx.await
+        .map_err(|_| format!("{label} callback receiver dropped"))?
+        .map_err(|err| err.to_string())
+}
+
+async fn invoke_void_callback(
+    tsfn: Arc<VpnStopThreadsafeFunction>,
+    label: &'static str,
+) -> std::result::Result<(), String> {
+    let (tx, rx) = oneshot::channel::<Result<()>>();
+    let status = tsfn.call_with_return_value((), ThreadsafeFunctionCallMode::NonBlocking, {
         move |result, _| {
             match result {
                 Ok(value) => {
