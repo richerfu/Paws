@@ -16,14 +16,14 @@ hmeta_vpn = { path = "crates/hmeta_vpn" }
 
 arkit = { path = "../../ohos-rs/arkit/crates/arkit", package = "arkit", features = ["router", "shadcn"] }
 
-meow-api = "0.17.0"
-meow-common = "0.17.0"
-meow-config = { version = "0.17.0", features = ["anytls"] }
-meow-dns = "0.17.0"
-meow-listener = "0.17.0"
-meow-proxy = { version = "0.17.0", features = ["anytls"] }
-meow-trie = "0.17.0"
-meow-tunnel = "0.17.0"
+meow-api = "0.18.0"
+meow-common = "0.18.0"
+meow-config = { version = "0.18.0", features = ["anytls"] }
+meow-dns = "0.18.0"
+meow-listener = "0.18.0"
+meow-proxy = { version = "0.18.0", features = ["anytls"] }
+meow-trie = "0.18.0"
+meow-tunnel = "0.18.0"
 
 anyhow = "1"
 async-trait = "0.1"

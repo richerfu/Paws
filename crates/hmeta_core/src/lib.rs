@@ -40,7 +40,7 @@ const MAX_TRAFFIC_HISTORY: usize = 32;
 const PLATFORM_VPN_STATE_FILE: &str = "platform-vpn-state.json";
 const PLATFORM_VPN_TELEMETRY_FILE: &str = "platform-vpn-telemetry.json";
 const APP_VERSION: &str = "1.0.0";
-const MEOW_RS_VERSION: &str = "0.17.0";
+const MEOW_RS_VERSION: &str = "0.18.0";
 const ARKIT_REV: &str = "11a69c66d5c450473054088920e49fc4de1827e0";
 const RUST_VERSION: &str = "1.89";
 
@@ -2360,8 +2360,8 @@ fn active_connections_from_tunnel(tunnel: &Tunnel) -> Vec<ConnectionSummary> {
                 proxy,
                 chains,
                 started_at: connection.start.to_string(),
-                upload_bytes: non_negative_i64_to_u64(connection.upload),
-                download_bytes: non_negative_i64_to_u64(connection.download),
+                upload_bytes: non_negative_i64_to_u64(connection.counters.upload_bytes()),
+                download_bytes: non_negative_i64_to_u64(connection.counters.download_bytes()),
             }
         })
         .collect();
@@ -2730,9 +2730,9 @@ fn system_time_secs(time: SystemTime) -> Option<String> {
         .map(|duration| duration.as_secs().to_string())
 }
 
-fn meow_version_marker() -> &'static str {
+fn meow_version_marker() -> String {
     let _ = std::any::type_name::<meow_tunnel::Tunnel>();
-    "meow-rs@0.17.0"
+    format!("meow-rs@{MEOW_RS_VERSION}")
 }
 
 fn mode_to_tunnel(value: RuntimeMode) -> TunnelMode {
@@ -3660,7 +3660,9 @@ rules:
         assert_eq!(connection.proxy, "DIRECT");
         assert_eq!(connection.chains, vec!["DIRECT"]);
         assert!(!connection.started_at.is_empty());
-        assert!(connection.started_at.parse::<u64>().is_ok());
+        assert_eq!(connection.started_at.len(), 20);
+        assert_eq!(connection.started_at.as_bytes().get(10), Some(&b'T'));
+        assert!(connection.started_at.ends_with('Z'));
         assert_eq!(snapshot.request_history.len(), 1);
         let request = &snapshot.request_history[0];
         assert_eq!(request.id, connection_id);
@@ -4146,7 +4148,7 @@ rules:
         tunnel.statistics().add_upload(64);
         tunnel.statistics().add_download(96);
         let connection_id = track_test_connection(&tunnel, "api.example.test");
-        let traffic = wait_for_json(&format!("http://{addr}/traffic")).await;
+        let traffic = wait_for_traffic_frame(&format!("ws://{addr}/traffic"), 64, 96).await;
         assert_eq!(
             traffic.get("up").and_then(serde_json::Value::as_i64),
             Some(64)
@@ -5887,6 +5889,43 @@ rules:
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         panic!("{url} did not become ready: {last_error}");
+    }
+
+    async fn wait_for_traffic_frame(
+        url: &str,
+        expected_upload: i64,
+        expected_download: i64,
+    ) -> serde_json::Value {
+        let (mut socket, _) = tokio_tungstenite::connect_async(url)
+            .await
+            .expect("traffic websocket connects");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let Some(frame) = tokio::time::timeout(remaining, socket.next())
+                .await
+                .expect("traffic websocket frame before timeout")
+            else {
+                break;
+            };
+            let Ok(frame) = frame else {
+                continue;
+            };
+            let Ok(text) = frame.into_text() else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            if value.get("up").and_then(serde_json::Value::as_i64) == Some(expected_upload)
+                && value.get("down").and_then(serde_json::Value::as_i64) == Some(expected_download)
+            {
+                return value;
+            }
+        }
+        panic!(
+            "{url} did not publish expected traffic frame: up={expected_upload}, down={expected_download}"
+        );
     }
 
     async fn spawn_healthcheck_http_server() -> String {
