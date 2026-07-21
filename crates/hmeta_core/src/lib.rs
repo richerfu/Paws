@@ -1,16 +1,22 @@
+use axum::extract::{Request, State as AxumState};
+use axum::http::Method;
+use axum::middleware::Next;
+use axum::response::Response as AxumResponse;
+use futures::StreamExt;
 use hmeta_model::{
-    from_json, to_json, AboutSnapshot, ConnectionSummary, DnsSnapshot, HMetaError, LogEntry,
-    PerAppMode, ProfileSummary, ProviderSummary, ProxyGroup, ProxyItem, RequestSummary,
-    RuntimeMode, RuntimeSnapshot, TrafficHistoryPoint, TrafficSnapshot, VpnLifecycle, VpnOptions,
+    from_json, to_json, AboutSnapshot, ConnectionSummary, ControllerDiagnostics, DnsSnapshot,
+    HMetaError, LogEntry, PerAppMode, ProfileSummary, ProviderProxySummary, ProviderSummary,
+    ProxyGroup, ProxyItem, RequestSummary, RuntimeMode, RuntimeSnapshot, TrafficHistoryPoint,
+    TrafficSnapshot, VpnLifecycle, VpnOptions,
 };
 use hmeta_profile::{normalize_profile_content, ProfileStore};
 use hmeta_vpn::{TunSession, TunStats};
+use meow_common::sniffer::SnifferConfig;
 use meow_common::{ConnType, Metadata, Network, TunnelMode};
 use meow_config::{
     proxy_provider::ProxyProvider, raw::RawConfig, rule_provider::RuleProvider, Config,
     NamedListener,
 };
-use meow_proxy::SelectorGroup;
 use meow_tunnel::Tunnel;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -18,6 +24,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Once;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -72,11 +79,26 @@ struct PlatformVpnTelemetry {
 struct ApiControllerRuntime {
     addr: SocketAddr,
     task: tokio::task::JoinHandle<()>,
+    memory_task: tokio::task::JoinHandle<()>,
+    raw_config: Arc<parking_lot::RwLock<RawConfig>>,
+    baseline_raw_config: RawConfig,
+    proxy_providers: Arc<dashmap::DashMap<String, Arc<ProxyProvider>>>,
+    config_revision: Arc<AtomicU64>,
+    synced_revision: u64,
+    memory_in_use_bytes: Arc<AtomicU64>,
+    memory_limit_bytes: Arc<AtomicU64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ControllerMemoryFrame {
+    inuse: u64,
+    oslimit: u64,
 }
 
 impl Drop for ApiControllerRuntime {
     fn drop(&mut self) {
         self.task.abort();
+        self.memory_task.abort();
     }
 }
 
@@ -89,6 +111,7 @@ struct CoreState {
     mode: RuntimeMode,
     profiles: ProfileStore,
     tunnel: Option<Tunnel>,
+    sniffer_config: SnifferConfig,
     proxy_groups: Vec<ProxyGroup>,
     providers: Vec<ProviderSummary>,
     runtime_rules: Vec<hmeta_model::RuleSummary>,
@@ -101,6 +124,9 @@ struct CoreState {
     request_history: VecDeque<RequestSummary>,
     vpn_options: VpnOptions,
     api_controller: Option<ApiControllerRuntime>,
+    controller_config_sync_count: u64,
+    last_controller_config_sync_at: Option<String>,
+    last_controller_config_sync_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +147,7 @@ impl Default for CoreState {
             mode: RuntimeMode::Rule,
             profiles,
             tunnel: None,
+            sniffer_config: SnifferConfig::default(),
             proxy_groups: Vec::new(),
             providers: Vec::new(),
             runtime_rules: Vec::new(),
@@ -150,6 +177,9 @@ impl Default for CoreState {
             request_history: VecDeque::with_capacity(MAX_REQUEST_HISTORY),
             vpn_options: VpnOptions::default(),
             api_controller: None,
+            controller_config_sync_count: 0,
+            last_controller_config_sync_at: None,
+            last_controller_config_sync_error: None,
         }
     }
 }
@@ -188,6 +218,7 @@ impl CoreHandle {
                 mode: RuntimeMode::Rule,
                 profiles,
                 tunnel: None,
+                sniffer_config: SnifferConfig::default(),
                 proxy_groups: Vec::new(),
                 providers: Vec::new(),
                 runtime_rules: Vec::new(),
@@ -213,6 +244,9 @@ impl CoreHandle {
                 request_history: VecDeque::with_capacity(MAX_REQUEST_HISTORY),
                 vpn_options: VpnOptions::default(),
                 api_controller: None,
+                controller_config_sync_count: 0,
+                last_controller_config_sync_at: None,
+                last_controller_config_sync_error: None,
             }),
             config_reload_lock: tokio::sync::Mutex::new(()),
             vpn: TunSession::default(),
@@ -595,12 +629,14 @@ impl CoreHandle {
     pub async fn start_vpn(&self, fd: i32, options_json: &str) -> Result<(), HMetaError> {
         let options: VpnOptions = from_json(options_json)?;
         self.prepare_active_vpn().await?;
-        let tunnel = {
+        let (tunnel, sniffer_config) = {
             let state = self.lock_state()?;
-            state.tunnel.clone()
-        }
-        .ok_or_else(|| HMetaError::Core("activate a profile before starting VPN".to_owned()))?;
-        self.vpn.start(fd, options.clone(), tunnel)?;
+            (state.tunnel.clone(), state.sniffer_config.clone())
+        };
+        let tunnel = tunnel
+            .ok_or_else(|| HMetaError::Core("activate a profile before starting VPN".to_owned()))?;
+        self.vpn
+            .start(fd, options.clone(), tunnel, sniffer_config)?;
         let mut state = self.lock_state()?;
         sync_platform_vpn_state(&mut state);
         state.vpn_options = options;
@@ -786,6 +822,96 @@ impl CoreHandle {
         self.reload_config_inner(profile_id).await
     }
 
+    pub async fn sync_external_controller_config(&self) -> Result<bool, HMetaError> {
+        let _reload_guard = self.config_reload_lock.lock().await;
+        let pending = {
+            let mut state = self.lock_state()?;
+            sync_live_controller_route(&mut state)?;
+            let Some(controller) = state.api_controller.as_ref() else {
+                return Ok(false);
+            };
+            let revision = controller.config_revision.load(Ordering::Acquire);
+            if revision == controller.synced_revision {
+                return Ok(false);
+            }
+            let current = controller.raw_config.read().clone();
+            let baseline = controller.baseline_raw_config.clone();
+            if raw_configs_equal(&baseline, &current)? {
+                if let Some(controller) = state.api_controller.as_mut() {
+                    controller.synced_revision = revision;
+                }
+                return Ok(false);
+            }
+            let profile_id = state
+                .profiles
+                .active_profile()
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| HMetaError::ProfileNotFound("<active>".to_owned()))?;
+            let previous_yaml = state.profiles.raw_yaml(&profile_id)?;
+            let merged_yaml = merge_external_raw_config(&previous_yaml, &baseline, &current)?;
+            let tunnel_mode = state
+                .tunnel
+                .as_ref()
+                .map(Tunnel::mode)
+                .map(mode_from_tunnel)
+                .unwrap_or(state.mode);
+            state.mode = tunnel_mode;
+            if let Some(stats) = self.vpn.stats().as_ref() {
+                settle_traffic_before_profile_switch(&mut state, Some(stats))?;
+            }
+            state
+                .profiles
+                .update_profile_content(&profile_id, merged_yaml)?;
+            Some((profile_id, previous_yaml, self.vpn.fd()))
+        };
+        let Some((profile_id, previous_yaml, running_fd)) = pending else {
+            return Ok(false);
+        };
+
+        let reload_result = self.reload_config_inner(&profile_id).await;
+        if let Err(error) = reload_result {
+            let mut state = self.lock_state()?;
+            let _ = state
+                .profiles
+                .update_profile_content(&profile_id, previous_yaml);
+            state.last_controller_config_sync_error = Some(error.to_string());
+            state.logs.push(warning_log(format!(
+                "external-controller config sync failed: {error}"
+            )));
+            return Err(error);
+        }
+
+        if let Some(fd) = running_fd {
+            let (tunnel, sniffer_config, vpn_options) = {
+                let state = self.lock_state()?;
+                (
+                    state.tunnel.clone().ok_or_else(|| {
+                        HMetaError::Core("meow tunnel is not loaded after config sync".to_owned())
+                    })?,
+                    state.sniffer_config.clone(),
+                    state.vpn_options.clone(),
+                )
+            };
+            if let Err(error) = self.vpn.start(fd, vpn_options, tunnel, sniffer_config) {
+                let mut state = self.lock_state()?;
+                state.last_controller_config_sync_error = Some(error.to_string());
+                state.logs.push(warning_log(format!(
+                    "external-controller config synced but VPN restart failed: {error}"
+                )));
+                return Err(error);
+            }
+        }
+
+        let mut state = self.lock_state()?;
+        state.controller_config_sync_count = state.controller_config_sync_count.saturating_add(1);
+        state.last_controller_config_sync_at = Some(unix_timestamp_string());
+        state.last_controller_config_sync_error = None;
+        state.logs.push(info_log(format!(
+            "external-controller config synchronized to profile {profile_id}"
+        )));
+        Ok(true)
+    }
+
     async fn reload_config_inner(&self, profile_id: &str) -> Result<(), HMetaError> {
         let reload_started = Instant::now();
         let tun_stats = self.vpn.stats();
@@ -820,6 +946,7 @@ impl CoreHandle {
         let proxy_provider_registry = config.proxy_providers.clone();
         let rule_provider_registry = config.rule_providers.clone();
         let listeners = config.listeners.named.clone();
+        let sniffer_config = config.sniffer.clone();
         let (mut providers, editable_rules) = {
             let state = self.lock_state()?;
             (
@@ -829,7 +956,7 @@ impl CoreHandle {
         };
         let runtime_rules = runtime_rule_summaries(profile_id, &loaded_rule_lines, &editable_rules);
         let tunnel = tunnel_from_config(config, mode);
-        restore_selector_selections(&tunnel, &selected_proxies);
+        restore_proxy_selections(&tunnel, &selected_proxies);
         let mut proxy_groups = proxy_groups_from_tunnel(&tunnel);
         let runtime_ready = Instant::now();
         let mut state = self.lock_state()?;
@@ -847,6 +974,7 @@ impl CoreHandle {
             &tunnel,
         )?;
         state.tunnel = Some(tunnel);
+        state.sniffer_config = sniffer_config;
         state.proxy_groups = proxy_groups;
         state.providers = providers;
         state.runtime_rules = runtime_rules;
@@ -876,9 +1004,12 @@ impl CoreHandle {
         Ok(())
     }
 
-    pub fn select_proxy(&self, group_name: &str, proxy_name: &str) -> Result<(), HMetaError> {
-        let mut state = self.lock_state()?;
-        let Some(tunnel) = state.tunnel.clone() else {
+    pub async fn select_proxy(&self, group_name: &str, proxy_name: &str) -> Result<(), HMetaError> {
+        let tunnel = {
+            let state = self.lock_state()?;
+            state.tunnel.clone()
+        };
+        let Some(tunnel) = tunnel else {
             return Err(HMetaError::Core("meow tunnel is not loaded".to_owned()));
         };
         let route = tunnel.route_snapshot();
@@ -888,15 +1019,48 @@ impl CoreHandle {
                 "proxy group not found: {group_name}"
             )));
         };
-        let selector = group
-            .as_any()
-            .and_then(|value| value.downcast_ref::<SelectorGroup>())
+        let selection = group
+            .selection()
             .ok_or_else(|| HMetaError::Core(format!("{group_name} is not selectable")))?;
-        if !selector.select(proxy_name) {
+        selection.set(proxy_name).await.map_err(|err| {
+            HMetaError::Core(format!("cannot select {proxy_name} in {group_name}: {err}"))
+        })?;
+        self.record_proxy_selection(group_name, proxy_name, false)
+    }
+
+    pub fn unfix_proxy(&self, group_name: &str) -> Result<(), HMetaError> {
+        let tunnel = {
+            let state = self.lock_state()?;
+            state.tunnel.clone()
+        };
+        let Some(tunnel) = tunnel else {
+            return Err(HMetaError::Core("meow tunnel is not loaded".to_owned()));
+        };
+        let route = tunnel.route_snapshot();
+        let Some(group) = route.proxies.get(group_name) else {
             return Err(HMetaError::Core(format!(
-                "proxy {proxy_name} not found in {group_name}"
+                "proxy group not found: {group_name}"
             )));
-        }
+        };
+        let selection = group
+            .selection()
+            .filter(|selection| selection.can_unfix())
+            .ok_or_else(|| HMetaError::Core(format!("{group_name} is not an automatic group")))?;
+        selection.force_set(None);
+        self.record_proxy_selection(group_name, "", false)
+    }
+
+    fn record_proxy_selection(
+        &self,
+        group_name: &str,
+        proxy_name: &str,
+        via_controller: bool,
+    ) -> Result<(), HMetaError> {
+        let mut state = self.lock_state()?;
+        let tunnel = state
+            .tunnel
+            .clone()
+            .ok_or_else(|| HMetaError::Core("meow tunnel is not loaded".to_owned()))?;
         if let Some(profile_id) = state.profiles.active_profile().map(ToOwned::to_owned) {
             state.profiles.set_selected_proxy(
                 &profile_id,
@@ -905,9 +1069,13 @@ impl CoreHandle {
             )?;
         }
         refresh_proxy_groups_preserving_order(&mut state, &tunnel);
-        state
-            .logs
-            .push(info_log(format!("selected {proxy_name} in {group_name}")));
+        let source = if via_controller { " via meow API" } else { "" };
+        let message = if proxy_name.is_empty() {
+            format!("restored automatic selection in {group_name}{source}")
+        } else {
+            format!("selected {proxy_name} in {group_name}{source}")
+        };
+        state.logs.push(info_log(message));
         Ok(())
     }
 
@@ -916,39 +1084,29 @@ impl CoreHandle {
         group_name: &str,
         proxy_name: &str,
     ) -> Result<(), HMetaError> {
-        let controller_addr = {
+        let controller = {
             let state = self.lock_state()?;
-            state
-                .api_controller
-                .as_ref()
-                .map(|controller| controller.addr)
+            controller_credentials(&state)
         };
-        let Some(addr) = controller_addr else {
-            return self.select_proxy(group_name, proxy_name);
+        let Some((addr, secret)) = controller else {
+            return self.select_proxy(group_name, proxy_name).await;
         };
         let url = controller_url(addr, &["proxies", group_name])?;
-        let response = reqwest::Client::new()
+        let client = reqwest::Client::new();
+        let mut request = client
             .put(url)
             // The controller is an in-process loopback service. If it has
             // already stopped, fail quickly and use the local selector instead
             // of leaving the UI in a pending state indefinitely.
             .timeout(std::time::Duration::from_secs(2))
-            .json(&serde_json::json!({ "name": proxy_name }))
-            .send()
-            .await;
+            .json(&serde_json::json!({ "name": proxy_name }));
+        if let Some(secret) = secret {
+            request = request.bearer_auth(secret);
+        }
+        let response = request.send().await;
         match response {
             Ok(response) if response.status().is_success() => {
-                // Keep the in-process tunnel as the source of truth. The meow
-                // controller can acknowledge the PUT before its selector is
-                // observable through our cached runtime snapshot; applying
-                // the same idempotent selection locally makes the UI update
-                // immediately while preserving controller compatibility.
-                self.select_proxy(group_name, proxy_name)?;
-                let mut state = self.lock_state()?;
-                state.logs.push(info_log(format!(
-                    "selected {proxy_name} in {group_name} via meow API"
-                )));
-                Ok(())
+                self.record_proxy_selection(group_name, proxy_name, true)
             }
             Ok(response) => {
                 tracing::warn!(
@@ -957,7 +1115,7 @@ impl CoreHandle {
                     status = %response.status(),
                     "meow API proxy selection failed, falling back to local selector"
                 );
-                self.select_proxy(group_name, proxy_name)
+                self.select_proxy(group_name, proxy_name).await
             }
             Err(err) => {
                 tracing::warn!(
@@ -966,7 +1124,47 @@ impl CoreHandle {
                     error = %err,
                     "meow API proxy selection failed, falling back to local selector"
                 );
-                self.select_proxy(group_name, proxy_name)
+                self.select_proxy(group_name, proxy_name).await
+            }
+        }
+    }
+
+    pub async fn unfix_proxy_via_controller(&self, group_name: &str) -> Result<(), HMetaError> {
+        let controller = {
+            let state = self.lock_state()?;
+            controller_credentials(&state)
+        };
+        let Some((addr, secret)) = controller else {
+            return self.unfix_proxy(group_name);
+        };
+        let url = controller_url(addr, &["proxies", group_name])?;
+        let client = reqwest::Client::new();
+        let mut request = client
+            .delete(url)
+            .timeout(std::time::Duration::from_secs(2));
+        if let Some(secret) = secret {
+            request = request.bearer_auth(secret);
+        }
+        let response = request.send().await;
+        match response {
+            Ok(response) if response.status().is_success() => {
+                self.record_proxy_selection(group_name, "", true)
+            }
+            Ok(response) => {
+                tracing::warn!(
+                    group = group_name,
+                    status = %response.status(),
+                    "meow API proxy unfix failed, falling back to local group"
+                );
+                self.unfix_proxy(group_name)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    group = group_name,
+                    error = %err,
+                    "meow API proxy unfix failed, falling back to local group"
+                );
+                self.unfix_proxy(group_name)
             }
         }
     }
@@ -1143,6 +1341,280 @@ impl CoreHandle {
                 self.test_proxy_delay(proxy_name, url, timeout_ms).await
             }
         }
+    }
+
+    pub async fn test_proxy_group_via_controller(
+        &self,
+        group_name: &str,
+        url: Option<&str>,
+        timeout_ms: Option<u64>,
+    ) -> Result<BTreeMap<String, u16>, HMetaError> {
+        let controller = {
+            let state = self.lock_state()?;
+            controller_credentials(&state)
+        };
+        let delay_url = url.unwrap_or("https://www.gstatic.com/generate_204");
+        let timeout = timeout_ms.unwrap_or(5000);
+        if let Some((addr, secret)) = controller {
+            let mut url = controller_url(addr, &["group", group_name, "delay"])?;
+            url.query_pairs_mut()
+                .append_pair("url", delay_url)
+                .append_pair("timeout", &timeout.to_string());
+            let client = reqwest::Client::new();
+            let mut request = client.get(url);
+            if let Some(secret) = secret {
+                request = request.bearer_auth(secret);
+            }
+            match request
+                .timeout(std::time::Duration::from_millis(
+                    timeout.saturating_add(1000),
+                ))
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    let delays =
+                        response
+                            .json::<BTreeMap<String, u16>>()
+                            .await
+                            .map_err(|error| {
+                                HMetaError::Core(format!(
+                                    "meow API group delay response parse failed: {error}"
+                                ))
+                            })?;
+                    let mut state = self.lock_state()?;
+                    if let Some(tunnel) = state.tunnel.clone() {
+                        refresh_proxy_groups_preserving_order(&mut state, &tunnel);
+                    }
+                    if state
+                        .proxy_groups
+                        .iter()
+                        .find(|group| group.name == group_name)
+                        .and_then(|group| group.fixed.as_deref())
+                        == Some("")
+                    {
+                        if let Some(profile_id) =
+                            state.profiles.active_profile().map(ToOwned::to_owned)
+                        {
+                            state.profiles.set_selected_proxy(
+                                &profile_id,
+                                group_name.to_owned(),
+                                String::new(),
+                            )?;
+                        }
+                    }
+                    state.logs.push(info_log(format!(
+                        "group {group_name} delay tested via meow API: {} members",
+                        delays.len()
+                    )));
+                    return Ok(delays);
+                }
+                Ok(response) => tracing::warn!(
+                    group = group_name,
+                    status = %response.status(),
+                    "meow API group delay failed, falling back to member probes"
+                ),
+                Err(error) => tracing::warn!(
+                    group = group_name,
+                    %error,
+                    "meow API group delay failed, falling back to member probes"
+                ),
+            }
+        }
+
+        let members = {
+            let state = self.lock_state()?;
+            state
+                .proxy_groups
+                .iter()
+                .find(|group| group.name == group_name)
+                .map(|group| {
+                    group
+                        .proxies
+                        .iter()
+                        .map(|proxy| proxy.name.clone())
+                        .collect::<Vec<_>>()
+                })
+                .ok_or_else(|| HMetaError::Core(format!("proxy group not found: {group_name}")))?
+        };
+        let mut delays = BTreeMap::new();
+        for member in members {
+            let delay = self
+                .test_proxy_delay(&member, Some(delay_url), Some(timeout))
+                .await
+                .unwrap_or(0);
+            delays.insert(member, delay);
+        }
+        Ok(delays)
+    }
+
+    pub async fn flush_dns_cache_via_controller(&self) -> Result<(), HMetaError> {
+        self.vpn.flush_dns_cache()?;
+        let (controller, tunnel) = {
+            let state = self.lock_state()?;
+            (controller_credentials(&state), state.tunnel.clone())
+        };
+        if let Some((addr, secret)) = controller {
+            let client = reqwest::Client::new();
+            let mut request = client.post(controller_url(addr, &["cache", "dns", "flush"])?);
+            if let Some(secret) = secret {
+                request = request.bearer_auth(secret);
+            }
+            let response = request
+                .timeout(std::time::Duration::from_secs(2))
+                .send()
+                .await;
+            if matches!(response, Ok(ref response) if response.status().is_success()) {
+                let mut state = self.lock_state()?;
+                state.logs.push(info_log("DNS caches flushed via meow API"));
+                return Ok(());
+            }
+        }
+        let tunnel =
+            tunnel.ok_or_else(|| HMetaError::Core("meow tunnel is not loaded".to_owned()))?;
+        tunnel.resolver().clear_cache();
+        let mut state = self.lock_state()?;
+        state.logs.push(info_log("DNS caches flushed"));
+        Ok(())
+    }
+
+    pub async fn flush_fake_ip_cache_via_controller(&self) -> Result<(), HMetaError> {
+        let (controller, tunnel) = {
+            let state = self.lock_state()?;
+            (controller_credentials(&state), state.tunnel.clone())
+        };
+        if let Some((addr, secret)) = controller {
+            let client = reqwest::Client::new();
+            let mut request = client.post(controller_url(addr, &["cache", "fakeip", "flush"])?);
+            if let Some(secret) = secret {
+                request = request.bearer_auth(secret);
+            }
+            let response = request
+                .timeout(std::time::Duration::from_secs(2))
+                .send()
+                .await;
+            if matches!(response, Ok(ref response) if response.status().is_success()) {
+                let mut state = self.lock_state()?;
+                state
+                    .logs
+                    .push(info_log("fake-IP cache flushed via meow API"));
+                return Ok(());
+            }
+        }
+        let tunnel =
+            tunnel.ok_or_else(|| HMetaError::Core("meow tunnel is not loaded".to_owned()))?;
+        tunnel
+            .resolver()
+            .flush_fake_ip()
+            .map_err(|error| HMetaError::Core(format!("fake-IP cache flush failed: {error}")))?;
+        let mut state = self.lock_state()?;
+        state.logs.push(info_log("fake-IP cache flushed"));
+        Ok(())
+    }
+
+    pub async fn healthcheck_proxy_provider_via_controller(
+        &self,
+        provider_name: &str,
+    ) -> Result<(), HMetaError> {
+        let (addr, secret) = {
+            let state = self.lock_state()?;
+            controller_credentials(&state)
+        }
+        .ok_or_else(|| HMetaError::Core("meow external-controller is not running".to_owned()))?;
+        let client = reqwest::Client::new();
+        let mut request = client.get(controller_url(
+            addr,
+            &["providers", "proxies", provider_name, "healthcheck"],
+        )?);
+        if let Some(secret) = secret {
+            request = request.bearer_auth(secret);
+        }
+        let response = request
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|error| HMetaError::Core(format!("provider health check failed: {error}")))?;
+        if !response.status().is_success() {
+            return Err(HMetaError::Core(format!(
+                "provider health check failed with HTTP {}",
+                response.status()
+            )));
+        }
+        let mut state = self.lock_state()?;
+        state.logs.push(info_log(format!(
+            "proxy provider {provider_name} health checked via meow API"
+        )));
+        Ok(())
+    }
+
+    pub async fn healthcheck_provider_proxy_via_controller(
+        &self,
+        provider_name: &str,
+        proxy_name: &str,
+        url: &str,
+        timeout_ms: Option<u64>,
+        expected_status: Option<&str>,
+    ) -> Result<u16, HMetaError> {
+        let (addr, secret) = {
+            let state = self.lock_state()?;
+            controller_credentials(&state)
+        }
+        .ok_or_else(|| HMetaError::Core("meow external-controller is not running".to_owned()))?;
+        let timeout = timeout_ms.unwrap_or(5000);
+        let mut endpoint = controller_url(
+            addr,
+            &[
+                "providers",
+                "proxies",
+                provider_name,
+                proxy_name,
+                "healthcheck",
+            ],
+        )?;
+        endpoint
+            .query_pairs_mut()
+            .append_pair("url", url)
+            .append_pair("timeout", &timeout.to_string());
+        if let Some(expected_status) = expected_status.filter(|value| !value.is_empty()) {
+            endpoint
+                .query_pairs_mut()
+                .append_pair("expected", expected_status);
+        }
+        let client = reqwest::Client::new();
+        let mut request = client.get(endpoint);
+        if let Some(secret) = secret {
+            request = request.bearer_auth(secret);
+        }
+        let response = request
+            .timeout(std::time::Duration::from_millis(
+                timeout.saturating_add(1000),
+            ))
+            .send()
+            .await
+            .map_err(|error| {
+                HMetaError::Core(format!("provider member health check failed: {error}"))
+            })?;
+        if !response.status().is_success() {
+            return Err(HMetaError::Core(format!(
+                "provider member health check failed with HTTP {}",
+                response.status()
+            )));
+        }
+        let value = response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|error| {
+                HMetaError::Core(format!(
+                    "provider member health response parse failed: {error}"
+                ))
+            })?;
+        value
+            .get("delay")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|delay| u16::try_from(delay).ok())
+            .ok_or_else(|| {
+                HMetaError::Core("provider member health response missing delay".to_owned())
+            })
     }
 
     pub async fn refresh_provider(&self, provider_name: &str) -> Result<(), HMetaError> {
@@ -1721,6 +2193,29 @@ impl CoreHandle {
             }
         };
         refresh_provider_cache_metadata(&mut state.providers);
+        if let Some(proxy_providers) = state
+            .api_controller
+            .as_ref()
+            .map(|controller| Arc::clone(&controller.proxy_providers))
+        {
+            enrich_proxy_provider_members(&mut state.providers, &proxy_providers);
+        }
+        let controller_diagnostics = state
+            .api_controller
+            .as_ref()
+            .map(|controller| ControllerDiagnostics {
+                memory_in_use_bytes: controller.memory_in_use_bytes.load(Ordering::Relaxed),
+                memory_limit_bytes: controller.memory_limit_bytes.load(Ordering::Relaxed),
+                config_sync_count: state.controller_config_sync_count,
+                last_config_sync_at: state.last_controller_config_sync_at.clone(),
+                last_config_sync_error: state.last_controller_config_sync_error.clone(),
+            })
+            .unwrap_or_else(|| ControllerDiagnostics {
+                config_sync_count: state.controller_config_sync_count,
+                last_config_sync_at: state.last_controller_config_sync_at.clone(),
+                last_config_sync_error: state.last_controller_config_sync_error.clone(),
+                ..ControllerDiagnostics::default()
+            });
         let vpn_running = native_vpn_running || state.platform_vpn_running;
         Ok(RuntimeSnapshot {
             vpn_lifecycle: vpn_lifecycle(
@@ -1741,6 +2236,7 @@ impl CoreHandle {
                 .api_controller
                 .as_ref()
                 .map(|controller| controller.addr.to_string()),
+            controller_diagnostics,
             active_profile,
             mode: state.mode,
             traffic: state.traffic.clone(),
@@ -1829,24 +2325,46 @@ impl CoreHandle {
         for (name, provider) in proxy_providers {
             proxy_provider_map.insert(name, provider);
         }
-        let server = meow_api::ApiServer::new(
-            tunnel.clone(),
-            addr,
-            raw_config.secret.clone(),
-            runtime_path.to_string_lossy().into_owned(),
-            Arc::new(parking_lot::RwLock::new(raw_config)),
+        let proxy_providers = Arc::new(proxy_provider_map);
+        let shared_raw_config = Arc::new(parking_lot::RwLock::new(raw_config.clone()));
+        let config_revision = Arc::new(AtomicU64::new(0));
+        let memory_in_use_bytes = Arc::new(AtomicU64::new(0));
+        let memory_limit_bytes = Arc::new(AtomicU64::new(0));
+        let app_state = Arc::new(meow_api::routes::AppState {
+            tunnel: tunnel.clone(),
+            secret: raw_config.secret.clone(),
+            config_path: runtime_path.to_string_lossy().into_owned(),
+            raw_config: Arc::clone(&shared_raw_config),
             log_tx,
-            Arc::new(proxy_provider_map),
-            Arc::new(parking_lot::RwLock::new(rule_providers)),
+            proxy_providers: Arc::clone(&proxy_providers),
+            rule_providers: Arc::new(parking_lot::RwLock::new(rule_providers)),
             listeners,
-            None,
-        );
+            external_ui: None,
+        });
+        let task_revision = Arc::clone(&config_revision);
         let task = tokio::spawn(async move {
-            if let Err(err) = server.run().await {
+            if let Err(err) = run_api_controller(addr, app_state, task_revision).await {
                 tracing::warn!("meow external-controller stopped: {err}");
             }
         });
-        state.api_controller = Some(ApiControllerRuntime { addr, task });
+        let memory_task = tokio::spawn(monitor_controller_memory(
+            addr,
+            raw_config.secret.clone(),
+            Arc::clone(&memory_in_use_bytes),
+            Arc::clone(&memory_limit_bytes),
+        ));
+        state.api_controller = Some(ApiControllerRuntime {
+            addr,
+            task,
+            memory_task,
+            raw_config: shared_raw_config,
+            baseline_raw_config: raw_config,
+            proxy_providers,
+            config_revision,
+            synced_revision: 0,
+            memory_in_use_bytes,
+            memory_limit_bytes,
+        });
         state.logs.push(info_log(format!(
             "meow external-controller listening on {addr}"
         )));
@@ -1857,6 +2375,79 @@ impl CoreHandle {
         self.state
             .lock()
             .map_err(|_| HMetaError::Core("core state lock poisoned".to_owned()))
+    }
+}
+
+async fn track_controller_mutation(
+    AxumState(revision): AxumState<Arc<AtomicU64>>,
+    request: Request,
+    next: Next,
+) -> AxumResponse {
+    let mutation = !matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    );
+    let response = next.run(request).await;
+    if mutation && response.status().is_success() {
+        revision.fetch_add(1, Ordering::AcqRel);
+    }
+    response
+}
+
+async fn run_api_controller(
+    addr: SocketAddr,
+    state: Arc<meow_api::routes::AppState>,
+    revision: Arc<AtomicU64>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let app = meow_api::routes::create_router(state).layer(axum::middleware::from_fn_with_state(
+        revision,
+        track_controller_mutation,
+    ));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("REST API listening on {addr}");
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn monitor_controller_memory(
+    addr: SocketAddr,
+    secret: Option<String>,
+    memory_in_use_bytes: Arc<AtomicU64>,
+    memory_limit_bytes: Arc<AtomicU64>,
+) {
+    loop {
+        let mut url = format!("ws://{addr}/memory");
+        if let Some(secret) = secret.as_deref().filter(|secret| !secret.is_empty()) {
+            if let Ok(mut parsed) = reqwest::Url::parse(&url) {
+                parsed.query_pairs_mut().append_pair("token", secret);
+                url = parsed.to_string();
+            }
+        }
+        match tokio_tungstenite::connect_async(&url).await {
+            Ok((mut socket, _)) => {
+                while let Some(frame) = socket.next().await {
+                    let payload = match frame {
+                        Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                            Some(text.as_bytes().to_vec())
+                        }
+                        Ok(tokio_tungstenite::tungstenite::Message::Binary(bytes)) => {
+                            Some(bytes.to_vec())
+                        }
+                        Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_) => break,
+                        _ => None,
+                    };
+                    let Some(payload) = payload else { continue };
+                    if let Ok(frame) = serde_json::from_slice::<ControllerMemoryFrame>(&payload) {
+                        memory_in_use_bytes.store(frame.inuse, Ordering::Relaxed);
+                        memory_limit_bytes.store(frame.oslimit, Ordering::Relaxed);
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::debug!(%error, "waiting for meow controller memory stream");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
 }
 
@@ -1885,7 +2476,120 @@ fn tunnel_from_config(config: Config, mode: RuntimeMode) -> Tunnel {
     tunnel
 }
 
-fn restore_selector_selections(
+fn raw_configs_equal(left: &RawConfig, right: &RawConfig) -> Result<bool, HMetaError> {
+    let left = serde_yaml::to_value(left)
+        .map_err(|error| HMetaError::Core(format!("cannot inspect controller config: {error}")))?;
+    let right = serde_yaml::to_value(right)
+        .map_err(|error| HMetaError::Core(format!("cannot inspect controller config: {error}")))?;
+    Ok(left == right)
+}
+
+fn merge_external_raw_config(
+    profile_yaml: &str,
+    baseline: &RawConfig,
+    current: &RawConfig,
+) -> Result<String, HMetaError> {
+    let mut profile = serde_yaml::from_str::<serde_yaml::Value>(profile_yaml)
+        .map_err(|error| HMetaError::Core(format!("profile YAML parse failed: {error}")))?;
+    let profile = profile
+        .as_mapping_mut()
+        .ok_or_else(|| HMetaError::Core("profile YAML root must be a mapping".to_owned()))?;
+    let baseline = serde_yaml::to_value(baseline).map_err(|error| {
+        HMetaError::Core(format!("cannot serialize controller config: {error}"))
+    })?;
+    let current = serde_yaml::to_value(current).map_err(|error| {
+        HMetaError::Core(format!("cannot serialize controller config: {error}"))
+    })?;
+    let baseline = baseline
+        .as_mapping()
+        .ok_or_else(|| HMetaError::Core("controller baseline is not a mapping".to_owned()))?;
+    let current = current
+        .as_mapping()
+        .ok_or_else(|| HMetaError::Core("controller config is not a mapping".to_owned()))?;
+
+    let mut keys = baseline
+        .keys()
+        .chain(current.keys())
+        .cloned()
+        .collect::<Vec<_>>();
+    keys.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+    keys.dedup();
+    for key in keys {
+        let Some(name) = key.as_str() else { continue };
+        if controller_runtime_only_key(name) || baseline.get(&key) == current.get(&key) {
+            continue;
+        }
+        match current.get(&key) {
+            Some(value) if !value.is_null() => {
+                profile.insert(key, value.clone());
+            }
+            _ => {
+                profile.remove(&key);
+            }
+        }
+    }
+
+    serde_yaml::to_string(&serde_yaml::Value::Mapping(profile.clone()))
+        .map_err(|error| HMetaError::Core(format!("profile YAML serialization failed: {error}")))
+}
+
+fn controller_runtime_only_key(key: &str) -> bool {
+    matches!(
+        key,
+        "port"
+            | "socks-port"
+            | "mixed-port"
+            | "allow-lan"
+            | "bind-address"
+            | "mode"
+            | "log-level"
+            | "external-controller"
+            | "external-ui"
+            | "external-ui-name"
+            | "external-ui-url"
+            | "secret"
+            | "tproxy-port"
+            | "tproxy-sni"
+            | "routing-mark"
+            | "listeners"
+            | "authentication"
+            | "skip-auth-prefixes"
+            | "max-connections"
+    )
+}
+
+fn sync_live_controller_route(state: &mut CoreState) -> Result<(), HMetaError> {
+    let Some(tunnel) = state.tunnel.clone() else {
+        return Ok(());
+    };
+    state.mode = mode_from_tunnel(tunnel.mode());
+    refresh_proxy_groups_preserving_order(state, &tunnel);
+    let Some(profile_id) = state.profiles.active_profile().map(ToOwned::to_owned) else {
+        return Ok(());
+    };
+    let persisted = state.profiles.selected_proxies(&profile_id)?;
+    let selections = state
+        .proxy_groups
+        .iter()
+        .filter_map(|group| {
+            let selected = match group.fixed.as_deref() {
+                Some(fixed) => fixed.to_owned(),
+                None => group.selected.clone()?,
+            };
+            Some((group.name.clone(), selected))
+        })
+        .collect::<Vec<_>>();
+    for (group, selected) in selections {
+        if persisted.get(&group) != Some(&selected) {
+            state
+                .profiles
+                .set_selected_proxy(&profile_id, group, selected)?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_proxy_selections(
     tunnel: &Tunnel,
     selected_proxies: &std::collections::BTreeMap<String, String>,
 ) {
@@ -1898,13 +2602,17 @@ fn restore_selector_selections(
         let Some(group) = proxies.get(group_name.as_str()) else {
             continue;
         };
-        let Some(selector) = group
-            .as_any()
-            .and_then(|value| value.downcast_ref::<SelectorGroup>())
-        else {
+        let Some(selection) = group.selection() else {
             continue;
         };
-        let _ = selector.select(proxy_name);
+        if proxy_name.is_empty() && selection.can_unfix() {
+            selection.force_set(None);
+        } else if group
+            .members()
+            .is_some_and(|members| members.iter().any(|member| member == proxy_name))
+        {
+            selection.force_set(Some(proxy_name));
+        }
     }
 }
 
@@ -2314,6 +3022,39 @@ fn refresh_provider_cache_metadata(providers: &mut [ProviderSummary]) {
     }
 }
 
+fn enrich_proxy_provider_members(
+    providers: &mut [ProviderSummary],
+    registry: &dashmap::DashMap<String, Arc<ProxyProvider>>,
+) {
+    for provider in providers
+        .iter_mut()
+        .filter(|provider| provider.provider_type == "proxy")
+    {
+        let Some(runtime) = registry.get(&provider.name) else {
+            provider.members.clear();
+            continue;
+        };
+        if let Some(health_check) = runtime.health_check.as_ref() {
+            provider.health_check_enabled = true;
+            provider.health_check_url = Some(health_check.url.clone());
+            provider.health_check_interval_seconds = Some(health_check.interval);
+            provider.expected_status = Some(health_check.expected_status.clone());
+        }
+        let members: Vec<_> = runtime
+            .proxies()
+            .into_iter()
+            .map(|proxy| ProviderProxySummary {
+                name: proxy.name().to_owned(),
+                proxy_type: proxy.adapter_type().to_string(),
+                alive: proxy.alive(),
+                delay_ms: (!proxy.delay_history().is_empty())
+                    .then(|| u32::from(proxy.last_delay())),
+            })
+            .collect();
+        provider.members = members;
+    }
+}
+
 fn about_snapshot() -> AboutSnapshot {
     AboutSnapshot {
         app_version: APP_VERSION.to_owned(),
@@ -2428,6 +3169,17 @@ fn controller_url(addr: SocketAddr, segments: &[&str]) -> Result<reqwest::Url, H
     Ok(url)
 }
 
+fn controller_credentials(state: &CoreState) -> Option<(SocketAddr, Option<String>)> {
+    let controller = state.api_controller.as_ref()?;
+    let secret = controller
+        .raw_config
+        .read()
+        .secret
+        .clone()
+        .filter(|secret| !secret.is_empty());
+    Some((controller.addr, secret))
+}
+
 fn proxy_groups_from_tunnel(tunnel: &Tunnel) -> Vec<ProxyGroup> {
     let route = tunnel.route_snapshot();
     let proxies = &route.proxies;
@@ -2440,6 +3192,7 @@ fn proxy_groups_from_tunnel(tunnel: &Tunnel) -> Vec<ProxyGroup> {
                 name: proxy.name().to_owned(),
                 group_type: proxy.adapter_type().to_string(),
                 selected: selected.clone(),
+                fixed: proxy.selection().and_then(|selection| selection.fixed()),
                 proxies: members
                     .into_iter()
                     .map(|name| {
@@ -2743,6 +3496,14 @@ fn mode_to_tunnel(value: RuntimeMode) -> TunnelMode {
     }
 }
 
+fn mode_from_tunnel(value: TunnelMode) -> RuntimeMode {
+    match value {
+        TunnelMode::Rule => RuntimeMode::Rule,
+        TunnelMode::Global => RuntimeMode::Global,
+        TunnelMode::Direct => RuntimeMode::Direct,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2808,6 +3569,7 @@ mod tests {
             name: "GLOBAL".to_owned(),
             group_type: "Selector".to_owned(),
             selected: Some("Tokyo 04".to_owned()),
+            fixed: None,
             proxies: vec![
                 item("Tokyo 04", true),
                 item("DIRECT", false),
@@ -2819,6 +3581,7 @@ mod tests {
             name: "GLOBAL".to_owned(),
             group_type: "Selector".to_owned(),
             selected: Some("Tokyo 01".to_owned()),
+            fixed: None,
             proxies: vec![
                 item("Tokyo 01", true),
                 item("DIRECT", false),
@@ -4073,6 +4836,12 @@ proxy-groups:
     proxies:
       - DIRECT
       - HTTP-MOCK
+  - name: Auto
+    type: url-test
+    proxies:
+      - DIRECT
+    url: https://www.gstatic.com/generate_204
+    interval: 3600
 rules:
   - MATCH,Proxy
 "#
@@ -4122,6 +4891,26 @@ rules:
             .proxies
             .iter()
             .any(|proxy| proxy.name == "HTTP-MOCK" && proxy.selected));
+        core.select_proxy_via_controller("Auto", "DIRECT")
+            .await
+            .unwrap();
+        let auto_group = core
+            .snapshot()
+            .unwrap()
+            .proxy_groups
+            .into_iter()
+            .find(|group| group.name == "Auto")
+            .expect("URLTest group");
+        assert_eq!(auto_group.fixed.as_deref(), Some("DIRECT"));
+        core.unfix_proxy_via_controller("Auto").await.unwrap();
+        let auto_group = core
+            .snapshot()
+            .unwrap()
+            .proxy_groups
+            .into_iter()
+            .find(|group| group.name == "Auto")
+            .expect("URLTest group");
+        assert_eq!(auto_group.fixed.as_deref(), Some(""));
         let rules = wait_for_json(&format!("http://{addr}/rules")).await;
         assert!(rules
             .get("rules")
@@ -4140,6 +4929,29 @@ rules:
             .and_then(|value| value.get("history"))
             .and_then(serde_json::Value::as_array)
             .is_some_and(|history| !history.is_empty()));
+
+        let group_health_url = spawn_healthcheck_http_server().await;
+        let group_delays = core
+            .test_proxy_group_via_controller("Auto", Some(&group_health_url), Some(1000))
+            .await
+            .unwrap();
+        assert!(group_delays.get("DIRECT").is_some_and(|delay| *delay > 0));
+        core.flush_dns_cache_via_controller().await.unwrap();
+        core.flush_fake_ip_cache_via_controller().await.unwrap();
+
+        let mut memory_in_use = 0;
+        for _ in 0..30 {
+            memory_in_use = core
+                .snapshot()
+                .unwrap()
+                .controller_diagnostics
+                .memory_in_use_bytes;
+            if memory_in_use > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(memory_in_use > 0, "controller memory stream stayed empty");
 
         let tunnel = {
             let state = core.lock_state().unwrap();
@@ -4239,6 +5051,113 @@ rules:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn external_controller_config_reload_converges_profile_and_native_snapshot() {
+        let root = std::env::temp_dir().join(format!(
+            "hmeta-core-controller-sync-test-{}",
+            now_unix_nanos()
+        ));
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let core = CoreHandle::new_with_profile_root_and_controller(root, addr);
+        let original = format!(
+            r#"mixed-port: 7890
+hmeta:
+  vpn:
+    mtu: 1410
+proxies:
+  - name: HTTP-OLD
+    type: http
+    server: 127.0.0.1
+    port: 18080
+proxy-groups:
+  - name: OldProxy
+    type: select
+    proxies: [DIRECT, HTTP-OLD]
+rules:
+  - MATCH,OldProxy
+"#
+        );
+        let profile_id = core
+            .import_profile_from_content("Controller sync", "test", &original, None)
+            .await
+            .unwrap();
+        core.reload_config(&profile_id).await.unwrap();
+        let _ = wait_for_json(&format!("http://{addr}/version")).await;
+        let mut fds = [0_i32; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let options_json = to_json(&VpnOptions::default()).unwrap();
+        core.start_vpn(fds[0], &options_json).await.unwrap();
+        assert_eq!(core.vpn.fd(), Some(fds[0]));
+
+        let replacement = r#"mode: direct
+proxies:
+  - name: HTTP-NEW
+    type: http
+    server: 127.0.0.1
+    port: 18081
+proxy-groups:
+  - name: NewProxy
+    type: select
+    proxies: [DIRECT, HTTP-NEW]
+rules:
+  - MATCH,NewProxy
+"#;
+        let payload = base64::engine::general_purpose::STANDARD.encode(replacement);
+        let response = reqwest::Client::new()
+            .put(format!("http://{addr}/configs"))
+            .json(&serde_json::json!({ "payload": payload }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
+
+        assert!(core.sync_external_controller_config().await.unwrap());
+        let snapshot = core.snapshot().unwrap();
+        assert!(snapshot.vpn_running);
+        assert_eq!(core.vpn.fd(), Some(fds[0]));
+        assert_eq!(snapshot.mode, RuntimeMode::Direct);
+        assert!(snapshot
+            .proxy_groups
+            .iter()
+            .any(|group| group.name == "NewProxy"));
+        assert!(!snapshot
+            .proxy_groups
+            .iter()
+            .any(|group| group.name == "OldProxy"));
+        assert!(snapshot
+            .rules
+            .iter()
+            .any(|rule| rule.line == "MATCH,NewProxy"));
+        assert_eq!(snapshot.controller_diagnostics.config_sync_count, 1);
+        assert!(snapshot
+            .controller_diagnostics
+            .last_config_sync_at
+            .is_some());
+        assert!(snapshot
+            .controller_diagnostics
+            .last_config_sync_error
+            .is_none());
+        let controller_proxies = wait_for_json(&format!("http://{addr}/proxies")).await;
+        assert!(controller_proxies
+            .get("proxies")
+            .and_then(|proxies| proxies.get("NewProxy"))
+            .is_some());
+
+        let persisted = core.profile_raw_yaml(&profile_id).unwrap();
+        assert!(persisted.contains("HTTP-NEW"));
+        assert!(!persisted.contains("HTTP-OLD"));
+        assert!(persisted.contains("hmeta:"));
+        assert!(persisted.contains("mtu: 1410"));
+        assert!(!persisted.contains("external-controller:"));
+        core.stop_vpn().unwrap();
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn controller_exposes_loaded_provider_registries() {
         let root = std::env::temp_dir().join(format!(
             "hmeta-core-provider-controller-test-{}",
@@ -4327,6 +5246,32 @@ rules:
         assert!(proxy_provider.cache_updated_at.is_some());
         assert!(proxy_provider.last_refresh_at.is_some());
         assert!(proxy_provider.last_refresh_error.is_none());
+        assert_eq!(proxy_provider.members.len(), 1);
+        assert_eq!(proxy_provider.members[0].name, "PROVIDER-HTTP");
+
+        core.healthcheck_proxy_provider_via_controller("LocalProxyProvider")
+            .await
+            .unwrap();
+        let health_url = spawn_healthcheck_http_server().await;
+        let error = core
+            .healthcheck_provider_proxy_via_controller(
+                "LocalProxyProvider",
+                "PROVIDER-HTTP",
+                &health_url,
+                Some(1000),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("HTTP 503"));
+        let snapshot = core.snapshot().unwrap();
+        let proxy_provider = snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.name == "LocalProxyProvider")
+            .expect("LocalProxyProvider summary after health check");
+        assert!(!proxy_provider.members[0].alive);
+        assert_eq!(proxy_provider.members[0].delay_ms, Some(0));
 
         core.refresh_all_providers().await.unwrap();
         let snapshot = core.snapshot().unwrap();
@@ -4369,6 +5314,8 @@ rules:
                 health_check_enabled: false,
                 health_check_url: None,
                 health_check_interval_seconds: None,
+                expected_status: None,
+                members: Vec::new(),
                 cache_exists: false,
                 cache_bytes: None,
                 cache_updated_at: None,
@@ -4566,6 +5513,8 @@ rules:
             health_check_enabled: false,
             health_check_url: None,
             health_check_interval_seconds: None,
+            expected_status: None,
+            members: Vec::new(),
             cache_exists: false,
             cache_bytes: None,
             cache_updated_at: None,
@@ -4642,6 +5591,8 @@ rules:
                 health_check_enabled: false,
                 health_check_url: None,
                 health_check_interval_seconds: None,
+                expected_status: None,
+                members: Vec::new(),
                 cache_exists: false,
                 cache_bytes: None,
                 cache_updated_at: None,
@@ -4698,7 +5649,7 @@ rules:
             .into_iter()
             .map(|proxy| proxy.name)
             .collect::<Vec<_>>();
-        core.select_proxy("Proxy", "DIRECT").unwrap();
+        core.select_proxy("Proxy", "DIRECT").await.unwrap();
         core.reload_config(&id).await.unwrap();
 
         let snapshot = core.snapshot().unwrap();
@@ -4726,6 +5677,120 @@ rules:
                 .map(String::as_str),
             Some("DIRECT")
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn automatic_group_pins_and_auto_mode_persist_across_reload() {
+        let root = std::env::temp_dir().join(format!(
+            "hmeta-core-automatic-group-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let core = CoreHandle::new_with_profile_root(root);
+        let yaml = r#"
+proxy-groups:
+  - name: Auto
+    type: url-test
+    proxies: [DIRECT]
+    url: https://www.gstatic.com/generate_204
+    interval: 3600
+  - name: Backup
+    type: fallback
+    proxies: [DIRECT]
+    url: https://www.gstatic.com/generate_204
+    interval: 3600
+rules:
+  - MATCH,Auto
+"#;
+        let profile_id = core
+            .import_profile_from_content("Automatic", "test", yaml, None)
+            .await
+            .unwrap();
+        core.reload_config(&profile_id).await.unwrap();
+
+        for group_name in ["Auto", "Backup"] {
+            core.select_proxy(group_name, "DIRECT").await.unwrap();
+            let group = core
+                .snapshot()
+                .unwrap()
+                .proxy_groups
+                .into_iter()
+                .find(|group| group.name == group_name)
+                .expect("automatic group");
+            assert_eq!(group.fixed.as_deref(), Some("DIRECT"));
+
+            core.unfix_proxy(group_name).unwrap();
+            let snapshot = core.snapshot().unwrap();
+            let group = snapshot
+                .proxy_groups
+                .iter()
+                .find(|group| group.name == group_name)
+                .expect("automatic group");
+            assert_eq!(group.fixed.as_deref(), Some(""));
+            assert_eq!(
+                snapshot.profiles[0]
+                    .selected_proxies
+                    .get(group_name)
+                    .map(String::as_str),
+                Some("")
+            );
+        }
+
+        core.reload_config(&profile_id).await.unwrap();
+        for group_name in ["Auto", "Backup"] {
+            let group = core
+                .snapshot()
+                .unwrap()
+                .proxy_groups
+                .into_iter()
+                .find(|group| group.name == group_name)
+                .expect("restored automatic group");
+            assert_eq!(group.fixed.as_deref(), Some(""));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reload_retains_sniffer_config_for_harmony_tun() {
+        let root = std::env::temp_dir().join(format!(
+            "hmeta-core-sniffer-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let core = CoreHandle::new_with_profile_root(root);
+        let yaml = r#"
+sniffer:
+  enable: true
+  timeout: 250
+  parse-pure-ip: true
+  override-destination: true
+  sniff:
+    TLS:
+      ports: [443, 8443]
+    HTTP:
+      ports: [80, 8080]
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [DIRECT]
+rules:
+  - MATCH,Proxy
+"#;
+        let profile_id = core
+            .import_profile_from_content("Sniffer", "test", yaml, None)
+            .await
+            .unwrap();
+        core.reload_config(&profile_id).await.unwrap();
+
+        let config = core.lock_state().unwrap().sniffer_config.clone();
+        assert!(config.enable);
+        assert_eq!(config.timeout, std::time::Duration::from_millis(250));
+        assert!(config.override_destination);
+        assert_eq!(config.tls_ports, vec![443, 8443]);
+        assert_eq!(config.http_ports, vec![80, 8080]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -7,7 +7,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+axum.workspace = true
 dashmap.workspace = true
+futures.workspace = true
 hmeta_model.workspace = true
 hmeta_profile.workspace = true
 hmeta_vpn.workspace = true
@@ -26,13 +28,12 @@ serde_yaml.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
+tokio-tungstenite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 parking_lot.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
-futures.workspace = true
 libc.workspace = true
 shadowsocks.workspace = true
-tokio-tungstenite.workspace = true

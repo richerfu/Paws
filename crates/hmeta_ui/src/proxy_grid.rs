@@ -13,6 +13,8 @@ pub(crate) struct ProxyGridItem {
     pub(crate) proxy_type: String,
     pub(crate) delay_ms: Option<u32>,
     pub(crate) selected: bool,
+    pub(crate) automatic: bool,
+    pub(crate) pinned: bool,
 }
 
 pub(crate) fn flatten_proxy_groups(groups: &[ProxyGroup], query: &str) -> Vec<ProxyGridItem> {
@@ -51,6 +53,8 @@ pub(crate) fn flatten_proxy_groups(groups: &[ProxyGroup], query: &str) -> Vec<Pr
                     .is_some_and(|(active_group, active_name)| {
                         active_group == &group.name && active_name == &proxy.name
                     }),
+                automatic: group.fixed.is_some(),
+                pinned: group.fixed.as_deref() == Some(proxy.name.as_str()),
             });
         }
     }

@@ -12,12 +12,11 @@ hmeta_model.workspace = true
 libc.workspace = true
 meow-common.workspace = true
 meow-dns.workspace = true
+meow-listener.workspace = true
+meow-trie.workspace = true
 meow-tunnel.workspace = true
 netstack-smoltcp.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tun-rs.workspace = true
-
-[dev-dependencies]
-meow-trie.workspace = true

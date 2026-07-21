@@ -147,9 +147,12 @@ pub async fn stop_vpn() -> Result<()> {
 
 #[napi]
 pub fn persist_vpn_telemetry() -> Result<()> {
-    hmeta_core::shared_core()
-        .persist_vpn_telemetry()
-        .map_err(to_napi_error)
+    let core = hmeta_core::shared_core();
+    let sync_core = core.clone();
+    napi_ohos::bindgen_prelude::spawn(async move {
+        let _ = sync_core.sync_external_controller_config().await;
+    });
+    core.persist_vpn_telemetry().map_err(to_napi_error)
 }
 
 #[napi]
@@ -398,6 +401,14 @@ pub async fn set_mode(mode: String) -> Result<()> {
 pub async fn select_proxy(group: String, proxy: String) -> Result<()> {
     hmeta_core::shared_core()
         .select_proxy_via_controller(&group, &proxy)
+        .await
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub async fn unfix_proxy(group: String) -> Result<()> {
+    hmeta_core::shared_core()
+        .unfix_proxy_via_controller(&group)
         .await
         .map_err(to_napi_error)
 }

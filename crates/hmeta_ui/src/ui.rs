@@ -72,9 +72,24 @@ pub(crate) enum Action {
         group: String,
         proxy: String,
     },
+    UnfixProxy {
+        group: String,
+    },
     ProxySelected(Result<RuntimeSnapshot, String>),
     TestAllProxyDelays,
     AllProxyDelaysTested(Result<ProxyDelayBatchResult, String>),
+    FlushDnsCache,
+    FlushFakeIpCache,
+    HealthcheckProxyProvider {
+        provider_name: String,
+    },
+    HealthcheckProviderProxy {
+        provider_name: String,
+        proxy_name: String,
+        url: String,
+        expected_status: Option<String>,
+    },
+    ControllerDiagnosticFinished(Result<(RuntimeSnapshot, String), String>),
     CloseConnection(String),
     ConnectionClosed(Result<RuntimeSnapshot, String>),
     CloseAllConnections,
@@ -188,6 +203,7 @@ pub(crate) struct State {
     vpn_command_pending: Option<VpnCommandAction>,
     proxy_selection_pending: Option<(String, String)>,
     proxy_delay_loading: bool,
+    controller_diagnostic_pending: Option<String>,
     notifications: NotificationCenter,
 }
 
@@ -327,6 +343,7 @@ impl State {
             vpn_command_pending: None,
             proxy_selection_pending: None,
             proxy_delay_loading: false,
+            controller_diagnostic_pending: None,
             notifications,
         }
     }
@@ -512,6 +529,13 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             state.proxy_selection_pending = Some((group, proxy));
             Command::perform(select_proxy_and_snapshot(selections), Action::ProxySelected)
         }
+        Action::UnfixProxy { group } => {
+            if state.proxy_selection_pending.is_some() {
+                return Command::none();
+            }
+            state.proxy_selection_pending = Some((group.clone(), String::new()));
+            Command::perform(unfix_proxy_and_snapshot(group), Action::ProxySelected)
+        }
         Action::ProxySelected(result) => {
             state.proxy_selection_pending = None;
             match result {
@@ -533,8 +557,8 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             if state.proxy_delay_loading {
                 return Command::none();
             }
-            let proxies = proxy_names_for_delay_test(&state.snapshot);
-            if proxies.is_empty() {
+            let groups = proxy_groups_for_delay_test(&state.snapshot);
+            if groups.is_empty() {
                 show_toast(
                     state,
                     strings(state.locale).feedback_proxy_delay_empty.to_owned(),
@@ -542,7 +566,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             } else {
                 state.proxy_delay_loading = true;
                 Command::perform(
-                    test_proxy_delays_and_snapshot(proxies),
+                    test_proxy_delays_and_snapshot(groups),
                     Action::AllProxyDelaysTested,
                 )
             }
@@ -572,6 +596,103 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         error
                     ),
                 ),
+            }
+        }
+        Action::FlushDnsCache => {
+            if state.controller_diagnostic_pending.is_some() {
+                return Command::none();
+            }
+            state.controller_diagnostic_pending = Some("dns".to_owned());
+            Command::perform(
+                async {
+                    hmeta_core::shared_core()
+                        .flush_dns_cache_via_controller()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    Ok((
+                        load_snapshot().await,
+                        "DNS 缓存已清理 / DNS cache flushed".to_owned(),
+                    ))
+                },
+                Action::ControllerDiagnosticFinished,
+            )
+        }
+        Action::FlushFakeIpCache => {
+            if state.controller_diagnostic_pending.is_some() {
+                return Command::none();
+            }
+            state.controller_diagnostic_pending = Some("fakeip".to_owned());
+            Command::perform(
+                async {
+                    hmeta_core::shared_core()
+                        .flush_fake_ip_cache_via_controller()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    Ok((
+                        load_snapshot().await,
+                        "Fake-IP 缓存已清理 / Fake-IP cache flushed".to_owned(),
+                    ))
+                },
+                Action::ControllerDiagnosticFinished,
+            )
+        }
+        Action::HealthcheckProxyProvider { provider_name } => {
+            if state.controller_diagnostic_pending.is_some() {
+                return Command::none();
+            }
+            state.controller_diagnostic_pending = Some(format!("provider:{provider_name}"));
+            Command::perform(
+                async move {
+                    hmeta_core::shared_core()
+                        .healthcheck_proxy_provider_via_controller(&provider_name)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    Ok((
+                        load_snapshot().await,
+                        format!("Provider {provider_name} 健康检查完成"),
+                    ))
+                },
+                Action::ControllerDiagnosticFinished,
+            )
+        }
+        Action::HealthcheckProviderProxy {
+            provider_name,
+            proxy_name,
+            url,
+            expected_status,
+        } => {
+            if state.controller_diagnostic_pending.is_some() {
+                return Command::none();
+            }
+            state.controller_diagnostic_pending =
+                Some(format!("provider:{provider_name}:{proxy_name}"));
+            Command::perform(
+                async move {
+                    let delay = hmeta_core::shared_core()
+                        .healthcheck_provider_proxy_via_controller(
+                            &provider_name,
+                            &proxy_name,
+                            &url,
+                            Some(5000),
+                            expected_status.as_deref(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    Ok((load_snapshot().await, format!("{proxy_name}: {delay} ms")))
+                },
+                Action::ControllerDiagnosticFinished,
+            )
+        }
+        Action::ControllerDiagnosticFinished(result) => {
+            state.controller_diagnostic_pending = None;
+            match result {
+                Ok((snapshot, message)) => {
+                    state.snapshot = snapshot;
+                    show_toast(state, message)
+                }
+                Err(error) => {
+                    show_toast(state, format!("诊断操作失败 / Diagnostic failed: {error}"))
+                }
             }
         }
         Action::CloseConnection(connection_id) => Command::perform(
@@ -1671,7 +1792,9 @@ fn system_color_mode() -> i32 {
 }
 
 async fn load_snapshot() -> RuntimeSnapshot {
-    hmeta_core::shared_core().snapshot().unwrap_or_default()
+    let core = hmeta_core::shared_core();
+    let _ = core.sync_external_controller_config().await;
+    core.snapshot().unwrap_or_default()
 }
 
 async fn delayed_snapshot() -> RuntimeSnapshot {
@@ -2124,18 +2247,29 @@ async fn select_proxy_and_snapshot(
     Ok(load_snapshot().await)
 }
 
+async fn unfix_proxy_and_snapshot(group: String) -> Result<RuntimeSnapshot, String> {
+    hmeta_core::shared_core()
+        .unfix_proxy_via_controller(&group)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(load_snapshot().await)
+}
+
 async fn test_proxy_delays_and_snapshot(
-    proxies: Vec<String>,
+    groups: Vec<(String, usize)>,
 ) -> Result<ProxyDelayBatchResult, String> {
     let mut succeeded = 0;
     let mut failed = 0;
-    for proxy in proxies {
+    for (group, member_count) in groups {
         match hmeta_core::shared_core()
-            .test_proxy_delay_via_controller(&proxy, None, Some(5000))
+            .test_proxy_group_via_controller(&group, None, Some(5000))
             .await
         {
-            Ok(_) => succeeded += 1,
-            Err(_) => failed += 1,
+            Ok(delays) => {
+                succeeded += delays.values().filter(|delay| **delay > 0).count();
+                failed += delays.values().filter(|delay| **delay == 0).count();
+            }
+            Err(_) => failed += member_count,
         }
     }
     Ok(ProxyDelayBatchResult {
@@ -2145,18 +2279,13 @@ async fn test_proxy_delays_and_snapshot(
     })
 }
 
-fn proxy_names_for_delay_test(snapshot: &RuntimeSnapshot) -> Vec<String> {
-    let mut names = Vec::new();
-    for proxy in snapshot
+fn proxy_groups_for_delay_test(snapshot: &RuntimeSnapshot) -> Vec<(String, usize)> {
+    snapshot
         .proxy_groups
         .iter()
-        .flat_map(|group| group.proxies.iter())
-    {
-        if !names.iter().any(|name| name == &proxy.name) {
-            names.push(proxy.name.clone());
-        }
-    }
-    names
+        .filter(|group| !group.proxies.is_empty())
+        .map(|group| (group.name.clone(), group.proxies.len()))
+        .collect()
 }
 
 async fn close_connection_and_snapshot(connection_id: String) -> Result<RuntimeSnapshot, String> {

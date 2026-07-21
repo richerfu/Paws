@@ -3017,6 +3017,8 @@ fn collect_provider_summaries(
                 .unwrap_or(false),
             health_check_url: health_check.and_then(|m| get_string(m, "url")),
             health_check_interval_seconds: health_check.and_then(|m| get_u64(m, "interval")),
+            expected_status: health_check.and_then(|m| get_string(m, "expected-status")),
+            members: Vec::new(),
             cache_exists: cache_metadata
                 .as_ref()
                 .is_some_and(std::fs::Metadata::is_file),

@@ -261,6 +261,10 @@ pub struct ProxyGroup {
     pub name: String,
     pub group_type: String,
     pub selected: Option<String>,
+    /// `None` for manual/non-selectable groups, `Some("")` for an automatic
+    /// group in auto mode, and `Some(name)` when URLTest/Fallback is pinned.
+    #[serde(default)]
+    pub fixed: Option<String>,
     pub proxies: Vec<ProxyItem>,
 }
 
@@ -360,6 +364,10 @@ pub struct ProviderSummary {
     #[serde(default)]
     pub health_check_interval_seconds: Option<u64>,
     #[serde(default)]
+    pub expected_status: Option<String>,
+    #[serde(default)]
+    pub members: Vec<ProviderProxySummary>,
+    #[serde(default)]
     pub cache_exists: bool,
     #[serde(default)]
     pub cache_bytes: Option<u64>,
@@ -371,6 +379,31 @@ pub struct ProviderSummary {
     pub last_refresh_at: Option<String>,
     #[serde(default)]
     pub last_refresh_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderProxySummary {
+    pub name: String,
+    pub proxy_type: String,
+    pub alive: bool,
+    #[serde(default)]
+    pub delay_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControllerDiagnostics {
+    #[serde(default)]
+    pub memory_in_use_bytes: u64,
+    #[serde(default)]
+    pub memory_limit_bytes: u64,
+    #[serde(default)]
+    pub config_sync_count: u64,
+    #[serde(default)]
+    pub last_config_sync_at: Option<String>,
+    #[serde(default)]
+    pub last_config_sync_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -484,6 +517,8 @@ pub struct RuntimeSnapshot {
     pub controller_running: bool,
     #[serde(default)]
     pub controller_addr: Option<String>,
+    #[serde(default)]
+    pub controller_diagnostics: ControllerDiagnostics,
     pub active_profile: Option<String>,
     pub mode: RuntimeMode,
     pub traffic: TrafficSnapshot,
@@ -518,6 +553,7 @@ impl Default for RuntimeSnapshot {
             network_protect_error: None,
             controller_running: false,
             controller_addr: None,
+            controller_diagnostics: ControllerDiagnostics::default(),
             active_profile: None,
             mode: RuntimeMode::Rule,
             traffic: TrafficSnapshot {

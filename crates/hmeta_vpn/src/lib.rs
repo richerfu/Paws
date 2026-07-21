@@ -1,6 +1,9 @@
 use futures::{SinkExt, StreamExt};
 use hmeta_model::{DnsQuerySummary, HMetaError, VpnOptions};
+use meow_common::sniffer::{sniff_http, sniff_tls, SnifferConfig};
 use meow_common::{ConnType, Metadata, Network, ProxyConn, ProxyPacketConn};
+use meow_listener::SnifferRuntime;
+use meow_trie::DomainTrie;
 use meow_tunnel::Tunnel;
 use netstack_smoltcp::{AnyIpPktFrame, StackBuilder};
 use std::collections::{HashMap, VecDeque};
@@ -12,7 +15,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
@@ -25,6 +28,7 @@ const DNS_RECENT_QUERY_LIMIT: usize = 16;
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const UDP_SWEEP_INTERVAL: Duration = Duration::from_secs(15);
 const UDP_RESPONSE_BUFFER_SIZE: usize = 64 * 1024;
+const SNIFF_BUFFER_SIZE: usize = 8 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VpnLifecycle {
@@ -113,6 +117,8 @@ struct RunningTask {
     handle: JoinHandle<()>,
     running: Arc<AtomicBool>,
     stats: Arc<SharedStats>,
+    dns_table: DnsTable,
+    dns_cache: DnsResponseCache,
 }
 
 impl RunningTask {
@@ -140,7 +146,13 @@ impl Default for TunSession {
 }
 
 impl TunSession {
-    pub fn start(&self, fd: i32, options: VpnOptions, tunnel: Tunnel) -> Result<(), HMetaError> {
+    pub fn start(
+        &self,
+        fd: i32,
+        options: VpnOptions,
+        tunnel: Tunnel,
+        sniffer_config: SnifferConfig,
+    ) -> Result<(), HMetaError> {
         if fd < 0 {
             return Err(HMetaError::Core(format!("invalid tun fd: {fd}")));
         }
@@ -153,7 +165,11 @@ impl TunSession {
         let task_stats = stats.clone();
         let running = Arc::new(AtomicBool::new(true));
         let task_running = running.clone();
+        let dns_table = DnsTable::default();
+        let dns_cache = DnsResponseCache::default();
         let dns_hijacking = options.dns_hijacking;
+        let task_dns_table = dns_table.clone();
+        let task_dns_cache = dns_cache.clone();
         let handle = tokio::spawn(async move {
             if let Err(error) = run_netstack_vpn(
                 duplicated_fd,
@@ -161,6 +177,9 @@ impl TunSession {
                 task_stats,
                 task_running,
                 dns_hijacking,
+                sniffer_config,
+                task_dns_table,
+                task_dns_cache,
             )
             .await
             {
@@ -185,6 +204,8 @@ impl TunSession {
                 handle,
                 running,
                 stats,
+                dns_table,
+                dns_cache,
             });
         Ok(())
     }
@@ -235,6 +256,18 @@ impl TunSession {
             .as_ref()
             .map(|task| task.stats.snapshot())
     }
+
+    pub fn flush_dns_cache(&self) -> Result<(), HMetaError> {
+        let task = self
+            .task
+            .lock()
+            .map_err(|_| HMetaError::Core("vpn task lock poisoned".to_owned()))?;
+        if let Some(task) = task.as_ref() {
+            task.dns_table.clear();
+            task.dns_cache.clear();
+        }
+        Ok(())
+    }
 }
 
 async fn run_netstack_vpn(
@@ -243,6 +276,9 @@ async fn run_netstack_vpn(
     stats: Arc<SharedStats>,
     running: Arc<AtomicBool>,
     dns_hijacking: bool,
+    sniffer_config: SnifferConfig,
+    dns_table: DnsTable,
+    dns_cache: DnsResponseCache,
 ) -> io::Result<()> {
     let (mut stack, tcp_runner, udp_socket, tcp_listener) = StackBuilder::default()
         .enable_tcp(true)
@@ -254,9 +290,8 @@ async fn run_netstack_vpn(
     let tcp_runner = tcp_runner.expect("TCP runner");
     let mut tcp_listener = tcp_listener.expect("TCP listener");
     let udp_socket = udp_socket.expect("UDP socket");
-    let dns_table = DnsTable::default();
-    let dns_cache = DnsResponseCache::default();
     let udp_sessions = UdpSessionMap::default();
+    let sniffer = HarmonyTcpSniffer::from_config(sniffer_config).map(Arc::new);
 
     let (ingress_tx, mut ingress_rx) = mpsc::channel::<AnyIpPktFrame>(256);
     let (egress_tx, mut egress_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -292,14 +327,23 @@ async fn run_netstack_vpn(
     let accept_tunnel = tunnel.clone();
     let accept_dns_table = dns_table.clone();
     let accept_stats = stats.clone();
+    let accept_sniffer = sniffer.clone();
     let accept_handle = tokio::spawn(async move {
         while let Some((stream, local_addr, remote_addr)) = tcp_listener.next().await {
             accept_stats.tcp_packets.fetch_add(1, Ordering::Relaxed);
             let flow_tunnel = accept_tunnel.clone();
             let flow_dns_table = accept_dns_table.clone();
+            let flow_sniffer = accept_sniffer.clone();
             tokio::spawn(async move {
-                handle_tcp_stream(flow_tunnel, stream, local_addr, remote_addr, flow_dns_table)
-                    .await;
+                handle_tcp_stream(
+                    flow_tunnel,
+                    stream,
+                    local_addr,
+                    remote_addr,
+                    flow_dns_table,
+                    flow_sniffer,
+                )
+                .await;
             });
         }
     });
@@ -451,9 +495,15 @@ async fn handle_tcp_stream(
     src_addr: SocketAddr,
     dst_addr: SocketAddr,
     dns_table: DnsTable,
+    sniffer: Option<Arc<HarmonyTcpSniffer>>,
 ) {
-    let metadata = tcp_metadata_for_stream(src_addr, dst_addr, &dns_table);
-    let proxy_conn: Box<dyn ProxyConn> = Box::new(NetstackConn(stream));
+    let mut metadata = tcp_metadata_for_stream(src_addr, dst_addr, &dns_table);
+    let mut stream = stream;
+    let prefix = match sniffer {
+        Some(sniffer) => sniffer.sniff(&mut stream, &mut metadata).await,
+        None => Vec::new(),
+    };
+    let proxy_conn: Box<dyn ProxyConn> = Box::new(ReplayConn::new(stream, prefix));
     let inner = tunnel.inner().clone();
     meow_tunnel::tcp::handle_tcp(&inner, proxy_conn, metadata).await;
 }
@@ -481,37 +531,135 @@ fn tcp_metadata_for_stream(
     }
 }
 
-struct NetstackConn(netstack_smoltcp::TcpStream);
+#[derive(Debug, Clone, Copy)]
+enum SniffProtocol {
+    Tls,
+    Http,
+}
 
-impl AsyncRead for NetstackConn {
+struct HarmonyTcpSniffer {
+    config: SnifferConfig,
+    runtime: SnifferRuntime,
+    force_domains: DomainTrie<()>,
+}
+
+impl HarmonyTcpSniffer {
+    fn from_config(config: SnifferConfig) -> Option<Self> {
+        if !config.enable {
+            return None;
+        }
+        let mut force_domains = DomainTrie::new();
+        for domain in &config.force_domain {
+            force_domains.insert(domain, ());
+        }
+        Some(Self {
+            runtime: SnifferRuntime::new(config.clone()),
+            config,
+            force_domains,
+        })
+    }
+
+    fn protocol_for(&self, port: u16) -> Option<SniffProtocol> {
+        // Match meow's dispatch precedence when a port appears in both lists:
+        // HTTP is inserted after TLS and therefore wins.
+        if self.config.http_ports.contains(&port) {
+            Some(SniffProtocol::Http)
+        } else if self.config.tls_ports.contains(&port) {
+            Some(SniffProtocol::Tls)
+        } else {
+            None
+        }
+    }
+
+    fn should_sniff(&self, metadata: &Metadata) -> bool {
+        if !self.config.parse_pure_ip || metadata.host.is_empty() {
+            return true;
+        }
+        metadata.host.parse::<IpAddr>().is_ok()
+            || self.force_domains.search(&metadata.host).is_some()
+    }
+
+    async fn sniff<S>(&self, stream: &mut S, metadata: &mut Metadata) -> Vec<u8>
+    where
+        S: AsyncRead + Unpin,
+    {
+        let Some(protocol) = self.protocol_for(metadata.dst_port) else {
+            return Vec::new();
+        };
+        if !self.should_sniff(metadata) {
+            return Vec::new();
+        }
+
+        let mut prefix = vec![0_u8; SNIFF_BUFFER_SIZE];
+        let Ok(Ok(size)) =
+            tokio::time::timeout(self.config.timeout, stream.read(&mut prefix)).await
+        else {
+            return Vec::new();
+        };
+        prefix.truncate(size);
+        let host = match protocol {
+            SniffProtocol::Tls => sniff_tls(&prefix),
+            SniffProtocol::Http => sniff_http(&prefix),
+        };
+        if let Some(host) = host {
+            self.runtime.maybe_apply_sniff(&host, metadata);
+        }
+        prefix
+    }
+}
+
+struct ReplayConn<S> {
+    stream: S,
+    prefix: Vec<u8>,
+    prefix_offset: usize,
+}
+
+impl<S> ReplayConn<S> {
+    fn new(stream: S, prefix: Vec<u8>) -> Self {
+        Self {
+            stream,
+            prefix,
+            prefix_offset: 0,
+        }
+    }
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for ReplayConn<S> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.0).poll_read(cx, buf)
+        if self.prefix_offset < self.prefix.len() && buf.remaining() > 0 {
+            let available = &self.prefix[self.prefix_offset..];
+            let size = available.len().min(buf.remaining());
+            buf.put_slice(&available[..size]);
+            self.prefix_offset += size;
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut self.stream).poll_read(cx, buf)
     }
 }
 
-impl AsyncWrite for NetstackConn {
+impl<S: AsyncWrite + Unpin> AsyncWrite for ReplayConn<S> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.0).poll_write(cx, buf)
+        Pin::new(&mut self.stream).poll_write(cx, buf)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.0).poll_flush(cx)
+        Pin::new(&mut self.stream).poll_flush(cx)
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.0).poll_shutdown(cx)
+        Pin::new(&mut self.stream).poll_shutdown(cx)
     }
 }
 
-impl ProxyConn for NetstackConn {}
+impl<S> ProxyConn for ReplayConn<S> where S: AsyncRead + AsyncWrite + Unpin + Send + Sync {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct UdpSessionKey {
@@ -692,6 +840,12 @@ struct DnsTableRecord {
 }
 
 impl DnsTable {
+    fn clear(&self) {
+        if let Ok(mut records) = self.records.lock() {
+            records.clear();
+        }
+    }
+
     fn insert(&self, ip: IpAddr, host: String, ttl: u32) {
         let ttl_ms = u64::from(ttl.clamp(1, 3600)) * 1000;
         if let Ok(mut records) = self.records.lock() {
@@ -748,6 +902,12 @@ struct DnsResponseCacheRecord {
 }
 
 impl DnsResponseCache {
+    fn clear(&self) {
+        if let Ok(mut records) = self.records.lock() {
+            records.clear();
+        }
+    }
+
     fn lookup(&self, query: &[u8]) -> Option<Vec<u8>> {
         let key = dns_cache_key(query)?;
         let mut records = self.records.lock().ok()?;
@@ -1367,6 +1527,102 @@ mod tests {
     use meow_dns::Resolver;
     use meow_trie::DomainTrie;
     use std::net::{Ipv4Addr, Ipv6Addr};
+    use tokio::io::AsyncWriteExt;
+
+    fn tls_client_hello(hostname: &str) -> Vec<u8> {
+        let hostname = hostname.as_bytes();
+        let mut sni = Vec::new();
+        sni.extend_from_slice(&[0x00, 0x00]);
+        sni.extend_from_slice(&((5 + hostname.len()) as u16).to_be_bytes());
+        sni.extend_from_slice(&((3 + hostname.len()) as u16).to_be_bytes());
+        sni.push(0);
+        sni.extend_from_slice(&(hostname.len() as u16).to_be_bytes());
+        sni.extend_from_slice(hostname);
+
+        let mut hello = Vec::new();
+        hello.extend_from_slice(&[0x03, 0x03]);
+        hello.extend_from_slice(&[0; 32]);
+        hello.push(0);
+        hello.extend_from_slice(&[0, 2, 0, 0x2f]);
+        hello.extend_from_slice(&[1, 0]);
+        hello.extend_from_slice(&(sni.len() as u16).to_be_bytes());
+        hello.extend_from_slice(&sni);
+
+        let mut handshake = vec![
+            1,
+            ((hello.len() >> 16) & 0xff) as u8,
+            ((hello.len() >> 8) & 0xff) as u8,
+            (hello.len() & 0xff) as u8,
+        ];
+        handshake.extend_from_slice(&hello);
+
+        let mut record = vec![0x16, 0x03, 0x01];
+        record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+        record.extend_from_slice(&handshake);
+        record
+    }
+
+    #[tokio::test]
+    async fn harmony_sniffer_extracts_tls_sni_and_replays_client_hello() {
+        let sniffer = HarmonyTcpSniffer::from_config(SnifferConfig {
+            enable: true,
+            override_destination: true,
+            tls_ports: vec![443],
+            http_ports: Vec::new(),
+            ..SnifferConfig::default()
+        })
+        .expect("enabled sniffer");
+        let payload = tls_client_hello("tls.example.test");
+        let (mut client, mut server) = tokio::io::duplex(SNIFF_BUFFER_SIZE * 2);
+        client.write_all(&payload).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut metadata = Metadata {
+            network: Network::Tcp,
+            dst_ip: Some(Ipv4Addr::new(203, 0, 113, 1).into()),
+            dst_port: 443,
+            ..Metadata::default()
+        };
+
+        let prefix = sniffer.sniff(&mut server, &mut metadata).await;
+        let mut replay = ReplayConn::new(server, prefix);
+        let mut received = Vec::new();
+        replay.read_to_end(&mut received).await.unwrap();
+
+        assert_eq!(metadata.sniff_host, "tls.example.test");
+        assert_eq!(metadata.host, "tls.example.test");
+        assert_eq!(received, payload);
+    }
+
+    #[tokio::test]
+    async fn harmony_sniffer_extracts_http_host_without_overriding_destination() {
+        let sniffer = HarmonyTcpSniffer::from_config(SnifferConfig {
+            enable: true,
+            override_destination: false,
+            tls_ports: Vec::new(),
+            http_ports: vec![80],
+            ..SnifferConfig::default()
+        })
+        .expect("enabled sniffer");
+        let payload = b"GET / HTTP/1.1\r\nHost: http.example.test\r\n\r\n".to_vec();
+        let (mut client, mut server) = tokio::io::duplex(SNIFF_BUFFER_SIZE * 2);
+        client.write_all(&payload).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut metadata = Metadata {
+            network: Network::Tcp,
+            dst_port: 80,
+            host: "203.0.113.2".into(),
+            ..Metadata::default()
+        };
+
+        let prefix = sniffer.sniff(&mut server, &mut metadata).await;
+        let mut replay = ReplayConn::new(server, prefix);
+        let mut received = Vec::new();
+        replay.read_to_end(&mut received).await.unwrap();
+
+        assert_eq!(metadata.sniff_host, "http.example.test");
+        assert_eq!(metadata.host, "203.0.113.2");
+        assert_eq!(received, payload);
+    }
 
     struct NoopPacketConn;
 

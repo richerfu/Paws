@@ -632,8 +632,10 @@ fn dashboard_page(state: Signal<State>) -> Element {
     };
     let mut quick_items = flatten_proxy_groups(&snapshot.proxy_groups, "");
     if let Some((pending_group, pending_proxy)) = &current.proxy_selection_pending {
-        for item in &mut quick_items {
-            item.selected = item.group == *pending_group && item.name == *pending_proxy;
+        if !pending_proxy.is_empty() {
+            for item in &mut quick_items {
+                item.selected = item.group == *pending_group && item.name == *pending_proxy;
+            }
         }
     }
     let current_node = quick_items
@@ -875,8 +877,10 @@ fn proxies_page(state: Signal<State>) -> Element {
     let current_layout = layout_mode();
     let mut items = flatten_proxy_groups(&current.snapshot.proxy_groups, &query_value);
     if let Some((pending_group, pending_proxy)) = &current.proxy_selection_pending {
-        for item in &mut items {
-            item.selected = item.group == *pending_group && item.name == *pending_proxy;
+        if !pending_proxy.is_empty() {
+            for item in &mut items {
+                item.selected = item.group == *pending_group && item.name == *pending_proxy;
+            }
         }
     }
     let matching_group_count = items
@@ -935,7 +939,11 @@ fn proxies_page(state: Signal<State>) -> Element {
                             palette,
                             selection_pending: current.proxy_selection_pending.is_some(),
                             on_select: move |(group, proxy): (String, String)| {
-                                dispatch(state, Action::SelectProxy { group, proxy });
+                                if proxy.is_empty() {
+                                    dispatch(state, Action::UnfixProxy { group });
+                                } else {
+                                    dispatch(state, Action::SelectProxy { group, proxy });
+                                }
                             },
                         }
                     } else {
@@ -945,7 +953,11 @@ fn proxies_page(state: Signal<State>) -> Element {
                             palette,
                             selection_pending: current.proxy_selection_pending.is_some(),
                             on_select: move |(group, proxy): (String, String)| {
-                                dispatch(state, Action::SelectProxy { group, proxy });
+                                if proxy.is_empty() {
+                                    dispatch(state, Action::UnfixProxy { group });
+                                } else {
+                                    dispatch(state, Action::SelectProxy { group, proxy });
+                                }
                             },
                         }
                     }
@@ -1241,6 +1253,8 @@ fn virtual_quick_proxy_item_keys(
             item.proxy_type.hash(&mut hasher);
             item.delay_ms.hash(&mut hasher);
             item.selected.hash(&mut hasher);
+            item.automatic.hash(&mut hasher);
+            item.pinned.hash(&mut hasher);
             locale.language_tag().hash(&mut hasher);
             palette.hash(&mut hasher);
             hasher.finish()
@@ -1275,14 +1289,28 @@ fn render_virtual_proxy_card(
         ProxyLayoutMode::List => (82.0, 11.0, [0.0, 0.0, 8.0, 0.0]),
         ProxyLayoutMode::Compact => unreachable!("compact rows use their dedicated renderer"),
     };
+    let emphasized = item.selected || item.pinned;
     let title = if item.selected {
         format!("✓ {}", item.name)
+    } else if item.pinned {
+        format!("◆ {}", item.name)
     } else {
         item.name.clone()
     };
     let metadata = format!("{} · {}", item.group, item.proxy_type.to_ascii_uppercase(),);
     let status = if item.selected && selection_pending {
         tr(locale, "切换中…", "Switching…").to_owned()
+    } else if item.pinned {
+        format!(
+            "{} · {} · {delay}",
+            tr(locale, "已固定，点击恢复自动", "Pinned, tap for auto"),
+            item.group_type
+        )
+    } else if item.automatic && item.selected {
+        format!(
+            "{} · {selected_label} · {delay}",
+            tr(locale, "自动", "Auto")
+        )
     } else if item.selected {
         format!("{selected_label} · {} · {delay}", item.group_type)
     } else {
@@ -1292,8 +1320,8 @@ fn render_virtual_proxy_card(
     let title_node = virtual_proxy_text(
         title,
         13.0,
-        if item.selected { 6 } else { 4 },
-        if item.selected {
+        if emphasized { 6 } else { 4 },
+        if emphasized {
             palette.success
         } else {
             palette.foreground
@@ -1304,8 +1332,8 @@ fn render_virtual_proxy_card(
     let status_node = virtual_proxy_text(
         status,
         10.0,
-        if item.selected { 5 } else { 3 },
-        if item.delay_ms.is_some() || item.selected {
+        if emphasized { 5 } else { 3 },
+        if item.delay_ms.is_some() || emphasized {
             palette.success
         } else {
             palette.muted_foreground
@@ -1319,7 +1347,7 @@ fn render_virtual_proxy_card(
         .height(height)?
         .background_color(format!(
             "#{:08x}",
-            if item.selected {
+            if emphasized {
                 palette.selected_surface
             } else {
                 palette.surface
@@ -1341,19 +1369,20 @@ fn render_virtual_proxy_card(
         .child(metadata_node)?
         .child(status_node)?;
 
-    if item.selected {
-        return Ok(node.build());
-    }
-
     let group = item.group.clone();
     let proxy = item.name.clone();
+    let unfix = item.pinned && layout != ProxyLayoutMode::Compact;
     Ok(node
         .on_click(move || {
             // Virtual rows outlive an individual Dioxus render. Resolve the
             // current handler at click time instead of retaining a stale
             // listener from the render that originally created this node.
-            let on_select = interaction_state.borrow().on_select;
-            on_select.call((group.clone(), proxy.clone()));
+            let state = interaction_state.borrow();
+            if state.selection_pending {
+                return;
+            }
+            let proxy = if unfix { String::new() } else { proxy.clone() };
+            state.on_select.call((group.clone(), proxy));
         })?
         .build())
 }
@@ -1369,11 +1398,20 @@ fn render_virtual_quick_proxy_row(
         .delay_ms
         .map(|value| format!("{value} ms"))
         .unwrap_or_else(|| strings(locale).proxies_untested.to_owned());
-    let detail = format!(
-        "{} · {} · {delay}",
-        item.group,
-        item.proxy_type.to_ascii_uppercase()
-    );
+    let detail = if item.pinned {
+        format!(
+            "{} · {} · {} · {delay}",
+            item.group,
+            tr(locale, "已固定", "Pinned"),
+            item.proxy_type.to_ascii_uppercase()
+        )
+    } else {
+        format!(
+            "{} · {} · {delay}",
+            item.group,
+            item.proxy_type.to_ascii_uppercase()
+        )
+    };
     let title_node = virtual_proxy_text(
         item.name.clone(),
         13.0,
@@ -1431,8 +1469,10 @@ fn render_virtual_quick_proxy_row(
     let proxy = item.name.clone();
     Ok(node
         .on_click(move || {
-            let on_select = interaction_state.borrow().on_select;
-            on_select.call((group.clone(), proxy.clone()));
+            let state = interaction_state.borrow();
+            if !state.selection_pending {
+                state.on_select.call((group.clone(), proxy.clone()));
+            }
         })?
         .build())
 }
@@ -2089,6 +2129,19 @@ fn traffic_page(state: Signal<State>) -> Element {
     let recent_dns = snapshot.dns.recent_queries.iter().map(|query| {
         rsx! { {info_row(format!("{} {}", query.record_type, query.name), query.count.to_string())} }
     }).collect::<Vec<_>>();
+    let diagnostic_pending = current.controller_diagnostic_pending.is_some();
+    let memory_in_use = format_total(snapshot.controller_diagnostics.memory_in_use_bytes);
+    let memory_limit = if snapshot.controller_diagnostics.memory_limit_bytes > 0 {
+        format_total(snapshot.controller_diagnostics.memory_limit_bytes)
+    } else {
+        "—".to_owned()
+    };
+    let last_config_sync = snapshot
+        .controller_diagnostics
+        .last_config_sync_at
+        .as_deref()
+        .and_then(time_format::format_unix_seconds)
+        .unwrap_or_else(|| tr(current.locale, "尚未同步", "Not synced yet").to_owned());
     let body = rsx! {
         column {
             percent_width: 1.0,
@@ -2192,6 +2245,42 @@ fn traffic_page(state: Signal<State>) -> Element {
                             row { height: 8.0 }
                             {recent_dns.into_iter()}
                         }
+                        row { height: 8.0 }
+                        row {
+                            percent_width: 1.0,
+                            FlatButton {
+                                variant: FlatButtonVariant::Outline,
+                                size: ButtonSize::Sm,
+                                disabled: Some(diagnostic_pending),
+                                onclick: move |_| dispatch(state, Action::FlushDnsCache),
+                                text { content: tr(current.locale, "清理 DNS 缓存", "Flush DNS cache"), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                            }
+                            row { width: 8.0 }
+                            FlatButton {
+                                variant: FlatButtonVariant::Outline,
+                                size: ButtonSize::Sm,
+                                disabled: Some(diagnostic_pending),
+                                onclick: move |_| dispatch(state, Action::FlushFakeIpCache),
+                                text { content: tr(current.locale, "清理 Fake-IP", "Flush Fake-IP"), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                            }
+                        }
+                    }
+                }
+            )}
+            row { height: 12.0 }
+            {card(
+                tr(current.locale, "Controller 诊断", "Controller diagnostics"),
+                snapshot.controller_addr.clone(),
+                rsx! {
+                    column {
+                        percent_width: 1.0,
+                        {info_row(tr(current.locale, "内存占用", "Memory in use"), memory_in_use)}
+                        {info_row(tr(current.locale, "系统内存上限", "OS memory limit"), memory_limit)}
+                        {info_row(tr(current.locale, "配置同步次数", "Config sync count"), snapshot.controller_diagnostics.config_sync_count.to_string())}
+                        {info_row(tr(current.locale, "最近配置同步", "Last config sync"), last_config_sync)}
+                        if let Some(error) = snapshot.controller_diagnostics.last_config_sync_error.clone() {
+                            text { content: compact(&error), margin_top: 6.0, font_size: 12.0, font_color: danger(), max_lines: 3 }
+                        }
                     }
                 }
             )}
@@ -2203,6 +2292,7 @@ fn traffic_page(state: Signal<State>) -> Element {
 fn resources_page(state: Signal<State>) -> Element {
     let mut query = use_signal(String::new);
     let mut geodata_detail = use_signal(|| None::<hmeta_model::GeodataFileSummary>);
+    let mut provider_detail = use_signal(|| None::<String>);
     let current = state.read().clone();
     let query_value = query();
     let active_profile_name = current
@@ -2236,8 +2326,14 @@ fn resources_page(state: Signal<State>) -> Element {
         .filter(|provider| matches_provider_query(provider, &query_value))
         .cloned()
         .map(|provider| {
-            let provider_type = provider.provider_type.clone();
-            let provider_name = provider.name.clone();
+            let refresh_provider_type = provider.provider_type.clone();
+            let refresh_provider_name = provider.name.clone();
+            let health_provider_name = provider.name.clone();
+            let detail_provider_name = provider.name.clone();
+            let member_count = provider.members.len();
+            let alive_count = provider.members.iter().filter(|member| member.alive).count();
+            let can_healthcheck = provider.provider_type == "proxy"
+                && provider.health_check_enabled;
             let provider_status = if provider.last_refresh_error.is_some() {
                 tr(current.locale, "刷新失败", "Refresh failed")
             } else if provider.vehicle_type.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("inline")) {
@@ -2257,6 +2353,9 @@ fn resources_page(state: Signal<State>) -> Element {
                             {info_row(tr(current.locale, "状态", "Status"), provider_status)}
                             {info_row(tr(current.locale, "缓存", "Cache"), if provider.cache_exists { format_total(provider.cache_bytes.unwrap_or(0)) } else { tr(current.locale, "无", "None").to_owned() })}
                             {info_row(tr(current.locale, "刷新间隔", "Interval"), provider.interval_seconds.map(|value| format!("{value}s")).unwrap_or_else(|| "-".to_owned()))}
+                            if provider.provider_type == "proxy" {
+                                {info_row(tr(current.locale, "成员健康", "Member health"), format!("{alive_count}/{member_count}"))}
+                            }
                             if let Some(error) = provider.last_refresh_error.clone() {
                                 text { content: compact(&error), margin_top: 6.0, font_size: 12.0, font_color: danger(), max_lines: 2 }
                             }
@@ -2267,9 +2366,28 @@ fn resources_page(state: Signal<State>) -> Element {
                                 FlatButton {
                                     variant: FlatButtonVariant::Ghost,
                                     size: ButtonSize::Sm,
+                                    onclick: move |_| provider_detail.set(Some(detail_provider_name.clone())),
+                                    {arkit::icon("list", 14.0, text_color())}
+                                    text { content: tr(current.locale, "详情", "Details"), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
+                                }
+                                if can_healthcheck {
+                                    FlatButton {
+                                        variant: FlatButtonVariant::Ghost,
+                                        size: ButtonSize::Sm,
+                                        disabled: Some(current.controller_diagnostic_pending.is_some()),
+                                        onclick: move |_| dispatch(state, Action::HealthcheckProxyProvider {
+                                            provider_name: health_provider_name.clone(),
+                                        }),
+                                        {arkit::icon("heart-pulse", 14.0, text_color())}
+                                        text { content: tr(current.locale, "检查", "Check"), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
+                                    }
+                                }
+                                FlatButton {
+                                    variant: FlatButtonVariant::Ghost,
+                                    size: ButtonSize::Sm,
                                     onclick: move |_| dispatch(state, Action::RefreshProvider {
-                                        provider_type: provider_type.clone(),
-                                        provider_name: provider_name.clone(),
+                                        provider_type: refresh_provider_type.clone(),
+                                        provider_name: refresh_provider_name.clone(),
                                     }),
                                     {arkit::icon("refresh-cw", 14.0, text_color())}
                                     text { content: tr(current.locale, "刷新", "Refresh"), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
@@ -2343,6 +2461,14 @@ fn resources_page(state: Signal<State>) -> Element {
         }).collect::<Vec<_>>();
     let visible_geodata_count = geodata.len();
     let selected_geodata = geodata_detail();
+    let selected_provider = provider_detail().and_then(|name| {
+        current
+            .snapshot
+            .providers
+            .iter()
+            .find(|provider| provider.name == name)
+            .cloned()
+    });
     let body = rsx! {
         column {
             percent_width: 1.0,
@@ -2431,6 +2557,96 @@ fn resources_page(state: Signal<State>) -> Element {
         {page}
         if let Some(file) = selected_geodata {
             {geodata_detail_dialog(current.locale, file, geodata_detail)}
+        }
+        if let Some(provider) = selected_provider {
+            {provider_detail_dialog(
+                state,
+                current.locale,
+                provider,
+                provider_detail,
+                current.controller_diagnostic_pending.is_some(),
+            )}
+        }
+    }
+}
+
+fn provider_detail_dialog(
+    state: Signal<State>,
+    locale: UiLocale,
+    provider: hmeta_model::ProviderSummary,
+    mut selected: Signal<Option<String>>,
+    pending: bool,
+) -> Element {
+    let provider_name = provider.name.clone();
+    let health_url = provider
+        .health_check_url
+        .clone()
+        .unwrap_or_else(|| "https://www.gstatic.com/generate_204".to_owned());
+    let expected_status = provider.expected_status.clone();
+    let members = provider.members.into_iter().map(|member| {
+        let check_provider = provider_name.clone();
+        let check_proxy = member.name.clone();
+        let check_url = health_url.clone();
+        let check_expected = expected_status.clone();
+        let status = if member.alive {
+            tr(locale, "可用", "Alive")
+        } else {
+            tr(locale, "不可用", "Unavailable")
+        };
+        let delay = member
+            .delay_ms
+            .map(|delay| format!("{delay} ms"))
+            .unwrap_or_else(|| tr(locale, "未测试", "Untested").to_owned());
+        rsx! {
+            row {
+                percent_width: 1.0,
+                height: 50.0,
+                padding_left: 10.0,
+                padding_right: 8.0,
+                align_items: "center",
+                column {
+                    layout_weight: 1.0,
+                    align_items: "start",
+                    text { content: truncate_text(&member.name, 34), percent_width: 1.0, font_size: 12.0, font_weight: 650, font_color: text_color(), max_lines: 1 }
+                    text { content: format!("{} · {} · {}", member.proxy_type, status, delay), margin_top: 3.0, percent_width: 1.0, font_size: 10.0, font_color: if member.alive { success() } else { danger() }, max_lines: 1 }
+                }
+                FlatButton {
+                    variant: FlatButtonVariant::Ghost,
+                    size: ButtonSize::Icon,
+                    disabled: Some(pending),
+                    onclick: move |_| dispatch(state, Action::HealthcheckProviderProxy {
+                        provider_name: check_provider.clone(),
+                        proxy_name: check_proxy.clone(),
+                        url: check_url.clone(),
+                        expected_status: check_expected.clone(),
+                    }),
+                    {arkit::icon("gauge", 15.0, text_color())}
+                }
+            }
+            Separator {}
+        }
+    }).collect::<Vec<_>>();
+    rsx! {
+        FlatDialog {
+            open: true,
+            on_close: move |_| selected.set(None),
+            DialogHeader {
+                title: truncate_text(&provider_name, 42),
+                description: Some(format!("{} {}", members.len(), tr(locale, "个成员", "members"))),
+            }
+            row { height: 12.0 }
+            if members.is_empty() {
+                text { content: tr(locale, "当前 Provider 没有可展示的成员", "No provider members available"), font_size: 12.0, font_color: subtle() }
+            } else {
+                column {
+                    percent_width: 1.0,
+                    border_width: 1.0,
+                    border_color: line(),
+                    border_radius: 9.0,
+                    clip: true,
+                    {members.into_iter()}
+                }
+            }
         }
     }
 }

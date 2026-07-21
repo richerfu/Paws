@@ -61,6 +61,8 @@ export declare function refreshAllProfiles(): Promise<void>
 
 export declare function selectProxy(group: string, proxy: string): Promise<void>
 
+export declare function unfixProxy(group: string): Promise<void>
+
 export declare function seedGeodataFromRawfiles(resourceManager: resourceManager.ResourceManager): number
 
 export declare function setMode(mode: string): Promise<void>

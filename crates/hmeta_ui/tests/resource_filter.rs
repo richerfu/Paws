@@ -19,6 +19,8 @@ fn provider() -> ProviderSummary {
         health_check_enabled: true,
         health_check_url: Some("https://cp.cloudflare.com/generate_204".to_owned()),
         health_check_interval_seconds: Some(600),
+        expected_status: None,
+        members: Vec::new(),
         cache_exists: true,
         cache_bytes: Some(128),
         cache_updated_at: Some("1700000000".to_owned()),

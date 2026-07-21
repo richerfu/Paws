@@ -27,6 +27,7 @@ meow-tunnel = "0.18.0"
 
 anyhow = "1"
 async-trait = "0.1"
+axum = "0.8"
 base64 = "0.22"
 dashmap = "6"
 dioxus = { version = "0.7", default-features = false, features = ["signals", "hooks", "macro"] }
