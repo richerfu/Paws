@@ -1,4 +1,4 @@
-import { Want } from '@kit.AbilityKit';
+import { Want, wantAgent, WantAgent } from '@kit.AbilityKit';
 import { vpnExtension, VpnExtensionAbility } from '@kit.NetworkKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -7,9 +7,12 @@ import {
   blockedApplications,
   DEFAULT_OPTIONS_JSON,
   HMetaVpnConfig,
+  HMETA_ENTRY_ABILITY,
+  HMETA_MODULE_NAME,
   parseOptions,
   perAppMode,
   readOptionsJson,
+  currentHMetaBundleName,
   setHMetaBundleName,
   trustedApplications,
 } from './VpnConfig';
@@ -85,6 +88,8 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
   private notificationRetryAt: number = 0;
   private notificationGeneration: number = 0;
   private lastNotificationText: string = '';
+  private notificationWantAgent?: WantAgent;
+  private notificationWantAgentRequest?: Promise<WantAgent>;
 
   public onCreate(want: Want): void {
     super.onCreate(want);
@@ -256,7 +261,48 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     }
   }
 
-  private publishSpeedNotification(): void {
+  private getNotificationWantAgent(): Promise<WantAgent> {
+    if (this.notificationWantAgent) {
+      return Promise.resolve(this.notificationWantAgent);
+    }
+    if (this.notificationWantAgentRequest) {
+      return this.notificationWantAgentRequest;
+    }
+    let request: Promise<WantAgent>;
+    try {
+      request = wantAgent.getWantAgent({
+        wants: [
+          {
+            bundleName: currentHMetaBundleName(),
+            moduleName: HMETA_MODULE_NAME,
+            abilityName: HMETA_ENTRY_ABILITY,
+            parameters: {
+              hmetaNotification: true,
+            },
+          },
+        ],
+        actionType: wantAgent.OperationType.START_ABILITY,
+        requestCode: VPN_SPEED_NOTIFICATION_ID,
+        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG],
+      });
+    } catch (err) {
+      return Promise.reject(new Error(`create notification want agent failed: ${describeError(err)}`));
+    }
+    this.notificationWantAgentRequest = request;
+    request
+      .then((agent: WantAgent) => {
+        this.notificationWantAgent = agent;
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (this.notificationWantAgentRequest === request) {
+          this.notificationWantAgentRequest = undefined;
+        }
+      });
+    return request;
+  }
+
+  private async publishSpeedNotification(): Promise<void> {
     if (this.notificationPublishing || Date.now() < this.notificationRetryAt) {
       return;
     }
@@ -274,44 +320,47 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     }
 
     const generation = this.notificationGeneration;
-    const request: notificationManager.NotificationRequest = {
-      id: VPN_SPEED_NOTIFICATION_ID,
-      notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
-      isOngoing: true,
-      isUnremovable: true,
-      isAlertOnce: true,
-      tapDismissed: false,
-      showDeliveryTime: false,
-      content: {
-        notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-        normal: {
-          title: 'Paws · VPN',
-          text,
-          additionalText: '实时网速',
-        },
-      },
-    };
     this.notificationPublishing = true;
-    notificationManager.publish(request)
-      .then(() => {
-        if (generation !== this.notificationGeneration) {
-          notificationManager.cancel(VPN_SPEED_NOTIFICATION_ID).catch(() => {});
-          return;
-        }
-        this.lastNotificationText = text;
-        this.notificationFailureLogged = false;
-        this.notificationRetryAt = 0;
-      })
-      .catch((err: Error) => {
-        this.notificationRetryAt = Date.now() + NOTIFICATION_RETRY_DELAY_MS;
-        if (!this.notificationFailureLogged) {
-          hilog.warn(LOG_DOMAIN, LOG_TAG, 'publish VPN speed notification failed %{public}s', describeError(err));
-          this.notificationFailureLogged = true;
-        }
-      })
-      .finally(() => {
-        this.notificationPublishing = false;
-      });
+    try {
+      const notificationWantAgent = await this.getNotificationWantAgent();
+      if (generation !== this.notificationGeneration) {
+        return;
+      }
+      const request: notificationManager.NotificationRequest = {
+        id: VPN_SPEED_NOTIFICATION_ID,
+        notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
+        isOngoing: true,
+        isUnremovable: true,
+        isAlertOnce: true,
+        tapDismissed: false,
+        showDeliveryTime: false,
+        wantAgent: notificationWantAgent,
+        content: {
+          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+          normal: {
+            title: 'Paws · VPN',
+            text,
+            additionalText: '实时网速',
+          },
+        },
+      };
+      await notificationManager.publish(request);
+      if (generation !== this.notificationGeneration) {
+        notificationManager.cancel(VPN_SPEED_NOTIFICATION_ID).catch(() => {});
+        return;
+      }
+      this.lastNotificationText = text;
+      this.notificationFailureLogged = false;
+      this.notificationRetryAt = 0;
+    } catch (err) {
+      this.notificationRetryAt = Date.now() + NOTIFICATION_RETRY_DELAY_MS;
+      if (!this.notificationFailureLogged) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'publish VPN speed notification failed %{public}s', describeError(err));
+        this.notificationFailureLogged = true;
+      }
+    } finally {
+      this.notificationPublishing = false;
+    }
   }
 
   private stopSpeedNotification(): void {

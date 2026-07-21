@@ -30,3 +30,13 @@ fn vpn_notification_is_updated_in_place_and_removed_on_stop() {
     assert!(VPN_ABILITY.contains("this.stopSpeedNotification()"));
     assert!(VPN_ABILITY.contains("this.persistTelemetry(false)"));
 }
+
+#[test]
+fn vpn_notification_click_opens_the_entry_ability() {
+    assert!(VPN_ABILITY.contains("wantAgent.getWantAgent"));
+    assert!(VPN_ABILITY.contains("actionType: wantAgent.OperationType.START_ABILITY"));
+    assert!(VPN_ABILITY.contains("moduleName: HMETA_MODULE_NAME"));
+    assert!(VPN_ABILITY.contains("abilityName: HMETA_ENTRY_ABILITY"));
+    assert!(VPN_ABILITY.contains("wantAgent: notificationWantAgent"));
+    assert!(VPN_ABILITY.contains("WantAgentFlags.UPDATE_PRESENT_FLAG"));
+}
