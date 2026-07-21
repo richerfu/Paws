@@ -19,6 +19,8 @@ pub(crate) fn matches_connection_query(connection: &ConnectionSummary, query: &s
     }
     let query = query.to_ascii_lowercase();
     contains(&connection.host, &query)
+        || contains(&connection.domain, &query)
+        || contains(&connection.destination_ip, &query)
         || contains(&connection.network, &query)
         || contains(&connection.rule, &query)
         || contains(&connection.rule_payload, &query)
@@ -48,6 +50,8 @@ pub(crate) fn matches_request_filter(
     }
     let query = query.to_ascii_lowercase();
     contains(&request.host, &query)
+        || contains(&request.domain, &query)
+        || contains(&request.destination_ip, &query)
         || contains(&request.network, &query)
         || contains(&request.rule, &query)
         || contains(&request.proxy, &query)

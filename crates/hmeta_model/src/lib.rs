@@ -339,6 +339,52 @@ pub struct RuleSummary {
     pub source: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ManualRuleMatchKind {
+    Domain,
+    DomainSuffix,
+    IpCidr,
+}
+
+impl ManualRuleMatchKind {
+    pub fn rule_type(self, ipv6: bool) -> &'static str {
+        match self {
+            Self::Domain => "DOMAIN",
+            Self::DomainSuffix => "DOMAIN-SUFFIX",
+            Self::IpCidr if ipv6 => "IP-CIDR6",
+            Self::IpCidr => "IP-CIDR",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualRuleSpec {
+    pub match_kind: ManualRuleMatchKind,
+    pub value: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ManualRuleMutationKind {
+    Added,
+    Updated,
+    Reenabled,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualRuleMutation {
+    pub rule_id: String,
+    pub line: String,
+    pub kind: ManualRuleMutationKind,
+    pub replaced_line: Option<String>,
+    pub removed_duplicates: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSummary {
@@ -432,6 +478,12 @@ pub struct LogEntry {
 pub struct ConnectionSummary {
     pub id: String,
     pub host: String,
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default)]
+    pub destination_ip: String,
+    #[serde(default)]
+    pub destination_port: u16,
     pub network: String,
     pub rule: String,
     #[serde(default)]
@@ -450,6 +502,12 @@ pub struct ConnectionSummary {
 pub struct RequestSummary {
     pub id: String,
     pub host: String,
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default)]
+    pub destination_ip: String,
+    #[serde(default)]
+    pub destination_port: u16,
     pub network: String,
     pub rule: String,
     pub proxy: String,

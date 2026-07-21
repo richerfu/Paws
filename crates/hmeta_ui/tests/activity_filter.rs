@@ -10,6 +10,9 @@ fn connection(host: &str, rule: &str, proxy: &str) -> ConnectionSummary {
     ConnectionSummary {
         id: "conn-1".to_owned(),
         host: host.to_owned(),
+        domain: host.split(':').next().unwrap_or(host).to_owned(),
+        destination_ip: String::new(),
+        destination_port: 443,
         network: "tcp".to_owned(),
         rule: rule.to_owned(),
         rule_payload: "example.com".to_owned(),
@@ -25,6 +28,9 @@ fn request(active: bool, host: &str, rule: &str, proxy: &str) -> RequestSummary 
     RequestSummary {
         id: "req-1".to_owned(),
         host: host.to_owned(),
+        domain: host.split(':').next().unwrap_or(host).to_owned(),
+        destination_ip: String::new(),
+        destination_port: 53,
         network: "udp".to_owned(),
         rule: rule.to_owned(),
         proxy: proxy.to_owned(),
@@ -37,10 +43,13 @@ fn request(active: bool, host: &str, rule: &str, proxy: &str) -> RequestSummary 
 
 #[test]
 fn matches_connection_query_across_connection_fields() {
-    let item = connection("api.example.com:443", "DOMAIN(example.com)", "Proxy A");
+    let mut item = connection("198.51.100.7:443", "DOMAIN(example.com)", "Proxy A");
+    item.domain = "api.example.com".to_owned();
+    item.destination_ip = "198.51.100.7".to_owned();
 
     assert!(matches_connection_query(&item, ""));
     assert!(matches_connection_query(&item, "API.EXAMPLE"));
+    assert!(matches_connection_query(&item, "198.51.100"));
     assert!(matches_connection_query(&item, "domain"));
     assert!(matches_connection_query(&item, "example.com"));
     assert!(matches_connection_query(&item, "auto"));
@@ -52,18 +61,25 @@ fn matches_connection_query_across_connection_fields() {
 
 #[test]
 fn matches_request_status_and_query_filters() {
-    let active = request(
-        true,
-        "api.example.com:443",
-        "DOMAIN(example.com)",
-        "Proxy A",
-    );
+    let mut active = request(true, "198.51.100.8:443", "DOMAIN(example.com)", "Proxy A");
+    active.domain = "api.example.com".to_owned();
+    active.destination_ip = "198.51.100.8".to_owned();
     let ended = request(false, "cdn.example.com:443", "MATCH", "DIRECT");
 
     assert!(matches_request_filter(
         &active,
         RequestStatusFilter::Active,
         "proxy"
+    ));
+    assert!(matches_request_filter(
+        &active,
+        RequestStatusFilter::Active,
+        "api.example"
+    ));
+    assert!(matches_request_filter(
+        &active,
+        RequestStatusFilter::Active,
+        "198.51.100"
     ));
     assert!(!matches_request_filter(
         &active,

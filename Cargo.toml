@@ -32,6 +32,7 @@ base64 = "0.22"
 dashmap = "6"
 dioxus = { version = "0.7", default-features = false, features = ["signals", "hooks", "macro"] }
 futures = "0.3"
+ipnet = "2"
 libc = "0.2"
 netstack-smoltcp = "0.2"
 napi-build-ohos = "1.1"

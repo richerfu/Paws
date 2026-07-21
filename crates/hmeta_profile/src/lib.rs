@@ -1,23 +1,27 @@
 use base64::Engine;
 use hmeta_model::{
-    GeodataFileSummary, HMetaError, PerAppMode, ProfileSummary, ProviderSummary, RuleSummary,
-    RuntimeMode, SubscriptionMetadata, SubscriptionUserInfo, VpnOptions, DEFAULT_CHINA_DNS_SERVERS,
-    DEFAULT_GLOBAL_DNS_FALLBACKS,
+    GeodataFileSummary, HMetaError, ManualRuleMatchKind, ManualRuleMutation,
+    ManualRuleMutationKind, ManualRuleSpec, PerAppMode, ProfileSummary, ProviderSummary,
+    RuleSummary, RuntimeMode, SubscriptionMetadata, SubscriptionUserInfo, VpnOptions,
+    DEFAULT_CHINA_DNS_SERVERS, DEFAULT_GLOBAL_DNS_FALLBACKS,
 };
+use ipnet::IpNet;
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use url::Url;
+use url::{Host, Url};
 
 const STORE_VERSION: u32 = 1;
 const MEOW_V4_CLIENT: &str = "172.19.0.1/30";
 const MEOW_V4_ROUTER: &str = "172.19.0.2";
 const MEOW_V6_CLIENT: &str = "fdfe:dcba:9876::1/126";
+pub const MANUAL_ACTIVITY_RULE_SOURCE: &str = "manual:activity";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -819,6 +823,100 @@ impl ProfileStore {
         Ok(ids)
     }
 
+    /// Stage a validated activity rule in memory. The caller can render and
+    /// validate the resulting runtime configuration before committing it with
+    /// [`ProfileStore::persist`]. Rules with the same selector are replaced
+    /// instead of stacked, and the latest explicit override is kept first.
+    pub fn stage_manual_rule(
+        &mut self,
+        profile_id: &str,
+        spec: &ManualRuleSpec,
+    ) -> Result<ManualRuleMutation, HMetaError> {
+        self.profile(profile_id)?;
+        let normalized = normalize_manual_rule_spec(spec)?;
+        let line = normalized.line();
+        let mut matching = self
+            .rules
+            .values()
+            .filter(|rule| rule.profile_id == profile_id)
+            .filter_map(|rule| {
+                manual_rule_selector(&rule.line)
+                    .filter(|selector| selector == &normalized.selector())
+                    .map(|_| rule.clone())
+            })
+            .collect::<Vec<_>>();
+        matching.sort_by_key(|rule| rule.order);
+
+        let (rule_id, kind, replaced_line) = if let Some(existing) = matching.first() {
+            let reordered = existing.order != 0 || matching.len() > 1;
+            let kind = if existing.line.trim() != line {
+                ManualRuleMutationKind::Updated
+            } else if !existing.enabled {
+                ManualRuleMutationKind::Reenabled
+            } else if reordered {
+                ManualRuleMutationKind::Updated
+            } else {
+                ManualRuleMutationKind::Unchanged
+            };
+            let replaced_line = (existing.line.trim() != line).then(|| existing.line.clone());
+            let rule = self
+                .rules
+                .get_mut(&existing.id)
+                .ok_or_else(|| HMetaError::RuleNotFound(existing.id.clone()))?;
+            rule.line = line.clone();
+            rule.enabled = true;
+            rule.source = MANUAL_ACTIVITY_RULE_SOURCE.to_owned();
+            (existing.id.clone(), kind, replaced_line)
+        } else {
+            let id = next_id("rule");
+            self.rules.insert(
+                id.clone(),
+                RuleDocument {
+                    id: id.clone(),
+                    profile_id: profile_id.to_owned(),
+                    line: line.clone(),
+                    enabled: true,
+                    order: 0,
+                    source: MANUAL_ACTIVITY_RULE_SOURCE.to_owned(),
+                },
+            );
+            (id, ManualRuleMutationKind::Added, None)
+        };
+
+        let duplicate_ids = matching
+            .into_iter()
+            .skip(1)
+            .map(|rule| rule.id)
+            .collect::<Vec<_>>();
+        for duplicate_id in &duplicate_ids {
+            self.rules.remove(duplicate_id);
+        }
+
+        let mut ordered_ids = self
+            .rules
+            .values()
+            .filter(|rule| rule.profile_id == profile_id && rule.id != rule_id)
+            .map(|rule| (rule.order, rule.id.clone()))
+            .collect::<Vec<_>>();
+        ordered_ids.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+        if let Some(rule) = self.rules.get_mut(&rule_id) {
+            rule.order = 0;
+        }
+        for (index, (_, id)) in ordered_ids.into_iter().enumerate() {
+            if let Some(rule) = self.rules.get_mut(&id) {
+                rule.order = index.saturating_add(1) as u32;
+            }
+        }
+
+        Ok(ManualRuleMutation {
+            rule_id,
+            line,
+            kind,
+            replaced_line,
+            removed_duplicates: duplicate_ids.len(),
+        })
+    }
+
     pub fn set_rule_enabled(
         &mut self,
         profile_id: &str,
@@ -867,6 +965,17 @@ impl ProfileStore {
         mode: RuntimeMode,
         vpn_options: &VpnOptions,
     ) -> Result<String, HMetaError> {
+        let yaml = self.render_runtime_yaml(profile_id, mode, vpn_options)?;
+        self.write_runtime_yaml(profile_id, &yaml)?;
+        Ok(yaml)
+    }
+
+    pub fn render_runtime_yaml(
+        &self,
+        profile_id: &str,
+        mode: RuntimeMode,
+        vpn_options: &VpnOptions,
+    ) -> Result<String, HMetaError> {
         let raw_yaml = self.raw_yaml(profile_id)?;
         let mut value: Value =
             serde_yaml::from_str(&raw_yaml).map_err(|err| HMetaError::Core(err.to_string()))?;
@@ -889,14 +998,19 @@ impl ProfileStore {
         rewrite_provider_paths(root, &self.root, profile_id)?;
         merge_rules(root, self.enabled_rule_lines(profile_id));
 
-        let yaml =
-            serde_yaml::to_string(&value).map_err(|err| HMetaError::Core(err.to_string()))?;
+        serde_yaml::to_string(&value).map_err(|err| HMetaError::Core(err.to_string()))
+    }
+
+    pub fn write_runtime_yaml(&self, profile_id: &str, yaml: &str) -> Result<(), HMetaError> {
         fs::write(
             self.root.join("runtime").join(format!("{profile_id}.yaml")),
-            &yaml,
+            yaml,
         )
-        .map_err(io_error)?;
-        Ok(yaml)
+        .map_err(io_error)
+    }
+
+    pub fn persist(&self) -> Result<(), HMetaError> {
+        self.save()
     }
 
     pub fn providers_from_yaml(&self, raw_yaml: &str) -> Vec<ProviderSummary> {
@@ -985,6 +1099,109 @@ impl ProfileStore {
         rules.sort_by_key(|rule| rule.order);
         rules.into_iter().map(|rule| rule.line).collect()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedManualRule {
+    match_kind: ManualRuleMatchKind,
+    value: String,
+    target: String,
+    ipv6: bool,
+}
+
+impl NormalizedManualRule {
+    fn selector(&self) -> (ManualRuleMatchKind, String) {
+        (self.match_kind, self.value.clone())
+    }
+
+    fn line(&self) -> String {
+        format!(
+            "{},{},{}",
+            self.match_kind.rule_type(self.ipv6),
+            self.value,
+            self.target
+        )
+    }
+}
+
+fn normalize_manual_rule_spec(spec: &ManualRuleSpec) -> Result<NormalizedManualRule, HMetaError> {
+    let target = spec.target.trim();
+    if target.is_empty() || target.contains(',') || target.contains('\n') || target.contains('\r') {
+        return Err(HMetaError::Core(
+            "manual rule target must be a proxy group or DIRECT".to_owned(),
+        ));
+    }
+    let target = if target.eq_ignore_ascii_case("DIRECT") {
+        "DIRECT".to_owned()
+    } else {
+        target.to_owned()
+    };
+    let (value, ipv6) = normalize_manual_rule_value(spec.match_kind, &spec.value)?;
+    Ok(NormalizedManualRule {
+        match_kind: spec.match_kind,
+        value,
+        target,
+        ipv6,
+    })
+}
+
+fn normalize_manual_rule_value(
+    match_kind: ManualRuleMatchKind,
+    value: &str,
+) -> Result<(String, bool), HMetaError> {
+    match match_kind {
+        ManualRuleMatchKind::Domain | ManualRuleMatchKind::DomainSuffix => {
+            let mut value = value.trim().trim_end_matches('.');
+            if match_kind == ManualRuleMatchKind::DomainSuffix {
+                value = value.trim_start_matches('.');
+            }
+            if value.is_empty() || value.contains(['/', ',', '\n', '\r']) {
+                return Err(HMetaError::Core("invalid manual rule domain".to_owned()));
+            }
+            let domain = match Host::parse(value)
+                .map_err(|_| HMetaError::Core(format!("invalid manual rule domain: {value}")))?
+            {
+                Host::Domain(domain) => domain,
+                Host::Ipv4(_) | Host::Ipv6(_) => {
+                    return Err(HMetaError::Core(
+                        "use IP/CIDR matching for an IP address".to_owned(),
+                    ));
+                }
+            };
+            Ok((domain.to_ascii_lowercase(), false))
+        }
+        ManualRuleMatchKind::IpCidr => {
+            let network = if value.trim().contains('/') {
+                value
+                    .trim()
+                    .parse::<IpNet>()
+                    .map_err(|_| HMetaError::Core(format!("invalid IP/CIDR: {}", value.trim())))?
+            } else {
+                let ip = value.trim().parse::<IpAddr>().map_err(|_| {
+                    HMetaError::Core(format!("invalid IP address: {}", value.trim()))
+                })?;
+                IpNet::new(ip, if ip.is_ipv4() { 32 } else { 128 })
+                    .map_err(|error| HMetaError::Core(format!("invalid IP address: {error}")))?
+            }
+            .trunc();
+            Ok((network.to_string(), network.addr().is_ipv6()))
+        }
+    }
+}
+
+fn manual_rule_selector(line: &str) -> Option<(ManualRuleMatchKind, String)> {
+    let mut fields = line.split(',').map(str::trim);
+    let rule_type = fields.next()?.to_ascii_uppercase();
+    let value = fields.next()?;
+    let match_kind = match rule_type.as_str() {
+        "DOMAIN" => ManualRuleMatchKind::Domain,
+        "DOMAIN-SUFFIX" => ManualRuleMatchKind::DomainSuffix,
+        "IP-CIDR" | "IP-CIDR6" => ManualRuleMatchKind::IpCidr,
+        _ => return None,
+    };
+    normalize_manual_rule_value(match_kind, value)
+        .ok()
+        .map(|(value, _)| (match_kind, value))
 }
 
 pub fn normalize_profile_content(raw_profile: &str) -> Result<String, HMetaError> {
@@ -3356,6 +3573,100 @@ mod tests {
 
         store.delete_rule(&rule_ids[0]).unwrap();
         assert!(store.rules_for_profile("default").is_empty());
+    }
+
+    #[test]
+    fn activity_rules_are_normalized_and_replace_conflicting_targets() {
+        let root = std::env::temp_dir().join(format!(
+            "hmeta-profile-test-{}",
+            next_id("activity-rule-upsert")
+        ));
+        let mut store = ProfileStore::open(root).unwrap();
+        store.seed_default().unwrap();
+        store
+            .import_rules_for_profile(
+                "default",
+                "manual-file",
+                "DOMAIN,other.example,DIRECT\nDOMAIN-SUFFIX,Example.COM.,Proxy",
+            )
+            .unwrap();
+
+        let mutation = store
+            .stage_manual_rule(
+                "default",
+                &ManualRuleSpec {
+                    match_kind: ManualRuleMatchKind::DomainSuffix,
+                    value: ".EXAMPLE.com.".to_owned(),
+                    target: "DIRECT".to_owned(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(mutation.kind, ManualRuleMutationKind::Updated);
+        assert_eq!(mutation.line, "DOMAIN-SUFFIX,example.com,DIRECT");
+        assert_eq!(
+            mutation.replaced_line.as_deref(),
+            Some("DOMAIN-SUFFIX,Example.COM.,Proxy")
+        );
+        let rules = store.rules_for_profile("default");
+        assert_eq!(rules[0].line, mutation.line);
+        assert_eq!(rules[0].source, MANUAL_ACTIVITY_RULE_SOURCE);
+        assert_eq!(rules[1].line, "DOMAIN,other.example,DIRECT");
+    }
+
+    #[test]
+    fn activity_ip_rules_use_canonical_host_prefixes_and_deduplicate() {
+        let root = std::env::temp_dir().join(format!(
+            "hmeta-profile-test-{}",
+            next_id("activity-ip-rule")
+        ));
+        let mut store = ProfileStore::open(root).unwrap();
+        store.seed_default().unwrap();
+        store
+            .import_rules_for_profile(
+                "default",
+                "manual-a",
+                "IP-CIDR,192.0.2.7/32,DIRECT\nIP-CIDR,192.0.2.7/32,Proxy",
+            )
+            .unwrap();
+
+        let mutation = store
+            .stage_manual_rule(
+                "default",
+                &ManualRuleSpec {
+                    match_kind: ManualRuleMatchKind::IpCidr,
+                    value: "192.0.2.7".to_owned(),
+                    target: "Proxy".to_owned(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(mutation.line, "IP-CIDR,192.0.2.7/32,Proxy");
+        assert_eq!(mutation.removed_duplicates, 1);
+        assert_eq!(
+            store
+                .rules_for_profile("default")
+                .iter()
+                .filter(|rule| rule.line.contains("192.0.2.7/32"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn activity_rules_reject_domain_ip_mixups_and_invalid_prefixes() {
+        assert!(normalize_manual_rule_spec(&ManualRuleSpec {
+            match_kind: ManualRuleMatchKind::Domain,
+            value: "192.0.2.1".to_owned(),
+            target: "DIRECT".to_owned(),
+        })
+        .is_err());
+        assert!(normalize_manual_rule_spec(&ManualRuleSpec {
+            match_kind: ManualRuleMatchKind::IpCidr,
+            value: "192.0.2.1/64".to_owned(),
+            target: "DIRECT".to_owned(),
+        })
+        .is_err());
     }
 
     #[test]

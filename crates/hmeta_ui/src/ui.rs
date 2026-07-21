@@ -23,8 +23,8 @@ use crate::ui_preferences::{LanguagePreference, ThemePreference, UiPreferences};
 use crate::vpn_feedback::{vpn_command_is_pending, vpn_command_message, VpnCommandAction};
 use crate::yaml_summary::summarize_yaml_edit;
 use hmeta_model::{
-    InstalledApplication, PerAppMode, RuntimeMode, RuntimeSnapshot, TrafficHistoryPoint,
-    VpnLifecycle,
+    InstalledApplication, ManualRuleMatchKind, ManualRuleMutationKind, ManualRuleSpec, PerAppMode,
+    RuntimeMode, RuntimeSnapshot, TrafficHistoryPoint, VpnLifecycle,
 };
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -92,6 +92,18 @@ pub(crate) enum Action {
     ControllerDiagnosticFinished(Result<(RuntimeSnapshot, String), String>),
     CloseConnection(String),
     ConnectionClosed(Result<RuntimeSnapshot, String>),
+    OpenManualRuleEditor {
+        connection_id: Option<String>,
+        domain: String,
+        destination_ip: String,
+    },
+    CloseManualRuleEditor,
+    SetManualRuleMatchKind(ManualRuleMatchKind),
+    SetManualRuleValue(String),
+    SetManualRuleTarget(String),
+    SetManualRuleDisconnect(bool),
+    SaveManualRule,
+    ManualRuleSaved(Result<ManualRuleSaveResult, String>),
     CloseAllConnections,
     AllConnectionsClosed(Result<RuntimeSnapshot, String>),
     OpenExternalUrl(String),
@@ -204,7 +216,29 @@ pub(crate) struct State {
     proxy_selection_pending: Option<(String, String)>,
     proxy_delay_loading: bool,
     controller_diagnostic_pending: Option<String>,
+    manual_rule_editor: Option<ManualRuleEditorState>,
     notifications: NotificationCenter,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManualRuleEditorState {
+    connection_id: Option<String>,
+    domain: String,
+    destination_ip: String,
+    match_kind: ManualRuleMatchKind,
+    value: String,
+    target: String,
+    disconnect_after_save: bool,
+    submitting: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManualRuleSaveResult {
+    snapshot: RuntimeSnapshot,
+    applied: hmeta_core::ManualRuleApplyResult,
+    connection_close_requested: bool,
+    connection_close_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -344,6 +378,7 @@ impl State {
             proxy_selection_pending: None,
             proxy_delay_loading: false,
             controller_diagnostic_pending: None,
+            manual_rule_editor: None,
             notifications,
         }
     }
@@ -715,6 +750,136 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     error
                 ),
             ),
+        },
+        Action::OpenManualRuleEditor {
+            connection_id,
+            domain,
+            destination_ip,
+        } => {
+            let domain = domain.trim().to_owned();
+            let destination_ip = destination_ip.trim().to_owned();
+            let (match_kind, value) = if domain.is_empty() {
+                if destination_ip.is_empty() {
+                    (ManualRuleMatchKind::Domain, String::new())
+                } else {
+                    (ManualRuleMatchKind::IpCidr, destination_ip.clone())
+                }
+            } else {
+                (ManualRuleMatchKind::Domain, domain.clone())
+            };
+            state.manual_rule_editor = Some(ManualRuleEditorState {
+                connection_id,
+                domain,
+                destination_ip,
+                match_kind,
+                value,
+                target: "DIRECT".to_owned(),
+                disconnect_after_save: false,
+                submitting: false,
+                error: None,
+            });
+            Command::none()
+        }
+        Action::CloseManualRuleEditor => {
+            if !state
+                .manual_rule_editor
+                .as_ref()
+                .is_some_and(|editor| editor.submitting)
+            {
+                state.manual_rule_editor = None;
+            }
+            Command::none()
+        }
+        Action::SetManualRuleMatchKind(match_kind) => {
+            if let Some(editor) = state.manual_rule_editor.as_mut() {
+                if editor.submitting {
+                    return Command::none();
+                }
+                editor.match_kind = match_kind;
+                editor.value = match match_kind {
+                    ManualRuleMatchKind::Domain | ManualRuleMatchKind::DomainSuffix => {
+                        editor.domain.clone()
+                    }
+                    ManualRuleMatchKind::IpCidr => editor.destination_ip.clone(),
+                };
+                editor.error = None;
+            }
+            Command::none()
+        }
+        Action::SetManualRuleValue(value) => {
+            if let Some(editor) = state.manual_rule_editor.as_mut() {
+                if editor.submitting {
+                    return Command::none();
+                }
+                editor.value = value;
+                editor.error = None;
+            }
+            Command::none()
+        }
+        Action::SetManualRuleTarget(target) => {
+            if let Some(editor) = state.manual_rule_editor.as_mut() {
+                if editor.submitting {
+                    return Command::none();
+                }
+                editor.target = target;
+                editor.error = None;
+            }
+            Command::none()
+        }
+        Action::SetManualRuleDisconnect(disconnect) => {
+            if let Some(editor) = state.manual_rule_editor.as_mut() {
+                if editor.submitting {
+                    return Command::none();
+                }
+                editor.disconnect_after_save = disconnect;
+            }
+            Command::none()
+        }
+        Action::SaveManualRule => {
+            let Some(editor) = state.manual_rule_editor.as_mut() else {
+                return Command::none();
+            };
+            if editor.submitting {
+                return Command::none();
+            }
+            let Some(profile_id) = state.snapshot.active_profile.clone() else {
+                editor.error = Some(if state.locale == UiLocale::ZhCn {
+                    "请先启用一个订阅配置".to_owned()
+                } else {
+                    "Activate a profile before adding a rule".to_owned()
+                });
+                return Command::none();
+            };
+            editor.submitting = true;
+            editor.error = None;
+            let spec = ManualRuleSpec {
+                match_kind: editor.match_kind,
+                value: editor.value.clone(),
+                target: editor.target.clone(),
+            };
+            let connection_id = editor
+                .disconnect_after_save
+                .then(|| editor.connection_id.clone())
+                .flatten();
+            Command::perform(
+                apply_manual_rule_and_snapshot(profile_id, spec, connection_id),
+                Action::ManualRuleSaved,
+            )
+        }
+        Action::ManualRuleSaved(result) => match result {
+            Ok(result) => {
+                let message = manual_rule_saved_message(&result, state.locale);
+                state.snapshot = result.snapshot;
+                state.manual_rule_editor = None;
+                show_toast(state, message)
+            }
+            Err(error) => {
+                if let Some(editor) = state.manual_rule_editor.as_mut() {
+                    editor.submitting = false;
+                    editor.error = Some(error);
+                }
+                Command::none()
+            }
         },
         Action::CloseAllConnections => Command::perform(
             close_all_connections_and_snapshot(),
@@ -2296,6 +2461,33 @@ async fn close_connection_and_snapshot(connection_id: String) -> Result<RuntimeS
     Ok(load_snapshot().await)
 }
 
+async fn apply_manual_rule_and_snapshot(
+    profile_id: String,
+    spec: ManualRuleSpec,
+    connection_id: Option<String>,
+) -> Result<ManualRuleSaveResult, String> {
+    let applied = hmeta_core::shared_core()
+        .apply_manual_rule(&profile_id, &spec)
+        .await
+        .map_err(|error| error.to_string())?;
+    let connection_close_requested = connection_id.is_some();
+    let connection_close_error = if let Some(connection_id) = connection_id {
+        hmeta_core::shared_core()
+            .close_connection_via_controller(&connection_id)
+            .await
+            .err()
+            .map(|error| error.to_string())
+    } else {
+        None
+    };
+    Ok(ManualRuleSaveResult {
+        snapshot: load_snapshot().await,
+        applied,
+        connection_close_requested,
+        connection_close_error,
+    })
+}
+
 async fn close_all_connections_and_snapshot() -> Result<RuntimeSnapshot, String> {
     hmeta_core::shared_core()
         .close_all_connections_via_controller()
@@ -2427,6 +2619,56 @@ fn profile_delete_vpn_action_label(
         ProfileDeleteVpnAction::Stop => strings.feedback_vpn_action_stop,
         ProfileDeleteVpnAction::Restart => strings.feedback_vpn_action_restart,
     }
+}
+
+fn manual_rule_saved_message(result: &ManualRuleSaveResult, locale: UiLocale) -> String {
+    let mut parts = vec![
+        match (locale, result.applied.mutation.kind) {
+            (UiLocale::ZhCn, ManualRuleMutationKind::Added) => "手动规则已添加".to_owned(),
+            (UiLocale::ZhCn, ManualRuleMutationKind::Updated) => "冲突规则已更新".to_owned(),
+            (UiLocale::ZhCn, ManualRuleMutationKind::Reenabled) => "手动规则已重新启用".to_owned(),
+            (UiLocale::ZhCn, ManualRuleMutationKind::Unchanged) => "相同规则已存在".to_owned(),
+            (_, ManualRuleMutationKind::Added) => "Manual rule added".to_owned(),
+            (_, ManualRuleMutationKind::Updated) => "Conflicting rule updated".to_owned(),
+            (_, ManualRuleMutationKind::Reenabled) => "Manual rule re-enabled".to_owned(),
+            (_, ManualRuleMutationKind::Unchanged) => "The same rule already exists".to_owned(),
+        },
+        result.applied.mutation.line.clone(),
+    ];
+    if result.applied.live_updated {
+        parts.push(if locale == UiLocale::ZhCn {
+            "运行时规则已热更新".to_owned()
+        } else {
+            "Runtime rules updated live".to_owned()
+        });
+    } else {
+        parts.push(if locale == UiLocale::ZhCn {
+            "将在 VPN 下次启动时生效".to_owned()
+        } else {
+            "Takes effect on the next VPN start".to_owned()
+        });
+    }
+    if !result.applied.rule_mode_active {
+        parts.push(if locale == UiLocale::ZhCn {
+            "当前不是规则模式，切换到规则模式后才会命中".to_owned()
+        } else {
+            "Rule mode is not active; switch to Rule mode for matching".to_owned()
+        });
+    }
+    if let Some(error) = &result.connection_close_error {
+        parts.push(if locale == UiLocale::ZhCn {
+            format!("规则已保存，但断开当前连接失败：{error}")
+        } else {
+            format!("Rule saved, but the current connection could not be closed: {error}")
+        });
+    } else if result.connection_close_requested {
+        parts.push(if locale == UiLocale::ZhCn {
+            "当前连接已断开，新连接将使用新规则".to_owned()
+        } else {
+            "Current connection closed; the new rule applies when it reconnects".to_owned()
+        });
+    }
+    parts.join(" · ")
 }
 
 fn show_toast(state: &mut State, message: String) -> Command<Action> {

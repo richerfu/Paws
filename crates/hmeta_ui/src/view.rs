@@ -1,4 +1,5 @@
 use super::*;
+use crate::manual_rule::{find_manual_rule_conflict, manual_rule_preview};
 use crate::notification::{use_notification_center, NotificationHost};
 use crate::platform_callbacks;
 use arkit::ohos_arkui_binding::{
@@ -24,8 +25,8 @@ mod pages;
 mod route;
 
 use pages::{
-    about_page, appearance_page, connections_page, per_app_settings_page, requests_page,
-    settings_page, tools_page,
+    about_page, appearance_page, connections_page, manual_rule_dialog, per_app_settings_page,
+    requests_page, settings_page, tools_page,
 };
 use route::Route;
 
@@ -2538,7 +2539,25 @@ fn resources_page(state: Signal<State>) -> Element {
                 {spaced(providers)}
             }
             row { height: 14.0 }
-            {section_label(strings(current.locale).resources_rules_title)}
+            row {
+                percent_width: 1.0,
+                height: 34.0,
+                margin_bottom: 8.0,
+                align_items: "center",
+                text { content: strings(current.locale).resources_rules_title, font_size: 15.0, font_weight: 750, font_color: text_color() }
+                row { layout_weight: 1.0 }
+                FlatButton {
+                    variant: FlatButtonVariant::Ghost,
+                    size: ButtonSize::Sm,
+                    onclick: move |_| dispatch(state, Action::OpenManualRuleEditor {
+                        connection_id: None,
+                        domain: String::new(),
+                        destination_ip: String::new(),
+                    }),
+                    {arkit::icon("plus", 14.0, text_color())}
+                    text { content: tr(current.locale, "添加", "Add"), margin_left: 5.0, font_size: 12.0, font_weight: 650, font_color: text_color() }
+                }
+            }
             if rules.is_empty() {
                 {empty_state("list-checks", tr(current.locale, "当前配置没有可编辑规则", "No editable rules"), tr(current.locale, "请确认已选择订阅并完成配置加载", "Select a profile and wait for configuration loading"))}
             } else {
@@ -2566,6 +2585,9 @@ fn resources_page(state: Signal<State>) -> Element {
                 provider_detail,
                 current.controller_diagnostic_pending.is_some(),
             )}
+        }
+        if current.manual_rule_editor.is_some() {
+            {manual_rule_dialog(state, &current)}
         }
     }
 }

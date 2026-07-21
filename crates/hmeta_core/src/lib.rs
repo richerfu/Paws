@@ -5,9 +5,9 @@ use axum::response::Response as AxumResponse;
 use futures::StreamExt;
 use hmeta_model::{
     from_json, to_json, AboutSnapshot, ConnectionSummary, ControllerDiagnostics, DnsSnapshot,
-    HMetaError, LogEntry, PerAppMode, ProfileSummary, ProviderProxySummary, ProviderSummary,
-    ProxyGroup, ProxyItem, RequestSummary, RuntimeMode, RuntimeSnapshot, TrafficHistoryPoint,
-    TrafficSnapshot, VpnLifecycle, VpnOptions,
+    HMetaError, LogEntry, ManualRuleMutation, ManualRuleSpec, PerAppMode, ProfileSummary,
+    ProviderProxySummary, ProviderSummary, ProxyGroup, ProxyItem, RequestSummary, RuntimeMode,
+    RuntimeSnapshot, TrafficHistoryPoint, TrafficSnapshot, VpnLifecycle, VpnOptions,
 };
 use hmeta_profile::{normalize_profile_content, ProfileStore};
 use hmeta_vpn::{TunSession, TunStats};
@@ -190,6 +190,13 @@ pub struct CoreHandle {
     vpn: TunSession,
     api_controller_enabled: bool,
     api_controller_addr_override: Option<SocketAddr>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManualRuleApplyResult {
+    pub mutation: ManualRuleMutation,
+    pub live_updated: bool,
+    pub rule_mode_active: bool,
 }
 
 impl CoreHandle {
@@ -570,6 +577,97 @@ impl CoreHandle {
             ids.len()
         )));
         Ok(ids)
+    }
+
+    pub async fn apply_manual_rule(
+        &self,
+        profile_id: &str,
+        spec: &ManualRuleSpec,
+    ) -> Result<ManualRuleApplyResult, HMetaError> {
+        let _reload_guard = self.config_reload_lock.lock().await;
+        let (candidate_profiles, old_runtime_yaml, runtime_yaml, mutation, mode) = {
+            let state = self.lock_state()?;
+            if state.profiles.active_profile() != Some(profile_id) {
+                return Err(HMetaError::Core(
+                    "manual activity rules can only be added to the active profile".to_owned(),
+                ));
+            }
+            let mut candidate_profiles = state.profiles.clone();
+            let old_runtime_yaml =
+                state
+                    .profiles
+                    .render_runtime_yaml(profile_id, state.mode, &state.vpn_options)?;
+            let mutation = candidate_profiles.stage_manual_rule(profile_id, spec)?;
+            let runtime_yaml = candidate_profiles.render_runtime_yaml(
+                profile_id,
+                state.mode,
+                &state.vpn_options,
+            )?;
+            (
+                candidate_profiles,
+                old_runtime_yaml,
+                runtime_yaml,
+                mutation,
+                state.mode,
+            )
+        };
+
+        let config = load_meow_config(&runtime_yaml).await?;
+        let target = mutation.line.split(',').nth(2).unwrap_or_default().trim();
+        if !target.eq_ignore_ascii_case("DIRECT") {
+            let is_group = config
+                .proxies
+                .get(target)
+                .is_some_and(|proxy| proxy.members().is_some());
+            if !is_group {
+                return Err(HMetaError::Core(format!(
+                    "manual rule target is not an available proxy group: {target}"
+                )));
+            }
+        }
+
+        let raw_config = config.raw.clone();
+        let loaded_rule_lines = raw_config.rules.clone().unwrap_or_default();
+        let editable_rules = candidate_profiles.rules_for_profile(profile_id);
+        let runtime_rules = runtime_rule_summaries(profile_id, &loaded_rule_lines, &editable_rules);
+
+        let mut state = self.lock_state()?;
+        if state.profiles.active_profile() != Some(profile_id) {
+            return Err(HMetaError::Core(
+                "active profile changed while applying the manual rule".to_owned(),
+            ));
+        }
+        candidate_profiles.write_runtime_yaml(profile_id, &runtime_yaml)?;
+        if let Err(error) = candidate_profiles.persist() {
+            let _ = state
+                .profiles
+                .write_runtime_yaml(profile_id, &old_runtime_yaml);
+            return Err(error);
+        }
+
+        let live_updated = if let Some(tunnel) = &state.tunnel {
+            tunnel.update_rules(config.rules);
+            true
+        } else {
+            false
+        };
+        if let Some(controller) = state.api_controller.as_mut() {
+            *controller.raw_config.write() = raw_config.clone();
+            controller.baseline_raw_config = raw_config;
+            controller.synced_revision = controller.config_revision.load(Ordering::Acquire);
+        }
+        state.profiles = candidate_profiles;
+        state.runtime_rules = runtime_rules;
+        state.logs.push(info_log(format!(
+            "manual activity rule applied: {} ({:?})",
+            mutation.line, mutation.kind
+        )));
+
+        Ok(ManualRuleApplyResult {
+            mutation,
+            live_updated,
+            rule_mode_active: mode == RuntimeMode::Rule,
+        })
     }
 
     pub fn set_rule_enabled(
@@ -3095,6 +3193,13 @@ fn active_connections_from_tunnel(tunnel: &Tunnel) -> Vec<ConnectionSummary> {
             ConnectionSummary {
                 id: connection.id.to_string(),
                 host: connection.metadata.remote_address().to_string(),
+                domain: connection.metadata.rule_host().to_owned(),
+                destination_ip: connection
+                    .metadata
+                    .dst_ip
+                    .map(|ip| ip.to_string())
+                    .unwrap_or_default(),
+                destination_port: connection.metadata.dst_port,
                 network: connection.metadata.network.to_string(),
                 rule,
                 rule_payload,
@@ -3123,6 +3228,9 @@ fn record_request_history(state: &mut CoreState, connections: &[ConnectionSummar
             .find(|request| request.id == connection.id)
         {
             request.host = connection.host.clone();
+            request.domain = connection.domain.clone();
+            request.destination_ip = connection.destination_ip.clone();
+            request.destination_port = connection.destination_port;
             request.network = connection.network.clone();
             request.rule = connection.rule.clone();
             request.proxy = connection.proxy.clone();
@@ -3136,6 +3244,9 @@ fn record_request_history(state: &mut CoreState, connections: &[ConnectionSummar
         state.request_history.push_back(RequestSummary {
             id: connection.id.clone(),
             host: connection.host.clone(),
+            domain: connection.domain.clone(),
+            destination_ip: connection.destination_ip.clone(),
+            destination_port: connection.destination_port,
             network: connection.network.clone(),
             rule: connection.rule.clone(),
             proxy: connection.proxy.clone(),
@@ -3997,6 +4108,84 @@ rules:
             .iter()
             .any(|rule| rule.source == "profile-yaml" && rule.enabled));
         assert_eq!(snapshot.profiles[0].rule_count, snapshot.rules.len());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn manual_activity_rules_persist_and_hot_update_the_existing_tunnel() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-core-manual-rule-test-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(root.clone());
+        let profile_id = core
+            .import_profile_from_content(
+                "Manual rule",
+                "test",
+                &hmeta_profile::default_runtime_yaml(),
+                None,
+            )
+            .await
+            .unwrap();
+        core.reload_config(&profile_id).await.unwrap();
+        let original_inner = {
+            let state = core.lock_state().unwrap();
+            Arc::clone(state.tunnel.as_ref().unwrap().inner())
+        };
+
+        let added = core
+            .apply_manual_rule(
+                &profile_id,
+                &ManualRuleSpec {
+                    match_kind: hmeta_model::ManualRuleMatchKind::Domain,
+                    value: "API.Example.COM.".to_owned(),
+                    target: "Proxy".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            added.mutation.kind,
+            hmeta_model::ManualRuleMutationKind::Added
+        );
+        assert_eq!(added.mutation.line, "DOMAIN,api.example.com,Proxy");
+        assert!(added.live_updated);
+        assert!(added.rule_mode_active);
+
+        let updated = core
+            .apply_manual_rule(
+                &profile_id,
+                &ManualRuleSpec {
+                    match_kind: hmeta_model::ManualRuleMatchKind::Domain,
+                    value: "api.example.com".to_owned(),
+                    target: "DIRECT".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.mutation.rule_id, added.mutation.rule_id);
+        assert_eq!(
+            updated.mutation.kind,
+            hmeta_model::ManualRuleMutationKind::Updated
+        );
+
+        let snapshot = core.snapshot().unwrap();
+        let matching = snapshot
+            .rules
+            .iter()
+            .filter(|rule| rule.line.starts_with("DOMAIN,api.example.com,"))
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1);
+        assert_eq!(matching[0].line, "DOMAIN,api.example.com,DIRECT");
+        let current_inner = {
+            let state = core.lock_state().unwrap();
+            Arc::clone(state.tunnel.as_ref().unwrap().inner())
+        };
+        assert!(Arc::ptr_eq(&original_inner, &current_inner));
+
+        let reopened = ProfileStore::open(&root).unwrap();
+        assert!(reopened
+            .rules_for_profile(&profile_id)
+            .iter()
+            .any(|rule| rule.line == "DOMAIN,api.example.com,DIRECT"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -64,13 +64,38 @@ fn virtual_activity_rows_keep_their_previous_actions() {
 }
 
 #[test]
+fn activity_rows_create_structured_hot_rules_without_leaving_virtual_lists() {
+    assert_eq!(
+        ACTIVITY_SOURCE
+            .matches("Action::OpenManualRuleEditor")
+            .count(),
+        2,
+    );
+    assert!(ACTIVITY_SOURCE.contains("fn manual_rule_dialog("));
+    assert!(ACTIVITY_SOURCE.contains("fn ManualRuleDialogContent("));
+    assert!(ACTIVITY_SOURCE.contains("let current = state.read().clone();"));
+    assert!(ACTIVITY_SOURCE.contains("ManualRuleMatchKind::Domain"));
+    assert!(ACTIVITY_SOURCE.contains("ManualRuleMatchKind::DomainSuffix"));
+    assert!(ACTIVITY_SOURCE.contains("ManualRuleMatchKind::IpCidr"));
+    assert!(ACTIVITY_SOURCE.contains("ManualRuleTargetSelect {"));
+    assert!(!ACTIVITY_SOURCE.contains("\"Fruits\""));
+    assert!(ACTIVITY_SOURCE.contains("Action::SetManualRuleDisconnect(value)"));
+    assert!(ACTIVITY_SOURCE.contains("manual_rule_preview("));
+    assert!(ACTIVITY_SOURCE.contains("find_manual_rule_conflict("));
+    assert_eq!(ACTIVITY_SOURCE.matches("on_add_rule.call(").count(), 2);
+}
+
+#[test]
 fn resource_rules_are_compact_and_section_titles_have_no_counts() {
     let page = section(VIEW_SOURCE, "fn resources_page", "fn geodata_detail_dialog");
     let rule = section(VIEW_SOURCE, "fn rule_view", "fn reordered_rule_ids");
     let label = section(VIEW_SOURCE, "fn section_label", "fn empty_state");
 
     assert!(page.contains("section_label(tr(current.locale, \"Provider\", \"Providers\"))"));
-    assert!(page.contains("section_label(strings(current.locale).resources_rules_title)"));
+    assert!(page.contains("content: strings(current.locale).resources_rules_title"));
+    assert!(page.contains("tr(current.locale, \"添加\", \"Add\")"));
+    assert!(page.contains("Action::OpenManualRuleEditor"));
+    assert!(page.contains("manual_rule_dialog(state, &current)"));
     assert!(!page.contains("section_label(tr(current.locale, \"Provider\", \"Providers\"),"));
     assert!(!page.contains("section_label(strings(current.locale).resources_rules_title,"));
     assert!(page.contains("compact_rule_list(rules)"));
