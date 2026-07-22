@@ -1,5 +1,4 @@
 import { AbilityConstant, Configuration, ConfigurationConstant, Want } from '@kit.AbilityKit';
-import { osAccount } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { i18n } from '@kit.LocalizationKit';
 import { vpnExtension } from '@kit.NetworkKit';
@@ -8,16 +7,10 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { NativeAbility } from '@ohos-rs/ability';
 import hmetaUi from 'libhmeta_ui.so';
 import window from '@ohos.window';
-import legacyBundle from '@ohos.bundle';
-import { buildVpnWant, currentHMetaBundleName, setHMetaBundleName } from '../vpnability/VpnConfig';
+import { buildVpnWant, setHMetaBundleName } from '../vpnability/VpnConfig';
 
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'HMetaEntry';
-
-interface HMetaInstalledApplication {
-  bundleName: string;
-  name: string;
-}
 
 interface HMetaAutomationParams {
   hmetaProfileContent?: string;
@@ -224,55 +217,6 @@ export default class EntryAbility extends NativeAbility {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'request VPN stop failed %{public}s', describeError(err));
       throw new Error(describeError(err) || 'request VPN stop failed');
     }
-  }
-
-  private async listInstalledApplications(): Promise<string> {
-    const result: HMetaInstalledApplication[] = [];
-    try {
-      const launcherWants: Want[] = [
-        {
-          action: 'action.system.home',
-          entities: ['entity.system.home'],
-        },
-        {
-          action: 'ohos.want.action.home',
-          entities: ['entity.system.home'],
-        },
-      ];
-      const seenBundles: Record<string, boolean> = {};
-      const userId = await osAccount.getAccountManager().getOsAccountLocalId();
-      for (const launcherWant of launcherWants) {
-        const launchableAbilities = await legacyBundle.queryAbilityByWant(
-          launcherWant,
-          legacyBundle.BundleFlag.GET_BUNDLE_DEFAULT,
-          userId,
-        );
-        for (const abilityInfo of launchableAbilities) {
-          const bundleName = abilityInfo.bundleName ?? '';
-          if (!bundleName || bundleName === currentHMetaBundleName()) {
-            continue;
-          }
-          if (seenBundles[bundleName]) {
-            continue;
-          }
-          seenBundles[bundleName] = true;
-          result.push({
-            bundleName,
-            name: abilityInfo.label && abilityInfo.label.length > 0 ? abilityInfo.label : bundleName,
-          });
-        }
-      }
-      result.sort((left: HMetaInstalledApplication, right: HMetaInstalledApplication) => {
-        const nameCompare = left.name.localeCompare(right.name);
-        return nameCompare !== 0 ? nameCompare : left.bundleName.localeCompare(right.bundleName);
-      });
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'listed %{public}d launchable applications', result.length);
-    } catch (err) {
-      const message = describeError(err) || 'list installed applications failed';
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'list installed applications failed %{public}s', message);
-      throw new Error(message);
-    }
-    return JSON.stringify(result);
   }
 
   private async openExternalUrl(url: string): Promise<void> {
@@ -608,7 +552,6 @@ export default class EntryAbility extends NativeAbility {
         pickProfileFile: async () => await this.pickProfileFileFromSystem(),
         requestStartVpn: async (optionsJson: string) => await this.requestStartVpn(optionsJson),
         requestStopVpn: async () => await this.requestStopVpn(),
-        listInstalledApplications: async () => await this.listInstalledApplications(),
         openExternalUrl: async (url: string) => await this.openExternalUrl(url),
         exportProfile: async (requestJson: string) => await this.exportProfileToSystem(requestJson),
         setColorMode: async (colorMode: number) => this.setAppColorMode(colorMode),

@@ -4,17 +4,14 @@ import { notificationManager } from '@kit.NotificationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import hmetaUi from 'libhmeta_ui.so';
 import {
-  blockedApplications,
   DEFAULT_OPTIONS_JSON,
   HMetaVpnConfig,
   HMETA_ENTRY_ABILITY,
   HMETA_MODULE_NAME,
   parseOptions,
-  perAppMode,
   readOptionsJson,
   currentHMetaBundleName,
   setHMetaBundleName,
-  trustedApplications,
 } from './VpnConfig';
 
 const LOG_DOMAIN: number = 0x0000;
@@ -134,17 +131,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
       ? readOptionsJson(rawOptionsJson)
       : DEFAULT_OPTIONS_JSON;
     const options = parseOptions(optionsJson);
-    const trusted = trustedApplications(options);
-    const blocked = blockedApplications(options);
-    const config = new HMetaVpnConfig(options, trusted, blocked);
-    hilog.info(
-      LOG_DOMAIN,
-      LOG_TAG,
-      'applying per-app VPN mode %{public}s trusted %{public}d blocked %{public}d',
-      perAppMode(options),
-      trusted.length,
-      blocked.length,
-    );
+    const config = new HMetaVpnConfig(options);
     const startedAt = Date.now();
 
     try {

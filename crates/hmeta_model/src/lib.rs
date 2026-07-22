@@ -38,34 +38,39 @@ impl TryFrom<&str> for RuntimeMode {
     }
 }
 
+pub const SUPPORTED_VPN_STACKS: &[VpnStack] = &[VpnStack::Smoltcp, VpnStack::Lwip];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum PerAppMode {
-    Off,
-    Proxy,
-    Bypass,
+pub enum VpnStack {
+    Smoltcp,
+    Lwip,
 }
 
-impl PerAppMode {
+impl VpnStack {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Off => "off",
-            Self::Proxy => "proxy",
-            Self::Bypass => "bypass",
+            Self::Smoltcp => "netstack-smoltcp",
+            Self::Lwip => "lwip",
         }
     }
 }
 
-impl TryFrom<&str> for PerAppMode {
+impl Default for VpnStack {
+    fn default() -> Self {
+        Self::Smoltcp
+    }
+}
+
+impl TryFrom<&str> for VpnStack {
     type Error = HMetaError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "off" | "disabled" | "none" => Ok(Self::Off),
-            "proxy" | "allow" | "allowlist" | "include" => Ok(Self::Proxy),
-            "bypass" | "block" | "blocklist" | "exclude" => Ok(Self::Bypass),
+        match value.trim().to_ascii_lowercase().as_str() {
+            "netstack-smoltcp" | "smoltcp" => Ok(Self::Smoltcp),
+            "lwip" => Ok(Self::Lwip),
             other => Err(HMetaError::Core(format!(
-                "invalid per-app VPN mode: {other}"
+                "unsupported VPN network stack: {other}"
             ))),
         }
     }
@@ -90,17 +95,6 @@ pub struct VpnOptions {
     pub dns_fallbacks: Vec<String>,
     #[serde(default)]
     pub dns_nameserver_policy: BTreeMap<String, Vec<String>>,
-    #[serde(default)]
-    pub per_app_mode: PerAppMode,
-    pub trusted_applications: Vec<String>,
-    pub blocked_applications: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InstalledApplication {
-    pub bundle_name: String,
-    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,22 +154,13 @@ impl Default for VpnOptions {
             system_proxy: false,
             dns_hijacking: true,
             allow_bypass: false,
-            stack: "netstack-smoltcp".to_owned(),
+            stack: VpnStack::default().as_str().to_owned(),
             routes: vec!["0.0.0.0/0".to_owned()],
             dns_addresses: default_vpn_dns_addresses(),
             dns_servers: default_china_dns_servers(),
             dns_fallbacks: default_global_dns_fallbacks(),
             dns_nameserver_policy: default_dns_policy(),
-            per_app_mode: PerAppMode::Off,
-            trusted_applications: Vec::new(),
-            blocked_applications: Vec::new(),
         }
-    }
-}
-
-impl Default for PerAppMode {
-    fn default() -> Self {
-        Self::Off
     }
 }
 
@@ -674,4 +659,29 @@ pub fn to_json<T: Serialize>(value: &T) -> Result<String, HMetaError> {
 
 pub fn from_json<T: for<'de> Deserialize<'de>>(value: &str) -> Result<T, HMetaError> {
     serde_json::from_str(value).map_err(|err| HMetaError::InvalidJson(err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vpn_stack_parses_only_runnable_backends() {
+        assert_eq!(
+            VpnStack::try_from("netstack-smoltcp").unwrap(),
+            VpnStack::Smoltcp
+        );
+        assert_eq!(VpnStack::try_from("smoltcp").unwrap(), VpnStack::Smoltcp);
+        assert_eq!(VpnStack::try_from(" LWIP ").unwrap(), VpnStack::Lwip);
+        assert!(VpnStack::try_from("gvisor").is_err());
+        assert_eq!(SUPPORTED_VPN_STACKS, &[VpnStack::Smoltcp, VpnStack::Lwip]);
+    }
+
+    #[test]
+    fn default_vpn_options_omit_per_app_system_fields() {
+        let json = to_json(&VpnOptions::default()).unwrap();
+        assert!(!json.contains("perAppMode"));
+        assert!(!json.contains("trustedApplications"));
+        assert!(!json.contains("blockedApplications"));
+    }
 }

@@ -31,6 +31,21 @@ Hvigor daemon registry locks; set `HVIGOR_ARGS` to override that behavior. The
 expected output is
 `entry/build/default/outputs/default/entry-default-unsigned.hap`.
 
+For a signed package that can be installed on a physical device, run:
+
+```sh
+scripts/package-signed-hap.sh
+```
+
+The signed-package script uses DevEco Studio's bundled JBR for the HarmonyOS
+signing task. Do not unpack and rebuild the HAP with a generic ZIP utility:
+that changes `resources.index` and layered app-icon entries from the aligned,
+stored layout emitted by the HarmonyOS packager to deflated entries. Simulator
+resource loading may tolerate that layout, while a physical-device launcher
+can resolve the desktop icon incorrectly. The script rejects signed artifacts
+whose icon resources are compressed. Its default output is
+`entry/build/default/outputs/default/entry-default-release-signed.hap`.
+
 ## GitHub Actions
 
 `.github/workflows/ci.yml` defines two jobs:

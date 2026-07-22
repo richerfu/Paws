@@ -86,8 +86,6 @@ export declare function setProfileDnsConfig(profileId: string, dnsServersJson: s
 
 export declare function setProfileVpnConfig(profileId: string, systemProxy: boolean, dnsHijacking: boolean, allowBypass: boolean, stack: string): Promise<void>
 
-export declare function setProfilePerAppConfig(profileId: string, mode: string, trustedApplicationsJson: string, blockedApplicationsJson: string): Promise<void>
-
 export declare function setRuleEnabled(profileId: string, ruleId: string, enabled: boolean): void
 
 export declare function startVpn(fd: number, optionsJson: string): Promise<void>

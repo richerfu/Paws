@@ -67,9 +67,6 @@ export interface VpnOptions {
   dnsServers?: string[];
   dnsFallbacks?: string[];
   dnsNameserverPolicy?: Record<string, string[]>;
-  perAppMode?: string;
-  trustedApplications?: string[];
-  blockedApplications?: string[];
 }
 
 const DEFAULT_DNS_NAMESERVER_POLICY: Record<string, string[]> = {
@@ -90,9 +87,6 @@ const DEFAULT_OPTIONS: VpnOptions = {
   dnsServers: ['223.5.5.5', '119.29.29.29'],
   dnsFallbacks: ['1.1.1.1', '8.8.8.8'],
   dnsNameserverPolicy: DEFAULT_DNS_NAMESERVER_POLICY,
-  perAppMode: 'off',
-  trustedApplications: [],
-  blockedApplications: [],
 };
 
 export const DEFAULT_OPTIONS_JSON: string = JSON.stringify(DEFAULT_OPTIONS);
@@ -105,10 +99,8 @@ export class HMetaVpnConfig {
   public isIPv4Accepted: boolean;
   public isIPv6Accepted: boolean;
   public isBlocking: boolean;
-  public trustedApplications: string[];
-  public blockedApplications: string[];
 
-  constructor(options: VpnOptions, trustedApplications: string[], blockedApplications: string[]) {
+  constructor(options: VpnOptions) {
     const addresses = options.addresses?.length ? options.addresses : ['172.19.0.1/30'];
     const routes = options.routes?.length ? options.routes : ['0.0.0.0/0'];
     this.addresses = addresses.map((value: string) => parseLinkAddress(value, addressDefaultPrefix(value)));
@@ -124,8 +116,6 @@ export class HMetaVpnConfig {
       this.addresses.some((address: LinkAddress) => address.address.family === 2) ||
       this.routes.some((route: RouteInfo) => route.destination.address.family === 2);
     this.isBlocking = false;
-    this.trustedApplications = trustedApplications;
-    this.blockedApplications = blockedApplications;
   }
 }
 
@@ -154,51 +144,6 @@ export function parseOptions(optionsJson: string): VpnOptions {
   } catch (_err) {
     return {};
   }
-}
-
-export function blockedApplications(options: VpnOptions): string[] {
-  if (perAppMode(options) === 'proxy') {
-    return [];
-  }
-  const blocked = perAppMode(options) === 'bypass' ? uniqueApplications(options.blockedApplications ?? []) : [];
-  return uniqueApplications([currentHMetaBundleName(), ...blocked]);
-}
-
-export function trustedApplications(options: VpnOptions): string[] {
-  if (perAppMode(options) !== 'proxy') {
-    return [];
-  }
-  const bundleName = currentHMetaBundleName();
-  return uniqueApplications(options.trustedApplications ?? [])
-    .filter((application: string) => application !== bundleName);
-}
-
-export function perAppMode(options: VpnOptions): string {
-  const mode = options.perAppMode ?? '';
-  if (mode === 'proxy' || mode === 'allow' || mode === 'allowlist' || mode === 'include') {
-    return 'proxy';
-  }
-  if (mode === 'bypass' || mode === 'block' || mode === 'blocklist' || mode === 'exclude') {
-    return 'bypass';
-  }
-  if ((options.trustedApplications ?? []).length > 0) {
-    return 'proxy';
-  }
-  if ((options.blockedApplications ?? []).length > 0) {
-    return 'bypass';
-  }
-  return 'off';
-}
-
-function uniqueApplications(applications: string[]): string[] {
-  const result: string[] = [];
-  applications.forEach((application: string) => {
-    const value = application.trim();
-    if (value.length > 0 && !result.includes(value)) {
-      result.push(value);
-    }
-  });
-  return result;
 }
 
 export function parseLinkAddress(value: string, defaultPrefix: number): LinkAddress {

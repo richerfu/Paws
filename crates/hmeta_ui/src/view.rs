@@ -9,11 +9,13 @@ use arkit::prelude::*;
 use arkit::router::{use_back_handler, use_navigator, use_route, AnimatedOutlet, Router};
 use arkit::shadcn::components::{
     Badge, BadgeVariant, BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant,
-    CardContent, CardHeader, CardTitle, DialogFooter, DialogHeader, Field, FieldContent,
+    Card, CardContent, CardHeader, CardTitle, DialogFooter, DialogHeader, Field, FieldContent,
     FieldDescription, FieldOrientation, FieldTitle, Form, FormItem, Input, RadioGroup, Separator,
     Spinner, Switch, Textarea, ToggleGroup,
 };
-use arkit::shadcn::theme::{use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider};
+use arkit::shadcn::theme::{
+    spacing, typography, use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider,
+};
 use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -25,8 +27,8 @@ mod pages;
 mod route;
 
 use pages::{
-    about_page, appearance_page, connections_page, manual_rule_dialog, per_app_settings_page,
-    requests_page, settings_page, tools_page,
+    about_page, appearance_page, connections_page, manual_rule_dialog, requests_page,
+    settings_page, tools_page,
 };
 use route::Route;
 
@@ -90,6 +92,18 @@ enum FlatButtonVariant {
     Link,
 }
 
+impl FlatButtonVariant {
+    fn to_button_variant(self) -> ButtonVariant {
+        match self {
+            Self::Outline => ButtonVariant::Outline,
+            Self::Primary => ButtonVariant::Default,
+            Self::Destructive => ButtonVariant::Destructive,
+            Self::Ghost => ButtonVariant::Ghost,
+            Self::Link => ButtonVariant::Link,
+        }
+    }
+}
+
 #[derive(Props, Clone, PartialEq)]
 struct FlatButtonProps {
     #[props(default)]
@@ -97,58 +111,23 @@ struct FlatButtonProps {
     #[props(default)]
     size: ButtonSize,
     disabled: Option<bool>,
-    percent_width: Option<f32>,
+    width: Option<String>,
     onclick: Option<EventHandler<()>>,
     children: Element,
 }
 
-/// Arkit's shadcn button geometry with its non-configurable shadow removed.
+/// Flat mobile button: shadcn Button variants/sizes with elevation disabled.
 #[component]
 fn FlatButton(props: FlatButtonProps) -> Element {
-    let disabled = props.disabled.unwrap_or(false);
-    let onclick = props.onclick;
-    let (height, width, horizontal_padding) = match props.size {
-        ButtonSize::Default => (48.0, None, 20.0),
-        ButtonSize::Sm => (36.0, None, 12.0),
-        ButtonSize::Lg => (56.0, None, 32.0),
-        ButtonSize::Icon => (40.0, Some(40.0), 0.0),
-    };
-    let (background, foreground, border_width, border_color) = match props.variant {
-        FlatButtonVariant::Outline => (surface(), text_color(), 1.0, line()),
-        FlatButtonVariant::Primary => (text_color(), primary_text(), 0.0, text_color()),
-        FlatButtonVariant::Destructive => (danger(), destructive_text(), 0.0, danger()),
-        FlatButtonVariant::Ghost | FlatButtonVariant::Link => {
-            (0x00000000, text_color(), 0.0, 0x00000000)
-        }
-    };
-
     rsx! {
-        button {
-            height: height,
-            width: if let Some(width) = width { width },
-            percent_width: if let Some(width) = props.percent_width { width },
-            padding_left: horizontal_padding,
-            padding_right: horizontal_padding,
-            foreground_color: foreground,
-            background_color: background,
-            border_width: border_width,
-            border_color: border_color,
-            border_radius: 8.0,
-            clip: true,
-            opacity: if disabled { 0.5 } else { 1.0 },
-            enabled: !disabled,
-            onclick: move |_| {
-                if !disabled {
-                    if let Some(handler) = onclick {
-                        handler.call(());
-                    }
-                }
-            },
-            row {
-                align_items: "center",
-                justify_content: "center",
-                {props.children}
-            }
+        Button {
+            variant: props.variant.to_button_variant(),
+            size: props.size,
+            disabled: props.disabled,
+            width: props.width,
+            shadow: Some(false),
+            onclick: props.onclick,
+            {props.children}
         }
     }
 }
@@ -163,6 +142,7 @@ struct FlatSegmentedProps {
 /// A full-width shadcn segmented control without ToggleGroup's fixed shadow.
 #[component]
 fn FlatSegmented(props: FlatSegmentedProps) -> Element {
+    let theme = use_theme();
     let count = props.options.len();
     let options = props
         .options
@@ -177,24 +157,25 @@ fn FlatSegmented(props: FlatSegmentedProps) -> Element {
                     key: "{option}",
                     layout_weight: 1.0,
                     if index > 0 {
-                        row { width: 1.0, height: 40.0, background_color: line() }
+                        row { width: 1.0, height: 40.0, background_color: theme.colors.border }
                     }
                     button {
-                        percent_width: 1.0,
+                        button_type: "normal",
+                        width: "100%",
                         height: 40.0,
-                        background_color: if active { muted() } else { surface() },
-                        foreground_color: text_color(),
+                        background_color: if active { theme.colors.muted } else { theme.colors.background },
+                        foreground_color: theme.colors.foreground,
                         border_width: 0.0,
-                        border_radius: if count == 1 { 8.0 } else { 0.0 },
+                        border_radius: if count == 1 { theme.radii.md } else { 0.0 },
                         onclick: move |_| {
                             let next = next.clone();
                             arkit::queue_ui_loop(move || on_change.call(next));
                         },
                         text {
                             content: option,
-                            font_size: 11.0,
-                            font_weight: if active { 700 } else { 500 },
-                            font_color: if active { text_color() } else { subtle() },
+                            font_size: typography::XS,
+                            font_weight: if active { 600 } else { 500 },
+                            font_color: if active { theme.colors.foreground } else { theme.colors.muted_foreground },
                         }
                     }
                 }
@@ -204,14 +185,159 @@ fn FlatSegmented(props: FlatSegmentedProps) -> Element {
 
     rsx! {
         row {
-            percent_width: 1.0,
+            width: "100%",
             height: 42.0,
             border_width: 1.0,
-            border_color: line(),
-            border_radius: 9.0,
-            background_color: surface(),
+            border_color: theme.colors.border,
+            border_radius: theme.radii.md,
+            background_color: theme.colors.background,
             clip: true,
             {options.into_iter()}
+        }
+    }
+}
+
+#[derive(Clone, PartialEq)]
+struct FlatSelectOption {
+    value: String,
+    label: String,
+    description: String,
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct FlatSelectProps {
+    options: Vec<FlatSelectOption>,
+    selected: String,
+    on_change: EventHandler<String>,
+}
+
+/// Compact inline select used where ArkUI's native menu cannot preserve the
+/// currently selected value across declarative rerenders.
+#[component]
+fn FlatSelect(props: FlatSelectProps) -> Element {
+    let theme = use_theme();
+    let mut open = use_signal(|| false);
+    let selected = props
+        .options
+        .iter()
+        .find(|option| option.value == props.selected)
+        .or_else(|| props.options.first())
+        .cloned();
+    let selected_label = selected
+        .as_ref()
+        .map(|option| option.label.clone())
+        .unwrap_or_default();
+    let selected_description = selected
+        .as_ref()
+        .map(|option| option.description.clone())
+        .unwrap_or_default();
+    let options = props.options.clone();
+
+    rsx! {
+        column {
+            width: "100%",
+            button {
+                button_type: "normal",
+                width: "100%",
+                height: 44.0,
+                padding_left: spacing::MD,
+                padding_right: spacing::MD,
+                background_color: theme.colors.background,
+                border_width: 1.0,
+                border_color: theme.colors.input,
+                border_radius: theme.radii.md,
+                onclick: move |_| open.set(!open()),
+                row {
+                    width: "100%",
+                    align_items: "center",
+                    row {
+                        layout_weight: 1.0,
+                        clip: true,
+                        text {
+                            content: selected_label,
+                            width: "100%",
+                            font_size: typography::SM,
+                            font_weight: 600,
+                            font_color: theme.colors.foreground,
+                            max_lines: 1,
+                            text_overflow: "ellipsis",
+                        }
+                    }
+                    {arkit::icon(if open() { "chevron-up" } else { "chevron-down" }, 16.0, theme.colors.muted_foreground)}
+                }
+            }
+            if !selected_description.is_empty() {
+                text {
+                    content: selected_description,
+                    margin_top: spacing::XXS,
+                    margin_left: 2.0,
+                    font_size: typography::XS,
+                    line_height: 16.0,
+                    font_color: theme.colors.muted_foreground,
+                }
+            }
+            if open() {
+                column {
+                    width: "100%",
+                    margin_top: spacing::XXS,
+                    border_width: 1.0,
+                    border_color: theme.colors.border,
+                    border_radius: theme.radii.md,
+                    background_color: theme.colors.popover,
+                    clip: true,
+                    for option in options {
+                        {
+                            let active = option.value == props.selected;
+                            let value = option.value.clone();
+                            let on_change = props.on_change;
+                            rsx! {
+                                button {
+                                    key: "{option.value}",
+                                    button_type: "normal",
+                                    width: "100%",
+                                    height: 48.0,
+                                    padding_left: spacing::MD,
+                                    padding_right: spacing::MD,
+                                    background_color: if active { theme.colors.accent } else { theme.colors.popover },
+                                    border_width: 0.0,
+                                    border_radius: 0.0,
+                                    onclick: move |_| {
+                                        open.set(false);
+                                        let value = value.clone();
+                                        arkit::queue_ui_loop(move || on_change.call(value));
+                                    },
+                                    row {
+                                        width: "100%",
+                                        align_items: "center",
+                                        column {
+                                            layout_weight: 1.0,
+                                            align_items: "start",
+                                            text {
+                                                content: option.label,
+                                                font_size: typography::SM,
+                                                font_weight: if active { 600 } else { 500 },
+                                                font_color: theme.colors.foreground,
+                                                max_lines: 1,
+                                            }
+                                            text {
+                                                content: option.description,
+                                                margin_top: 2.0,
+                                                font_size: typography::XS,
+                                                font_color: theme.colors.muted_foreground,
+                                                max_lines: 1,
+                                                text_overflow: "ellipsis",
+                                            }
+                                        }
+                                        if active {
+                                            {arkit::icon("check", 15.0, theme.colors.foreground)}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -219,6 +345,12 @@ fn FlatSegmented(props: FlatSegmentedProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 struct FlatDialogProps {
     open: bool,
+    /// Bump when dialog body should refresh while `open` stays true
+    /// (loading spinners, validation errors, controlled field values, etc.).
+    /// Overlay content is snapshotted on show; without a key change the panel
+    /// freezes and pending/loading UI never appears.
+    #[props(default)]
+    content_key: u64,
     on_close: EventHandler<()>,
     children: Element,
 }
@@ -226,52 +358,60 @@ struct FlatDialogProps {
 /// Arkit modal behavior and shadcn dialog composition with a strictly flat panel.
 #[component]
 fn FlatDialog(props: FlatDialogProps) -> Element {
+    let theme = use_theme();
     let close = props.on_close;
     let panel_close = close;
     let panel = rsx! {
         stack {
-            percent_width: 1.0,
+            width: "100%",
             max_width_constraint: 512.0,
-            alignment: 0,
-            border_radius: 12.0,
+            alignment: "top-start",
+            border_radius: theme.radii.lg,
             border_width: 1.0,
-            border_color: line(),
-            background_color: surface(),
+            border_color: theme.colors.border,
+            background_color: theme.colors.background,
             clip: true,
             column {
-                percent_width: 1.0,
-                padding: 24.0,
+                width: "100%",
+                padding: spacing::XXL,
                 {props.children}
             }
             row {
-                percent_width: 1.0,
+                width: "100%",
                 justify_content: "end",
                 padding_top: 14.0,
                 padding_right: 14.0,
-                hit_test_behavior: 2,
+                hit_test_behavior: "transparent",
                 button {
+                    button_type: "normal",
                     width: 28.0,
                     height: 28.0,
                     padding: 0.0,
                     background_color: 0x00000000,
                     border_width: 0.0,
-                    border_radius: 6.0,
+                    border_radius: theme.radii.sm,
                     clip: true,
+                    focusable: false,
+                    focus_on_touch: false,
+                    alignment: "center",
                     onclick: move |_| panel_close.call(()),
-                    {arkit::icon("x", 18.0, subtle())}
+                    {arkit::icon("x", 18.0, theme.colors.muted_foreground)}
                 }
             }
         }
     };
-    use_flat_dialog_overlay(props.open, panel, close);
+    use_flat_dialog_overlay(props.open, props.content_key, panel, close);
     rsx! {}
 }
 
-fn use_flat_dialog_overlay(open: bool, panel: Element, on_dismiss: EventHandler<()>) {
+fn use_flat_dialog_overlay(
+    open: bool,
+    content_key: u64,
+    panel: Element,
+    on_dismiss: EventHandler<()>,
+) {
     let overlay = arkit::use_overlay();
-    let last_open = use_hook(|| Rc::new(Cell::new(None::<bool>)));
-    let changed = last_open.get() != Some(open);
-    last_open.set(Some(open));
+    let last_open = use_hook(|| Rc::new(Cell::new(false)));
     let spec = arkit::hooks::ModalOverlaySpec {
         open,
         presentation: arkit::hooks::ModalPresentation::CenteredDialog,
@@ -281,10 +421,10 @@ fn use_flat_dialog_overlay(open: bool, panel: Element, on_dismiss: EventHandler<
     };
 
     let effect_overlay = overlay.clone();
-    use_effect(use_reactive((&open,), move |(open,)| {
-        if !changed {
-            return;
-        }
+    let effect_last_open = last_open.clone();
+    // Re-publish whenever open flips *or* content_key changes while open so
+    // loading/error/field updates reach the overlay-hosted panel.
+    use_effect(use_reactive((&open, &content_key), move |(open, _key)| {
         if open {
             let panel = panel.clone();
             effect_overlay.show_modal_with_dismiss(
@@ -292,18 +432,28 @@ fn use_flat_dialog_overlay(open: bool, panel: Element, on_dismiss: EventHandler<
                 move || panel.clone(),
                 move || on_dismiss.call(()),
             );
-        } else {
+            effect_last_open.set(true);
+        } else if effect_last_open.get() {
             effect_overlay.dismiss();
+            effect_last_open.set(false);
         }
     }));
 
     let cleanup_overlay = overlay.clone();
     let cleanup_last_open = last_open.clone();
     use_drop(move || {
-        if cleanup_last_open.get() == Some(true) {
+        if cleanup_last_open.get() {
             cleanup_overlay.dismiss();
         }
     });
+}
+
+fn dialog_content_key(parts: &[&str]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for part in parts {
+        part.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 #[component]
@@ -359,16 +509,16 @@ fn AppShell() -> Element {
 
     rsx! {
         stack {
-            percent_width: 1.0,
-            percent_height: 1.0,
+            width: "100%",
+            height: "100%",
             background_color: bg(),
-            alignment: 0,
+            alignment: "top-start",
             column {
-                percent_width: 1.0,
-                percent_height: 1.0,
+                width: "100%",
+                height: "100%",
                 column {
                     layout_weight: 1.0,
-                    percent_width: Some(1.0),
+                    width: "100%",
                     AnimatedOutlet::<Route> {}
                 }
             if route.parent().is_none() {
@@ -394,6 +544,7 @@ fn AppShell() -> Element {
 }
 
 fn vpn_floating_action(state: Signal<State>, current: &State) -> Element {
+    let theme = use_theme();
     let pending = current.vpn_command_pending;
     let starting = pending == Some(VpnCommandAction::Start)
         || matches!(current.snapshot.vpn_lifecycle, VpnLifecycle::Starting);
@@ -402,33 +553,48 @@ fn vpn_floating_action(state: Signal<State>, current: &State) -> Element {
     let disabled =
         pending.is_some() || matches!(current.snapshot.vpn_lifecycle, VpnLifecycle::Starting);
     let icon = if active { "square" } else { "power" };
+    let background = if disabled {
+        theme.colors.muted
+    } else if active {
+        theme.colors.destructive
+    } else {
+        theme.colors.primary
+    };
+    let foreground = if disabled {
+        theme.colors.muted_foreground
+    } else if active {
+        theme.colors.destructive_foreground
+    } else {
+        theme.colors.primary_foreground
+    };
     rsx! {
         column {
-            percent_width: 1.0,
-            percent_height: 1.0,
-            padding_right: 24.0,
+            width: "100%",
+            height: "100%",
+            padding_right: spacing::XXL,
             padding_bottom: 92.0,
             align_items: "end",
             justify_content: "end",
-            hit_test_behavior: 2_i32,
+            hit_test_behavior: "transparent",
             button {
-                width: 58.0,
-                height: 58.0,
-                background_color: if disabled { muted() } else { text_color() },
-                border_width: 1.0,
-                border_color: if disabled { line() } else { text_color() },
-                border_radius: 29.0,
+                button_type: "normal",
+                width: 56.0,
+                height: 56.0,
+                background_color: background,
+                border_width: 0.0,
+                border_radius: theme.radii.full,
                 enabled: !disabled,
+                opacity: if disabled { 0.6 } else { 1.0 },
                 onclick: move |_| dispatch(state, Action::StartStopVpn),
                 row {
-                    percent_width: 1.0,
-                    percent_height: 1.0,
+                    width: "100%",
+                    height: "100%",
                     align_items: "center",
                     justify_content: "center",
                     if starting || stopping {
-                        Spinner { size: 24.0, color: Some(subtle()) }
+                        Spinner { size: 22.0, color: Some(foreground) }
                     } else {
-                        {arkit::icon(icon, 23.0, primary_text())}
+                        {arkit::icon(icon, 22.0, foreground)}
                     }
                 }
             }
@@ -486,18 +652,19 @@ fn scaffold_layout(
     use_parent_back_handler(parent.clone());
     let scroll_key = format!("page-scroll-{page:?}");
     let navigator = use_navigator();
+    let theme = use_theme();
     rsx! {
         column {
             layout_weight: 1.0,
-            percent_width: 1.0,
-            background_color: bg(),
+            width: "100%",
+            background_color: theme.colors.background,
             row {
-                height: 60.0,
-                percent_width: 1.0,
-                padding_left: 12.0,
-                padding_right: 12.0,
+                height: 56.0,
+                width: "100%",
+                padding_left: spacing::MD,
+                padding_right: spacing::MD,
                 align_items: "center",
-                background_color: surface(),
+                background_color: theme.colors.card,
                 row {
                     align_items: "center",
                     if let Some(parent) = parent {
@@ -511,16 +678,16 @@ fn scaffold_layout(
                                     navigator.push(parent.clone());
                                 }
                             },
-                            {arkit::icon("arrow-left", 18.0, text_color())}
+                            {arkit::icon("arrow-left", 18.0, theme.colors.foreground)}
                         }
-                        row { width: 4.0 }
+                        row { width: spacing::XXS }
                     }
                     text {
                         content: page.title(current.locale),
-                        font_size: 22.0,
+                        font_size: typography::XL,
                         line_height: 28.0,
-                        font_weight: 700,
-                        font_color: text_color(),
+                        font_weight: 600,
+                        font_color: theme.colors.foreground,
                         text_letter_spacing: -0.3,
                     }
                 }
@@ -530,32 +697,32 @@ fn scaffold_layout(
             Separator {}
             column {
                 layout_weight: 1.0,
-                percent_width: 1.0,
+                width: "100%",
                 if scrollable {
                     scroll {
                         key: "{scroll_key}",
-                        percent_width: 1.0,
-                        percent_height: 1.0,
-                        alignment: 0,
-                        background_color: bg(),
-                        scroll_bar: 0,
+                        width: "100%",
+                        height: "100%",
+                        alignment: "top-start",
+                        background_color: theme.colors.background,
+                        scroll_bar: "off",
                         column {
-                            percent_width: 1.0,
-                            padding: 16.0,
+                            width: "100%",
+                            padding: spacing::LG,
                             align_items: "start",
                             justify_content: "start",
                             {body}
-                            row { height: 12.0 }
+                            row { height: spacing::MD }
                         }
                     }
                 } else {
                     column {
                         layout_weight: 1.0,
-                        percent_width: 1.0,
-                        padding_top: 16.0,
-                        padding_right: 16.0,
-                        padding_bottom: if flush_fixed_bottom { 0.0 } else { 16.0 },
-                        padding_left: 16.0,
+                        width: "100%",
+                        padding_top: spacing::LG,
+                        padding_right: spacing::LG,
+                        padding_bottom: if flush_fixed_bottom { 0.0 } else { spacing::LG },
+                        padding_left: spacing::LG,
                         align_items: "start",
                         justify_content: "start",
                         {body}
@@ -694,12 +861,12 @@ fn dashboard_page(state: Signal<State>) -> Element {
 
     let body = rsx! {
         column {
-            percent_width: 1.0,
+            width: "100%",
             layout_weight: 1.0,
             column {
-                percent_width: 1.0,
+                width: "100%",
                 row {
-                    percent_width: 1.0,
+                    width: "100%",
                     height: 52.0,
                     align_items: "center",
                     row {
@@ -727,14 +894,14 @@ fn dashboard_page(state: Signal<State>) -> Element {
                             font_color: status_color,
                         }
                         text {
-                            percent_width: 1.0,
+                            width: "100%",
                             content: profile,
                             margin_top: 1.0,
                             font_size: 11.0,
                             line_height: 16.0,
                             font_color: subtle(),
                             max_lines: 1,
-                            text_overflow: 2_i32,
+                            text_overflow: "ellipsis",
                         }
                     }
                 }
@@ -742,7 +909,7 @@ fn dashboard_page(state: Signal<State>) -> Element {
                 {mode_picker(state, snapshot.mode, current.locale)}
                 row { height: 14.0 }
                 row {
-                    percent_width: 1.0,
+                    width: "100%",
                     height: 40.0,
                     padding_left: 4.0,
                     padding_right: 4.0,
@@ -757,7 +924,7 @@ fn dashboard_page(state: Signal<State>) -> Element {
                             margin_left: 8.0,
                             align_items: "start",
                             text { content: tr(current.locale, "当前节点", "Current node"), font_size: 10.0, line_height: 14.0, font_color: subtle() }
-                            text { percent_width: 1.0, content: current_node, font_size: 13.0, line_height: 18.0, font_weight: 650, font_color: text_color(), max_lines: 1, text_overflow: 2_i32 }
+                            text { width: "100%", content: current_node, font_size: 13.0, line_height: 18.0, font_weight: 650, font_color: text_color(), max_lines: 1, text_overflow: "ellipsis" }
                         }
                     }
                     Separator { vertical_height: Some(30.0) }
@@ -772,7 +939,7 @@ fn dashboard_page(state: Signal<State>) -> Element {
                             margin_left: 8.0,
                             align_items: "start",
                             text { content: "VPN IP", font_size: 10.0, line_height: 14.0, font_color: subtle() }
-                            text { percent_width: 1.0, content: vpn_ip, font_size: 13.0, line_height: 18.0, font_weight: 650, font_color: text_color(), max_lines: 1, text_overflow: 2_i32 }
+                            text { width: "100%", content: vpn_ip, font_size: 13.0, line_height: 18.0, font_weight: 650, font_color: text_color(), max_lines: 1, text_overflow: "ellipsis" }
                         }
                     }
                 }
@@ -781,7 +948,7 @@ fn dashboard_page(state: Signal<State>) -> Element {
             Separator {}
             row { height: 18.0 }
             row {
-                percent_width: 1.0,
+                width: "100%",
                 align_items: "center",
                 column {
                     layout_weight: 1.0,
@@ -806,12 +973,12 @@ fn dashboard_page(state: Signal<State>) -> Element {
             if quick_count == 0 {
                 column {
                     layout_weight: 1.0,
-                    percent_width: 1.0,
+                    width: "100%",
                     align_items: "center",
                     justify_content: "center",
                     {arkit::icon("rss", 21.0, subtle())}
                     text { content: tr(current.locale, "尚未选择订阅", "No subscription selected"), margin_top: 9.0, font_size: 14.0, font_weight: 700, font_color: text_color() }
-                    text { content: tr(current.locale, "添加并启用订阅后即可选择节点", "Add and activate a subscription to choose nodes"), margin_top: 3.0, font_size: 11.0, line_height: 16.0, font_color: subtle(), text_align: 1 }
+                    text { content: tr(current.locale, "添加并启用订阅后即可选择节点", "Add and activate a subscription to choose nodes"), margin_top: 3.0, font_size: 11.0, line_height: 16.0, font_color: subtle(), text_align: "center" }
                     row { height: 10.0 }
                     Button {
                         variant: ButtonVariant::Default,
@@ -827,7 +994,7 @@ fn dashboard_page(state: Signal<State>) -> Element {
             } else {
                 column {
                     layout_weight: 1.0,
-                    percent_width: 1.0,
+                    width: "100%",
                     clip: true,
                     VirtualQuickProxyList {
                         key: "dashboard-quick-proxy-list",
@@ -858,7 +1025,7 @@ fn mode_picker(state: Signal<State>, selected: RuntimeMode, locale: UiLocale) ->
         ToggleGroup {
             options: vec![rule, global.clone(), direct.clone()],
             selected: Some(vec![selected_label]),
-            percent_width: 1.0,
+            width: "100%",
             shadow: Some(false),
             on_change: move |values: Vec<String>| {
                 if let Some(value) = values.first() {
@@ -904,16 +1071,16 @@ fn proxies_page(state: Signal<State>) -> Element {
     let empty = items.is_empty();
     let body = rsx! {
         column {
-            percent_width: 1.0,
+            width: "100%",
             layout_weight: 1.0,
             Input {
                 value: Some(query_value),
                 placeholder: Some(strings(current.locale).proxies_search_placeholder.to_owned()),
-                percent_width: Some(1.0),
+                width: Some("100%".into()),
                 on_change: move |value| query.set(value),
             }
             row {
-                percent_width: 1.0,
+                width: "100%",
                 height: 34.0,
                 align_items: "center",
                 text {
@@ -925,14 +1092,14 @@ fn proxies_page(state: Signal<State>) -> Element {
             if empty {
                 column {
                     layout_weight: 1.0,
-                    percent_width: 1.0,
+                    width: "100%",
                     justify_content: "center",
                     {empty_state("git-branch", strings(current.locale).proxies_empty_title, strings(current.locale).proxies_empty_subtitle)}
                 }
             } else {
                 column {
                     layout_weight: 1.0,
-                    percent_width: 1.0,
+                    width: "100%",
                     if current_layout == ProxyLayoutMode::Grid {
                         VirtualProxyGrid {
                             items,
@@ -1118,8 +1285,8 @@ fn VirtualProxyGrid(
 
     rsx! {
         grid {
-            percent_width: 1.0,
-            percent_height: 1.0,
+            width: "100%",
+            height: "100%",
             grid_column_template: "1fr 1fr",
             grid_column_gap: 10.0,
             grid_row_gap: 10.0,
@@ -1180,8 +1347,8 @@ fn VirtualProxyList(
 
     rsx! {
         list {
-            percent_width: 1.0,
-            percent_height: 1.0,
+            width: "100%",
+            height: "100%",
             list_cached_count: 16_i32,
         }
     }
@@ -1232,8 +1399,8 @@ fn VirtualQuickProxyList(
 
     rsx! {
         list {
-            percent_width: 1.0,
-            percent_height: 1.0,
+            width: "100%",
+            height: "100%",
             list_cached_count: 20_i32,
         }
     }
@@ -1511,12 +1678,11 @@ fn profiles_page(state: Signal<State>) -> Element {
     let current = state.read().clone();
 
     use_effect(move || {
-        let (succeeded, loading, failed) = {
+        let (succeeded, loading) = {
             let feedback = state.read();
             (
                 feedback.profile_import_succeeded,
                 feedback.profile_import_loading,
-                feedback.profile_import_error.is_some(),
             )
         };
         if import_submitted() && succeeded {
@@ -1525,7 +1691,8 @@ fn profiles_page(state: Signal<State>) -> Element {
             import_name.set(String::new());
             import_submitted.set(false);
             dispatch(state, Action::ResetProfileImportFeedback);
-        } else if import_submitted() && !loading && failed {
+        } else if import_submitted() && !loading && !succeeded {
+            // Failure, validation error, or cancelled file picker.
             import_submitted.set(false);
         }
     });
@@ -1563,7 +1730,7 @@ fn profiles_page(state: Signal<State>) -> Element {
             rsx! {
                 row {
                     key: "{profile.id}",
-                    percent_width: 1.0,
+                    width: "100%",
                     height: 108.0,
                     background_color: surface(),
                     border_width: 1.0,
@@ -1573,7 +1740,7 @@ fn profiles_page(state: Signal<State>) -> Element {
                     row {
                         layout_weight: 1.0,
                         button {
-                            percent_width: 1.0,
+                            width: "100%",
                             height: 106.0,
                             padding_left: 16.0,
                             padding_right: 8.0,
@@ -1586,7 +1753,7 @@ fn profiles_page(state: Signal<State>) -> Element {
                                 }
                             },
                             row {
-                                percent_width: 1.0,
+                                width: "100%",
                                 align_items: "center",
                                 column {
                                     width: 24.0,
@@ -1615,7 +1782,7 @@ fn profiles_page(state: Signal<State>) -> Element {
                                     }
                                     if let Some(error) = profile.last_refresh_error.clone() {
                                         text {
-                                            percent_width: 1.0,
+                                            width: "100%",
                                             content: compact(&error),
                                             margin_top: 6.0,
                                             font_size: 11.0,
@@ -1625,7 +1792,7 @@ fn profiles_page(state: Signal<State>) -> Element {
                                         }
                                     } else {
                                         row {
-                                            percent_width: 1.0,
+                                            width: "100%",
                                             margin_top: 6.0,
                                             align_items: "center",
                                             {arkit::icon("clock", 12.0, subtle())}
@@ -1680,16 +1847,16 @@ fn profiles_page(state: Signal<State>) -> Element {
     });
     let body = rsx! {
         column {
-            percent_width: 1.0,
+            width: "100%",
             if !has_profiles {
                 column {
-                    percent_width: 1.0,
+                    width: "100%",
                     height: 360.0,
                     align_items: "center",
                     justify_content: "center",
                     {arkit::icon("rss", 30.0, subtle())}
                     text { content: strings(current.locale).profiles_empty_title, margin_top: 16.0, font_size: 17.0, font_weight: 700, font_color: text_color() }
-                    text { content: tr(current.locale, "添加订阅以获取代理节点与规则", "Add a subscription to get proxy nodes and rules"), margin_top: 6.0, font_size: 13.0, line_height: 19.0, font_color: subtle(), text_align: 1 }
+                    text { content: tr(current.locale, "添加订阅以获取代理节点与规则", "Add a subscription to get proxy nodes and rules"), margin_top: 6.0, font_size: 13.0, line_height: 19.0, font_color: subtle(), text_align: "center" }
                     row { height: 18.0 }
                     FlatButton {
                         variant: FlatButtonVariant::Primary,
@@ -1705,7 +1872,7 @@ fn profiles_page(state: Signal<State>) -> Element {
                 Input {
                     value: Some(query_value),
                     placeholder: Some(strings(current.locale).profiles_search_placeholder.to_owned()),
-                    percent_width: Some(1.0),
+                    width: Some("100%".into()),
                     on_change: move |value| query.set(value),
                 }
                 row { height: 12.0 }
@@ -1802,14 +1969,14 @@ fn profile_action_dialog(
             }
             row { height: 14.0 }
             column {
-                percent_width: 1.0,
+                width: "100%",
                 border_width: 1.0,
                 border_color: line(),
                 border_radius: 9.0,
                 clip: true,
                 if !profile.active {
                     button {
-                        percent_width: 1.0,
+                        width: "100%",
                         height: 48.0,
                         padding_left: 14.0,
                         padding_right: 14.0,
@@ -1821,7 +1988,7 @@ fn profile_action_dialog(
                             dispatch(state, Action::ActivateProfile(activate_id.clone()));
                         },
                         row {
-                            percent_width: 1.0,
+                            width: "100%",
                             align_items: "center",
                             {arkit::icon("circle-check", 16.0, text_color())}
                             text { content: tr(locale, "设为当前配置", "Use this profile"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
@@ -1832,7 +1999,7 @@ fn profile_action_dialog(
                 }
                 if profile.subscription_url.is_some() {
                     button {
-                        percent_width: 1.0,
+                        width: "100%",
                         height: 48.0,
                         padding_left: 14.0,
                         padding_right: 14.0,
@@ -1846,7 +2013,7 @@ fn profile_action_dialog(
                             action_profile_id.set(None);
                         },
                         row {
-                            percent_width: 1.0,
+                            width: "100%",
                             align_items: "center",
                             {arkit::icon("file-pen-line", 16.0, text_color())}
                             text { content: tr(locale, "编辑订阅", "Edit subscription"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
@@ -1856,7 +2023,7 @@ fn profile_action_dialog(
                     Separator {}
                 }
                 button {
-                    percent_width: 1.0,
+                    width: "100%",
                     height: 48.0,
                     padding_left: 14.0,
                     padding_right: 14.0,
@@ -1868,7 +2035,7 @@ fn profile_action_dialog(
                         dispatch(state, Action::OpenYamlEditor(yaml_id.clone()));
                     },
                     row {
-                        percent_width: 1.0,
+                        width: "100%",
                         align_items: "center",
                         {arkit::icon("file-pen-line", 16.0, text_color())}
                         text { content: tr(locale, "编辑 YAML", "Edit YAML"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
@@ -1877,7 +2044,7 @@ fn profile_action_dialog(
                 }
                 Separator {}
                 button {
-                    percent_width: 1.0,
+                    width: "100%",
                     height: 48.0,
                     padding_left: 14.0,
                     padding_right: 14.0,
@@ -1889,7 +2056,7 @@ fn profile_action_dialog(
                         dispatch(state, Action::ExportProfile(export_id.clone()));
                     },
                     row {
-                        percent_width: 1.0,
+                        width: "100%",
                         align_items: "center",
                         {arkit::icon("download", 16.0, text_color())}
                         text { content: tr(locale, "导出配置", "Export profile"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
@@ -1899,7 +2066,7 @@ fn profile_action_dialog(
                 if profile.subscription_url.is_some() {
                     Separator {}
                     button {
-                        percent_width: 1.0,
+                        width: "100%",
                         height: 48.0,
                         padding_left: 14.0,
                         padding_right: 14.0,
@@ -1911,7 +2078,7 @@ fn profile_action_dialog(
                             dispatch(state, Action::RefreshProfile(refresh_id.clone()));
                         },
                         row {
-                            percent_width: 1.0,
+                            width: "100%",
                             align_items: "center",
                             {arkit::icon("refresh-cw", 16.0, text_color())}
                             text { content: tr(locale, "刷新订阅", "Refresh subscription"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
@@ -1922,7 +2089,7 @@ fn profile_action_dialog(
                 if profile.has_backup {
                     Separator {}
                     button {
-                        percent_width: 1.0,
+                        width: "100%",
                         height: 48.0,
                         padding_left: 14.0,
                         padding_right: 14.0,
@@ -1934,7 +2101,7 @@ fn profile_action_dialog(
                             dispatch(state, Action::RestoreProfileBackup(restore_id.clone()));
                         },
                         row {
-                            percent_width: 1.0,
+                            width: "100%",
                             align_items: "center",
                             {arkit::icon("history", 16.0, text_color())}
                             text { content: tr(locale, "恢复上次备份", "Restore backup"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
@@ -1944,7 +2111,7 @@ fn profile_action_dialog(
                 }
                 Separator {}
                 button {
-                    percent_width: 1.0,
+                    width: "100%",
                     height: 48.0,
                     padding_left: 14.0,
                     padding_right: 14.0,
@@ -1956,7 +2123,7 @@ fn profile_action_dialog(
                         action_profile_id.set(None);
                     },
                     row {
-                        percent_width: 1.0,
+                        width: "100%",
                         align_items: "center",
                         {arkit::icon("trash-2", 16.0, danger())}
                         text { content: tr(locale, "删除配置", "Delete profile"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: danger() }
@@ -1986,32 +2153,32 @@ fn profile_edit_dialog(
             }
             row { height: 18.0 }
             row {
-                percent_width: 1.0,
+                width: "100%",
                 text { content: tr(locale, "名称", "Name"), font_size: 12.0, font_weight: 600, font_color: text_color() }
             }
             row { height: 6.0 }
             Input {
                 value: Some(name()),
                 placeholder: Some(tr(locale, "配置名称", "Profile name").to_owned()),
-                percent_width: Some(1.0),
+                width: Some("100%".into()),
                 on_change: move |value| name.set(value),
             }
             row { height: 14.0 }
             row {
-                percent_width: 1.0,
+                width: "100%",
                 text { content: tr(locale, "订阅地址", "Subscription URL"), font_size: 12.0, font_weight: 600, font_color: text_color() }
             }
             row { height: 6.0 }
             Input {
                 value: Some(url()),
                 placeholder: Some("https://".to_owned()),
-                percent_width: Some(1.0),
+                width: Some("100%".into()),
                 on_change: move |value| url.set(value),
             }
             DialogFooter {
                 FlatButton {
                     variant: FlatButtonVariant::Primary,
-                    percent_width: 1.0,
+                    width: "100%",
                     onclick: move |_| {
                         if let Some(id) = profile_id() {
                             dispatch(state, Action::UpdateProfileSubscription {
@@ -2050,7 +2217,7 @@ fn profile_delete_dialog(
             row { height: 20.0 }
             DialogFooter {
                 row {
-                    percent_width: 1.0,
+                    width: "100%",
                     FlatButton {
                         variant: FlatButtonVariant::Outline,
                         onclick: move |_| profile_id.set(None),
@@ -2063,7 +2230,7 @@ fn profile_delete_dialog(
                             profile_id.set(None);
                             dispatch(state, Action::DeleteProfile(delete_id.clone()));
                         },
-                        text { content: tr(locale, "删除", "Delete"), font_size: 13.0, font_weight: 600, font_color: primary_text() }
+                        text { content: tr(locale, "删除", "Delete"), font_size: 13.0, font_weight: 600, font_color: destructive_text() }
                     }
                 }
             }
@@ -2145,10 +2312,10 @@ fn traffic_page(state: Signal<State>) -> Element {
         .unwrap_or_else(|| tr(current.locale, "尚未同步", "Not synced yet").to_owned());
     let body = rsx! {
         column {
-            percent_width: 1.0,
+            width: "100%",
             align_items: "start",
             row {
-                percent_width: 1.0,
+                width: "100%",
                 align_items: "center",
                 text { content: if connected { tr(current.locale, "已连接", "Connected") } else { tr(current.locale, "未连接", "Disconnected") }, font_size: 14.0, font_weight: 650, font_color: if connected { success() } else { subtle() } }
                 row { layout_weight: 1.0 }
@@ -2158,7 +2325,7 @@ fn traffic_page(state: Signal<State>) -> Element {
             text { content: tr(current.locale, "流量用量", "Data usage"), font_size: 17.0, font_weight: 700, font_color: text_color() }
             row { height: 8.0 }
             row {
-                percent_width: 1.0,
+                width: "100%",
                 row {
                     layout_weight: 1.0,
                     {usage_summary_card(
@@ -2192,7 +2359,7 @@ fn traffic_page(state: Signal<State>) -> Element {
                 Some(format!("{} {}", samples, strings(current.locale).traffic_sample_unit)),
                 rsx! {
                     column {
-                        percent_width: 1.0,
+                        width: "100%",
                         {info_row(strings(current.locale).traffic_peak_download, format_speed(peak_download))}
                         {info_row(strings(current.locale).traffic_peak_upload, format_speed(peak_upload))}
                         {speed_bars(&snapshot.traffic_history)}
@@ -2205,7 +2372,7 @@ fn traffic_page(state: Signal<State>) -> Element {
                 Some(format!("{} {}", active_connection_count, tr(current.locale, "条", "active"))),
                 rsx! {
                     column {
-                        percent_width: 1.0,
+                        width: "100%",
                         {info_row(tr(current.locale, "连接下载", "Connection download"), format_total(connection_download))}
                         {info_row(tr(current.locale, "连接上传", "Connection upload"), format_total(connection_upload))}
                         if !connection_rows.is_empty() {
@@ -2216,7 +2383,7 @@ fn traffic_page(state: Signal<State>) -> Element {
                         FlatButton {
                             variant: FlatButtonVariant::Outline,
                             size: ButtonSize::Sm,
-                            percent_width: Some(1.0),
+                            width: Some("100%".into()),
                             onclick: move |_| {
                                 connections_navigator.push(Route::Connections { query: String::new() });
                             },
@@ -2232,7 +2399,7 @@ fn traffic_page(state: Signal<State>) -> Element {
                 Some(snapshot.dns.model.clone()),
                 rsx! {
                     column {
-                        percent_width: 1.0,
+                        width: "100%",
                         {info_row(tr(current.locale, "DNS 劫持", "DNS hijack"), if snapshot.dns.hijacking { tr(current.locale, "已启用", "Enabled") } else { tr(current.locale, "已关闭", "Disabled") })}
                         {info_row(tr(current.locale, "监听地址", "Listen"), snapshot.dns.listen.clone())}
                         {info_row(tr(current.locale, "TUN DNS", "TUN DNS"), dns_tun_addresses)}
@@ -2248,7 +2415,7 @@ fn traffic_page(state: Signal<State>) -> Element {
                         }
                         row { height: 8.0 }
                         row {
-                            percent_width: 1.0,
+                            width: "100%",
                             FlatButton {
                                 variant: FlatButtonVariant::Outline,
                                 size: ButtonSize::Sm,
@@ -2274,7 +2441,7 @@ fn traffic_page(state: Signal<State>) -> Element {
                 snapshot.controller_addr.clone(),
                 rsx! {
                     column {
-                        percent_width: 1.0,
+                        width: "100%",
                         {info_row(tr(current.locale, "内存占用", "Memory in use"), memory_in_use)}
                         {info_row(tr(current.locale, "系统内存上限", "OS memory limit"), memory_limit)}
                         {info_row(tr(current.locale, "配置同步次数", "Config sync count"), snapshot.controller_diagnostics.config_sync_count.to_string())}
@@ -2350,7 +2517,7 @@ fn resources_page(state: Signal<State>) -> Element {
                     Some(format!("{} · {}", provider.provider_type, provider.vehicle_type.clone().unwrap_or_default())),
                     rsx! {
                         column {
-                            percent_width: 1.0,
+                            width: "100%",
                             {info_row(tr(current.locale, "状态", "Status"), provider_status)}
                             {info_row(tr(current.locale, "缓存", "Cache"), if provider.cache_exists { format_total(provider.cache_bytes.unwrap_or(0)) } else { tr(current.locale, "无", "None").to_owned() })}
                             {info_row(tr(current.locale, "刷新间隔", "Interval"), provider.interval_seconds.map(|value| format!("{value}s")).unwrap_or_else(|| "-".to_owned()))}
@@ -2362,7 +2529,7 @@ fn resources_page(state: Signal<State>) -> Element {
                             }
                             row { height: 4.0 }
                             row {
-                                percent_width: 1.0,
+                                width: "100%",
                                 justify_content: "end",
                                 FlatButton {
                                     variant: FlatButtonVariant::Ghost,
@@ -2428,7 +2595,7 @@ fn resources_page(state: Signal<State>) -> Element {
                     Separator {}
                 }
                 button {
-                    percent_width: 1.0,
+                    width: "100%",
                     height: 68.0,
                     padding_left: 14.0,
                     padding_right: 12.0,
@@ -2437,7 +2604,7 @@ fn resources_page(state: Signal<State>) -> Element {
                     border_radius: 0.0,
                     onclick: move |_| geodata_detail.set(Some(detail.clone())),
                     row {
-                        percent_width: 1.0,
+                        width: "100%",
                         align_items: "center",
                         row {
                             width: 36.0,
@@ -2452,8 +2619,8 @@ fn resources_page(state: Signal<State>) -> Element {
                             layout_weight: 1.0,
                             margin_left: 11.0,
                             align_items: "start",
-                            text { content: file.name, percent_width: 1.0, font_size: 13.0, font_weight: 650, font_color: text_color(), max_lines: 1 }
-                            text { content: metadata, percent_width: 1.0, margin_top: 3.0, font_size: 11.0, font_color: if file.exists { success() } else { danger() }, max_lines: 1 }
+                            text { content: file.name, width: "100%", font_size: 13.0, font_weight: 650, font_color: text_color(), max_lines: 1 }
+                            text { content: metadata, width: "100%", margin_top: 3.0, font_size: 11.0, font_color: if file.exists { success() } else { danger() }, max_lines: 1 }
                         }
                         {arkit::icon("chevron-right", 15.0, subtle())}
                     }
@@ -2472,11 +2639,11 @@ fn resources_page(state: Signal<State>) -> Element {
     });
     let body = rsx! {
         column {
-            percent_width: 1.0,
+            width: "100%",
             Input {
                 value: Some(query_value),
                 placeholder: Some(strings(current.locale).resources_search_placeholder.to_owned()),
-                percent_width: Some(1.0),
+                width: Some("100%".into()),
                 on_change: move |value| query.set(value),
             }
             row { height: 12.0 }
@@ -2485,7 +2652,7 @@ fn resources_page(state: Signal<State>) -> Element {
                 Some(active_profile_name),
                 rsx! {
                     column {
-                        percent_width: 1.0,
+                        width: "100%",
                         {info_row(tr(current.locale, "引擎配置", "Engine config"), if current.snapshot.engine_loaded { tr(current.locale, "已加载", "Loaded") } else { tr(current.locale, "未加载", "Not loaded") })}
                         {info_row(tr(current.locale, "当前模式", "Current mode"), mode_label)}
                         {info_row(tr(current.locale, "生效规则", "Effective rules"), format!("{enabled_rule_count}/{total_rule_count}"))}
@@ -2496,14 +2663,14 @@ fn resources_page(state: Signal<State>) -> Element {
             )}
             row { height: 12.0 }
             column {
-                percent_width: 1.0,
+                width: "100%",
                 background_color: surface(),
                 border_width: 1.0,
                 border_color: line(),
                 border_radius: 10.0,
                 clip: true,
                 row {
-                    percent_width: 1.0,
+                    width: "100%",
                     height: 56.0,
                     padding_left: 14.0,
                     padding_right: 14.0,
@@ -2520,7 +2687,7 @@ fn resources_page(state: Signal<State>) -> Element {
                 Separator {}
                 if visible_geodata_count == 0 {
                     row {
-                        percent_width: 1.0,
+                        width: "100%",
                         height: 66.0,
                         padding_left: 14.0,
                         padding_right: 14.0,
@@ -2540,7 +2707,7 @@ fn resources_page(state: Signal<State>) -> Element {
             }
             row { height: 14.0 }
             row {
-                percent_width: 1.0,
+                width: "100%",
                 height: 34.0,
                 margin_bottom: 8.0,
                 align_items: "center",
@@ -2621,7 +2788,7 @@ fn provider_detail_dialog(
             .unwrap_or_else(|| tr(locale, "未测试", "Untested").to_owned());
         rsx! {
             row {
-                percent_width: 1.0,
+                width: "100%",
                 height: 50.0,
                 padding_left: 10.0,
                 padding_right: 8.0,
@@ -2629,8 +2796,8 @@ fn provider_detail_dialog(
                 column {
                     layout_weight: 1.0,
                     align_items: "start",
-                    text { content: truncate_text(&member.name, 34), percent_width: 1.0, font_size: 12.0, font_weight: 650, font_color: text_color(), max_lines: 1 }
-                    text { content: format!("{} · {} · {}", member.proxy_type, status, delay), margin_top: 3.0, percent_width: 1.0, font_size: 10.0, font_color: if member.alive { success() } else { danger() }, max_lines: 1 }
+                    text { content: truncate_text(&member.name, 34), width: "100%", font_size: 12.0, font_weight: 650, font_color: text_color(), max_lines: 1 }
+                    text { content: format!("{} · {} · {}", member.proxy_type, status, delay), margin_top: 3.0, width: "100%", font_size: 10.0, font_color: if member.alive { success() } else { danger() }, max_lines: 1 }
                 }
                 FlatButton {
                     variant: FlatButtonVariant::Ghost,
@@ -2661,7 +2828,7 @@ fn provider_detail_dialog(
                 text { content: tr(locale, "当前 Provider 没有可展示的成员", "No provider members available"), font_size: 12.0, font_color: subtle() }
             } else {
                 column {
-                    percent_width: 1.0,
+                    width: "100%",
                     border_width: 1.0,
                     border_color: line(),
                     border_radius: 9.0,
@@ -2703,7 +2870,7 @@ fn geodata_detail_dialog(
             }
             row { height: 16.0 }
             column {
-                percent_width: 1.0,
+                width: "100%",
                 border_width: 1.0,
                 border_color: line(),
                 border_radius: 9.0,
@@ -2719,13 +2886,13 @@ fn geodata_detail_dialog(
             text { content: tr(locale, "文件位置", "File location"), font_size: 11.0, font_weight: 650, font_color: subtle() }
             row { height: 6.0 }
             row {
-                percent_width: 1.0,
+                width: "100%",
                 padding: 11.0,
                 background_color: muted(),
                 border_radius: 8.0,
                 text {
                     content: file.path,
-                    percent_width: 1.0,
+                    width: "100%",
                     font_size: 11.0,
                     line_height: 17.0,
                     font_color: text_color(),
@@ -2766,7 +2933,7 @@ fn rule_view(state: Signal<State>, current: &State, rule: hmeta_model::RuleSumma
     };
     rsx! {
         column {
-            percent_width: 1.0,
+            width: "100%",
             height: 88.0,
             padding_top: 8.0,
             padding_right: 8.0,
@@ -2778,7 +2945,7 @@ fn rule_view(state: Signal<State>, current: &State, rule: hmeta_model::RuleSumma
             border_radius: 8.0,
             clip: true,
             row {
-                percent_width: 1.0,
+                width: "100%",
                 height: 32.0,
                 align_items: "center",
                 text {
@@ -2794,7 +2961,7 @@ fn rule_view(state: Signal<State>, current: &State, rule: hmeta_model::RuleSumma
                     margin_right: 4.0,
                     text {
                         content: rule_source,
-                        percent_width: 1.0,
+                        width: "100%",
                         font_size: 10.0,
                         font_color: subtle(),
                         max_lines: 1,
@@ -2815,7 +2982,7 @@ fn rule_view(state: Signal<State>, current: &State, rule: hmeta_model::RuleSumma
             }
             text {
                 content: truncate_text(&rule.line, 180),
-                percent_width: 1.0,
+                width: "100%",
                 margin_top: 5.0,
                 font_size: 11.0,
                 line_height: 16.0,
@@ -2842,8 +3009,8 @@ fn compact_rule_action(
             border_radius: 7.0,
             onclick: move |_| dispatch(state, action.clone()),
             row {
-                percent_width: 1.0,
-                percent_height: 1.0,
+                width: "100%",
+                height: "100%",
                 align_items: "center",
                 justify_content: "center",
                 {arkit::icon(icon, 15.0, color)}
@@ -2860,7 +3027,7 @@ fn compact_rule_list(items: Vec<Element>) -> Element {
             if index + 1 < len { row { height: 6.0 } }
         }
     });
-    rsx! { column { percent_width: 1.0, {nodes} } }
+    rsx! { column { width: "100%", {nodes} } }
 }
 
 fn reordered_rule_ids(
@@ -2948,17 +3115,17 @@ fn logs_page(state: Signal<State>) -> Element {
     let selected_log_value = selected_log();
     let body = rsx! {
         column {
-            percent_width: 1.0,
-            percent_height: 1.0,
+            width: "100%",
+            height: "100%",
             Input {
                 value: Some(query_value),
                 placeholder: Some(strings(current.locale).logs_search_placeholder.to_owned()),
-                percent_width: Some(1.0),
+                width: Some("100%".into()),
                 on_change: move |value| log_query.set(value),
             }
             row { height: 12.0 }
             row {
-                percent_width: 1.0,
+                width: "100%",
                 justify_content: "center",
                 FlatSegmented {
                     options: filter_options,
@@ -2980,7 +3147,7 @@ fn logs_page(state: Signal<State>) -> Element {
                 }
             }
             row {
-                percent_width: 1.0,
+                width: "100%",
                 height: 32.0,
                 align_items: "center",
                 text {
@@ -2995,7 +3162,7 @@ fn logs_page(state: Signal<State>) -> Element {
             }
             row {
                 layout_weight: 1.0,
-                percent_width: 1.0,
+                width: "100%",
                 if empty {
                     {empty_state("scroll-text", strings(current.locale).logs_empty_title, strings(current.locale).logs_empty_subtitle)}
                 } else {
@@ -3084,8 +3251,8 @@ fn VirtualLogList(
 
     rsx! {
         list {
-            percent_width: 1.0,
-            percent_height: 1.0,
+            width: "100%",
+            height: "100%",
             list_cached_count: 18_i32,
         }
     }
@@ -3169,20 +3336,20 @@ fn log_detail_dialog(
             }
             row { height: 14.0 }
             scroll {
-                percent_width: 1.0,
+                width: "100%",
                 height: detail_height,
-                alignment: 0,
-                scroll_bar: 0,
+                alignment: "top-start",
+                scroll_bar: "off",
                 background_color: muted(),
                 border_radius: 9.0,
                 column {
-                    percent_width: 1.0,
+                    width: "100%",
                     padding: 12.0,
                     align_items: "start",
                     justify_content: "start",
                     text {
                         content: log.message,
-                        percent_width: 1.0,
+                        width: "100%",
                         font_size: 12.0,
                         line_height: 19.0,
                         font_color: text_color(),
@@ -3198,88 +3365,143 @@ fn profile_import_dialog(
     current: &State,
     open: bool,
     mut open_signal: Signal<bool>,
-    mut url: Signal<String>,
-    mut name: Signal<String>,
-    mut submitted: Signal<bool>,
+    url: Signal<String>,
+    name: Signal<String>,
+    submitted: Signal<bool>,
 ) -> Element {
-    let locale = current.locale;
     let import_loading = current.profile_import_loading;
+    let error_value = current.profile_import_error.clone().unwrap_or_default();
+    // Refresh the overlay shell when pending/error flips so the live body is remounted
+    // with the latest loading branch. Field edits are handled by the body component.
+    let content_key = dialog_content_key(&[
+        if import_loading { "loading" } else { "idle" },
+        &error_value,
+    ]);
     rsx! {
         FlatDialog {
             open: open,
+            content_key: content_key,
             on_close: move |_| {
-                if !import_loading {
+                if !state.read().profile_import_loading {
                     open_signal.set(false);
                     dispatch(state, Action::ResetProfileImportFeedback);
                 }
             },
-            DialogHeader {
-                title: strings(locale).profiles_import_network.to_owned(),
-                description: Some(strings(locale).profiles_import_network_subtitle.to_owned()),
+            ProfileImportDialogBody {
+                state,
+                url,
+                name,
+                submitted,
             }
-            row { height: 20.0 }
-            column {
-                percent_width: 1.0,
-                Input {
-                    value: Some(url()),
-                    placeholder: Some(strings(locale).profiles_import_url_label.to_owned()),
-                    percent_width: Some(1.0),
-                    disabled: import_loading,
-                    on_change: move |value| {
-                        url.set(value);
-                        dispatch(state, Action::ResetProfileImportFeedback);
-                    },
-                }
-                row { height: 12.0 }
-                Input {
-                    value: Some(name()),
-                    placeholder: Some(strings(locale).profiles_import_name_placeholder.to_owned()),
-                    percent_width: Some(1.0),
-                    disabled: import_loading,
-                    on_change: move |value| {
-                        name.set(value);
-                        dispatch(state, Action::ResetProfileImportFeedback);
-                    },
-                }
-                row { height: 8.0 }
-                FlatButton {
-                    variant: FlatButtonVariant::Ghost,
-                    size: ButtonSize::Sm,
-                    disabled: Some(import_loading),
-                    onclick: move |_| dispatch(state, Action::ImportLocalProfile),
+        }
+    }
+}
+
+/// Lives inside the overlay tree and re-reads `state` so Spinner/disabled can
+/// update while the dialog stays open.
+#[component]
+fn ProfileImportDialogBody(
+    state: Signal<State>,
+    mut url: Signal<String>,
+    mut name: Signal<String>,
+    mut submitted: Signal<bool>,
+) -> Element {
+    let current = state.read().clone();
+    let locale = current.locale;
+    let import_loading = current.profile_import_loading;
+    let loading_label = strings(locale).profiles_import_loading;
+    let url_value = url();
+    let name_value = name();
+    rsx! {
+        DialogHeader {
+            title: strings(locale).profiles_import_network.to_owned(),
+            description: Some(strings(locale).profiles_import_network_subtitle.to_owned()),
+        }
+        row { height: 20.0 }
+        column {
+            width: "100%",
+            Input {
+                value: Some(url_value),
+                placeholder: Some(strings(locale).profiles_import_url_label.to_owned()),
+                width: Some("100%".into()),
+                disabled: import_loading,
+                on_change: move |value| {
+                    url.set(value);
+                    dispatch(state, Action::ResetProfileImportFeedback);
+                },
+            }
+            row { height: 12.0 }
+            Input {
+                value: Some(name_value),
+                placeholder: Some(strings(locale).profiles_import_name_placeholder.to_owned()),
+                width: Some("100%".into()),
+                disabled: import_loading,
+                on_change: move |value| {
+                    name.set(value);
+                    dispatch(state, Action::ResetProfileImportFeedback);
+                },
+            }
+            row { height: 8.0 }
+            FlatButton {
+                variant: FlatButtonVariant::Ghost,
+                size: ButtonSize::Sm,
+                disabled: Some(import_loading),
+                onclick: move |_| {
+                    if !state.read().profile_import_loading {
+                        submitted.set(true);
+                        dispatch(state, Action::ImportLocalProfile);
+                    }
+                },
+                if import_loading {
+                    Spinner { size: 14.0, color: Some(text_color()) }
+                } else {
                     {arkit::icon("file-up", 14.0, text_color())}
-                    text { content: tr(locale, "从本地文件导入", "Import from local file"), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
                 }
-                if let Some(error) = current.profile_import_error.clone() {
-                    text { content: error, margin_top: 10.0, font_size: 12.0, line_height: 18.0, font_color: danger() }
+                text {
+                    content: if import_loading {
+                        loading_label
+                    } else {
+                        tr(locale, "从本地文件导入", "Import from local file")
+                    },
+                    margin_left: 6.0,
+                    font_size: 12.0,
+                    font_weight: 600,
+                    font_color: text_color(),
                 }
             }
-            DialogFooter {
-                FlatButton {
-                    variant: FlatButtonVariant::Primary,
-                    percent_width: 1.0,
-                    disabled: Some(import_loading),
-                    onclick: move |_| {
-                        if !import_loading {
-                            submitted.set(true);
-                            dispatch(state, Action::ImportProfileFromUrl {
-                                url: url(),
-                                name: name(),
-                            });
-                        }
-                    },
-                    if import_loading {
-                        Spinner { size: 16.0, color: Some(primary_text()) }
+            if let Some(error) = current.profile_import_error.clone() {
+                text { content: error, margin_top: 10.0, font_size: 12.0, line_height: 18.0, font_color: danger() }
+            }
+        }
+        DialogFooter {
+            FlatButton {
+                variant: FlatButtonVariant::Primary,
+                width: Some("100%".into()),
+                disabled: Some(import_loading),
+                onclick: move |_| {
+                    if !state.read().profile_import_loading {
+                        submitted.set(true);
+                        dispatch(state, Action::ImportProfileFromUrl {
+                            url: url(),
+                            name: name(),
+                        });
+                    }
+                },
+                if import_loading {
+                    Spinner { size: 16.0, color: Some(primary_text()) }
+                } else {
+                    {arkit::icon("download", 16.0, primary_text())}
+                }
+                text {
+                    content: if import_loading {
+                        loading_label
                     } else {
-                        {arkit::icon("download", 16.0, primary_text())}
-                    }
-                    text {
-                        content: if import_loading { strings(locale).profiles_import_loading } else { strings(locale).profiles_import_submit },
-                        margin_left: 8.0,
-                        font_size: 14.0,
-                        font_weight: 600,
-                        font_color: primary_text(),
-                    }
+                        strings(locale).profiles_import_submit
+                    },
+                    margin_left: 8.0,
+                    font_size: 14.0,
+                    font_weight: 600,
+                    font_color: primary_text(),
                 }
             }
         }
@@ -3287,63 +3509,96 @@ fn profile_import_dialog(
 }
 
 fn yaml_editor_dialog(state: Signal<State>, current: &State) -> Element {
-    let summary = summarize_yaml_edit(&current.yaml_editor_text, &current.yaml_editor_original);
+    let content_key = dialog_content_key(&[
+        if current.yaml_editor_testing { "testing" } else { "idle-test" },
+        if current.yaml_editor_saving { "saving" } else { "idle-save" },
+        current.yaml_editor_error.as_deref().unwrap_or(""),
+    ]);
     rsx! {
         FlatDialog {
             open: true,
-            on_close: move |_| dispatch(state, Action::SetYamlEditorOpen(false)),
-            DialogHeader {
-                title: strings(current.locale).profiles_yaml_editor_title.to_owned(),
-                description: Some(current.yaml_editor_profile_name.clone()),
+            content_key: content_key,
+            on_close: move |_| {
+                let busy = {
+                    let current = state.read();
+                    current.yaml_editor_testing || current.yaml_editor_saving
+                };
+                if !busy {
+                    dispatch(state, Action::SetYamlEditorOpen(false));
+                }
+            },
+            YamlEditorDialogBody { state }
+        }
+    }
+}
+
+#[component]
+fn YamlEditorDialogBody(state: Signal<State>) -> Element {
+    let current = state.read().clone();
+    let summary = summarize_yaml_edit(&current.yaml_editor_text, &current.yaml_editor_original);
+    let busy = current.yaml_editor_testing || current.yaml_editor_saving;
+    rsx! {
+        DialogHeader {
+            title: strings(current.locale).profiles_yaml_editor_title.to_owned(),
+            description: Some(current.yaml_editor_profile_name.clone()),
+        }
+        row { height: 16.0 }
+        column {
+            width: "100%",
+            text {
+                content: format!("{} {} · {} {} · {}", summary.lines, strings(current.locale).profiles_yaml_lines_unit, summary.characters, strings(current.locale).profiles_yaml_chars_unit, if summary.changed { strings(current.locale).profiles_yaml_changed } else { strings(current.locale).profiles_yaml_unchanged }),
+                font_size: 12.0,
+                font_color: subtle(),
             }
-            row { height: 16.0 }
-            column {
-                percent_width: 1.0,
-                text {
-                    content: format!("{} {} · {} {} · {}", summary.lines, strings(current.locale).profiles_yaml_lines_unit, summary.characters, strings(current.locale).profiles_yaml_chars_unit, if summary.changed { strings(current.locale).profiles_yaml_changed } else { strings(current.locale).profiles_yaml_unchanged }),
-                    font_size: 12.0,
-                    font_color: subtle(),
-                }
-                row { height: 8.0 }
-                Textarea {
-                    value: Some(current.yaml_editor_text.clone()),
-                    placeholder: Some(strings(current.locale).profiles_yaml_content.to_owned()),
-                    height: Some(260.0),
-                    percent_width: Some(1.0),
-                    on_change: move |value| dispatch(state, Action::SetYamlEditorText(value)),
-                }
-                if let Some(error) = current.yaml_editor_error.clone() {
-                    text { content: error, margin_top: 8.0, font_size: 12.0, font_color: danger() }
-                }
+            row { height: 8.0 }
+            Textarea {
+                value: Some(current.yaml_editor_text.clone()),
+                placeholder: Some(strings(current.locale).profiles_yaml_content.to_owned()),
+                height: Some(260.0),
+                width: Some("100%".into()),
+                disabled: busy,
+                on_change: move |value| dispatch(state, Action::SetYamlEditorText(value)),
             }
-            DialogFooter {
-                row {
-                    percent_width: 1.0,
-                    FlatButton {
-                        variant: FlatButtonVariant::Ghost,
-                        size: ButtonSize::Sm,
-                        onclick: move |_| dispatch(state, Action::ResetYamlEditorText),
-                        {arkit::icon("rotate-ccw", 14.0, text_color())}
-                        text { content: strings(current.locale).profiles_yaml_reset, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
-                    }
-                    row { layout_weight: 1.0 }
-                    FlatButton {
-                        variant: FlatButtonVariant::Outline,
-                        size: ButtonSize::Sm,
-                        disabled: Some(current.yaml_editor_testing),
-                        onclick: move |_| dispatch(state, Action::TestYamlEditor),
+            if let Some(error) = current.yaml_editor_error.clone() {
+                text { content: error, margin_top: 8.0, font_size: 12.0, font_color: danger() }
+            }
+        }
+        DialogFooter {
+            row {
+                width: "100%",
+                FlatButton {
+                    variant: FlatButtonVariant::Ghost,
+                    size: ButtonSize::Sm,
+                    disabled: Some(busy),
+                    onclick: move |_| dispatch(state, Action::ResetYamlEditorText),
+                    {arkit::icon("rotate-ccw", 14.0, text_color())}
+                    text { content: strings(current.locale).profiles_yaml_reset, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
+                }
+                row { layout_weight: 1.0 }
+                FlatButton {
+                    variant: FlatButtonVariant::Outline,
+                    size: ButtonSize::Sm,
+                    disabled: Some(busy),
+                    onclick: move |_| dispatch(state, Action::TestYamlEditor),
+                    if current.yaml_editor_testing {
+                        Spinner { size: 14.0, color: Some(text_color()) }
+                    } else {
                         {arkit::icon("check", 14.0, text_color())}
-                        text { content: if current.yaml_editor_testing { strings(current.locale).profiles_yaml_testing } else { strings(current.locale).profiles_yaml_test }, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
                     }
-                    row { width: 8.0 }
-                    FlatButton {
-                        variant: FlatButtonVariant::Primary,
-                        size: ButtonSize::Sm,
-                        disabled: Some(current.yaml_editor_saving),
-                        onclick: move |_| dispatch(state, Action::SaveYamlEditor),
+                    text { content: if current.yaml_editor_testing { strings(current.locale).profiles_yaml_testing } else { strings(current.locale).profiles_yaml_test }, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
+                }
+                row { width: 8.0 }
+                FlatButton {
+                    variant: FlatButtonVariant::Primary,
+                    size: ButtonSize::Sm,
+                    disabled: Some(busy),
+                    onclick: move |_| dispatch(state, Action::SaveYamlEditor),
+                    if current.yaml_editor_saving {
+                        Spinner { size: 14.0, color: Some(primary_text()) }
+                    } else {
                         {arkit::icon("save", 14.0, primary_text())}
-                        text { content: if current.yaml_editor_saving { strings(current.locale).profiles_yaml_saving } else { strings(current.locale).profiles_yaml_save }, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: primary_text() }
                     }
+                    text { content: if current.yaml_editor_saving { strings(current.locale).profiles_yaml_saving } else { strings(current.locale).profiles_yaml_save }, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: primary_text() }
                 }
             }
         }
@@ -3353,13 +3608,8 @@ fn yaml_editor_dialog(state: Signal<State>, current: &State) -> Element {
 fn card(title: impl Into<String>, subtitle: Option<String>, body: Element) -> Element {
     let title = title.into();
     rsx! {
-        column {
-            percent_width: 1.0,
-            background_color: surface(),
-            border_width: 1.0,
-            border_color: line(),
-            border_radius: 10.0,
-            clip: true,
+        Card {
+            shadow: Some(false),
             if let Some(subtitle) = subtitle {
                 CardHeader {
                     title: title,
@@ -3367,11 +3617,11 @@ fn card(title: impl Into<String>, subtitle: Option<String>, body: Element) -> El
                 }
             } else {
                 row {
-                    percent_width: 1.0,
-                    padding_top: 24.0,
-                    padding_right: 24.0,
-                    padding_bottom: 16.0,
-                    padding_left: 24.0,
+                    width: "100%",
+                    padding_top: spacing::XXL,
+                    padding_right: spacing::XXL,
+                    padding_bottom: spacing::LG,
+                    padding_left: spacing::XXL,
                     CardTitle { content: title }
                 }
             }
@@ -3392,18 +3642,14 @@ fn traffic_metrics(
     let download_value = download_value.into();
     let upload_label = upload_label.into();
     let upload_value = upload_value.into();
+    let theme = use_theme();
     rsx! {
-        column {
-            percent_width: 1.0,
-            background_color: surface(),
-            border_width: 1.0,
-            border_color: line(),
-            border_radius: 10.0,
-            clip: true,
+        Card {
+            shadow: Some(false),
             row {
-                percent_width: 1.0,
+                width: "100%",
                 height: 92.0,
-                padding: 16.0,
+                padding: spacing::LG,
                 align_items: "center",
                 row { layout_weight: 1.0, align_items: "center",
                     row {
@@ -3411,31 +3657,31 @@ fn traffic_metrics(
                         height: 38.0,
                         align_items: "center",
                         justify_content: "center",
-                        background_color: muted(),
-                        border_radius: 10.0,
+                        background_color: theme.colors.muted,
+                        border_radius: theme.radii.lg,
                         {arkit::icon("arrow-down", 18.0, success())}
                     }
                     column {
-                        margin_left: 12.0,
-                        text { content: download_label, font_size: 12.0, line_height: 18.0, font_color: subtle() }
-                        text { content: download_value, margin_top: 2.0, font_size: 18.0, line_height: 24.0, font_weight: 700, font_color: text_color() }
+                        margin_left: spacing::MD,
+                        text { content: download_label, font_size: typography::XS, line_height: 18.0, font_color: theme.colors.muted_foreground }
+                        text { content: download_value, margin_top: 2.0, font_size: typography::LG, line_height: 24.0, font_weight: 700, font_color: theme.colors.foreground }
                     }
                 }
-                row { width: 1.0, height: 48.0, margin_left: 12.0, margin_right: 16.0, background_color: line() }
+                row { width: 1.0, height: 48.0, margin_left: spacing::MD, margin_right: spacing::LG, background_color: theme.colors.border }
                 row { layout_weight: 1.0, align_items: "center",
                     row {
                         width: 38.0,
                         height: 38.0,
                         align_items: "center",
                         justify_content: "center",
-                        background_color: muted(),
-                        border_radius: 10.0,
+                        background_color: theme.colors.muted,
+                        border_radius: theme.radii.lg,
                         {arkit::icon("arrow-up", 18.0, warning())}
                     }
                     column {
-                        margin_left: 12.0,
-                        text { content: upload_label, font_size: 12.0, line_height: 18.0, font_color: subtle() }
-                        text { content: upload_value, margin_top: 2.0, font_size: 18.0, line_height: 24.0, font_weight: 700, font_color: text_color() }
+                        margin_left: spacing::MD,
+                        text { content: upload_label, font_size: typography::XS, line_height: 18.0, font_color: theme.colors.muted_foreground }
+                        text { content: upload_value, margin_top: 2.0, font_size: typography::LG, line_height: 24.0, font_weight: 700, font_color: theme.colors.foreground }
                     }
                 }
             }
@@ -3445,30 +3691,50 @@ fn traffic_metrics(
 
 fn usage_summary_card(title: impl Into<String>, upload: u64, download: u64) -> Element {
     let title = title.into();
+    let theme = use_theme();
     rsx! {
-        column {
-            percent_width: 1.0,
-            height: 126.0,
-            padding: 14.0,
-            align_items: "start",
-            background_color: surface(),
-            border_width: 1.0,
-            border_color: line(),
-            border_radius: 10.0,
-            text { content: title, font_size: 13.0, font_weight: 650, font_color: text_color(), max_lines: 1 }
-            row { height: 12.0 }
-            row {
-                percent_width: 1.0,
-                align_items: "center",
-                {arkit::icon("arrow-up", 14.0, warning())}
-                text { content: format_total(upload), margin_left: 7.0, font_size: 13.0, font_weight: 600, font_color: text_color(), max_lines: 1 }
-            }
-            row { height: 9.0 }
-            row {
-                percent_width: 1.0,
-                align_items: "center",
-                {arkit::icon("arrow-down", 14.0, success())}
-                text { content: format_total(download), margin_left: 7.0, font_size: 13.0, font_weight: 600, font_color: text_color(), max_lines: 1 }
+        Card {
+            shadow: Some(false),
+            column {
+                width: "100%",
+                height: 126.0,
+                padding: spacing::MD,
+                align_items: "start",
+                text {
+                    content: title,
+                    font_size: typography::SM,
+                    font_weight: 600,
+                    font_color: theme.colors.foreground,
+                    max_lines: 1,
+                }
+                row { height: spacing::MD }
+                row {
+                    width: "100%",
+                    align_items: "center",
+                    {arkit::icon("arrow-up", 14.0, warning())}
+                    text {
+                        content: format_total(upload),
+                        margin_left: spacing::XS,
+                        font_size: typography::SM,
+                        font_weight: 600,
+                        font_color: theme.colors.foreground,
+                        max_lines: 1,
+                    }
+                }
+                row { height: spacing::SM }
+                row {
+                    width: "100%",
+                    align_items: "center",
+                    {arkit::icon("arrow-down", 14.0, success())}
+                    text {
+                        content: format_total(download),
+                        margin_left: spacing::XS,
+                        font_size: typography::SM,
+                        font_weight: 600,
+                        font_color: theme.colors.foreground,
+                        max_lines: 1,
+                    }
+                }
             }
         }
     }
@@ -3479,7 +3745,7 @@ fn info_row(label: impl Into<String>, value: impl Into<String>) -> Element {
     let value = value.into();
     rsx! {
         row {
-            percent_width: 1.0,
+            width: "100%",
             height: 36.0,
             align_items: "center",
             text { content: label, font_size: 13.0, font_color: subtle() }
@@ -3488,14 +3754,14 @@ fn info_row(label: impl Into<String>, value: impl Into<String>) -> Element {
                 margin_left: 16.0,
                 justify_content: "end",
                 text {
-                    percent_width: 1.0,
+                    width: "100%",
                     content: value,
                     font_size: 13.0,
                     line_height: 19.0,
                     font_weight: 600,
                     font_color: text_color(),
                     max_lines: 1,
-                    text_align: 2,
+                    text_align: "end",
                 }
             }
         }
@@ -3515,11 +3781,17 @@ fn pill(label: String, color: u32) -> Element {
 
 fn section_label(label: impl Into<String>) -> Element {
     let label = label.into();
+    let theme = use_theme();
     rsx! {
         row {
-            percent_width: 1.0,
-            margin_bottom: 8.0,
-            text { content: label, font_size: 15.0, font_weight: 750, font_color: text_color() }
+            width: "100%",
+            margin_bottom: spacing::SM,
+            text {
+                content: label,
+                font_size: typography::MD,
+                font_weight: 600,
+                font_color: theme.colors.foreground,
+            }
         }
     }
 }
@@ -3531,18 +3803,14 @@ fn empty_state(
 ) -> Element {
     let title = title.into();
     let subtitle = subtitle.into();
+    let theme = use_theme();
     rsx! {
-        column {
-            percent_width: 1.0,
-            background_color: surface(),
-            border_width: 1.0,
-            border_color: line(),
-            border_radius: 10.0,
-            clip: true,
+        Card {
+            shadow: Some(false),
             column {
-                percent_width: 1.0,
+                width: "100%",
                 height: 190.0,
-                padding: 24.0,
+                padding: spacing::XXL,
                 align_items: "center",
                 justify_content: "center",
                 row {
@@ -3550,12 +3818,26 @@ fn empty_state(
                     height: 48.0,
                     align_items: "center",
                     justify_content: "center",
-                    background_color: muted(),
-                    border_radius: 14.0,
-                    {arkit::icon(icon, 22.0, subtle())}
+                    background_color: theme.colors.muted,
+                    border_radius: theme.radii.xl,
+                    {arkit::icon(icon, 22.0, theme.colors.muted_foreground)}
                 }
-                text { content: title, margin_top: 14.0, font_size: 16.0, line_height: 22.0, font_weight: 700, font_color: text_color() }
-                text { content: subtitle, margin_top: 5.0, font_size: 13.0, line_height: 20.0, font_color: subtle(), text_align: 1 }
+                text {
+                    content: title,
+                    margin_top: spacing::MD,
+                    font_size: typography::MD,
+                    line_height: 22.0,
+                    font_weight: 600,
+                    font_color: theme.colors.foreground,
+                }
+                text {
+                    content: subtitle,
+                    margin_top: spacing::XXS,
+                    font_size: typography::SM,
+                    line_height: 20.0,
+                    font_color: theme.colors.muted_foreground,
+                    text_align: "center",
+                }
             }
         }
     }
@@ -3569,7 +3851,7 @@ fn spaced(items: Vec<Element>) -> Element {
             if index + 1 < len { row { height: 10.0 } }
         }
     });
-    rsx! { column { percent_width: 1.0, {nodes} } }
+    rsx! { column { width: "100%", {nodes} } }
 }
 
 fn icon_action(icon: &'static str, action: Action, state: Signal<State>) -> Element {
@@ -3610,7 +3892,7 @@ fn speed_bars(history: &[TrafficHistoryPoint]) -> Element {
                 height: 56.0,
                 justify_content: "end",
                 row {
-                    percent_width: 0.72,
+                    width: "72%",
                     height: 3.0 + ratio * 49.0,
                     border_radius: 2.0,
                     background_color: if point.download_speed >= point.upload_speed { success() } else { warning() },
@@ -3620,7 +3902,7 @@ fn speed_bars(history: &[TrafficHistoryPoint]) -> Element {
     });
     rsx! {
         row {
-            percent_width: 1.0,
+            width: "100%",
             height: 62.0,
             margin_top: 10.0,
             padding: 4.0,

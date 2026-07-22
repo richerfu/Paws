@@ -5,20 +5,15 @@ pub(crate) fn tools_page(state: Signal<State>) -> Element {
     let about = current.snapshot.about.clone();
     let body = rsx! {
         column {
-            percent_width: 1.0,
+            width: "100%",
             {settings_section(
                 tr(current.locale, "常规", "General"),
                 vec![
                     settings_value_row("package", tr(current.locale, "版本", "Version"), about.app_version),
                     settings_value_row("cpu", tr(current.locale, "引擎", "Engine"), format!("meow-rs {}", about.meow_rs_version)),
-                    settings_route_row(
-                        Route::PerApp {},
-                        current.locale,
-                        tr(current.locale, "选择需要代理或绕过 VPN 的应用", "Choose apps to proxy or bypass"),
-                    ),
                 ],
             )}
-            row { height: 18.0 }
+            row { height: spacing::LG }
             {settings_section(
                 tr(current.locale, "界面", "Appearance"),
                 vec![settings_route_row(
@@ -27,7 +22,7 @@ pub(crate) fn tools_page(state: Signal<State>) -> Element {
                     tr(current.locale, "语言、浅色与深色主题", "Language, light and dark themes"),
                 )],
             )}
-            row { height: 18.0 }
+            row { height: spacing::LG }
             {settings_section(
                 tr(current.locale, "网络", "Network"),
                 vec![settings_route_row(
@@ -36,7 +31,7 @@ pub(crate) fn tools_page(state: Signal<State>) -> Element {
                     tr(current.locale, "VPN、DNS 与网络栈", "VPN, DNS and network stack"),
                 )],
             )}
-            row { height: 18.0 }
+            row { height: spacing::LG }
             {settings_section(
                 tr(current.locale, "诊断与管理", "Diagnostics & management"),
                 vec![
@@ -46,7 +41,7 @@ pub(crate) fn tools_page(state: Signal<State>) -> Element {
                     settings_route_row(Route::Logs {}, current.locale, tr(current.locale, "查看 meow-rs 运行日志", "Inspect meow-rs runtime logs")),
                 ],
             )}
-            row { height: 18.0 }
+            row { height: spacing::LG }
             {settings_section(
                 tr(current.locale, "关于", "About"),
                 vec![settings_route_row(
@@ -62,6 +57,7 @@ pub(crate) fn tools_page(state: Signal<State>) -> Element {
 
 fn settings_section(title: impl Into<String>, rows: Vec<Element>) -> Element {
     let title = title.into();
+    let theme = use_theme();
     let count = rows.len();
     let rows = rows.into_iter().enumerate().map(|(index, row)| {
         rsx! {
@@ -71,80 +67,78 @@ fn settings_section(title: impl Into<String>, rows: Vec<Element>) -> Element {
     });
     rsx! {
         column {
-            percent_width: 1.0,
+            width: "100%",
             align_items: "start",
             text {
                 content: title,
-                margin_left: 4.0,
-                margin_bottom: 8.0,
-                font_size: 13.0,
-                font_weight: 650,
-                font_color: subtle(),
+                margin_left: spacing::XXS,
+                margin_bottom: spacing::SM,
+                font_size: typography::SM,
+                font_weight: 600,
+                font_color: theme.colors.muted_foreground,
             }
-            column {
-                percent_width: 1.0,
-                padding_left: 14.0,
-                padding_right: 8.0,
-                background_color: surface(),
-                border_width: 1.0,
-                border_color: line(),
-                border_radius: 10.0,
-                clip: true,
-                {rows}
+            Card {
+                shadow: Some(false),
+                column {
+                    width: "100%",
+                    padding_left: spacing::MD,
+                    padding_right: spacing::SM,
+                    {rows}
+                }
             }
         }
     }
 }
 
 fn settings_route_row(page: Route, locale: UiLocale, subtitle: impl Into<String>) -> Element {
+    let theme = use_theme();
     let navigator = use_navigator();
     let target = page.clone();
     let subtitle = subtitle.into();
     rsx! {
         button {
-            percent_width: 1.0,
+            button_type: "normal",
+            width: "100%",
             height: 68.0,
-            padding_left: 0.0,
-            padding_right: 0.0,
-            padding_top: 0.0,
-            padding_bottom: 0.0,
-            background_color: surface(),
+            padding: 0.0,
+            background_color: 0x00000000,
             border_width: 0.0,
             onclick: move |_| {
                 navigator.push(target.clone());
             },
             row {
-                percent_width: 1.0,
-                padding_right: 6.0,
+                width: "100%",
+                padding_right: spacing::XS,
                 align_items: "center",
                 row {
                     width: 34.0,
                     height: 34.0,
                     align_items: "center",
                     justify_content: "center",
-                    background_color: muted(),
-                    border_radius: 9.0,
-                    {arkit::icon(page.icon(), 17.0, text_color())}
+                    background_color: theme.colors.muted,
+                    border_radius: theme.radii.md,
+                    {arkit::icon(page.icon(), 17.0, theme.colors.foreground)}
                 }
                 column {
                     layout_weight: 1.0,
-                    margin_left: 11.0,
+                    margin_left: spacing::MD,
                     align_items: "start",
                     text {
                         content: page.title(locale),
-                        font_size: 14.0,
-                        font_weight: 650,
-                        font_color: text_color(),
+                        font_size: typography::SM,
+                        font_weight: 600,
+                        font_color: theme.colors.foreground,
                     }
                     text {
                         content: subtitle,
                         margin_top: 3.0,
-                        font_size: 11.0,
-                        font_color: subtle(),
+                        font_size: typography::XS,
+                        font_color: theme.colors.muted_foreground,
                         max_lines: 1,
+                        text_overflow: "ellipsis",
                     }
                 }
-                {arkit::icon("chevron-right", 16.0, subtle())}
+                {arkit::icon("chevron-right", 16.0, theme.colors.muted_foreground)}
             }
         }
     }
@@ -155,26 +149,40 @@ fn settings_value_row(
     title: impl Into<String>,
     value: impl Into<String>,
 ) -> Element {
+    let theme = use_theme();
     let title = title.into();
     let value = value.into();
     rsx! {
         row {
-            percent_width: 1.0,
+            width: "100%",
             height: 58.0,
-            padding_right: 8.0,
+            padding_right: spacing::SM,
             align_items: "center",
             row {
                 width: 34.0,
                 height: 34.0,
                 align_items: "center",
                 justify_content: "center",
-                background_color: muted(),
-                border_radius: 9.0,
-                {arkit::icon(icon, 17.0, text_color())}
+                background_color: theme.colors.muted,
+                border_radius: theme.radii.md,
+                {arkit::icon(icon, 17.0, theme.colors.foreground)}
             }
-            text { content: title, margin_left: 11.0, font_size: 14.0, font_weight: 600, font_color: text_color() }
+            text {
+                content: title,
+                margin_left: spacing::MD,
+                font_size: typography::SM,
+                font_weight: 600,
+                font_color: theme.colors.foreground,
+            }
             row { layout_weight: 1.0 }
-            text { content: truncate_text(&value, 24), margin_left: 12.0, font_size: 12.0, font_color: subtle(), max_lines: 1, text_align: 2 }
+            text {
+                content: truncate_text(&value, 24),
+                margin_left: spacing::MD,
+                font_size: typography::XS,
+                font_color: theme.colors.muted_foreground,
+                max_lines: 1,
+                text_align: "end",
+            }
         }
     }
 }
@@ -189,7 +197,7 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
         .map(|item| {
             rsx! {
                 row {
-                    percent_width: 1.0,
+                    width: "100%",
                     margin_top: 8.0,
                     align_items: "start",
                     row {
@@ -204,7 +212,7 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
                         layout_weight: 1.0,
                         margin_left: 8.0,
                         text {
-                            percent_width: 1.0,
+                            width: "100%",
                             content: item,
                             font_size: 13.0,
                             line_height: 19.0,
@@ -218,13 +226,13 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
         .collect::<Vec<_>>();
     let body = rsx! {
         column {
-            percent_width: 1.0,
+            width: "100%",
             {card(
                 "Paws",
                 Some(tr(current.locale, "HarmonyOS 原生 meow-rs 客户端", "Native HarmonyOS client powered by meow-rs").to_owned()),
                 rsx! {
                     column {
-                        percent_width: 1.0,
+                        width: "100%",
                         {info_row(tr(current.locale, "应用版本", "App"), about.app_version)}
                         {info_row(tr(current.locale, "核心版本", "Core"), about.core_version)}
                         {info_row("meow-rs", about.meow_rs_version)}
@@ -234,15 +242,15 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
                 }
             )}
             row { height: 12.0 }
-            {card(tr(current.locale, "隐私", "Privacy"), None, rsx! { column { percent_width: 1.0, {privacy.into_iter()} } })}
+            {card(tr(current.locale, "隐私", "Privacy"), None, rsx! { column { width: "100%", {privacy.into_iter()} } })}
             row { height: 10.0 }
             row {
-                percent_width: 1.0,
+                width: "100%",
                 justify_content: "center",
                 FlatButton {
                     variant: FlatButtonVariant::Link,
                     size: ButtonSize::Sm,
-                    percent_width: 0.46,
+                    width: Some("46%".into()),
                     onclick: move |_| dispatch(state, Action::OpenExternalUrl("https://github.com/madeye/meow-rs".to_owned())),
                     row {
                         width: 18.0,
@@ -251,13 +259,13 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
                         justify_content: "center",
                         {arkit::icon("github", 16.0, text_color())}
                     }
-                    text { content: "meow-rs", margin_left: 8.0, font_size: 14.0, line_height: 20.0, font_weight: 600, font_color: text_color() }
+                    text { content: "meow-rs", margin_left: spacing::SM, font_size: typography::SM, line_height: 20.0, font_weight: 600, font_color: text_color() }
                 }
-                row { width: 8.0 }
+                row { width: spacing::SM }
                 FlatButton {
                     variant: FlatButtonVariant::Link,
                     size: ButtonSize::Sm,
-                    percent_width: 0.46,
+                    width: Some("46%".into()),
                     onclick: move |_| dispatch(state, Action::OpenExternalUrl("https://github.com/richerfu/arkit".to_owned())),
                     row {
                         width: 18.0,
@@ -266,7 +274,7 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
                         justify_content: "center",
                         {arkit::icon("github", 16.0, text_color())}
                     }
-                    text { content: "arkit", margin_left: 8.0, font_size: 14.0, line_height: 20.0, font_weight: 600, font_color: text_color() }
+                    text { content: "arkit", margin_left: spacing::SM, font_size: typography::SM, line_height: 20.0, font_weight: 600, font_color: text_color() }
                 }
             }
         }

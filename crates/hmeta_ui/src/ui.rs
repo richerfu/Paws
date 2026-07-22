@@ -1,7 +1,6 @@
 use crate::activity_filter::{
     matches_connection_query, matches_request_filter, request_connection_query, RequestStatusFilter,
 };
-use crate::installed_app_filter::matches_installed_application_query;
 use crate::l10n::{strings, UiLocale, UiStrings};
 use crate::log_filter::{matches_log_filter_normalized, normalize_log_query, LogLevelFilter};
 use crate::mode_feedback::mode_changed_message;
@@ -23,8 +22,8 @@ use crate::ui_preferences::{LanguagePreference, ThemePreference, UiPreferences};
 use crate::vpn_feedback::{vpn_command_is_pending, vpn_command_message, VpnCommandAction};
 use crate::yaml_summary::summarize_yaml_edit;
 use hmeta_model::{
-    InstalledApplication, ManualRuleMatchKind, ManualRuleMutationKind, ManualRuleSpec, PerAppMode,
-    RuntimeMode, RuntimeSnapshot, TrafficHistoryPoint, VpnLifecycle,
+    ManualRuleMatchKind, ManualRuleMutationKind, ManualRuleSpec, RuntimeMode, RuntimeSnapshot,
+    TrafficHistoryPoint, VpnLifecycle,
 };
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -169,12 +168,6 @@ pub(crate) enum Action {
         rule_id: String,
     },
     RulesChanged(Result<RuleChangeResult, String>),
-    SavePerAppSettings {
-        mode: PerAppMode,
-        trusted_applications_text: String,
-        blocked_applications_text: String,
-    },
-    PerAppSettingsSaved(Result<SettingsSaveResult, String>),
     SaveDnsSettings {
         servers_text: String,
         fallbacks_text: String,
@@ -188,8 +181,6 @@ pub(crate) enum Action {
         stack: String,
     },
     VpnSettingsSaved(Result<SettingsSaveResult, String>),
-    RefreshInstalledApplications,
-    InstalledApplicationsLoaded(Result<Vec<InstalledApplication>, String>),
 }
 
 #[derive(Clone)]
@@ -209,9 +200,6 @@ pub(crate) struct State {
     yaml_editor_error: Option<String>,
     yaml_editor_saving: bool,
     yaml_editor_testing: bool,
-    installed_applications: Vec<InstalledApplication>,
-    installed_applications_loading: bool,
-    installed_applications_error: Option<String>,
     vpn_command_pending: Option<VpnCommandAction>,
     proxy_selection_pending: Option<(String, String)>,
     proxy_delay_loading: bool,
@@ -371,9 +359,6 @@ impl State {
             yaml_editor_error: None,
             yaml_editor_saving: false,
             yaml_editor_testing: false,
-            installed_applications: Vec::new(),
-            installed_applications_loading: false,
-            installed_applications_error: None,
             vpn_command_pending: None,
             proxy_selection_pending: None,
             proxy_delay_loading: false,
@@ -964,7 +949,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             Command::none()
         }
         Action::ImportLocalProfile => {
+            if state.profile_import_loading {
+                return Command::none();
+            }
+            state.profile_import_loading = true;
             state.profile_import_error = None;
+            state.profile_import_succeeded = false;
             let was_vpn_running = state.snapshot.vpn_running;
             let ui_strings = strings(state.locale);
             Command::perform(
@@ -972,28 +962,47 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 Action::LocalProfileImportFinished,
             )
         }
-        Action::LocalProfileImportFinished(result) => match result {
-            Ok(result) => {
-                state.snapshot = result.snapshot;
-                show_toast(
-                    state,
-                    localized_profile_import_message(
-                        &result.profile_name,
-                        result.restart_requested,
-                        result.restart_error.as_deref(),
-                        strings(state.locale),
-                    ),
-                )
+        Action::LocalProfileImportFinished(result) => {
+            state.profile_import_loading = false;
+            match result {
+                Ok(result) => {
+                    state.snapshot = result.snapshot;
+                    state.profile_import_error = None;
+                    state.profile_import_succeeded = true;
+                    show_toast(
+                        state,
+                        localized_profile_import_message(
+                            &result.profile_name,
+                            result.restart_requested,
+                            result.restart_error.as_deref(),
+                            strings(state.locale),
+                        ),
+                    )
+                }
+                Err(error) => {
+                    // File-picker cancel should not sticky-error the network form.
+                    let cancelled = error.to_ascii_lowercase().contains("cancel")
+                        || error.contains("取消")
+                        || error.contains("已取消");
+                    if cancelled {
+                        state.profile_import_error = None;
+                        state.profile_import_succeeded = false;
+                        Command::none()
+                    } else {
+                        state.profile_import_error = Some(error.clone());
+                        state.profile_import_succeeded = false;
+                        show_toast(
+                            state,
+                            format!(
+                                "{}{}",
+                                strings(state.locale).profiles_import_failed_prefix,
+                                error
+                            ),
+                        )
+                    }
+                }
             }
-            Err(error) => show_toast(
-                state,
-                format!(
-                    "{}{}",
-                    strings(state.locale).profiles_import_failed_prefix,
-                    error
-                ),
-            ),
-        },
+        }
         Action::ImportProfileFromUrl { url, name } => {
             if state.profile_import_loading {
                 return Command::none();
@@ -1716,67 +1725,6 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 ),
             ),
         },
-        Action::SavePerAppSettings {
-            mode,
-            trusted_applications_text,
-            blocked_applications_text,
-        } => {
-            let Some(profile_id) = state.snapshot.active_profile.clone() else {
-                return show_toast(
-                    state,
-                    strings(state.locale)
-                        .feedback_active_profile_required
-                        .to_owned(),
-                );
-            };
-            let trusted_applications = parse_applications_text(&trusted_applications_text);
-            let blocked_applications = parse_applications_text(&blocked_applications_text);
-            let was_vpn_running = state.snapshot.vpn_running;
-            let ui_strings = strings(state.locale);
-            Command::perform(
-                async move {
-                    hmeta_core::shared_core()
-                        .set_profile_per_app_config(
-                            &profile_id,
-                            mode,
-                            trusted_applications,
-                            blocked_applications,
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-                    let restart_error =
-                        request_vpn_restart_if_running(was_vpn_running, ui_strings).await;
-                    Ok(SettingsSaveResult {
-                        snapshot: load_snapshot().await,
-                        restart_requested: was_vpn_running,
-                        restart_error,
-                    })
-                },
-                Action::PerAppSettingsSaved,
-            )
-        }
-        Action::PerAppSettingsSaved(result) => match result {
-            Ok(result) => {
-                state.snapshot = result.snapshot;
-                show_toast(
-                    state,
-                    settings_saved_message(
-                        strings(state.locale).feedback_label_per_app_settings,
-                        result.restart_requested,
-                        result.restart_error.as_deref(),
-                        strings(state.locale),
-                    ),
-                )
-            }
-            Err(error) => show_toast(
-                state,
-                format!(
-                    "{}{}",
-                    strings(state.locale).feedback_per_app_save_failed_prefix,
-                    error
-                ),
-            ),
-        },
         Action::SaveDnsSettings {
             servers_text,
             fallbacks_text,
@@ -1913,35 +1861,6 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 ),
             ),
         },
-        Action::RefreshInstalledApplications => {
-            state.installed_applications_loading = true;
-            state.installed_applications_error = None;
-            Command::perform(
-                load_installed_applications(),
-                Action::InstalledApplicationsLoaded,
-            )
-        }
-        Action::InstalledApplicationsLoaded(result) => {
-            state.installed_applications_loading = false;
-            match result {
-                Ok(applications) => {
-                    state.installed_applications = applications;
-                    state.installed_applications_error = None;
-                    Command::none()
-                }
-                Err(error) => {
-                    state.installed_applications_error = Some(error.clone());
-                    show_toast(
-                        state,
-                        format!(
-                            "{}{}",
-                            strings(state.locale).feedback_installed_apps_load_failed_prefix,
-                            error
-                        ),
-                    )
-                }
-            }
-        }
     }
 }
 
@@ -2025,10 +1944,6 @@ fn count_failed_refreshed_providers(
             }) && provider.last_refresh_error.is_some()
         })
         .count()
-}
-
-async fn load_installed_applications() -> Result<Vec<InstalledApplication>, String> {
-    crate::platform_callbacks::list_installed_applications().await
 }
 
 async fn start_vpn_command_and_snapshot(
@@ -2149,14 +2064,6 @@ async fn request_vpn_restart_if_running(
     }
 }
 
-fn per_app_draft_from_snapshot(snapshot: &RuntimeSnapshot) -> (PerAppMode, String, String) {
-    (
-        snapshot.vpn_options.per_app_mode,
-        snapshot.vpn_options.trusted_applications.join("\n"),
-        snapshot.vpn_options.blocked_applications.join("\n"),
-    )
-}
-
 fn dns_draft_from_snapshot(snapshot: &RuntimeSnapshot) -> (String, String, String) {
     (
         snapshot.vpn_options.dns_servers.join(", "),
@@ -2166,11 +2073,15 @@ fn dns_draft_from_snapshot(snapshot: &RuntimeSnapshot) -> (String, String, Strin
 }
 
 fn vpn_draft_from_snapshot(snapshot: &RuntimeSnapshot) -> (bool, bool, bool, String) {
+    let stack = hmeta_model::VpnStack::try_from(snapshot.vpn_options.stack.as_str())
+        .unwrap_or_default()
+        .as_str()
+        .to_owned();
     (
         snapshot.vpn_options.system_proxy,
         snapshot.vpn_options.dns_hijacking,
         snapshot.vpn_options.allow_bypass,
-        snapshot.vpn_options.stack.clone(),
+        stack,
     )
 }
 
@@ -2180,20 +2091,6 @@ fn dns_policy_text(policy: &BTreeMap<String, Vec<String>>) -> String {
         .map(|(matcher, servers)| format!("{matcher} = {}", servers.join(", ")))
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn parse_applications_text(value: &str) -> Vec<String> {
-    let mut applications = Vec::new();
-    for item in value.split(|character: char| {
-        character == ',' || character == ';' || character.is_ascii_whitespace()
-    }) {
-        let item = item.trim();
-        if item.is_empty() || applications.iter().any(|application| application == item) {
-            continue;
-        }
-        applications.push(item.to_owned());
-    }
-    applications
 }
 
 fn parse_dns_servers_text(value: &str) -> Vec<String> {
@@ -2239,25 +2136,6 @@ fn parse_dns_policy_text(
         policy.insert(matcher.to_owned(), servers);
     }
     Ok(policy)
-}
-
-fn add_application_to_text(value: &str, bundle_name: &str) -> String {
-    let mut applications = parse_applications_text(value);
-    if !applications
-        .iter()
-        .any(|application| application == bundle_name)
-    {
-        applications.push(bundle_name.to_owned());
-    }
-    applications.join("\n")
-}
-
-fn remove_application_from_text(value: &str, bundle_name: &str) -> String {
-    parse_applications_text(value)
-        .into_iter()
-        .filter(|application| application != bundle_name)
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 async fn import_profile_url_and_snapshot(

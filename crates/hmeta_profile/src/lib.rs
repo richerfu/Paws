@@ -1,8 +1,8 @@
 use base64::Engine;
 use hmeta_model::{
     GeodataFileSummary, HMetaError, ManualRuleMatchKind, ManualRuleMutation,
-    ManualRuleMutationKind, ManualRuleSpec, PerAppMode, ProfileSummary, ProviderSummary,
-    RuleSummary, RuntimeMode, SubscriptionMetadata, SubscriptionUserInfo, VpnOptions,
+    ManualRuleMutationKind, ManualRuleSpec, ProfileSummary, ProviderSummary, RuleSummary,
+    RuntimeMode, SubscriptionMetadata, SubscriptionUserInfo, VpnOptions, VpnStack,
     DEFAULT_CHINA_DNS_SERVERS, DEFAULT_GLOBAL_DNS_FALLBACKS,
 };
 use ipnet::IpNet;
@@ -495,53 +495,6 @@ impl ProfileStore {
         self.save()
     }
 
-    pub fn set_profile_per_app_config(
-        &mut self,
-        profile_id: &str,
-        mode: PerAppMode,
-        trusted_applications: Vec<String>,
-        blocked_applications: Vec<String>,
-    ) -> Result<(), HMetaError> {
-        let raw_yaml = self.raw_yaml(profile_id)?;
-        let mut value: Value =
-            serde_yaml::from_str(&raw_yaml).map_err(|err| HMetaError::Core(err.to_string()))?;
-        let Some(root) = value.as_mapping_mut() else {
-            return Err(HMetaError::Core(
-                "profile root must be a YAML map".to_owned(),
-            ));
-        };
-
-        let hmeta_key = value_key("hmeta");
-        let mut hmeta = root
-            .remove(&hmeta_key)
-            .and_then(|value| value.as_mapping().cloned())
-            .unwrap_or_default();
-        put_string(&mut hmeta, "per-app-mode", mode.as_str());
-        hmeta.insert(
-            value_key("trusted-applications"),
-            Value::Sequence(
-                normalize_applications(trusted_applications)
-                    .into_iter()
-                    .map(Value::String)
-                    .collect(),
-            ),
-        );
-        hmeta.insert(
-            value_key("blocked-applications"),
-            Value::Sequence(
-                normalize_applications(blocked_applications)
-                    .into_iter()
-                    .map(Value::String)
-                    .collect(),
-            ),
-        );
-        root.insert(hmeta_key, Value::Mapping(hmeta));
-
-        let raw_yaml =
-            serde_yaml::to_string(&value).map_err(|err| HMetaError::Core(err.to_string()))?;
-        self.update_profile_content(profile_id, raw_yaml)
-    }
-
     pub fn set_profile_dns_servers(
         &mut self,
         profile_id: &str,
@@ -653,7 +606,7 @@ impl ProfileStore {
             .remove(&tun_key)
             .and_then(|value| value.as_mapping().cloned())
             .unwrap_or_default();
-        let stack = normalize_vpn_stack(stack);
+        let stack = VpnStack::try_from(stack.as_str())?.as_str().to_owned();
         put_string(&mut tun, "stack", &stack);
         if dns_hijacking {
             tun.insert(
@@ -2769,20 +2722,6 @@ pub fn vpn_options_from_yaml(raw_yaml: &str) -> Result<VpnOptions, HMetaError> {
         {
             options.allow_bypass = allow_bypass;
         }
-        if let Some(mode) = get_string(hmeta, "per-app-mode")
-            .or_else(|| get_string(hmeta, "per-app"))
-            .and_then(|mode| PerAppMode::try_from(mode.as_str()).ok())
-        {
-            options.per_app_mode = mode;
-        }
-        let trusted = get_string_list(hmeta, "trusted-applications");
-        if !trusted.is_empty() {
-            options.trusted_applications = trusted;
-        }
-        let blocked = get_string_list(hmeta, "blocked-applications");
-        if !blocked.is_empty() {
-            options.blocked_applications = blocked;
-        }
     }
 
     if let Some(Value::Mapping(tun)) = root.get(&value_key("tun")) {
@@ -2790,7 +2729,7 @@ pub fn vpn_options_from_yaml(raw_yaml: &str) -> Result<VpnOptions, HMetaError> {
             options.mtu = mtu;
         }
         if let Some(stack) = get_string(tun, "stack") {
-            options.stack = stack;
+            options.stack = normalize_vpn_stack(stack);
         }
         if let Some(Value::Bool(enabled)) = tun.get(&value_key("dns-hijack")) {
             options.dns_hijacking = *enabled;
@@ -2818,14 +2757,6 @@ pub fn vpn_options_from_yaml(raw_yaml: &str) -> Result<VpnOptions, HMetaError> {
                 options.ipv6 = true;
             }
             options.routes = route_addresses;
-        }
-    }
-
-    if options.per_app_mode == PerAppMode::Off {
-        if !options.trusted_applications.is_empty() {
-            options.per_app_mode = PerAppMode::Proxy;
-        } else if !options.blocked_applications.is_empty() {
-            options.per_app_mode = PerAppMode::Bypass;
         }
     }
 
@@ -3383,18 +3314,6 @@ fn get_string_list_map(map: &Mapping, key: &str) -> BTreeMap<String, Vec<String>
         .collect()
 }
 
-fn normalize_applications(applications: Vec<String>) -> Vec<String> {
-    let mut normalized = Vec::new();
-    for application in applications {
-        let application = application.trim();
-        if application.is_empty() || normalized.iter().any(|item| item == application) {
-            continue;
-        }
-        normalized.push(application.to_owned());
-    }
-    normalized
-}
-
 fn normalize_dns_servers(servers: Vec<String>) -> Vec<String> {
     let normalized = normalize_dns_optional_servers(servers);
     if normalized.is_empty() {
@@ -3445,12 +3364,10 @@ fn normalize_dns_policy(policy: BTreeMap<String, Vec<String>>) -> BTreeMap<Strin
 }
 
 fn normalize_vpn_stack(stack: String) -> String {
-    let stack = stack.trim();
-    if stack.is_empty() {
-        VpnOptions::default().stack
-    } else {
-        stack.to_owned()
-    }
+    VpnStack::try_from(stack.as_str())
+        .unwrap_or_default()
+        .as_str()
+        .to_owned()
 }
 
 fn dns_config_needs_default_nameserver(options: &VpnOptions) -> bool {
@@ -5783,7 +5700,7 @@ dns:
       - https://dns.alidns.com/dns-query
 tun:
   mtu: 1400
-  stack: gvisor
+  stack: lwip
   inet4-address:
     - 198.18.0.1/16
   route-address:
@@ -5791,14 +5708,11 @@ tun:
 hmeta:
   system-proxy: true
   allow-bypass: true
-  per-app-mode: bypass
-  blocked-applications:
-    - com.example.video
 "#,
         )
         .unwrap();
         assert_eq!(options.mtu, 1400);
-        assert_eq!(options.stack, "gvisor");
+        assert_eq!(options.stack, "lwip");
         assert_eq!(options.dns_servers, vec!["9.9.9.9"]);
         assert_eq!(options.dns_fallbacks, vec!["https://dns.google/dns-query"]);
         assert_eq!(
@@ -5818,8 +5732,25 @@ hmeta:
         );
         assert!(options.system_proxy);
         assert!(options.allow_bypass);
-        assert_eq!(options.per_app_mode, PerAppMode::Bypass);
-        assert_eq!(options.blocked_applications, vec!["com.example.video"]);
+    }
+
+    #[test]
+    fn legacy_per_app_yaml_does_not_enter_vpn_options() {
+        let options = vpn_options_from_yaml(
+            r#"
+hmeta:
+  per-app-mode: bypass
+  trusted-applications:
+    - com.example.browser
+  blocked-applications:
+    - com.example.video
+"#,
+        )
+        .unwrap();
+        let json = serde_json::to_string(&options).unwrap();
+        assert!(!json.contains("perAppMode"));
+        assert!(!json.contains("trustedApplications"));
+        assert!(!json.contains("blockedApplications"));
     }
 
     #[test]
@@ -5885,52 +5816,6 @@ hmeta:
     }
 
     #[test]
-    fn derives_per_app_proxy_mode_from_trusted_applications() {
-        let options = vpn_options_from_yaml(
-            r#"
-hmeta:
-  trusted-applications:
-    - com.example.browser
-"#,
-        )
-        .unwrap();
-        assert_eq!(options.per_app_mode, PerAppMode::Proxy);
-        assert_eq!(options.trusted_applications, vec!["com.example.browser"]);
-    }
-
-    #[test]
-    fn updates_per_app_config_in_profile_yaml() {
-        let root = std::env::temp_dir().join(format!("hmeta-profile-test-{}", next_id("per-app")));
-        let mut store = ProfileStore::open(root).unwrap();
-        let profile_id = store
-            .import_profile_content(
-                "Per App",
-                "local",
-                "mixed-port: 7890\nproxies: []\nproxy-groups: []\nrules: []\n",
-                None,
-            )
-            .unwrap();
-
-        store
-            .set_profile_per_app_config(
-                &profile_id,
-                PerAppMode::Proxy,
-                vec![
-                    "com.example.browser".to_owned(),
-                    "com.example.browser".to_owned(),
-                    " ".to_owned(),
-                ],
-                vec!["com.example.video".to_owned()],
-            )
-            .unwrap();
-
-        let options = store.vpn_options_for_profile(&profile_id).unwrap();
-        assert_eq!(options.per_app_mode, PerAppMode::Proxy);
-        assert_eq!(options.trusted_applications, vec!["com.example.browser"]);
-        assert_eq!(options.blocked_applications, vec!["com.example.video"]);
-    }
-
-    #[test]
     fn updates_vpn_config_in_profile_yaml() {
         let root = std::env::temp_dir().join(format!("hmeta-profile-test-{}", next_id("vpn")));
         let mut store = ProfileStore::open(root).unwrap();
@@ -5944,7 +5829,7 @@ hmeta:
             .unwrap();
 
         store
-            .set_profile_vpn_config(&profile_id, true, false, true, " gvisor ".to_owned())
+            .set_profile_vpn_config(&profile_id, true, false, true, " lwip ".to_owned())
             .unwrap();
 
         let raw_yaml = store.raw_yaml(&profile_id).unwrap();
@@ -5960,14 +5845,35 @@ hmeta:
             .expect("tun");
         assert_eq!(get_bool(hmeta, "system-proxy"), Some(true));
         assert_eq!(get_bool(hmeta, "allow-bypass"), Some(true));
-        assert_eq!(get_string(tun, "stack"), Some("gvisor".to_owned()));
+        assert_eq!(get_string(tun, "stack"), Some("lwip".to_owned()));
         assert_eq!(get_bool(tun, "dns-hijack"), Some(false));
 
         let options = store.vpn_options_for_profile(&profile_id).unwrap();
         assert!(options.system_proxy);
         assert!(!options.dns_hijacking);
         assert!(options.allow_bypass);
-        assert_eq!(options.stack, "gvisor");
+        assert_eq!(options.stack, "lwip");
+    }
+
+    #[test]
+    fn rejects_unsupported_stack_updates_and_safely_imports_legacy_values() {
+        let options = vpn_options_from_yaml("tun:\n  stack: gvisor\n").unwrap();
+        assert_eq!(options.stack, VpnStack::Smoltcp.as_str());
+
+        let root = std::env::temp_dir().join(format!("hmeta-profile-test-{}", next_id("stack")));
+        let mut store = ProfileStore::open(root).unwrap();
+        let profile_id = store
+            .import_profile_content(
+                "Stack",
+                "local",
+                "mixed-port: 7890\nproxies: []\nproxy-groups: []\nrules: []\n",
+                None,
+            )
+            .unwrap();
+        let error = store
+            .set_profile_vpn_config(&profile_id, false, true, false, "gvisor".to_owned())
+            .expect_err("unsupported stack must be rejected");
+        assert!(error.to_string().contains("unsupported VPN network stack"));
     }
 
     #[test]

@@ -1,6 +1,5 @@
 import { describe, beforeAll, beforeEach, afterEach, afterAll, it, expect } from '@ohos/hypium';
 import {
-  blockedApplications,
   buildVpnWant,
   currentHMetaBundleName,
   DEFAULT_OPTIONS_JSON,
@@ -8,12 +7,10 @@ import {
   HMETA_BUNDLE_NAME,
   HMETA_MODULE_NAME,
   HMETA_VPN_ABILITY,
-  perAppMode,
   parseLinkAddress,
   parseOptions,
   readOptionsJson,
   setHMetaBundleName,
-  trustedApplications,
 } from '../main/ets/vpnability/VpnConfig';
 
 export default function localUnitTest() {
@@ -36,21 +33,10 @@ export default function localUnitTest() {
       expect(want.parameters?.optionsJson).assertEqual('{"mtu":1400}');
     });
 
-    it('usesRuntimeBundleNameForVpnWantAndSelfBypass', 0, () => {
+    it('usesRuntimeBundleNameForVpnWant', 0, () => {
       setHMetaBundleName(' com.example.hmeta.debug ');
       expect(currentHMetaBundleName()).assertEqual('com.example.hmeta.debug');
       expect(buildVpnWant().bundleName).assertEqual('com.example.hmeta.debug');
-
-      const blocked = blockedApplications({ blockedApplications: ['com.demo.app'] });
-      expect(blocked[0]).assertEqual('com.example.hmeta.debug');
-      expect(blocked[1]).assertEqual('com.demo.app');
-
-      const trusted = trustedApplications({
-        perAppMode: 'proxy',
-        trustedApplications: ['com.demo.app', 'com.example.hmeta.debug'],
-      });
-      expect(trusted.length).assertEqual(1);
-      expect(trusted[0]).assertEqual('com.demo.app');
 
       setHMetaBundleName('');
       expect(currentHMetaBundleName()).assertEqual(HMETA_BUNDLE_NAME);
@@ -81,7 +67,7 @@ export default function localUnitTest() {
         dnsAddresses: ['172.19.0.2'],
         mtu: 1400,
         ipv6: true,
-      }, [], [HMETA_BUNDLE_NAME]);
+      });
       expect(config.mtu).assertEqual(1400);
       expect(config.addresses.length).assertEqual(2);
       expect(config.routes.length).assertEqual(2);
@@ -89,34 +75,6 @@ export default function localUnitTest() {
       expect(config.routes[1].isDefaultRoute).assertTrue();
       expect(config.isIPv4Accepted).assertTrue();
       expect(config.isIPv6Accepted).assertTrue();
-      expect(config.blockedApplications[0]).assertEqual(HMETA_BUNDLE_NAME);
-    });
-
-    it('normalizesBlockedApplications', 0, () => {
-      const blocked = blockedApplications({ blockedApplications: [' com.demo.app ', 'com.demo.app'] });
-      expect(blocked[0]).assertEqual(HMETA_BUNDLE_NAME);
-      expect(blocked[1]).assertEqual('com.demo.app');
-      expect(blocked.length).assertEqual(2);
-      const alreadyBlocked = blockedApplications({ blockedApplications: [HMETA_BUNDLE_NAME] });
-      expect(alreadyBlocked.length).assertEqual(1);
-    });
-
-    it('mapsPerAppModesToTrustedOrBlockedApplications', 0, () => {
-      const proxyOptions = {
-        perAppMode: 'proxy',
-        trustedApplications: [' com.demo.app ', 'com.demo.app', HMETA_BUNDLE_NAME],
-        blockedApplications: ['com.blocked.app'],
-      };
-      expect(perAppMode(proxyOptions)).assertEqual('proxy');
-      expect(trustedApplications(proxyOptions).length).assertEqual(1);
-      expect(trustedApplications(proxyOptions)[0]).assertEqual('com.demo.app');
-      expect(blockedApplications(proxyOptions).length).assertEqual(0);
-
-      const bypassOptions = { perAppMode: 'bypass', blockedApplications: ['com.demo.app'] };
-      expect(perAppMode(bypassOptions)).assertEqual('bypass');
-      expect(trustedApplications(bypassOptions).length).assertEqual(0);
-      expect(blockedApplications(bypassOptions)[0]).assertEqual(HMETA_BUNDLE_NAME);
-      expect(blockedApplications(bypassOptions)[1]).assertEqual('com.demo.app');
     });
 
     it('parsesLinkAddresses', 0, () => {

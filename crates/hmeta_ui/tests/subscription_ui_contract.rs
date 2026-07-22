@@ -132,9 +132,15 @@ fn network_import_has_a_real_pending_and_success_lifecycle() {
 
     assert!(page.contains("profile_import_succeeded"));
     assert!(page.contains("import_open.set(false)"));
+    assert!(dialog.contains("content_key"));
+    assert!(dialog.contains("ProfileImportDialogBody"));
     assert!(dialog.contains("disabled: Some(import_loading)"));
     assert!(dialog.contains("Spinner { size: 16.0"));
+    assert!(dialog.contains("profiles_import_loading"));
+    assert!(UI.contains("profile_import_loading = true"));
     assert!(UI.contains("profile_import_succeeded = true"));
+    assert!(UI.contains("Action::ImportLocalProfile"));
+    assert!(UI.contains("profile_import_loading = false"));
 }
 
 #[test]

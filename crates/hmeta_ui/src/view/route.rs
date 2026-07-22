@@ -20,8 +20,6 @@ pub(super) enum Route {
     Appearance {},
     #[route("/settings/network")]
     Settings {},
-    #[route("/settings/per-app")]
-    PerApp {},
     #[route("/settings/requests")]
     Requests {},
     #[route("/settings/connections?:query")]
@@ -49,7 +47,6 @@ impl Route {
             Self::Tools {} => strings.nav_tools,
             Self::Appearance {} => tr(locale, "界面设置", "Appearance"),
             Self::Settings {} => strings.nav_settings,
-            Self::PerApp {} => strings.settings_per_app_title,
             Self::About {} => strings.nav_about,
         }
     }
@@ -67,7 +64,6 @@ impl Route {
             Self::Tools {} => "settings",
             Self::Appearance {} => "palette",
             Self::Settings {} => "settings",
-            Self::PerApp {} => "layout-grid",
             Self::About {} => "badge-info",
         }
     }
@@ -80,7 +76,6 @@ impl Route {
             Self::Tools {}
             | Self::Appearance {}
             | Self::Settings {}
-            | Self::PerApp {}
             | Self::Requests {}
             | Self::Connections { .. }
             | Self::Resources {}
@@ -94,7 +89,6 @@ impl Route {
             Self::Proxies {} => Some(Self::Profiles {}),
             Self::Appearance {}
             | Self::Settings {}
-            | Self::PerApp {}
             | Self::Requests {}
             | Self::Connections { .. }
             | Self::Resources {}
@@ -171,11 +165,6 @@ fn Settings() -> Element {
 #[component]
 fn Appearance() -> Element {
     appearance_page(state())
-}
-
-#[component]
-fn PerApp() -> Element {
-    per_app_settings_page(state())
 }
 
 #[component]

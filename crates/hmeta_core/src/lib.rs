@@ -5,9 +5,9 @@ use axum::response::Response as AxumResponse;
 use futures::StreamExt;
 use hmeta_model::{
     from_json, to_json, AboutSnapshot, ConnectionSummary, ControllerDiagnostics, DnsSnapshot,
-    HMetaError, LogEntry, ManualRuleMutation, ManualRuleSpec, PerAppMode, ProfileSummary,
-    ProviderProxySummary, ProviderSummary, ProxyGroup, ProxyItem, RequestSummary, RuntimeMode,
-    RuntimeSnapshot, TrafficHistoryPoint, TrafficSnapshot, VpnLifecycle, VpnOptions,
+    HMetaError, LogEntry, ManualRuleMutation, ManualRuleSpec, ProfileSummary, ProviderProxySummary,
+    ProviderSummary, ProxyGroup, ProxyItem, RequestSummary, RuntimeMode, RuntimeSnapshot,
+    TrafficHistoryPoint, TrafficSnapshot, VpnLifecycle, VpnOptions,
 };
 use hmeta_profile::{normalize_profile_content, ProfileStore};
 use hmeta_vpn::{TunSession, TunStats};
@@ -48,7 +48,7 @@ const PLATFORM_VPN_STATE_FILE: &str = "platform-vpn-state.json";
 const PLATFORM_VPN_TELEMETRY_FILE: &str = "platform-vpn-telemetry.json";
 const APP_VERSION: &str = "1.0.0";
 const MEOW_RS_VERSION: &str = "0.18.0";
-const ARKIT_REV: &str = "11a69c66d5c450473054088920e49fc4de1827e0";
+const ARKIT_REV: &str = "e091886482f915779bc927d4aab5045922508851";
 const RUST_VERSION: &str = "1.89";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1994,32 +1994,6 @@ impl CoreHandle {
             state.profiles.restore_profile_backup(profile_id)?;
             state.logs.push(info_log(format!(
                 "profile restored from backup: {profile_id}"
-            )));
-            state.profiles.active_profile().map(ToOwned::to_owned)
-        };
-        if active.as_deref() == Some(profile_id) {
-            self.reload_config(profile_id).await?;
-        }
-        Ok(())
-    }
-
-    pub async fn set_profile_per_app_config(
-        &self,
-        profile_id: &str,
-        mode: PerAppMode,
-        trusted_applications: Vec<String>,
-        blocked_applications: Vec<String>,
-    ) -> Result<(), HMetaError> {
-        let active = {
-            let mut state = self.lock_state()?;
-            state.profiles.set_profile_per_app_config(
-                profile_id,
-                mode,
-                trusted_applications,
-                blocked_applications,
-            )?;
-            state.logs.push(info_log(format!(
-                "per-app VPN config updated for {profile_id}"
             )));
             state.profiles.active_profile().map(ToOwned::to_owned)
         };
@@ -4446,7 +4420,7 @@ rules:
             .unwrap();
         core.reload_config(&profile_id).await.unwrap();
 
-        core.set_profile_vpn_config(&profile_id, true, false, true, "gvisor".to_owned())
+        core.set_profile_vpn_config(&profile_id, true, false, true, "lwip".to_owned())
             .await
             .unwrap();
 
@@ -4454,7 +4428,7 @@ rules:
         assert!(snapshot.vpn_options.system_proxy);
         assert!(!snapshot.vpn_options.dns_hijacking);
         assert!(snapshot.vpn_options.allow_bypass);
-        assert_eq!(snapshot.vpn_options.stack, "gvisor");
+        assert_eq!(snapshot.vpn_options.stack, "lwip");
         assert!(!snapshot.dns.hijacking);
     }
 

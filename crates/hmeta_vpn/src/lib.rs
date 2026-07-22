@@ -1,11 +1,11 @@
 use futures::{SinkExt, StreamExt};
-use hmeta_model::{DnsQuerySummary, HMetaError, VpnOptions};
+use hmeta_model::{DnsQuerySummary, HMetaError, VpnOptions, VpnStack};
 use meow_common::sniffer::{sniff_http, sniff_tls, SnifferConfig};
 use meow_common::{ConnType, Metadata, Network, ProxyConn, ProxyPacketConn};
 use meow_listener::SnifferRuntime;
 use meow_trie::DomainTrie;
 use meow_tunnel::Tunnel;
-use netstack_smoltcp::{AnyIpPktFrame, StackBuilder};
+use netstack_smoltcp::StackBuilder;
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -29,6 +29,9 @@ const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const UDP_SWEEP_INTERVAL: Duration = Duration::from_secs(15);
 const UDP_RESPONSE_BUFFER_SIZE: usize = 64 * 1024;
 const SNIFF_BUFFER_SIZE: usize = 8 * 1024;
+static LWIP_RUNTIME_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+type FlowTasks = Arc<Mutex<Vec<JoinHandle<()>>>>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VpnLifecycle {
@@ -156,6 +159,7 @@ impl TunSession {
         if fd < 0 {
             return Err(HMetaError::Core(format!("invalid tun fd: {fd}")));
         }
+        let stack = VpnStack::try_from(options.stack.as_str())?;
         self.stop()?;
 
         let duplicated_fd = duplicate_fd(fd)?;
@@ -172,6 +176,7 @@ impl TunSession {
         let task_dns_cache = dns_cache.clone();
         let handle = tokio::spawn(async move {
             if let Err(error) = run_netstack_vpn(
+                stack,
                 duplicated_fd,
                 tunnel,
                 task_stats,
@@ -271,6 +276,7 @@ impl TunSession {
 }
 
 async fn run_netstack_vpn(
+    stack_kind: VpnStack,
     fd: RawFd,
     tunnel: Tunnel,
     stats: Arc<SharedStats>,
@@ -280,103 +286,57 @@ async fn run_netstack_vpn(
     dns_table: DnsTable,
     dns_cache: DnsResponseCache,
 ) -> io::Result<()> {
-    let (mut stack, tcp_runner, udp_socket, tcp_listener) = StackBuilder::default()
-        .enable_tcp(true)
-        .enable_udp(true)
-        .stack_buffer_size(1024)
-        .tcp_buffer_size(512)
-        .build()?;
+    // lwIP owns process-global C state. Serialize teardown and recreation so
+    // a quick VPN reconnect can never leave two stacks mutating it together.
+    let _lwip_guard = if stack_kind == VpnStack::Lwip {
+        Some(LWIP_RUNTIME_LOCK.lock().await)
+    } else {
+        None
+    };
+    if !running.load(Ordering::SeqCst) {
+        unsafe {
+            libc::close(fd);
+        }
+        return Ok(());
+    }
 
-    let tcp_runner = tcp_runner.expect("TCP runner");
-    let mut tcp_listener = tcp_listener.expect("TCP listener");
-    let udp_socket = udp_socket.expect("UDP socket");
     let udp_sessions = UdpSessionMap::default();
+    let flow_tasks: FlowTasks = Arc::new(Mutex::new(Vec::new()));
     let sniffer = HarmonyTcpSniffer::from_config(sniffer_config).map(Arc::new);
-
-    let (ingress_tx, mut ingress_rx) = mpsc::channel::<AnyIpPktFrame>(256);
-    let (egress_tx, mut egress_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let (udp_reply_tx, mut udp_reply_rx) = mpsc::unbounded_channel::<UdpReply>();
-    let dns_sem = Arc::new(Semaphore::new(DNS_BURST_CAP));
-
-    let runner_handle = tokio::spawn(async move {
-        let _ = tcp_runner.await;
-    });
-
-    let egress_tx_for_stack = egress_tx.clone();
-    let stack_handle = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                pkt = ingress_rx.recv() => {
-                    let Some(frame) = pkt else { break };
-                    if stack.send(frame).await.is_err() {
-                        break;
-                    }
-                }
-                pkt = stack.next() => {
-                    match pkt {
-                        Some(Ok(frame)) => {
-                            let _ = egress_tx_for_stack.send(frame);
-                        }
-                        Some(Err(_)) | None => break,
-                    }
-                }
+    let runtime = match stack_kind {
+        VpnStack::Smoltcp => spawn_smoltcp_backend(
+            tunnel.clone(),
+            stats.clone(),
+            dns_table.clone(),
+            udp_sessions.clone(),
+            sniffer.clone(),
+            flow_tasks.clone(),
+        ),
+        VpnStack::Lwip => spawn_lwip_backend(
+            tunnel.clone(),
+            stats.clone(),
+            dns_table.clone(),
+            udp_sessions.clone(),
+            sniffer.clone(),
+            flow_tasks.clone(),
+        ),
+    };
+    let NetstackRuntime {
+        ingress_tx,
+        egress_tx,
+        mut egress_rx,
+        handles,
+    } = match runtime {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            unsafe {
+                libc::close(fd);
             }
+            return Err(error);
         }
-    });
+    };
 
-    let accept_tunnel = tunnel.clone();
-    let accept_dns_table = dns_table.clone();
-    let accept_stats = stats.clone();
-    let accept_sniffer = sniffer.clone();
-    let accept_handle = tokio::spawn(async move {
-        while let Some((stream, local_addr, remote_addr)) = tcp_listener.next().await {
-            accept_stats.tcp_packets.fetch_add(1, Ordering::Relaxed);
-            let flow_tunnel = accept_tunnel.clone();
-            let flow_dns_table = accept_dns_table.clone();
-            let flow_sniffer = accept_sniffer.clone();
-            tokio::spawn(async move {
-                handle_tcp_stream(
-                    flow_tunnel,
-                    stream,
-                    local_addr,
-                    remote_addr,
-                    flow_dns_table,
-                    flow_sniffer,
-                )
-                .await;
-            });
-        }
-    });
-
-    let (mut udp_read_half, mut udp_write_half) = udp_socket.split();
-    let udp_reply_handle = tokio::spawn(async move {
-        while let Some(reply) = udp_reply_rx.recv().await {
-            let _ = udp_write_half
-                .send((reply.data, reply.remote, reply.local))
-                .await;
-        }
-    });
-
-    let udp_tunnel = tunnel.clone();
-    let udp_dns_table = dns_table.clone();
-    let udp_stats = stats.clone();
-    let udp_reply_tx_for_reader = udp_reply_tx.clone();
-    let udp_sessions_for_reader = udp_sessions.clone();
-    let udp_handle = tokio::spawn(async move {
-        while let Some((data, local, remote)) = udp_read_half.next().await {
-            udp_stats.udp_packets.fetch_add(1, Ordering::Relaxed);
-            let tunnel = udp_tunnel.clone();
-            let dns_table = udp_dns_table.clone();
-            let sessions = udp_sessions_for_reader.clone();
-            let reply_tx = udp_reply_tx_for_reader.clone();
-            tokio::spawn(async move {
-                handle_udp_datagram(tunnel, dns_table, sessions, reply_tx, data, local, remote)
-                    .await;
-            });
-        }
-    });
-
-    let udp_sweeper_sessions = udp_sessions.clone();
+    let udp_sweeper_sessions = udp_sessions;
     let udp_sweeper_handle = tokio::spawn(async move {
         let mut ticker = tokio::time::interval(UDP_SWEEP_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -399,14 +359,15 @@ async fn run_netstack_vpn(
         }
     });
 
-    let reader_running = running.clone();
-    let reader_stats = stats.clone();
-    let reader_dns_table = dns_table.clone();
-    let reader_dns_cache = dns_cache.clone();
-    let reader_tunnel = tunnel.clone();
-    let reader_egress_tx = egress_tx.clone();
+    let reader_running = running;
+    let reader_stats = stats;
+    let reader_dns_table = dns_table;
+    let reader_dns_cache = dns_cache;
+    let reader_tunnel = tunnel;
+    let reader_egress_tx = egress_tx;
     let reader_handle = tokio::spawn(async move {
         let mut read_buf = vec![0_u8; 65535];
+        let dns_sem = Arc::new(Semaphore::new(DNS_BURST_CAP));
         while reader_running.load(Ordering::SeqCst) {
             tokio::task::yield_now().await;
             let mut did_work = false;
@@ -459,8 +420,7 @@ async fn run_netstack_vpn(
                     continue;
                 }
 
-                let frame: AnyIpPktFrame = ip_data.to_vec();
-                match ingress_tx.try_send(frame) {
+                match ingress_tx.try_send(ip_data.to_vec()) {
                     Ok(()) => {}
                     Err(mpsc::error::TrySendError::Full(frame)) => {
                         let _ = ingress_tx.send(frame).await;
@@ -476,27 +436,283 @@ async fn run_netstack_vpn(
     });
 
     let _ = reader_handle.await;
-    runner_handle.abort();
-    stack_handle.abort();
-    accept_handle.abort();
-    udp_handle.abort();
-    udp_reply_handle.abort();
+    for handle in handles {
+        handle.abort();
+        let _ = handle.await;
+    }
+    abort_flow_tasks(&flow_tasks).await;
     udp_sweeper_handle.abort();
+    let _ = udp_sweeper_handle.await;
     writer_handle.abort();
+    let _ = writer_handle.await;
     unsafe {
         libc::close(fd);
     }
     Ok(())
 }
 
-async fn handle_tcp_stream(
+struct NetstackRuntime {
+    ingress_tx: mpsc::Sender<Vec<u8>>,
+    egress_tx: mpsc::UnboundedSender<Vec<u8>>,
+    egress_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    handles: Vec<JoinHandle<()>>,
+}
+
+fn spawn_smoltcp_backend(
     tunnel: Tunnel,
-    stream: netstack_smoltcp::TcpStream,
+    stats: Arc<SharedStats>,
+    dns_table: DnsTable,
+    udp_sessions: UdpSessionMap,
+    sniffer: Option<Arc<HarmonyTcpSniffer>>,
+    flow_tasks: FlowTasks,
+) -> io::Result<NetstackRuntime> {
+    let (mut stack, tcp_runner, udp_socket, tcp_listener) = StackBuilder::default()
+        .enable_tcp(true)
+        .enable_udp(true)
+        .stack_buffer_size(1024)
+        .tcp_buffer_size(512)
+        .build()?;
+
+    let tcp_runner = tcp_runner.expect("TCP runner");
+    let mut tcp_listener = tcp_listener.expect("TCP listener");
+    let udp_socket = udp_socket.expect("UDP socket");
+    let (ingress_tx, mut ingress_rx) = mpsc::channel::<Vec<u8>>(256);
+    let (egress_tx, egress_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (udp_reply_tx, mut udp_reply_rx) = mpsc::unbounded_channel::<UdpReply>();
+
+    let runner_handle = tokio::spawn(async move {
+        let _ = tcp_runner.await;
+    });
+
+    let egress_tx_for_stack = egress_tx.clone();
+    let stack_handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                pkt = ingress_rx.recv() => {
+                    let Some(frame) = pkt else { break };
+                    if stack.send(frame).await.is_err() {
+                        break;
+                    }
+                }
+                pkt = stack.next() => {
+                    match pkt {
+                        Some(Ok(frame)) => {
+                            let _ = egress_tx_for_stack.send(frame);
+                        }
+                        Some(Err(_)) | None => break,
+                    }
+                }
+            }
+        }
+    });
+
+    let accept_tunnel = tunnel.clone();
+    let accept_dns_table = dns_table.clone();
+    let accept_stats = stats.clone();
+    let accept_sniffer = sniffer.clone();
+    let accept_flow_tasks = flow_tasks.clone();
+    let accept_handle = tokio::spawn(async move {
+        while let Some((stream, local_addr, remote_addr)) = tcp_listener.next().await {
+            accept_stats.tcp_packets.fetch_add(1, Ordering::Relaxed);
+            let flow_tunnel = accept_tunnel.clone();
+            let flow_dns_table = accept_dns_table.clone();
+            let flow_sniffer = accept_sniffer.clone();
+            let handle = tokio::spawn(async move {
+                handle_tcp_stream(
+                    flow_tunnel,
+                    stream,
+                    local_addr,
+                    remote_addr,
+                    flow_dns_table,
+                    flow_sniffer,
+                )
+                .await;
+            });
+            track_flow_task(&accept_flow_tasks, handle);
+        }
+    });
+
+    let (mut udp_read_half, mut udp_write_half) = udp_socket.split();
+    let udp_reply_handle = tokio::spawn(async move {
+        while let Some(reply) = udp_reply_rx.recv().await {
+            let _ = udp_write_half
+                .send((reply.data, reply.remote, reply.local))
+                .await;
+        }
+    });
+
+    let udp_tunnel = tunnel.clone();
+    let udp_dns_table = dns_table.clone();
+    let udp_stats = stats.clone();
+    let udp_reply_tx_for_reader = udp_reply_tx.clone();
+    let udp_sessions_for_reader = udp_sessions.clone();
+    let udp_flow_tasks = flow_tasks;
+    let udp_handle = tokio::spawn(async move {
+        while let Some((data, local, remote)) = udp_read_half.next().await {
+            udp_stats.udp_packets.fetch_add(1, Ordering::Relaxed);
+            let tunnel = udp_tunnel.clone();
+            let dns_table = udp_dns_table.clone();
+            let sessions = udp_sessions_for_reader.clone();
+            let reply_tx = udp_reply_tx_for_reader.clone();
+            let response_flow_tasks = udp_flow_tasks.clone();
+            let handle = tokio::spawn(async move {
+                handle_udp_datagram(
+                    tunnel,
+                    dns_table,
+                    sessions,
+                    reply_tx,
+                    response_flow_tasks,
+                    data,
+                    local,
+                    remote,
+                )
+                .await;
+            });
+            track_flow_task(&udp_flow_tasks, handle);
+        }
+    });
+
+    Ok(NetstackRuntime {
+        ingress_tx,
+        egress_tx,
+        egress_rx,
+        handles: vec![
+            runner_handle,
+            stack_handle,
+            accept_handle,
+            udp_handle,
+            udp_reply_handle,
+        ],
+    })
+}
+
+fn spawn_lwip_backend(
+    tunnel: Tunnel,
+    stats: Arc<SharedStats>,
+    dns_table: DnsTable,
+    udp_sessions: UdpSessionMap,
+    sniffer: Option<Arc<HarmonyTcpSniffer>>,
+    flow_tasks: FlowTasks,
+) -> io::Result<NetstackRuntime> {
+    let (mut stack, mut tcp_listener, udp_socket) = lwip::NetStack::with_buffer_size(1024, 256)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    let (udp_write, mut udp_read) = udp_socket.split();
+    let (ingress_tx, mut ingress_rx) = mpsc::channel::<Vec<u8>>(256);
+    let (egress_tx, egress_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (udp_reply_tx, mut udp_reply_rx) = mpsc::unbounded_channel::<UdpReply>();
+
+    let driver_egress_tx = egress_tx.clone();
+    let driver_udp_reply_tx = udp_reply_tx.clone();
+    let driver_handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                pkt = ingress_rx.recv() => {
+                    let Some(frame) = pkt else { break };
+                    if stack.send(frame).await.is_err() {
+                        break;
+                    }
+                }
+                pkt = stack.next() => {
+                    match pkt {
+                        Some(Ok(frame)) => {
+                            let _ = driver_egress_tx.send(frame);
+                        }
+                        Some(Err(_)) | None => break,
+                    }
+                }
+                accepted = tcp_listener.next() => {
+                    let Some((stream, local_addr, remote_addr)) = accepted else { break };
+                    stats.tcp_packets.fetch_add(1, Ordering::Relaxed);
+                    let flow_tunnel = tunnel.clone();
+                    let flow_dns_table = dns_table.clone();
+                    let flow_sniffer = sniffer.clone();
+                    let handle = tokio::spawn(async move {
+                        handle_tcp_stream(
+                            flow_tunnel,
+                            stream,
+                            local_addr,
+                            remote_addr,
+                            flow_dns_table,
+                            flow_sniffer,
+                        )
+                        .await;
+                    });
+                    track_flow_task(&flow_tasks, handle);
+                }
+                datagram = udp_read.next() => {
+                    let Some((data, local, remote)) = datagram else { break };
+                    stats.udp_packets.fetch_add(1, Ordering::Relaxed);
+                    let flow_tunnel = tunnel.clone();
+                    let flow_dns_table = dns_table.clone();
+                    let flow_sessions = udp_sessions.clone();
+                    let reply_tx = driver_udp_reply_tx.clone();
+                    let response_flow_tasks = flow_tasks.clone();
+                    let handle = tokio::spawn(async move {
+                        handle_udp_datagram(
+                            flow_tunnel,
+                            flow_dns_table,
+                            flow_sessions,
+                            reply_tx,
+                            response_flow_tasks,
+                            data,
+                            local,
+                            remote,
+                        )
+                        .await;
+                    });
+                    track_flow_task(&flow_tasks, handle);
+                }
+                reply = udp_reply_rx.recv() => {
+                    let Some(reply) = reply else { break };
+                    if udp_write
+                        .send_to(&reply.data, &reply.remote, &reply.local)
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(NetstackRuntime {
+        ingress_tx,
+        egress_tx,
+        egress_rx,
+        handles: vec![driver_handle],
+    })
+}
+
+fn track_flow_task(flow_tasks: &FlowTasks, handle: JoinHandle<()>) {
+    if let Ok(mut tasks) = flow_tasks.lock() {
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(handle);
+    } else {
+        handle.abort();
+    }
+}
+
+async fn abort_flow_tasks(flow_tasks: &FlowTasks) {
+    let tasks = flow_tasks
+        .lock()
+        .map(|mut tasks| tasks.drain(..).collect::<Vec<_>>())
+        .unwrap_or_default();
+    for task in tasks {
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+async fn handle_tcp_stream<S>(
+    tunnel: Tunnel,
+    stream: S,
     src_addr: SocketAddr,
     dst_addr: SocketAddr,
     dns_table: DnsTable,
     sniffer: Option<Arc<HarmonyTcpSniffer>>,
-) {
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + Sync + 'static,
+{
     let mut metadata = tcp_metadata_for_stream(src_addr, dst_addr, &dns_table);
     let mut stream = stream;
     let prefix = match sniffer {
@@ -735,6 +951,7 @@ async fn handle_udp_datagram(
     dns_table: DnsTable,
     sessions: UdpSessionMap,
     reply_tx: mpsc::UnboundedSender<UdpReply>,
+    flow_tasks: FlowTasks,
     data: Vec<u8>,
     local: SocketAddr,
     remote: SocketAddr,
@@ -770,9 +987,10 @@ async fn handle_udp_datagram(
     let session = UdpTunSession::new(conn.clone());
     sessions.insert(key, session);
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         read_udp_responses(key, local, conn, sessions, reply_tx).await;
     });
+    track_flow_task(&flow_tasks, handle);
 }
 
 fn udp_metadata_for_datagram(
@@ -1712,6 +1930,44 @@ mod tests {
         assert!(duplicate_fd(-1).is_err());
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn lwip_stack_accepts_and_replies_to_tun_udp_packets() {
+        let (mut stack, _tcp_listener, udp_socket) =
+            lwip::NetStack::with_buffer_size(16, 16).expect("lwip stack");
+        let (udp_write, mut udp_read) = udp_socket.split();
+        let local = SocketAddr::new(Ipv4Addr::new(172, 19, 0, 1).into(), 40123);
+        let remote = SocketAddr::new(Ipv4Addr::new(203, 0, 113, 42).into(), 443);
+        let packet = build_udp_packet(
+            u32::from_ne_bytes([172, 19, 0, 1]),
+            local.port(),
+            u32::from_ne_bytes([203, 0, 113, 42]),
+            remote.port(),
+            b"request",
+        );
+
+        stack.send(packet).await.expect("send packet into lwip");
+        let (payload, src, dst) = tokio::time::timeout(Duration::from_secs(1), udp_read.next())
+            .await
+            .expect("lwip UDP receive timeout")
+            .expect("lwip UDP receive");
+        assert_eq!(payload, b"request");
+        assert_eq!(src, local);
+        assert_eq!(dst, remote);
+
+        udp_write
+            .send_to(b"response", &remote, &local)
+            .expect("send lwip UDP response");
+        let response = tokio::time::timeout(Duration::from_secs(1), stack.next())
+            .await
+            .expect("lwip egress timeout")
+            .expect("lwip egress frame")
+            .expect("lwip egress packet");
+        let parsed = parse_udp_packet(&response).expect("parse lwip UDP response");
+        assert_eq!(parsed.1, remote.port());
+        assert_eq!(parsed.3, local.port());
+        assert_eq!(parsed.4, b"response");
+    }
+
     #[test]
     fn udp_parser_classifies_ipv4_dns() {
         let packet = [
@@ -2063,6 +2319,7 @@ mod tests {
             let tunnel = direct_mode_tunnel();
             let dns_table = DnsTable::default();
             let sessions = UdpSessionMap::default();
+            let flow_tasks: FlowTasks = Arc::new(Mutex::new(Vec::new()));
             let (reply_tx, mut reply_rx) = mpsc::unbounded_channel();
             let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(172, 19, 0, 2)), 40123);
             let key = UdpSessionKey {
@@ -2075,6 +2332,7 @@ mod tests {
                 dns_table.clone(),
                 sessions.clone(),
                 reply_tx.clone(),
+                flow_tasks.clone(),
                 b"first".to_vec(),
                 local,
                 echo_addr,
@@ -2094,6 +2352,7 @@ mod tests {
                 dns_table,
                 sessions.clone(),
                 reply_tx,
+                flow_tasks.clone(),
                 b"second".to_vec(),
                 local,
                 echo_addr,
@@ -2109,6 +2368,7 @@ mod tests {
             assert!(sessions.get(&key).is_some());
 
             echo_task.await.unwrap();
+            abort_flow_tasks(&flow_tasks).await;
         });
     }
 

@@ -8,7 +8,7 @@
 - Meow 参考源码：`/Volumes/PSSD/code/harmony/meow`
 - Meow Android 参考包：`/Users/ranger/Downloads/meow-v1.0.1-universal.apk`
 - `meow-*` crates：`0.17.0`
-- arkit：`fe8f35cb4b67f126981d8ffc0c8368ec76a8bec1`，启用 `router` 与 `shadcn`
+- arkit：`e091886482f915779bc927d4aab5045922508851`，启用 `router` 与 `shadcn`
 
 当前 Rust 核心、配置导入、订阅交互、Harmony NAPI、协议拨号和 UI 自动化已完成验证。当前 Harmony 模拟器不会实际创建 `VpnExtensionAbility` TUN，因此系统 VPN 建链、`protectProcessNet()` 和其他应用流量穿过 TUN 必须在真机上完成最后验收；模拟器不会被记录为 VPN 通过。
 

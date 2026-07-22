@@ -34,6 +34,7 @@ dioxus = { version = "0.7", default-features = false, features = ["signals", "ho
 futures = "0.3"
 ipnet = "2"
 libc = "0.2"
+lwip = "0.3.15"
 netstack-smoltcp = "0.2"
 napi-build-ohos = "1.1"
 napi-derive-ohos = "1.1"
@@ -54,6 +55,13 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 tun-rs = { version = "2", features = ["async_tokio"] }
 url = "2"
+
+# The released lwip 0.3.15 wrappers can race with C callbacks on a
+# multi-thread runtime and leak half-closed TCP PCBs. This pinned upstream
+# revision contains the synchronization and close fixes already exercised by
+# Meow's Android/iOS tun2socks implementations.
+[patch.crates-io]
+lwip = { git = "https://github.com/madeye/lwip", rev = "dab00c540cf0606fee14ddd99cfa6ec79d33681d" }
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

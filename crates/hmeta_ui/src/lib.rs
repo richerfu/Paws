@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 mod activity_filter;
-mod installed_app_filter;
 mod l10n;
 mod log_filter;
 mod manual_rule;
@@ -292,29 +291,6 @@ pub fn profile_raw_yaml(profile_id: String) -> Result<String> {
 pub async fn restore_profile_backup(profile_id: String) -> Result<()> {
     hmeta_core::shared_core()
         .restore_profile_backup(&profile_id)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn set_profile_per_app_config(
-    profile_id: String,
-    mode: String,
-    trusted_applications_json: String,
-    blocked_applications_json: String,
-) -> Result<()> {
-    let mode = hmeta_model::PerAppMode::try_from(mode.as_str()).map_err(to_napi_error)?;
-    let trusted_applications: Vec<String> = serde_json::from_str(&trusted_applications_json)
-        .map_err(|err| Error::new(Status::InvalidArg, err.to_string()))?;
-    let blocked_applications: Vec<String> = serde_json::from_str(&blocked_applications_json)
-        .map_err(|err| Error::new(Status::InvalidArg, err.to_string()))?;
-    hmeta_core::shared_core()
-        .set_profile_per_app_config(
-            &profile_id,
-            mode,
-            trusted_applications,
-            blocked_applications,
-        )
         .await
         .map_err(to_napi_error)
 }

@@ -42,6 +42,16 @@ assert_text() {
   }
 }
 
+assert_no_text() {
+  layout="$1"
+  unexpected="$2"
+  if jq -e --arg unexpected "$unexpected" \
+    '.. | objects | select(.attributes?.text == $unexpected)' "$layout" >/dev/null; then
+    printf 'Unexpected UI text: %s\n' "$unexpected" >&2
+    exit 1
+  fi
+}
+
 text_bounds() {
   layout="$1"
   expected="$2"
@@ -90,16 +100,16 @@ dump_layout /data/local/tmp/hmeta-settings-home.json "$home_layout"
 click_text "$home_layout" "设置" last
 sleep 1
 dump_layout /data/local/tmp/hmeta-settings-alignment.json "$root_layout"
-for text in "常规" "版本" "引擎" "分应用 VPN" "网络设置"; do
+for text in "常规" "版本" "引擎" "网络设置"; do
   assert_text "$root_layout" "$text"
 done
+assert_no_text "$root_layout" "分应用 VPN"
 
 version_left="$(left_edge "$root_layout" "版本")"
 engine_left="$(left_edge "$root_layout" "引擎")"
-per_app_left="$(left_edge "$root_layout" "分应用 VPN")"
-if [ "$version_left" != "$engine_left" ] || [ "$version_left" != "$per_app_left" ]; then
-  printf 'Settings labels are not aligned: version=%s engine=%s per-app=%s\n' \
-    "$version_left" "$engine_left" "$per_app_left" >&2
+if [ "$version_left" != "$engine_left" ]; then
+  printf 'Settings labels are not aligned: version=%s engine=%s\n' \
+    "$version_left" "$engine_left" >&2
   exit 1
 fi
 capture_screen /data/local/tmp/hmeta-settings-alignment.jpeg \

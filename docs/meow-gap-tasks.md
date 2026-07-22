@@ -154,25 +154,24 @@ Meow 更像一个完整客户端产品，HMeta 当前更像一个核心链路已
 - VPN 重启后仍保留上次选中的节点。
 - profile 删除会清理 runtime/provider/rule 关联文件。
 
-### HMETA-MEOW-007：per-app VPN 能力补齐
+### HMETA-MEOW-007：per-app VPN（暂不接入）
 
 差异：
 
 - Meow 支持 installed apps 列表、proxy/bypass 两种 per-app 模式，并在 Android `VpnService.Builder` 中配置 allowed/disallowed applications。
-- HMeta 的 `VpnOptions` 已有 `trusted_applications`、`blocked_applications` 和 `per_app_mode`，ArkTS 已按 proxy/bypass/off 映射 Harmony `trustedApplications` / `blockedApplications`，并在平台映射层强制绕过当前 App：EntryAbility 与 VpnExtensionAbility 都会用运行时 `applicationInfo.name` 校准自身 bundle，proxy-only allowlist 会过滤自身包名，bypass/off 会把自身加入 blocked list 且对手动输入 trim/去重，避免手动配置或包名变化导致 VPN 回环；Settings 已能读取系统应用列表、按应用名/包名搜索、快捷加入代理/绕过名单，候选应用会 trim、过滤空包名、空名称回退到包名并按 bundle 去重，读取失败会进入 UI 错误状态而不是静默显示空列表，也支持手动编辑并持久化到当前 profile；Settings 也已支持保存 `system-proxy`、`allow-bypass`、`tun.stack` 和 `tun.dns-hijack` 等 VPN 基础项，运行中保存会请求重启 VPN，并在重启回调失败时保留保存成功提示同时明确显示重启失败原因。
+- HMeta 暂不接入 Harmony 的按应用 allow/block 能力。不同系统版本对空白名单和默认值的解释可能导致全部应用进入 VPN 或全部应用绕过 VPN，因此运行时 `VpnConfig` 完全不携带 `trustedApplications` / `blockedApplications` 字段。
+- Settings 不提供分应用入口，应用列表读取桥接和 `GET_BUNDLE_INFO` / `GET_BUNDLE_INFO_PRIVILEGED` 权限均已移除；历史配置中的相关 YAML 字段保留原文但不会再被解析为运行参数。
 
 落地任务：
 
-- 明确 HarmonyOS VPN 能力对 per-app allow/block 的 API 支持范围。
-- 已增加应用列表读取桥接；Settings 已提供候选应用搜索、快捷加入和手动输入 UI，读取失败会透传平台错误。
-- 已定义 `trusted_applications` / `blocked_applications` 与 proxy/bypass/off 模式的映射，并确保当前 App 不会被 proxy-only 手动 allowlist 纳入 VPN；当前 App bundle 会在 Entry/VPN Ability 启动时从运行时上下文校准。
-- 已支持 VPN 重连后应用 per-app 配置；运行中保存会请求重启 VPN。
+- 若未来重新评估，必须先在目标 HarmonyOS 版本和真机上验证字段缺失、空数组、allowlist 与 blocklist 的系统语义。
+- 重新接入前需要定义升级策略，确保历史配置不会在版本切换时意外改变全局 VPN 覆盖范围。
 
 验收：
 
-- 可选择仅指定应用走 VPN。
-- 可选择指定应用绕过 VPN。
-- 修改 per-app 配置后 UI 明确提示需要重连。
+- 默认和配置启动路径都不向系统提交按应用名单。
+- 旧 YAML 中的 per-app 字段不会影响当前运行。
+- 安装包不申请读取应用列表权限。
 
 ### HMETA-MEOW-008：连接、日志、流量视图接入真实数据
 

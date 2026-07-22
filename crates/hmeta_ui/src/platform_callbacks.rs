@@ -19,11 +19,6 @@ type VpnStartSlot = LazyLock<RwLock<Option<Arc<VpnStartThreadsafeFunction>>>>;
 type VpnStopCall<'a> = Function<'a, (), Unknown<'a>>;
 type VpnStopThreadsafeFunction = ThreadsafeFunction<(), Unknown<'static>, (), Status, false>;
 type VpnStopSlot = LazyLock<RwLock<Option<Arc<VpnStopThreadsafeFunction>>>>;
-type InstalledApplicationsCall<'a> = Function<'a, (), Unknown<'a>>;
-type InstalledApplicationsThreadsafeFunction =
-    ThreadsafeFunction<(), Unknown<'static>, (), Status, false>;
-type InstalledApplicationsSlot =
-    LazyLock<RwLock<Option<Arc<InstalledApplicationsThreadsafeFunction>>>>;
 type OpenExternalUrlCall<'a> = Function<'a, String, Unknown<'a>>;
 type OpenExternalUrlThreadsafeFunction =
     ThreadsafeFunction<String, Unknown<'static>, String, Status, false>;
@@ -39,7 +34,6 @@ type SetColorModeSlot = LazyLock<RwLock<Option<Arc<SetColorModeThreadsafeFunctio
 static PROFILE_FILE_PICKER: FilePickerSlot = LazyLock::new(|| RwLock::new(None));
 static REQUEST_START_VPN: VpnStartSlot = LazyLock::new(|| RwLock::new(None));
 static REQUEST_STOP_VPN: VpnStopSlot = LazyLock::new(|| RwLock::new(None));
-static LIST_INSTALLED_APPLICATIONS: InstalledApplicationsSlot = LazyLock::new(|| RwLock::new(None));
 static OPEN_EXTERNAL_URL: OpenExternalUrlSlot = LazyLock::new(|| RwLock::new(None));
 static EXPORT_PROFILE: ExportProfileSlot = LazyLock::new(|| RwLock::new(None));
 static SET_COLOR_MODE: SetColorModeSlot = LazyLock::new(|| RwLock::new(None));
@@ -59,11 +53,6 @@ pub(crate) fn register_platform_callbacks(callbacks: Object<'static>) -> Result<
         let request_stop_vpn: VpnStopCall<'static> =
             callbacks.get_named_property("requestStopVpn")?;
         set_request_stop_vpn(request_stop_vpn)?;
-    }
-    if callbacks.has_named_property("listInstalledApplications")? {
-        let list_installed_applications: InstalledApplicationsCall<'static> =
-            callbacks.get_named_property("listInstalledApplications")?;
-        set_list_installed_applications(list_installed_applications)?;
     }
     if callbacks.has_named_property("openExternalUrl")? {
         let open_external_url: OpenExternalUrlCall<'static> =
@@ -115,20 +104,6 @@ fn set_request_stop_vpn(request_stop_vpn: VpnStopCall<'static>) -> Result<()> {
     REQUEST_STOP_VPN
         .write()
         .map_err(|_| Error::from_reason("failed to store VPN stop callback"))?
-        .replace(Arc::new(tsfn));
-    Ok(())
-}
-
-fn set_list_installed_applications(
-    list_installed_applications: InstalledApplicationsCall<'static>,
-) -> Result<()> {
-    let tsfn = list_installed_applications
-        .build_threadsafe_function()
-        .callee_handled::<false>()
-        .build()?;
-    LIST_INSTALLED_APPLICATIONS
-        .write()
-        .map_err(|_| Error::from_reason("failed to store installed applications callback"))?
         .replace(Arc::new(tsfn));
     Ok(())
 }
@@ -226,20 +201,6 @@ pub(crate) async fn pick_profile_text() -> std::result::Result<(String, String),
     Ok((name, text))
 }
 
-pub(crate) async fn list_installed_applications(
-) -> std::result::Result<Vec<hmeta_model::InstalledApplication>, String> {
-    let tsfn = LIST_INSTALLED_APPLICATIONS
-        .read()
-        .map_err(|_| "failed to read installed applications callback".to_owned())?
-        .as_ref()
-        .map(Arc::clone)
-        .ok_or_else(|| "installed applications callback is not registered".to_owned())?;
-    let raw_json = invoke_string_callback(tsfn, "installed applications").await?;
-    let applications: Vec<hmeta_model::InstalledApplication> = serde_json::from_str(&raw_json)
-        .map_err(|err| format!("parse installed applications failed: {err}"))?;
-    Ok(crate::installed_app_filter::normalize_installed_applications(applications))
-}
-
 pub(crate) async fn open_external_url(url: String) -> std::result::Result<(), String> {
     let tsfn = OPEN_EXTERNAL_URL
         .read()
@@ -279,49 +240,6 @@ async fn pick_files() -> Result<Vec<String>> {
     #[cfg(target_env = "ohos")]
     persist_uris_or_err(&uris, FILE_SHARE_READ_MODE)?;
     Ok(uris)
-}
-
-async fn invoke_string_callback(
-    tsfn: Arc<InstalledApplicationsThreadsafeFunction>,
-    label: &'static str,
-) -> std::result::Result<String, String> {
-    let (tx, rx) = oneshot::channel::<Result<String>>();
-    let status = tsfn.call_with_return_value((), ThreadsafeFunctionCallMode::NonBlocking, {
-        move |result, _| {
-            match result {
-                Ok(value) => {
-                    let tx_cell = Rc::new(Cell::new(Some(tx)));
-                    let tx_in_catch = tx_cell.clone();
-                    let promise = unsafe { value.cast::<PromiseRaw<'static, String>>() }?;
-                    promise
-                        .then(move |ctx| {
-                            if let Some(sender) = tx_cell.replace(None) {
-                                let _ = sender.send(Ok(ctx.value));
-                            }
-                            Ok(())
-                        })?
-                        .catch(move |ctx: CallbackContext<Unknown>| {
-                            if let Some(sender) = tx_in_catch.replace(None) {
-                                let _ = sender.send(Err(ctx.value.into()));
-                            }
-                            Ok(())
-                        })?;
-                }
-                Err(err) => {
-                    let _ = tx.send(Err(err));
-                }
-            }
-            Ok(())
-        }
-    });
-    if status != Status::Ok {
-        return Err(format!(
-            "call {label} callback failed with status: {status:?}"
-        ));
-    }
-    rx.await
-        .map_err(|_| format!("{label} callback receiver dropped"))?
-        .map_err(|err| err.to_string())
 }
 
 async fn invoke_string_void_callback(

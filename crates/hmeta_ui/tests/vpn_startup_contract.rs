@@ -70,7 +70,7 @@ fn vpn_restart_waits_for_platform_stop_before_starting_with_new_options() {
     let restart = section(
         UI,
         "async fn request_vpn_restart_if_running",
-        "fn per_app_draft_from_snapshot",
+        "fn dns_draft_from_snapshot",
     );
     let stop = restart
         .find("request_stop_vpn().await")
@@ -85,7 +85,7 @@ fn vpn_restart_waits_for_platform_stop_before_starting_with_new_options() {
     assert!(PLATFORM_CALLBACKS
         .contains("invoke_string_void_callback(tsfn, options_json, \"VPN start\").await"));
     assert!(PLATFORM_CALLBACKS.contains("invoke_void_callback(tsfn, \"VPN stop\").await"));
-    assert!(VPN_ABILITY.contains("const trusted = trustedApplications(options)"));
-    assert!(VPN_ABILITY.contains("const blocked = blockedApplications(options)"));
-    assert!(VPN_ABILITY.contains("new HMetaVpnConfig(options, trusted, blocked)"));
+    assert!(VPN_ABILITY.contains("new HMetaVpnConfig(options)"));
+    assert!(!VPN_ABILITY.contains("trustedApplications"));
+    assert!(!VPN_ABILITY.contains("blockedApplications"));
 }

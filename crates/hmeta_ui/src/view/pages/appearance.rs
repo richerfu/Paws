@@ -29,7 +29,7 @@ pub(crate) fn appearance_page(state: Signal<State>) -> Element {
 
     let body = rsx! {
         column {
-            percent_width: 1.0,
+            width: "100%",
             {card(
                 tr(locale, "语言", "Language"),
                 Some(tr(locale, "选择界面语言；跟随系统会响应系统语言变化", "Choose the interface language; System follows device changes").to_owned()),

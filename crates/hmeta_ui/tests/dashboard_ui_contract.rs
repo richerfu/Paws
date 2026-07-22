@@ -38,7 +38,7 @@ fn dashboard_long_values_are_width_constrained() {
     let page = section(VIEW, "fn dashboard_page", "fn proxies_page");
 
     assert!(page.contains("content: current_node"));
-    assert!(page.contains("text_overflow: 2_i32"));
+    assert!(page.contains("text_overflow: \"ellipsis\""));
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn quick_switch_owns_an_internal_virtual_scroll_list() {
 
     assert!(page.contains("layout_weight: 1.0"));
     assert!(virtual_list.contains("VirtualKind::List"));
-    assert!(virtual_list.contains("percent_height: 1.0"));
+    assert!(virtual_list.contains("height: \"100%\""));
     assert!(virtual_list.contains("list_cached_count: 20_i32"));
 
     let keys = section(
@@ -78,6 +78,6 @@ fn dashboard_list_meets_bottom_navigation_without_a_padding_strip() {
     let page = section(VIEW, "fn dashboard_page", "fn proxies_page");
 
     assert!(layout.contains("fn fixed_scaffold_flush_bottom"));
-    assert!(layout.contains("if flush_fixed_bottom { 0.0 } else { 16.0 }"));
+    assert!(layout.contains("if flush_fixed_bottom { 0.0 } else { spacing::LG }"));
     assert!(page.contains("fixed_scaffold_flush_bottom"));
 }

@@ -11,17 +11,15 @@ fn settings_route_rows_do_not_inherit_native_button_insets() {
         .next()
         .unwrap();
 
-    for inset in [
-        "padding_left: 0.0",
-        "padding_right: 0.0",
-        "padding_top: 0.0",
-        "padding_bottom: 0.0",
-    ] {
-        assert!(
-            route_row.contains(inset),
-            "settings route rows must align with value rows: missing {inset}"
-        );
-    }
+    assert!(
+        route_row.contains("padding: 0.0") || route_row.contains("padding_left: 0.0"),
+        "settings route rows must zero out native button insets"
+    );
+    assert!(
+        route_row.contains("background_color: 0x00000000")
+            || route_row.contains("background_color: surface()"),
+        "settings route rows must not paint a competing surface fill"
+    );
 }
 
 #[test]
@@ -37,7 +35,7 @@ fn about_page_constrains_long_values_and_aligns_repositories() {
     let view = fs::read_to_string("src/view.rs").unwrap();
 
     assert!(page.contains("middle_truncate_text(&about.arkit_rev, 18)"));
-    assert!(page.matches("percent_width: 0.46").count() >= 2);
+    assert!(page.matches("width: Some(\"46%\".into())").count() >= 2);
     assert!(page.matches("width: 18.0").count() >= 2);
     assert!(page.contains("layout_weight: 1.0"));
     assert!(view.contains("fn middle_truncate_text"));
@@ -63,45 +61,41 @@ fn appearance_settings_use_arkit_shadcn_choices_and_persist_actions() {
 }
 
 #[test]
-fn per_app_vpn_supports_manual_bundles_when_system_app_listing_is_unavailable() {
+fn network_stack_is_a_bounded_selector_with_two_real_backends() {
     let page = fs::read_to_string("src/view/pages/settings.rs").unwrap();
-    let manual_entry = page.find("手动添加应用包名").expect("manual bundle entry");
-    let list_error = page
-        .find("系统应用列表不可用")
-        .expect("system app list fallback");
+    let view = fs::read_to_string("src/view.rs").unwrap();
+    let stack_field = page
+        .split("label: tr(current.locale, \"网络栈\", \"Network stack\")")
+        .nth(1)
+        .expect("network stack field")
+        .split("row { height: 12.0 }")
+        .next()
+        .unwrap();
 
-    assert!(list_error < manual_entry);
-    assert!(page.contains("let mut manual_bundle = use_signal(String::new)"));
-    assert!(page.contains("selected_bundle_rows"));
-    assert!(page.contains("add_application_to_text(&manual_add_source, &manual_add_bundle)"));
-    assert!(page.contains("remove_application_from_text(&blocked_source, &bundle_to_remove)"));
-    assert!(page.contains("remove_application_from_text(&trusted_source, &bundle_to_remove)"));
+    assert!(stack_field.contains("FlatSelect"));
+    assert!(!stack_field.contains("Input"));
+    assert!(page.contains("VpnStack::Smoltcp"));
+    assert!(page.contains("VpnStack::Lwip"));
+    assert!(page.contains("Action::SaveVpnSettings"));
+    assert!(view.contains("fn FlatSelect"));
 }
 
 #[test]
-fn per_app_picker_uses_arkit_keyed_virtual_list_without_truncating_apps() {
+fn per_app_vpn_is_absent_from_ui_permissions_and_runtime_config() {
     let page = fs::read_to_string("src/view/pages/settings.rs").unwrap();
-
-    assert!(page.contains("fn VirtualInstalledApplicationList"));
-    assert!(page.contains("use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys"));
-    assert!(page.contains("render_virtual_installed_application_row"));
-    assert!(page.contains("list_cached_count: 14_i32"));
-    assert!(!page.contains(".take(80)"));
-    assert!(!page.contains("use_virtual_node_adapter_keyed("));
-}
-
-#[test]
-fn per_app_picker_uses_launcher_query_without_privileged_bundle_enumeration() {
+    let tools = fs::read_to_string("src/view/pages/tools.rs").unwrap();
+    let route = fs::read_to_string("src/view/route.rs").unwrap();
     let entry =
         fs::read_to_string("../../entry/src/main/ets/entryability/EntryAbility.ets").unwrap();
     let module = fs::read_to_string("../../entry/src/main/module.json5").unwrap();
+    let vpn_config =
+        fs::read_to_string("../../entry/src/main/ets/vpnability/VpnConfig.ets").unwrap();
 
-    assert!(entry.contains("legacyBundle.queryAbilityByWant("));
-    assert!(entry.contains("action: 'action.system.home'"));
-    assert!(entry.contains("action: 'ohos.want.action.home'"));
-    assert!(entry.contains("entities: ['entity.system.home']"));
-    assert!(entry.contains("getOsAccountLocalId()"));
-    assert!(!entry.contains("legacyBundle.getAllApplicationInfo("));
-    assert!(module.contains("\"name\": \"ohos.permission.GET_BUNDLE_INFO\""));
-    assert!(!module.contains("ohos.permission.GET_BUNDLE_INFO_PRIVILEGED"));
+    assert!(!page.contains("per_app_settings_page"));
+    assert!(!tools.contains("Route::PerApp"));
+    assert!(!route.contains("PerApp"));
+    assert!(!entry.contains("listInstalledApplications"));
+    assert!(!module.contains("GET_BUNDLE_INFO"));
+    assert!(!vpn_config.contains("trustedApplications"));
+    assert!(!vpn_config.contains("blockedApplications"));
 }

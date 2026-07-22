@@ -94,10 +94,6 @@ fn localized_strings_cover_navigation_and_about_privacy() {
     assert_eq!(en.settings_dns_hijack, "DNS Hijack");
     assert_eq!(zh.settings_cache, "缓存");
     assert_eq!(en.settings_cache, "Cache");
-    assert_eq!(zh.settings_per_app_title, "分应用 VPN");
-    assert_eq!(en.settings_per_app_title, "Per-app VPN");
-    assert_eq!(zh.settings_load_apps, "读取应用");
-    assert_eq!(en.settings_load_apps, "Load Apps");
     assert_eq!(zh.feedback_proxy_delay_empty, "当前配置没有可测速节点");
     assert_eq!(
         en.feedback_proxy_delay_empty,

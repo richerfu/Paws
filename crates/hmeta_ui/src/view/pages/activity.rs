@@ -62,17 +62,17 @@ pub(crate) fn requests_page(state: Signal<State>) -> Element {
     };
     let body = rsx! {
         column {
-            percent_width: 1.0,
-            percent_height: 1.0,
+            width: "100%",
+            height: "100%",
             Input {
                 value: Some(query_value),
                 placeholder: Some(strings(current.locale).requests_search_placeholder.to_owned()),
-                percent_width: Some(1.0),
+                width: Some("100%".into()),
                 on_change: move |value| request_query.set(value),
             }
             row { height: 10.0 }
             row {
-                percent_width: 1.0,
+                width: "100%",
                 justify_content: "center",
                 FlatSegmented {
                     options: filter_options,
@@ -92,7 +92,7 @@ pub(crate) fn requests_page(state: Signal<State>) -> Element {
             row { height: 10.0 }
             row {
                 layout_weight: 1.0,
-                percent_width: 1.0,
+                width: "100%",
                 if empty {
                     {empty_state("activity", strings(current.locale).requests_empty_title, strings(current.locale).requests_empty_subtitle)}
                 } else {
@@ -185,18 +185,18 @@ pub(crate) fn connections_page(state: Signal<State>, initial_query: String) -> E
     };
     let body = rsx! {
         column {
-            percent_width: 1.0,
-            percent_height: 1.0,
+            width: "100%",
+            height: "100%",
             Input {
                 value: Some(query_value),
                 placeholder: Some(strings(current.locale).connections_search_placeholder.to_owned()),
-                percent_width: Some(1.0),
+                width: Some("100%".into()),
                 on_change: move |value| query.set(value),
             }
             row { height: 10.0 }
             row {
                 layout_weight: 1.0,
-                percent_width: 1.0,
+                width: "100%",
                 if empty {
                     {empty_state("unplug", strings(current.locale).connections_empty_title, strings(current.locale).connections_empty_subtitle)}
                 } else {
@@ -339,8 +339,8 @@ fn VirtualRequestList(
 
     rsx! {
         list {
-            percent_width: 1.0,
-            percent_height: 1.0,
+            width: "100%",
+            height: "100%",
             list_cached_count: 18_i32,
         }
     }
@@ -384,8 +384,8 @@ fn VirtualConnectionList(
 
     rsx! {
         list {
-            percent_width: 1.0,
-            percent_height: 1.0,
+            width: "100%",
+            height: "100%",
             list_cached_count: 18_i32,
         }
     }
@@ -696,7 +696,7 @@ fn ManualRuleTargetOption(props: ManualRuleTargetOptionProps) -> Element {
     let mut open = props.open;
     rsx! {
         button {
-            percent_width: 1.0,
+            width: "100%",
             height: 36.0,
             padding_left: 12.0,
             padding_right: 12.0,
@@ -708,12 +708,12 @@ fn ManualRuleTargetOption(props: ManualRuleTargetOptionProps) -> Element {
                 dispatch(state, Action::SetManualRuleTarget(value.clone()));
             },
             row {
-                percent_width: 1.0,
+                width: "100%",
                 align_items: "center",
                 row {
                     layout_weight: 1.0,
                     clip: true,
-                    text { content: props.option.clone(), percent_width: 1.0, font_size: 13.0, font_weight: if props.selected { 650 } else { 500 }, font_color: text_color(), max_lines: 1, text_overflow: 2 }
+                    text { content: props.option.clone(), width: "100%", font_size: 13.0, font_weight: if props.selected { 650 } else { 500 }, font_color: text_color(), max_lines: 1, text_overflow: "ellipsis" }
                 }
                 if props.selected {
                     {arkit::icon("check", 15.0, text_color())}
@@ -730,9 +730,9 @@ fn ManualRuleTargetSelect(props: ManualRuleTargetSelectProps) -> Element {
 
     rsx! {
         column {
-            percent_width: 1.0,
+            width: "100%",
             button {
-                percent_width: 1.0,
+                width: "100%",
                 height: 40.0,
                 padding_left: 12.0,
                 padding_right: 12.0,
@@ -746,19 +746,19 @@ fn ManualRuleTargetSelect(props: ManualRuleTargetSelectProps) -> Element {
                     }
                 },
                 row {
-                    percent_width: 1.0,
+                    width: "100%",
                     align_items: "center",
                     row {
                         layout_weight: 1.0,
                         clip: true,
-                        text { content: props.selected.clone(), percent_width: 1.0, font_size: 13.0, font_color: if props.disabled { subtle() } else { text_color() }, max_lines: 1, text_overflow: 2 }
+                        text { content: props.selected.clone(), width: "100%", font_size: 13.0, font_color: if props.disabled { subtle() } else { text_color() }, max_lines: 1, text_overflow: "ellipsis" }
                     }
                     {arkit::icon(if open() { "chevron-up" } else { "chevron-down" }, 16.0, subtle())}
                 }
             }
             if open() {
                 scroll {
-                    percent_width: 1.0,
+                    width: "100%",
                     height: list_height,
                     margin_top: 4.0,
                     scroll_enabled: props.options.len() > 5,
@@ -767,7 +767,7 @@ fn ManualRuleTargetSelect(props: ManualRuleTargetSelectProps) -> Element {
                     border_radius: 8.0,
                     clip: true,
                     column {
-                        percent_width: 1.0,
+                        width: "100%",
                         for option in props.options.iter() {
                             ManualRuleTargetOption {
                                 key: "{option}",
@@ -892,7 +892,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                     ManualRuleMatchKind::DomainSuffix => tr(locale, "例如 example.com", "For example example.com"),
                     ManualRuleMatchKind::IpCidr => tr(locale, "例如 192.0.2.1 或 192.0.2.0/24", "For example 192.0.2.1 or 192.0.2.0/24"),
                 }.to_owned()),
-                percent_width: Some(1.0),
+                width: Some("100%".into()),
                 disabled: editor.submitting,
                 on_change: move |value| dispatch(state, Action::SetManualRuleValue(value)),
             }
@@ -906,7 +906,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                 state,
             }
             column {
-                percent_width: 1.0,
+                width: "100%",
                 margin_top: 10.0,
                 padding: 9.0,
                 border_width: 1.0,
@@ -914,7 +914,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                 border_radius: 7.0,
                 background_color: muted(),
                 text { content: tr(locale, "规则预览", "Rule preview"), font_size: 10.0, font_weight: 650, font_color: subtle() }
-                text { content: preview, margin_top: 3.0, font_size: 11.0, font_color: text_color(), max_lines: 2, text_overflow: 2 }
+                text { content: preview, margin_top: 3.0, font_size: 11.0, font_color: text_color(), max_lines: 2, text_overflow: "ellipsis" }
             }
             if let Some(message) = conflict_message {
                 text { content: message, margin_top: 8.0, font_size: 11.0, line_height: 16.0, font_color: warning() }
@@ -924,7 +924,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
             }
             if editor.connection_id.is_some() {
                 row {
-                    percent_width: 1.0,
+                    width: "100%",
                     margin_top: 10.0,
                     align_items: "center",
                     Switch {
@@ -942,7 +942,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
         DialogFooter {
             FlatButton {
                 variant: FlatButtonVariant::Primary,
-                percent_width: 1.0,
+                width: "100%",
                 disabled: Some(!can_save),
                 onclick: move |_| dispatch(state, Action::SaveManualRule),
                 if editor.submitting {
