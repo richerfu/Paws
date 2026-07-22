@@ -313,7 +313,7 @@ impl CoreHandle {
             .or(header_name)
             .unwrap_or_else(|| profile_name_from_url(url));
         let raw_yaml = normalize_profile_content(&raw_yaml)?;
-        validate_meow_config(&raw_yaml).await?;
+        self.validate_meow_config(&raw_yaml).await?;
         let mut state = self.lock_state()?;
         let id = state
             .profiles
@@ -341,7 +341,7 @@ impl CoreHandle {
         let subscription_user_info = hmeta_profile::parse_subscription_userinfo_comment(raw_yaml);
         let subscription_metadata = hmeta_profile::parse_subscription_metadata_comment(raw_yaml);
         let raw_yaml = normalize_profile_content(raw_yaml)?;
-        validate_meow_config(&raw_yaml).await?;
+        self.validate_meow_config(&raw_yaml).await?;
         let mut state = self.lock_state()?;
         let id = state
             .profiles
@@ -407,7 +407,7 @@ impl CoreHandle {
             hmeta_profile::parse_subscription_metadata_comment(&raw_yaml),
         );
         let raw_yaml = normalize_profile_content(&raw_yaml)?;
-        validate_meow_config(&raw_yaml).await?;
+        self.validate_meow_config(&raw_yaml).await?;
         {
             let mut state = self.lock_state()?;
             state
@@ -1930,7 +1930,7 @@ impl CoreHandle {
         profile_id: &str,
         raw_yaml: &str,
     ) -> Result<(), HMetaError> {
-        validate_meow_config(raw_yaml).await?;
+        self.validate_meow_config(raw_yaml).await?;
         let previous_raw_yaml = {
             let state = self.lock_state()?;
             state.profiles.raw_yaml(profile_id)?
@@ -1980,7 +1980,15 @@ impl CoreHandle {
     }
 
     pub async fn validate_profile_content(&self, raw_yaml: &str) -> Result<(), HMetaError> {
-        validate_meow_config(raw_yaml).await
+        self.validate_meow_config(raw_yaml).await
+    }
+
+    async fn validate_meow_config(&self, raw_yaml: &str) -> Result<(), HMetaError> {
+        let store_root = {
+            let state = self.lock_state()?;
+            state.profiles.root().to_path_buf()
+        };
+        validate_meow_config(raw_yaml, &store_root).await
     }
 
     pub fn profile_raw_yaml(&self, profile_id: &str) -> Result<String, HMetaError> {
@@ -2527,8 +2535,12 @@ pub fn shared_core() -> Arc<CoreHandle> {
     CoreHandle::shared()
 }
 
-async fn validate_meow_config(raw_yaml: &str) -> Result<(), HMetaError> {
-    let validation_yaml = hmeta_profile::sanitize_profile_for_meow_validation(raw_yaml)?;
+async fn validate_meow_config(
+    raw_yaml: &str,
+    store_root: &std::path::Path,
+) -> Result<(), HMetaError> {
+    let validation_yaml =
+        hmeta_profile::sanitize_profile_for_meow_validation_at(raw_yaml, store_root)?;
     let _ = load_meow_config(&validation_yaml).await?;
     Ok(())
 }

@@ -21,6 +21,8 @@ const STORE_VERSION: u32 = 1;
 const MEOW_V4_CLIENT: &str = "172.19.0.1/30";
 const MEOW_V4_ROUTER: &str = "172.19.0.2";
 const MEOW_V6_CLIENT: &str = "fdfe:dcba:9876::1/126";
+const DEFAULT_PROXY_SUBSCRIPTION_RULES: [&str; 3] =
+    ["GEOSITE,cn,DIRECT", "GEOIP,CN,DIRECT", "MATCH,Proxy"];
 pub const MANUAL_ACTIVITY_RULE_SOURCE: &str = "manual:activity";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -946,6 +948,8 @@ impl ProfileStore {
         put_string(root, "external-controller", "127.0.0.1:9090");
         patch_geox_url(root);
         patch_geodata_paths(root, &self.root)?;
+        upgrade_legacy_generated_subscription_rules(root);
+        prune_unavailable_default_subscription_rules(root, &self.root);
         patch_dns(root, vpn_options);
         patch_tun(root, vpn_options);
         rewrite_provider_paths(root, &self.root, profile_id)?;
@@ -1401,6 +1405,23 @@ pub fn sanitize_profile_for_meow_validation(raw_yaml: &str) -> Result<String, HM
     sanitize_app_managed_config(root);
     sanitize_app_managed_dns_for_validation(root);
     remove_app_managed_geodata_fields(root);
+    serde_yaml::to_string(&value).map_err(|err| HMetaError::Core(err.to_string()))
+}
+
+pub fn sanitize_profile_for_meow_validation_at(
+    raw_yaml: &str,
+    store_root: &Path,
+) -> Result<String, HMetaError> {
+    let sanitized = sanitize_profile_for_meow_validation(raw_yaml)?;
+    let mut value: Value =
+        serde_yaml::from_str(&sanitized).map_err(|err| HMetaError::Core(err.to_string()))?;
+    let Some(root) = value.as_mapping_mut() else {
+        return Err(HMetaError::Core(
+            "profile root must be a YAML map or supported proxy subscription".to_owned(),
+        ));
+    };
+    patch_geodata_paths(root, store_root)?;
+    prune_unavailable_default_subscription_rules(root, store_root);
     serde_yaml::to_string(&value).map_err(|err| HMetaError::Core(err.to_string()))
 }
 
@@ -2477,7 +2498,12 @@ fn proxy_subscription_yaml(mut proxies: Vec<Mapping>) -> Result<String, HMetaErr
     );
     root.insert(
         value_key("rules"),
-        Value::Sequence(vec![Value::String("MATCH,Proxy".to_owned())]),
+        Value::Sequence(
+            DEFAULT_PROXY_SUBSCRIPTION_RULES
+                .iter()
+                .map(|rule| Value::String((*rule).to_owned()))
+                .collect(),
+        ),
     );
     serde_yaml::to_string(&Value::Mapping(root)).map_err(|err| HMetaError::Core(err.to_string()))
 }
@@ -2986,6 +3012,93 @@ fn patch_geodata_paths(root: &mut Mapping, store_root: &Path) -> Result<(), HMet
     );
     root.insert(key, Value::Mapping(geodata));
     Ok(())
+}
+
+fn prune_unavailable_default_subscription_rules(root: &mut Mapping, store_root: &Path) {
+    let Some(Value::Sequence(rules)) = root.get_mut(&value_key("rules")) else {
+        return;
+    };
+    if rules.len() != DEFAULT_PROXY_SUBSCRIPTION_RULES.len()
+        || !rules
+            .iter()
+            .zip(DEFAULT_PROXY_SUBSCRIPTION_RULES)
+            .all(|(actual, expected)| {
+                actual
+                    .as_str()
+                    .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+            })
+    {
+        return;
+    }
+
+    let geodata_dir = store_root.join("geodata");
+    let geosite_available = file_has_content(&geodata_dir.join("geosite.dat"));
+    let geoip_available = file_has_content(&geodata_dir.join("Country.mmdb"));
+    rules.retain(|rule| {
+        let Some(rule) = rule.as_str() else {
+            return true;
+        };
+        (!rule.eq_ignore_ascii_case(DEFAULT_PROXY_SUBSCRIPTION_RULES[0]) || geosite_available)
+            && (!rule.eq_ignore_ascii_case(DEFAULT_PROXY_SUBSCRIPTION_RULES[1]) || geoip_available)
+    });
+}
+
+fn upgrade_legacy_generated_subscription_rules(root: &mut Mapping) {
+    let has_legacy_fallback = root
+        .get(&value_key("rules"))
+        .and_then(Value::as_sequence)
+        .is_some_and(|rules| {
+            matches!(rules.as_slice(), [rule] if rule.as_str().is_some_and(|rule| rule.eq_ignore_ascii_case("MATCH,Proxy")))
+        });
+    if !has_legacy_fallback || !looks_like_generated_proxy_subscription(root) {
+        return;
+    }
+    root.insert(
+        value_key("rules"),
+        Value::Sequence(
+            DEFAULT_PROXY_SUBSCRIPTION_RULES
+                .iter()
+                .map(|rule| Value::String((*rule).to_owned()))
+                .collect(),
+        ),
+    );
+}
+
+fn looks_like_generated_proxy_subscription(root: &Mapping) -> bool {
+    let Some(proxies) = root.get(&value_key("proxies")).and_then(Value::as_sequence) else {
+        return false;
+    };
+    let proxy_names = proxies
+        .iter()
+        .filter_map(Value::as_mapping)
+        .filter_map(|proxy| get_string(proxy, "name"))
+        .collect::<Vec<_>>();
+    if proxy_names.is_empty() || proxy_names.len() != proxies.len() {
+        return false;
+    }
+
+    let Some([Value::Mapping(group)]) = root
+        .get(&value_key("proxy-groups"))
+        .and_then(Value::as_sequence)
+        .map(Vec::as_slice)
+    else {
+        return false;
+    };
+    if !get_string(group, "name").is_some_and(|name| name == "Proxy")
+        || !get_string(group, "type").is_some_and(|group_type| group_type == "select")
+    {
+        return false;
+    }
+
+    let mut expected_members = proxy_names;
+    expected_members.push("DIRECT".to_owned());
+    get_string_list(group, "proxies") == expected_members
+}
+
+fn file_has_content(path: &Path) -> bool {
+    path.metadata()
+        .map(|metadata| metadata.len() > 0)
+        .unwrap_or(false)
 }
 
 fn remove_app_managed_geodata_fields(root: &mut Mapping) {
@@ -3874,6 +3987,41 @@ proxies: []
     }
 
     #[test]
+    fn store_validation_uses_safe_geodata_paths_and_degrades_generated_defaults_when_missing() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-profile-test-{}", next_id("validation-geo")));
+        let yaml = proxy_subscription_yaml(vec![proxy_base(
+            "Node".to_owned(),
+            "socks5",
+            "127.0.0.1".to_owned(),
+            1080,
+        )])
+        .unwrap();
+
+        let missing_yaml = sanitize_profile_for_meow_validation_at(&yaml, &root).unwrap();
+        let missing_value: Value = serde_yaml::from_str(&missing_yaml).unwrap();
+        let missing_root = missing_value.as_mapping().unwrap();
+        assert_eq!(get_string_list(missing_root, "rules"), vec!["MATCH,Proxy"]);
+        let geodata = missing_root
+            .get(&value_key("geodata"))
+            .and_then(Value::as_mapping)
+            .unwrap();
+        assert_eq!(
+            get_string(geodata, "mmdb-path").as_deref(),
+            Some(root.join("geodata/Country.mmdb").to_string_lossy().as_ref())
+        );
+
+        fs::write(root.join("geodata/Country.mmdb"), b"test").unwrap();
+        fs::write(root.join("geodata/geosite.dat"), b"test").unwrap();
+        let available_yaml = sanitize_profile_for_meow_validation_at(&yaml, &root).unwrap();
+        let available_value: Value = serde_yaml::from_str(&available_yaml).unwrap();
+        assert_eq!(
+            get_string_list(available_value.as_mapping().unwrap(), "rules"),
+            vec!["GEOSITE,cn,DIRECT", "GEOIP,CN,DIRECT", "MATCH,Proxy"]
+        );
+    }
+
+    #[test]
     fn validation_yaml_removes_app_managed_listener_and_dns_fields() {
         let yaml = sanitize_profile_for_meow_validation(
             r#"
@@ -4224,8 +4372,125 @@ trojan://secret@proxy.example.test:443?sni=proxy.example.test#Trojan%20A
         assert!(yaml.contains("type: vless"));
         assert!(yaml.contains("type: trojan"));
         assert!(yaml.contains("name: VLESS A"));
-        assert!(yaml.contains("MATCH,Proxy"));
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        let raw_root = value.as_mapping().unwrap();
+        assert_eq!(
+            get_string_list(raw_root, "rules"),
+            vec!["GEOSITE,cn,DIRECT", "GEOIP,CN,DIRECT", "MATCH,Proxy"]
+        );
+
+        fs::write(root.join("geodata/Country.mmdb"), b"test").unwrap();
+        fs::write(root.join("geodata/geosite.dat"), b"test").unwrap();
+        let runtime_yaml = store
+            .build_runtime_yaml(&profile_id, RuntimeMode::Rule, &VpnOptions::default())
+            .unwrap();
+        let runtime_value: Value = serde_yaml::from_str(&runtime_yaml).unwrap();
+        let runtime_root = runtime_value.as_mapping().unwrap();
+        assert_eq!(
+            get_string_list(runtime_root, "rules"),
+            vec!["GEOSITE,cn,DIRECT", "GEOIP,CN,DIRECT", "MATCH,Proxy"]
+        );
         assert!(store.vpn_options_for_profile(&profile_id).is_ok());
+    }
+
+    #[test]
+    fn legacy_generated_subscription_is_upgraded_in_runtime_without_rewriting_raw_yaml() {
+        let root = std::env::temp_dir().join(format!(
+            "hmeta-profile-test-{}",
+            next_id("legacy-generated-rules")
+        ));
+        let mut store = ProfileStore::open(root.clone()).unwrap();
+        let current_yaml = proxy_subscription_yaml(vec![proxy_base(
+            "Node".to_owned(),
+            "socks5",
+            "127.0.0.1".to_owned(),
+            1080,
+        )])
+        .unwrap();
+        let mut legacy_value: Value = serde_yaml::from_str(&current_yaml).unwrap();
+        legacy_value.as_mapping_mut().unwrap().insert(
+            value_key("rules"),
+            Value::Sequence(vec![Value::String("MATCH,Proxy".to_owned())]),
+        );
+        let legacy_yaml = serde_yaml::to_string(&legacy_value).unwrap();
+        let profile_id = store
+            .import_profile_content("Legacy", "subscription", &legacy_yaml, None)
+            .unwrap();
+        store
+            .import_rules_for_profile(
+                &profile_id,
+                MANUAL_ACTIVITY_RULE_SOURCE,
+                "DOMAIN-SUFFIX,qq.com,DIRECT",
+            )
+            .unwrap();
+        fs::write(root.join("geodata/Country.mmdb"), b"test").unwrap();
+        fs::write(root.join("geodata/geosite.dat"), b"test").unwrap();
+
+        let runtime_yaml = store
+            .render_runtime_yaml(&profile_id, RuntimeMode::Rule, &VpnOptions::default())
+            .unwrap();
+        let runtime_value: Value = serde_yaml::from_str(&runtime_yaml).unwrap();
+        assert_eq!(
+            get_string_list(runtime_value.as_mapping().unwrap(), "rules"),
+            vec![
+                "DOMAIN-SUFFIX,qq.com,DIRECT",
+                "GEOSITE,cn,DIRECT",
+                "GEOIP,CN,DIRECT",
+                "MATCH,Proxy"
+            ]
+        );
+
+        let raw_yaml = store.raw_yaml(&profile_id).unwrap();
+        let raw_value: Value = serde_yaml::from_str(&raw_yaml).unwrap();
+        assert_eq!(
+            get_string_list(raw_value.as_mapping().unwrap(), "rules"),
+            vec!["MATCH,Proxy"]
+        );
+    }
+
+    #[test]
+    fn explicit_yaml_subscription_rules_are_preserved() {
+        let root = std::env::temp_dir().join(format!(
+            "hmeta-profile-test-{}",
+            next_id("explicit-subscription-rules")
+        ));
+        let mut store = ProfileStore::open(root).unwrap();
+        let profile_id = store
+            .import_profile_content(
+                "Custom rules",
+                "subscription",
+                r#"
+mixed-port: 7890
+proxies: []
+proxy-groups:
+  - name: Custom
+    type: select
+    proxies:
+      - DIRECT
+rules:
+  - DOMAIN-SUFFIX,example.cn,Custom
+  - MATCH,Custom
+"#,
+                Some("https://example.test/custom.yaml".to_owned()),
+            )
+            .unwrap();
+        let yaml = store.raw_yaml(&profile_id).unwrap();
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        let root = value.as_mapping().unwrap();
+
+        assert_eq!(
+            get_string_list(root, "rules"),
+            vec!["DOMAIN-SUFFIX,example.cn,Custom", "MATCH,Custom"]
+        );
+
+        let runtime_yaml = store
+            .render_runtime_yaml(&profile_id, RuntimeMode::Rule, &VpnOptions::default())
+            .unwrap();
+        let runtime_value: Value = serde_yaml::from_str(&runtime_yaml).unwrap();
+        assert_eq!(
+            get_string_list(runtime_value.as_mapping().unwrap(), "rules"),
+            vec!["DOMAIN-SUFFIX,example.cn,Custom", "MATCH,Custom"]
+        );
     }
 
     #[test]
@@ -4253,7 +4518,10 @@ trojan://secret@proxy.example.test:443?sni=proxy.example.test#Trojan%20Good
             .collect::<Vec<_>>();
 
         assert_eq!(names, vec!["VLESS Good", "Trojan Good"]);
-        assert!(yaml.contains("MATCH,Proxy"));
+        assert_eq!(
+            get_string_list(root, "rules"),
+            vec!["GEOSITE,cn,DIRECT", "GEOIP,CN,DIRECT", "MATCH,Proxy"]
+        );
     }
 
     #[test]
