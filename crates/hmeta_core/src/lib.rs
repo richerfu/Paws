@@ -45,6 +45,7 @@ const MAX_API_LOG_SENDERS: usize = 8;
 const MAX_REQUEST_HISTORY: usize = 128;
 const MAX_TRAFFIC_HISTORY: usize = 32;
 const PLATFORM_VPN_STATE_FILE: &str = "platform-vpn-state.json";
+const PLATFORM_VPN_CONTROL_FILE: &str = "platform-vpn-control.json";
 const PLATFORM_VPN_TELEMETRY_FILE: &str = "platform-vpn-telemetry.json";
 const APP_VERSION: &str = "1.0.0";
 const MEOW_RS_VERSION: &str = "0.18.0";
@@ -58,6 +59,13 @@ struct PlatformVpnState {
     running: bool,
     network_protected: bool,
     network_protect_error: Option<String>,
+    updated_at: u128,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlatformVpnControl {
+    mode: RuntimeMode,
     updated_at: u128,
 }
 
@@ -1092,6 +1100,8 @@ impl CoreHandle {
 
     pub fn set_mode(&self, mode: RuntimeMode) -> Result<(), HMetaError> {
         let mut state = self.lock_state()?;
+        sync_platform_vpn_state(&mut state);
+        persist_platform_vpn_control(&state, mode)?;
         state.mode = mode;
         if let Some(tunnel) = &state.tunnel {
             tunnel.set_mode(mode_to_tunnel(mode));
@@ -2927,6 +2937,10 @@ fn platform_vpn_state_path(state: &CoreState) -> PathBuf {
     state.profiles.root().join(PLATFORM_VPN_STATE_FILE)
 }
 
+fn platform_vpn_control_path(state: &CoreState) -> PathBuf {
+    state.profiles.root().join(PLATFORM_VPN_CONTROL_FILE)
+}
+
 fn platform_vpn_telemetry_path(state: &CoreState) -> PathBuf {
     state.profiles.root().join(PLATFORM_VPN_TELEMETRY_FILE)
 }
@@ -2955,6 +2969,24 @@ fn persist_platform_vpn_state(state: &CoreState) -> Result<(), HMetaError> {
     fs::rename(&temp_path, &path).map_err(|error| {
         let _ = fs::remove_file(&temp_path);
         HMetaError::Core(format!("replace platform VPN state failed: {error}"))
+    })
+}
+
+fn persist_platform_vpn_control(state: &CoreState, mode: RuntimeMode) -> Result<(), HMetaError> {
+    let path = platform_vpn_control_path(state);
+    let temp_path = path.with_extension(format!("tmp-{}", std::process::id()));
+    let control = PlatformVpnControl {
+        mode,
+        updated_at: now_unix_nanos(),
+    };
+    let content = serde_json::to_vec(&control).map_err(|error| {
+        HMetaError::Core(format!("serialize platform VPN control failed: {error}"))
+    })?;
+    fs::write(&temp_path, content)
+        .map_err(|error| HMetaError::Core(format!("write platform VPN control failed: {error}")))?;
+    fs::rename(&temp_path, &path).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        HMetaError::Core(format!("replace platform VPN control failed: {error}"))
     })
 }
 
@@ -2989,16 +3021,35 @@ fn now_unix_nanos() -> u128 {
 
 fn sync_platform_vpn_state(state: &mut CoreState) {
     let path = platform_vpn_state_path(state);
-    let Ok(content) = fs::read(&path) else {
+    if let Ok(content) = fs::read(&path) {
+        if let Ok(platform) = serde_json::from_slice::<PlatformVpnState>(&content) {
+            state.platform_vpn_starting = platform.starting;
+            state.platform_vpn_running = platform.running;
+            state.platform_network_protected = platform.network_protected;
+            state.platform_network_protect_error = platform.network_protect_error;
+        }
+    }
+    sync_platform_vpn_control(state);
+}
+
+fn sync_platform_vpn_control(state: &mut CoreState) {
+    let Ok(content) = fs::read(platform_vpn_control_path(state)) else {
         return;
     };
-    let Ok(platform) = serde_json::from_slice::<PlatformVpnState>(&content) else {
+    let Ok(control) = serde_json::from_slice::<PlatformVpnControl>(&content) else {
         return;
     };
-    state.platform_vpn_starting = platform.starting;
-    state.platform_vpn_running = platform.running;
-    state.platform_network_protected = platform.network_protected;
-    state.platform_network_protect_error = platform.network_protect_error;
+    if state.mode == control.mode {
+        return;
+    }
+    state.mode = control.mode;
+    if let Some(tunnel) = &state.tunnel {
+        tunnel.set_mode(mode_to_tunnel(control.mode));
+    }
+    state.logs.push(info_log(format!(
+        "mode synchronized from platform control: {}",
+        control.mode.as_str()
+    )));
 }
 
 fn vpn_lifecycle(
@@ -3734,9 +3785,11 @@ mod tests {
 
     #[test]
     fn mode_changes_are_reflected() {
-        let core = CoreHandle::new();
+        let root = std::env::temp_dir().join(format!("hmeta-core-mode-test-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
         core.set_mode(RuntimeMode::Direct).unwrap();
         assert_eq!(core.snapshot().unwrap().mode, RuntimeMode::Direct);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3817,6 +3870,36 @@ mod tests {
         let ui_snapshot = ui.snapshot().unwrap();
         assert_eq!(ui_snapshot.vpn_lifecycle, VpnLifecycle::Stopped);
         assert!(!ui_snapshot.vpn_running);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn runtime_mode_is_shared_with_the_vpn_extension_process_tunnel() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-platform-mode-ipc-{}", now_unix_nanos()));
+        let ui = CoreHandle::new_with_profile_root(&root);
+        let profile_id = ui
+            .import_profile_from_content(
+                "Mode IPC",
+                "test",
+                &hmeta_profile::default_runtime_yaml(),
+                None,
+            )
+            .await
+            .unwrap();
+        let extension = CoreHandle::new_with_profile_root(&root);
+        extension.reload_config(&profile_id).await.unwrap();
+        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Rule);
+
+        ui.set_mode(RuntimeMode::Direct).unwrap();
+
+        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Direct);
+        let extension_state = extension.lock_state().unwrap();
+        assert_eq!(
+            extension_state.tunnel.as_ref().unwrap().mode(),
+            TunnelMode::Direct
+        );
+        drop(extension_state);
         let _ = std::fs::remove_dir_all(root);
     }
 

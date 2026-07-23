@@ -11,7 +11,7 @@ fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 fn dashboard_stays_flat_and_decision_focused() {
     let page = section(VIEW, "fn dashboard_page", "fn proxies_page");
 
-    assert!(page.contains("ToggleGroup"));
+    assert!(page.contains("FlatSegmented"));
     assert!(page.contains("flatten_proxy_groups"));
     assert!(page.contains("VirtualQuickProxyList"));
     assert!(page.contains("fixed_scaffold_flush_bottom"));
@@ -28,9 +28,21 @@ fn dashboard_stays_flat_and_decision_focused() {
     assert!(!page.contains("Card {"));
     assert!(!page.contains("{card("));
 
-    // ToggleGroup already invokes its handler in the Dioxus runtime. Queuing
-    // this callback a second time makes state access panic on HarmonyOS.
+    // Keep the mode selector on the app-owned segmented buttons. ToggleGroup's
+    // nested hit-test surfaces have regressed on HarmonyOS across arkit
+    // renderer revisions, leaving the visible labels unable to change mode.
+    assert!(!page.contains("ToggleGroup"));
     assert!(!page.contains("arkit::queue_ui_loop"));
+}
+
+#[test]
+fn dashboard_mode_selector_dispatches_every_runtime_mode() {
+    let picker = section(VIEW, "fn mode_picker", "fn proxies_page");
+
+    assert!(picker.contains("RuntimeMode::Rule"));
+    assert!(picker.contains("RuntimeMode::Global"));
+    assert!(picker.contains("RuntimeMode::Direct"));
+    assert!(picker.contains("dispatch(state, Action::SetMode(mode))"));
 }
 
 #[test]

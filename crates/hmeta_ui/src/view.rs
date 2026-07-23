@@ -11,7 +11,7 @@ use arkit::shadcn::components::{
     Badge, BadgeVariant, BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant,
     Card, CardContent, CardHeader, CardTitle, DialogFooter, DialogHeader, Field, FieldContent,
     FieldDescription, FieldOrientation, FieldTitle, Form, FormItem, Input, RadioGroup, Separator,
-    Spinner, Switch, Textarea, ToggleGroup,
+    Spinner, Switch, Textarea,
 };
 use arkit::shadcn::theme::{
     spacing, typography, use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider,
@@ -1022,16 +1022,18 @@ fn mode_picker(state: Signal<State>, selected: RuntimeMode, locale: UiLocale) ->
         RuntimeMode::Direct => direct.clone(),
     };
     rsx! {
-        ToggleGroup {
+        FlatSegmented {
             options: vec![rule, global.clone(), direct.clone()],
-            selected: Some(vec![selected_label]),
-            width: "100%",
-            shadow: Some(false),
-            on_change: move |values: Vec<String>| {
-                if let Some(value) = values.first() {
-                    let mode = if value == &global { RuntimeMode::Global } else if value == &direct { RuntimeMode::Direct } else { RuntimeMode::Rule };
-                    dispatch(state, Action::SetMode(mode));
-                }
+            selected: selected_label,
+            on_change: move |value: String| {
+                let mode = if value == global {
+                    RuntimeMode::Global
+                } else if value == direct {
+                    RuntimeMode::Direct
+                } else {
+                    RuntimeMode::Rule
+                };
+                dispatch(state, Action::SetMode(mode));
             },
         }
     }
@@ -3510,8 +3512,16 @@ fn ProfileImportDialogBody(
 
 fn yaml_editor_dialog(state: Signal<State>, current: &State) -> Element {
     let content_key = dialog_content_key(&[
-        if current.yaml_editor_testing { "testing" } else { "idle-test" },
-        if current.yaml_editor_saving { "saving" } else { "idle-save" },
+        if current.yaml_editor_testing {
+            "testing"
+        } else {
+            "idle-test"
+        },
+        if current.yaml_editor_saving {
+            "saving"
+        } else {
+            "idle-save"
+        },
         current.yaml_editor_error.as_deref().unwrap_or(""),
     ]);
     rsx! {
