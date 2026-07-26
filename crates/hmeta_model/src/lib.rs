@@ -516,8 +516,8 @@ pub struct AboutSnapshot {
 impl Default for AboutSnapshot {
     fn default() -> Self {
         Self {
-            app_version: "0.1.0".to_owned(),
-            core_version: "0.1.0".to_owned(),
+            app_version: "1.0.0".to_owned(),
+            core_version: "1.0.0".to_owned(),
             meow_rs_version: "unknown".to_owned(),
             arkit_rev: "unknown".to_owned(),
             rust_version: "unknown".to_owned(),
