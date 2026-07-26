@@ -35,6 +35,7 @@ const UI_ICON_NAMES: &[&str] = &[
     "rotate-ccw",
     "rss",
     "save",
+    "scan-qr-code",
     "search",
     "settings",
     "shield-check",

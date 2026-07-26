@@ -3306,31 +3306,65 @@ fn ProfileImportDialogBody(
                 },
             }
             row { height: 8.0 }
-            FlatButton {
-                variant: FlatButtonVariant::Ghost,
-                size: ButtonSize::Sm,
-                disabled: Some(import_loading),
-                onclick: move |_| {
-                    if !state.read().profile_import_loading {
-                        submitted.set(true);
-                        dispatch(state, Action::ImportLocalProfile);
-                    }
-                },
-                if import_loading {
-                    Spinner { size: 14.0, color: Some(text_color()) }
-                } else {
-                    {arkit::icon("file-up", 14.0, text_color())}
-                }
-                text {
-                    content: if import_loading {
-                        loading_label
-                    } else {
-                        tr(locale, "从本地文件导入", "Import from local file")
+            row {
+                width: "100%",
+                align_items: "center",
+                FlatButton {
+                    variant: FlatButtonVariant::Ghost,
+                    size: ButtonSize::Sm,
+                    disabled: Some(import_loading),
+                    onclick: move |_| {
+                        if !state.read().profile_import_loading {
+                            submitted.set(true);
+                            dispatch(state, Action::ImportLocalProfile);
+                        }
                     },
-                    margin_left: 6.0,
-                    font_size: 12.0,
-                    font_weight: 600,
-                    font_color: text_color(),
+                    if import_loading {
+                        Spinner { size: 14.0, color: Some(text_color()) }
+                    } else {
+                        {arkit::icon("file-up", 14.0, text_color())}
+                    }
+                    text {
+                        content: if import_loading {
+                            loading_label
+                        } else {
+                            tr(locale, "从本地文件导入", "Import from local file")
+                        },
+                        margin_left: 6.0,
+                        font_size: 12.0,
+                        font_weight: 600,
+                        font_color: text_color(),
+                    }
+                }
+                row { layout_weight: 1.0 }
+                FlatButton {
+                    variant: FlatButtonVariant::Ghost,
+                    size: ButtonSize::Sm,
+                    disabled: Some(import_loading),
+                    onclick: move |_| {
+                        if !state.read().profile_import_loading {
+                            submitted.set(true);
+                            dispatch(state, Action::ScanProfileSubscription {
+                                name: name(),
+                            });
+                        }
+                    },
+                    if import_loading {
+                        Spinner { size: 14.0, color: Some(text_color()) }
+                    } else {
+                        {arkit::icon("scan-qr-code", 14.0, text_color())}
+                    }
+                    text {
+                        content: if import_loading {
+                            strings(locale).profiles_scan_loading
+                        } else {
+                            strings(locale).profiles_scan_action
+                        },
+                        margin_left: 6.0,
+                        font_size: 12.0,
+                        font_weight: 600,
+                        font_color: text_color(),
+                    }
                 }
             }
             if let Some(error) = current.profile_import_error.clone() {

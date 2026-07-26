@@ -12,6 +12,10 @@ use tokio::sync::oneshot;
 type FilePickerCall<'a> = Function<'a, (), Unknown<'a>>;
 type FilePickerThreadsafeFunction = ThreadsafeFunction<(), Unknown<'static>, (), Status, false>;
 type FilePickerSlot = LazyLock<RwLock<Option<Arc<FilePickerThreadsafeFunction>>>>;
+type SubscriptionScanCall<'a> = Function<'a, (), Unknown<'a>>;
+type SubscriptionScanThreadsafeFunction =
+    ThreadsafeFunction<(), Unknown<'static>, (), Status, false>;
+type SubscriptionScanSlot = LazyLock<RwLock<Option<Arc<SubscriptionScanThreadsafeFunction>>>>;
 type VpnStartCall<'a> = Function<'a, String, Unknown<'a>>;
 type VpnStartThreadsafeFunction =
     ThreadsafeFunction<String, Unknown<'static>, String, Status, false>;
@@ -32,6 +36,7 @@ type SetColorModeThreadsafeFunction = ThreadsafeFunction<i32, Unknown<'static>, 
 type SetColorModeSlot = LazyLock<RwLock<Option<Arc<SetColorModeThreadsafeFunction>>>>;
 
 static PROFILE_FILE_PICKER: FilePickerSlot = LazyLock::new(|| RwLock::new(None));
+static SUBSCRIPTION_SCANNER: SubscriptionScanSlot = LazyLock::new(|| RwLock::new(None));
 static REQUEST_START_VPN: VpnStartSlot = LazyLock::new(|| RwLock::new(None));
 static REQUEST_STOP_VPN: VpnStopSlot = LazyLock::new(|| RwLock::new(None));
 static OPEN_EXTERNAL_URL: OpenExternalUrlSlot = LazyLock::new(|| RwLock::new(None));
@@ -43,6 +48,11 @@ pub(crate) fn register_platform_callbacks(callbacks: Object<'static>) -> Result<
         let pick_profile_file: FilePickerCall<'static> =
             callbacks.get_named_property("pickProfileFile")?;
         set_profile_file_picker(pick_profile_file)?;
+    }
+    if callbacks.has_named_property("scanSubscription")? {
+        let scan_subscription: SubscriptionScanCall<'static> =
+            callbacks.get_named_property("scanSubscription")?;
+        set_subscription_scanner(scan_subscription)?;
     }
     if callbacks.has_named_property("requestStartVpn")? {
         let request_start_vpn: VpnStartCall<'static> =
@@ -80,6 +90,18 @@ fn set_profile_file_picker(pick_profile_file: FilePickerCall<'static>) -> Result
     PROFILE_FILE_PICKER
         .write()
         .map_err(|_| Error::from_reason("failed to store profile picker callback"))?
+        .replace(Arc::new(tsfn));
+    Ok(())
+}
+
+fn set_subscription_scanner(scan_subscription: SubscriptionScanCall<'static>) -> Result<()> {
+    let tsfn = scan_subscription
+        .build_threadsafe_function()
+        .callee_handled::<false>()
+        .build()?;
+    SUBSCRIPTION_SCANNER
+        .write()
+        .map_err(|_| Error::from_reason("failed to store subscription scanner callback"))?
         .replace(Arc::new(tsfn));
     Ok(())
 }
@@ -199,6 +221,18 @@ pub(crate) async fn pick_profile_text() -> std::result::Result<(String, String),
         .unwrap_or("Local Profile")
         .to_owned();
     Ok((name, text))
+}
+
+pub(crate) async fn scan_subscription_code() -> std::result::Result<String, String> {
+    let tsfn = SUBSCRIPTION_SCANNER
+        .read()
+        .map_err(|_| "failed to read subscription scanner callback".to_owned())?
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| "subscription scanner callback is not registered".to_owned())?;
+    invoke_subscription_scan(tsfn)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 pub(crate) async fn open_external_url(url: String) -> std::result::Result<(), String> {
@@ -366,6 +400,45 @@ async fn invoke_picker(tsfn: Arc<FilePickerThreadsafeFunction>) -> Result<Vec<St
     }
     rx.await
         .map_err(|_| Error::from_reason("profile picker callback receiver dropped"))?
+}
+
+async fn invoke_subscription_scan(tsfn: Arc<SubscriptionScanThreadsafeFunction>) -> Result<String> {
+    let (tx, rx) = oneshot::channel::<Result<String>>();
+    let status = tsfn.call_with_return_value((), ThreadsafeFunctionCallMode::NonBlocking, {
+        move |result, _| {
+            match result {
+                Ok(value) => {
+                    let tx_cell = Rc::new(Cell::new(Some(tx)));
+                    let tx_in_catch = tx_cell.clone();
+                    let promise = unsafe { value.cast::<PromiseRaw<'static, String>>() }?;
+                    promise
+                        .then(move |ctx| {
+                            if let Some(sender) = tx_cell.replace(None) {
+                                let _ = sender.send(Ok(ctx.value));
+                            }
+                            Ok(())
+                        })?
+                        .catch(move |ctx: CallbackContext<Unknown>| {
+                            if let Some(sender) = tx_in_catch.replace(None) {
+                                let _ = sender.send(Err(ctx.value.into()));
+                            }
+                            Ok(())
+                        })?;
+                }
+                Err(err) => {
+                    let _ = tx.send(Err(err));
+                }
+            }
+            Ok(())
+        }
+    });
+    if status != Status::Ok {
+        return Err(Error::from_reason(format!(
+            "call subscription scanner callback failed with status: {status:?}"
+        )));
+    }
+    rx.await
+        .map_err(|_| Error::from_reason("subscription scanner callback receiver dropped"))?
 }
 
 fn read_text_from_path(path: &PathBuf) -> std::result::Result<String, String> {

@@ -16,6 +16,7 @@ use crate::proxy_grid::{
 use crate::resource_filter::{matches_geodata_query, matches_provider_query, matches_rule_query};
 use crate::rule_feedback::rule_import_message;
 use crate::settings_feedback::settings_saved_message;
+use crate::subscription_scan::{parse_scanned_subscription, ScannedSubscriptionError};
 use crate::time_format;
 use crate::traffic_history::summarize_traffic_history;
 use crate::ui_preferences::{LanguagePreference, ThemePreference, UiPreferences};
@@ -113,6 +114,9 @@ pub(crate) enum Action {
     LogsCleared(Result<RuntimeSnapshot, String>),
     ResetProfileImportFeedback,
     ImportLocalProfile,
+    ScanProfileSubscription {
+        name: String,
+    },
     LocalProfileImportFinished(Result<ProfileImportResult, String>),
     ImportProfileFromUrl {
         url: String,
@@ -959,6 +963,20 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             let ui_strings = strings(state.locale);
             Command::perform(
                 import_profile_file_and_snapshot(was_vpn_running, ui_strings),
+                Action::LocalProfileImportFinished,
+            )
+        }
+        Action::ScanProfileSubscription { name } => {
+            if state.profile_import_loading {
+                return Command::none();
+            }
+            state.profile_import_loading = true;
+            state.profile_import_error = None;
+            state.profile_import_succeeded = false;
+            let was_vpn_running = state.snapshot.vpn_running;
+            let ui_strings = strings(state.locale);
+            Command::perform(
+                scan_profile_subscription_and_snapshot(name, was_vpn_running, ui_strings),
                 Action::LocalProfileImportFinished,
             )
         }
@@ -2153,6 +2171,50 @@ async fn import_profile_url_and_snapshot(
         .await
         .map_err(|error| error.to_string())?;
     Ok(profile_import_result(id, was_vpn_running, ui_strings).await)
+}
+
+async fn scan_profile_subscription_and_snapshot(
+    name: String,
+    was_vpn_running: bool,
+    ui_strings: &'static UiStrings,
+) -> Result<ProfileImportResult, String> {
+    let payload = crate::platform_callbacks::scan_subscription_code()
+        .await
+        .map_err(|error| format!("{}{}", ui_strings.profiles_scan_failed_prefix, error))?;
+    let scanned = match parse_scanned_subscription(&payload) {
+        Ok(scanned) => scanned,
+        Err(ScannedSubscriptionError::Empty) => {
+            return Err("profile scan cancelled".to_owned());
+        }
+        Err(ScannedSubscriptionError::Unsupported) => {
+            return Err(ui_strings.profiles_scan_invalid.to_owned());
+        }
+    };
+    let name = match name.trim() {
+        "" => scanned.name,
+        value => Some(value.to_owned()),
+    };
+    let core = hmeta_core::shared_core();
+    let existing = core.snapshot().ok().and_then(|snapshot| {
+        snapshot
+            .profiles
+            .into_iter()
+            .find(|profile| profile.subscription_url.as_deref() == Some(scanned.url.as_str()))
+    });
+    if let Some(profile) = existing {
+        if let Some(name) = name {
+            core.update_profile_subscription(&profile.id, &name, &scanned.url)
+                .map_err(|error| error.to_string())?;
+        }
+        core.refresh_profile(&profile.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        core.activate_profile(&profile.id)
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(profile_import_result(profile.id, was_vpn_running, ui_strings).await);
+    }
+    import_profile_url_and_snapshot(scanned.url, name, was_vpn_running, ui_strings).await
 }
 
 async fn import_profile_file_and_snapshot(
