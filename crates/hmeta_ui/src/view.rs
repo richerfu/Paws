@@ -2580,6 +2580,29 @@ fn resources_page(state: Signal<State>) -> Element {
                 FlatButton {
                     variant: FlatButtonVariant::Ghost,
                     size: ButtonSize::Sm,
+                    disabled: Some(current.rule_import_loading || current.snapshot.active_profile.is_none()),
+                    onclick: move |_| {
+                        if !state.read().rule_import_loading {
+                            dispatch(state, Action::ImportRules);
+                        }
+                    },
+                    if current.rule_import_loading {
+                        Spinner { size: 14.0, color: Some(text_color()) }
+                    } else {
+                        {arkit::icon("file-up", 14.0, text_color())}
+                    }
+                    text {
+                        content: strings(current.locale).resources_import_rules,
+                        margin_left: 5.0,
+                        font_size: 12.0,
+                        font_weight: 650,
+                        font_color: text_color(),
+                    }
+                }
+                FlatButton {
+                    variant: FlatButtonVariant::Ghost,
+                    size: ButtonSize::Sm,
+                    disabled: Some(current.snapshot.active_profile.is_none()),
                     onclick: move |_| dispatch(state, Action::OpenManualRuleEditor {
                         connection_id: None,
                         domain: String::new(),
@@ -2598,7 +2621,6 @@ fn resources_page(state: Signal<State>) -> Element {
     };
     let actions = rsx! {
         row {
-            {icon_action("file-up", Action::ImportRules, state)}
             {icon_action("refresh-cw", Action::RefreshAllProviders, state)}
         }
     };
