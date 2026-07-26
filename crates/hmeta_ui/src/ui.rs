@@ -196,6 +196,7 @@ pub(crate) struct State {
     profile_import_error: Option<String>,
     profile_import_loading: bool,
     profile_import_succeeded: bool,
+    rule_import_loading: bool,
     yaml_editor_open: bool,
     yaml_editor_profile_id: Option<String>,
     yaml_editor_profile_name: String,
@@ -355,6 +356,7 @@ impl State {
             profile_import_error: None,
             profile_import_loading: false,
             profile_import_succeeded: false,
+            rule_import_loading: false,
             yaml_editor_open: false,
             yaml_editor_profile_id: None,
             yaml_editor_profile_name: String::new(),
@@ -999,10 +1001,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 }
                 Err(error) => {
                     // File-picker cancel should not sticky-error the network form.
-                    let cancelled = error.to_ascii_lowercase().contains("cancel")
-                        || error.contains("取消")
-                        || error.contains("已取消");
-                    if cancelled {
+                    if picker_was_cancelled(&error) {
                         state.profile_import_error = None;
                         state.profile_import_succeeded = false;
                         Command::none()
@@ -1073,13 +1072,11 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             }
         }
         Action::ImportRules => {
-            let active_profile = state.snapshot.active_profile.clone().or_else(|| {
-                state
-                    .snapshot
-                    .profiles
-                    .first()
-                    .map(|profile| profile.id.clone())
-            });
+            if state.rule_import_loading {
+                return Command::none();
+            }
+            state.rule_import_loading = true;
+            let active_profile = state.snapshot.active_profile.clone();
             let was_vpn_running = state.snapshot.vpn_running;
             let ui_strings = strings(state.locale);
             Command::perform(
@@ -1087,29 +1084,33 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 Action::RulesImported,
             )
         }
-        Action::RulesImported(result) => match result {
-            Ok(result) => {
-                state.snapshot = result.snapshot;
-                show_toast(
+        Action::RulesImported(result) => {
+            state.rule_import_loading = false;
+            match result {
+                Ok(result) => {
+                    state.snapshot = result.snapshot;
+                    show_toast(
+                        state,
+                        rule_import_message(
+                            result.imported_count,
+                            result.reload_error.as_deref(),
+                            result.restart_requested,
+                            result.restart_error.as_deref(),
+                            strings(state.locale),
+                        ),
+                    )
+                }
+                Err(error) if picker_was_cancelled(&error) => Command::none(),
+                Err(error) => show_toast(
                     state,
-                    rule_import_message(
-                        result.imported_count,
-                        result.reload_error.as_deref(),
-                        result.restart_requested,
-                        result.restart_error.as_deref(),
-                        strings(state.locale),
+                    format!(
+                        "{}{}",
+                        strings(state.locale).feedback_rule_import_failed_prefix,
+                        error
                     ),
-                )
-            }
-            Err(error) => show_toast(
-                state,
-                format!(
-                    "{}{}",
-                    strings(state.locale).feedback_rule_import_failed_prefix,
-                    error
                 ),
-            ),
-        },
+            }
+        }
         Action::ActivateProfile(profile_id) => {
             let was_vpn_running = state.snapshot.vpn_running;
             let profile_name = state
@@ -2283,6 +2284,12 @@ async fn import_rules_and_snapshot(
         restart_requested: was_vpn_running,
         restart_error,
     })
+}
+
+fn picker_was_cancelled(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("cancel")
+        || error.contains("取消")
+        || error.contains("已取消")
 }
 
 async fn delete_profile_and_snapshot(

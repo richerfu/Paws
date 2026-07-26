@@ -96,6 +96,9 @@ fn resource_rules_are_compact_and_section_titles_have_no_counts() {
 
     assert!(page.contains("section_label(tr(current.locale, \"Provider\", \"Providers\"))"));
     assert!(page.contains("content: strings(current.locale).resources_rules_title"));
+    assert!(page.contains("content: strings(current.locale).resources_import_rules"));
+    assert!(page.contains("Action::ImportRules"));
+    assert!(page.contains("current.rule_import_loading"));
     assert!(page.contains("tr(current.locale, \"添加\", \"Add\")"));
     assert!(page.contains("Action::OpenManualRuleEditor"));
     assert!(page.contains("manual_rule_dialog(state, &current)"));
