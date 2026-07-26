@@ -49,7 +49,7 @@ const PLATFORM_VPN_CONTROL_FILE: &str = "platform-vpn-control.json";
 const PLATFORM_VPN_TELEMETRY_FILE: &str = "platform-vpn-telemetry.json";
 const APP_VERSION: &str = "1.0.0";
 const MEOW_RS_VERSION: &str = "0.18.0";
-const ARKIT_REV: &str = "e091886482f915779bc927d4aab5045922508851";
+const ARKIT_REV: &str = "fffbc35e0cbf7325e93a5fd849fab930b2f321ac";
 const RUST_VERSION: &str = "1.89";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
