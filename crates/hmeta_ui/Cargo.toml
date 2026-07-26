@@ -22,6 +22,7 @@ serde_json.workspace = true
 serde_yaml.workspace = true
 time.workspace = true
 tokio.workspace = true
+url.workspace = true
 
 [target.'cfg(target_env = "ohos")'.dependencies]
 ohos-fileuri-binding = { path = "../../../../ohos-rs/ohos-native-bindings/crates/fileuri" }

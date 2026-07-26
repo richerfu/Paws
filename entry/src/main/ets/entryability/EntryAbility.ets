@@ -4,6 +4,7 @@ import { i18n } from '@kit.LocalizationKit';
 import { vpnExtension } from '@kit.NetworkKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { scanBarcode, scanCore } from '@kit.ScanKit';
 import { NativeAbility } from '@ohos-rs/ability';
 import hmetaUi from 'libhmeta_ui.so';
 import window from '@ohos.window';
@@ -11,6 +12,7 @@ import { buildVpnWant, setHMetaBundleName } from '../vpnability/VpnConfig';
 
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'HMetaEntry';
+const SCAN_CANCELLED_CODE: number = 1000500002;
 
 interface HMetaAutomationParams {
   hmetaProfileContent?: string;
@@ -87,6 +89,25 @@ export default class EntryAbility extends NativeAbility {
       return result;
     } catch (_err) {
       return [];
+    }
+  }
+
+  private async scanSubscriptionFromSystem(): Promise<string> {
+    const options: scanBarcode.ScanOptions = {
+      scanTypes: [scanCore.ScanType.QR_CODE],
+      enableMultiMode: false,
+      enableAlbum: true,
+    };
+    try {
+      const result: scanBarcode.ScanResult =
+        await scanBarcode.startScanForResult(this.context, options);
+      return result.originalValue.trim();
+    } catch (err) {
+      const error = err as HMetaErrorLike;
+      if (error.code === SCAN_CANCELLED_CODE) {
+        return '';
+      }
+      throw new Error(describeError(err) || 'scan subscription failed');
     }
   }
 
@@ -550,6 +571,7 @@ export default class EntryAbility extends NativeAbility {
       this.seedGeodataFromRawfiles();
       hmetaUi.registerPlatformCallbacks({
         pickProfileFile: async () => await this.pickProfileFileFromSystem(),
+        scanSubscription: async () => await this.scanSubscriptionFromSystem(),
         requestStartVpn: async (optionsJson: string) => await this.requestStartVpn(optionsJson),
         requestStopVpn: async () => await this.requestStopVpn(),
         openExternalUrl: async (url: string) => await this.openExternalUrl(url),

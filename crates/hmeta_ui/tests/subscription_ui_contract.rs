@@ -119,6 +119,24 @@ fn profile_export_reaches_the_harmony_document_picker() {
 }
 
 #[test]
+fn subscription_scan_reaches_scankit_and_the_import_pipeline() {
+    let dialog = section(VIEW, "fn profile_import_dialog", "fn yaml_editor_dialog");
+
+    assert!(dialog.contains("Action::ScanProfileSubscription"));
+    assert!(dialog.contains("\"scan-qr-code\""));
+    assert!(dialog.contains("profiles_scan_loading"));
+    assert!(UI.contains("scan_profile_subscription_and_snapshot"));
+    assert!(UI.contains("parse_scanned_subscription"));
+    assert!(UI.contains("profile.subscription_url.as_deref()"));
+    assert!(PLATFORM_CALLBACKS.contains("scanSubscription"));
+    assert!(PLATFORM_CALLBACKS.contains("PromiseRaw<'static, String>"));
+    assert!(ENTRY_ABILITY.contains("scanBarcode.startScanForResult"));
+    assert!(ENTRY_ABILITY.contains("scanCore.ScanType.QR_CODE"));
+    assert!(ENTRY_ABILITY.contains("enableAlbum: true"));
+    assert!(ENTRY_ABILITY.contains("SCAN_CANCELLED_CODE"));
+}
+
+#[test]
 fn profile_surfaces_do_not_reintroduce_shadow_attributes() {
     assert!(!VIEW.contains("shadow_radius:"));
     assert!(!VIEW.contains("shadow_color:"));
