@@ -72,12 +72,13 @@ fn network_stack_is_a_bounded_selector_with_two_real_backends() {
         .next()
         .unwrap();
 
-    assert!(stack_field.contains("FlatSelect"));
+    assert!(stack_field.contains("Select {"));
+    assert!(!stack_field.contains("FlatSelect"));
     assert!(!stack_field.contains("Input"));
     assert!(page.contains("VpnStack::Smoltcp"));
     assert!(page.contains("VpnStack::Lwip"));
     assert!(page.contains("Action::SaveVpnSettings"));
-    assert!(view.contains("fn FlatSelect"));
+    assert!(view.contains("Select,"));
 }
 
 #[test]

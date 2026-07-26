@@ -49,8 +49,10 @@ fn activity_lists_use_compact_arkit_virtual_rows() {
         ACTIVITY_SOURCE.matches("list_cached_count: 18_i32").count(),
         2,
     );
-    assert!(ACTIVITY_SOURCE.contains("const REQUEST_ROW_HEIGHT: f32 = 72.0;"));
-    assert!(ACTIVITY_SOURCE.contains("const CONNECTION_ROW_HEIGHT: f32 = 72.0;"));
+    assert!(ACTIVITY_SOURCE.contains("const REQUEST_ROW_HEIGHT: f32 = 88.0;"));
+    assert!(ACTIVITY_SOURCE.contains("const CONNECTION_ROW_HEIGHT: f32 = 88.0;"));
+    assert!(ACTIVITY_SOURCE.contains("virtual_status_badge("));
+    assert!(ACTIVITY_SOURCE.contains("format_activity_timestamp("));
     assert!(!ACTIVITY_SOURCE.contains("compact_connection_card"));
     assert!(!ACTIVITY_SOURCE.contains("{spaced(rows)}"));
 }
@@ -77,7 +79,8 @@ fn activity_rows_create_structured_hot_rules_without_leaving_virtual_lists() {
     assert!(ACTIVITY_SOURCE.contains("ManualRuleMatchKind::Domain"));
     assert!(ACTIVITY_SOURCE.contains("ManualRuleMatchKind::DomainSuffix"));
     assert!(ACTIVITY_SOURCE.contains("ManualRuleMatchKind::IpCidr"));
-    assert!(ACTIVITY_SOURCE.contains("ManualRuleTargetSelect {"));
+    assert!(ACTIVITY_SOURCE.contains("Select {"));
+    assert!(!ACTIVITY_SOURCE.contains("ManualRuleTargetSelect"));
     assert!(!ACTIVITY_SOURCE.contains("\"Fruits\""));
     assert!(ACTIVITY_SOURCE.contains("Action::SetManualRuleDisconnect(value)"));
     assert!(ACTIVITY_SOURCE.contains("manual_rule_preview("));

@@ -10,8 +10,8 @@ use arkit::router::{use_back_handler, use_navigator, use_route, AnimatedOutlet, 
 use arkit::shadcn::components::{
     Badge, BadgeVariant, BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant,
     Card, CardContent, CardHeader, CardTitle, DialogFooter, DialogHeader, Field, FieldContent,
-    FieldDescription, FieldOrientation, FieldTitle, Form, FormItem, Input, RadioGroup, Separator,
-    Spinner, Switch, Textarea,
+    FieldDescription, FieldOrientation, FieldTitle, Form, FormItem, Input, RadioGroup, Select,
+    Separator, Spinner, Switch, Textarea,
 };
 use arkit::shadcn::theme::{
     spacing, typography, use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider,
@@ -139,16 +139,15 @@ struct FlatSegmentedProps {
     on_change: EventHandler<String>,
 }
 
-/// A full-width shadcn segmented control without ToggleGroup's fixed shadow.
+/// Full-width segmented control in the shadcn ToggleGroup style:
+/// muted track, raised active segment, no outer border or divider lines.
 #[component]
 fn FlatSegmented(props: FlatSegmentedProps) -> Element {
     let theme = use_theme();
-    let count = props.options.len();
     let options = props
         .options
         .into_iter()
-        .enumerate()
-        .map(|(index, option)| {
+        .map(|option| {
             let active = option == props.selected;
             let next = option.clone();
             let on_change = props.on_change;
@@ -156,24 +155,25 @@ fn FlatSegmented(props: FlatSegmentedProps) -> Element {
                 row {
                     key: "{option}",
                     layout_weight: 1.0,
-                    if index > 0 {
-                        row { width: 1.0, height: 40.0, background_color: theme.colors.border }
-                    }
+                    height: "100%",
+                    padding_left: 2.0,
+                    padding_right: 2.0,
                     button {
                         button_type: "normal",
                         width: "100%",
-                        height: 40.0,
-                        background_color: if active { theme.colors.muted } else { theme.colors.background },
+                        height: 32.0,
+                        background_color: if active { theme.colors.background } else { 0x00000000 },
                         foreground_color: theme.colors.foreground,
-                        border_width: 0.0,
-                        border_radius: if count == 1 { theme.radii.md } else { 0.0 },
+                        border_width: if active { 1.0 } else { 0.0 },
+                        border_color: if active { theme.colors.border } else { 0x00000000 },
+                        border_radius: theme.radii.md,
                         onclick: move |_| {
                             let next = next.clone();
                             arkit::queue_ui_loop(move || on_change.call(next));
                         },
                         text {
                             content: option,
-                            font_size: typography::XS,
+                            font_size: typography::SM,
                             font_weight: if active { 600 } else { 500 },
                             font_color: if active { theme.colors.foreground } else { theme.colors.muted_foreground },
                         }
@@ -186,158 +186,15 @@ fn FlatSegmented(props: FlatSegmentedProps) -> Element {
     rsx! {
         row {
             width: "100%",
-            height: 42.0,
-            border_width: 1.0,
-            border_color: theme.colors.border,
-            border_radius: theme.radii.md,
-            background_color: theme.colors.background,
+            height: 40.0,
+            padding_left: spacing::XXS,
+            padding_right: spacing::XXS,
+            align_items: "center",
+            border_width: 0.0,
+            border_radius: theme.radii.lg,
+            background_color: theme.colors.muted,
             clip: true,
             {options.into_iter()}
-        }
-    }
-}
-
-#[derive(Clone, PartialEq)]
-struct FlatSelectOption {
-    value: String,
-    label: String,
-    description: String,
-}
-
-#[derive(Props, Clone, PartialEq)]
-struct FlatSelectProps {
-    options: Vec<FlatSelectOption>,
-    selected: String,
-    on_change: EventHandler<String>,
-}
-
-/// Compact inline select used where ArkUI's native menu cannot preserve the
-/// currently selected value across declarative rerenders.
-#[component]
-fn FlatSelect(props: FlatSelectProps) -> Element {
-    let theme = use_theme();
-    let mut open = use_signal(|| false);
-    let selected = props
-        .options
-        .iter()
-        .find(|option| option.value == props.selected)
-        .or_else(|| props.options.first())
-        .cloned();
-    let selected_label = selected
-        .as_ref()
-        .map(|option| option.label.clone())
-        .unwrap_or_default();
-    let selected_description = selected
-        .as_ref()
-        .map(|option| option.description.clone())
-        .unwrap_or_default();
-    let options = props.options.clone();
-
-    rsx! {
-        column {
-            width: "100%",
-            button {
-                button_type: "normal",
-                width: "100%",
-                height: 44.0,
-                padding_left: spacing::MD,
-                padding_right: spacing::MD,
-                background_color: theme.colors.background,
-                border_width: 1.0,
-                border_color: theme.colors.input,
-                border_radius: theme.radii.md,
-                onclick: move |_| open.set(!open()),
-                row {
-                    width: "100%",
-                    align_items: "center",
-                    row {
-                        layout_weight: 1.0,
-                        clip: true,
-                        text {
-                            content: selected_label,
-                            width: "100%",
-                            font_size: typography::SM,
-                            font_weight: 600,
-                            font_color: theme.colors.foreground,
-                            max_lines: 1,
-                            text_overflow: "ellipsis",
-                        }
-                    }
-                    {arkit::icon(if open() { "chevron-up" } else { "chevron-down" }, 16.0, theme.colors.muted_foreground)}
-                }
-            }
-            if !selected_description.is_empty() {
-                text {
-                    content: selected_description,
-                    margin_top: spacing::XXS,
-                    margin_left: 2.0,
-                    font_size: typography::XS,
-                    line_height: 16.0,
-                    font_color: theme.colors.muted_foreground,
-                }
-            }
-            if open() {
-                column {
-                    width: "100%",
-                    margin_top: spacing::XXS,
-                    border_width: 1.0,
-                    border_color: theme.colors.border,
-                    border_radius: theme.radii.md,
-                    background_color: theme.colors.popover,
-                    clip: true,
-                    for option in options {
-                        {
-                            let active = option.value == props.selected;
-                            let value = option.value.clone();
-                            let on_change = props.on_change;
-                            rsx! {
-                                button {
-                                    key: "{option.value}",
-                                    button_type: "normal",
-                                    width: "100%",
-                                    height: 48.0,
-                                    padding_left: spacing::MD,
-                                    padding_right: spacing::MD,
-                                    background_color: if active { theme.colors.accent } else { theme.colors.popover },
-                                    border_width: 0.0,
-                                    border_radius: 0.0,
-                                    onclick: move |_| {
-                                        open.set(false);
-                                        let value = value.clone();
-                                        arkit::queue_ui_loop(move || on_change.call(value));
-                                    },
-                                    row {
-                                        width: "100%",
-                                        align_items: "center",
-                                        column {
-                                            layout_weight: 1.0,
-                                            align_items: "start",
-                                            text {
-                                                content: option.label,
-                                                font_size: typography::SM,
-                                                font_weight: if active { 600 } else { 500 },
-                                                font_color: theme.colors.foreground,
-                                                max_lines: 1,
-                                            }
-                                            text {
-                                                content: option.description,
-                                                margin_top: 2.0,
-                                                font_size: typography::XS,
-                                                font_color: theme.colors.muted_foreground,
-                                                max_lines: 1,
-                                                text_overflow: "ellipsis",
-                                            }
-                                        }
-                                        if active {
-                                            {arkit::icon("check", 15.0, theme.colors.foreground)}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -806,11 +663,16 @@ fn dashboard_page(state: Signal<State>) -> Element {
             }
         }
     }
-    let current_node = quick_items
+    let selected_proxy_node = quick_items
         .iter()
         .find(|item| item.selected)
         .map(|item| item.name.clone())
         .unwrap_or_else(|| tr(current.locale, "未选择", "Unselected").to_owned());
+    let current_node = if snapshot.mode == RuntimeMode::Direct {
+        s.proxies_direct.to_owned()
+    } else {
+        selected_proxy_node
+    };
     let quick_count = quick_items.len();
     let quick_group_count = quick_items
         .iter()

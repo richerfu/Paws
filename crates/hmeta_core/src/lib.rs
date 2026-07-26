@@ -12,7 +12,7 @@ use hmeta_model::{
 use hmeta_profile::{normalize_profile_content, ProfileStore};
 use hmeta_vpn::{TunSession, TunStats};
 use meow_common::sniffer::SnifferConfig;
-use meow_common::{ConnType, Metadata, Network, TunnelMode};
+use meow_common::{AdapterType, ConnType, Metadata, Network, TunnelMode};
 use meow_config::{
     proxy_provider::ProxyProvider, raw::RawConfig, rule_provider::RuleProvider, Config,
     NamedListener,
@@ -20,7 +20,7 @@ use meow_config::{
 use meow_tunnel::Tunnel;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -66,6 +66,12 @@ struct PlatformVpnState {
 #[serde(rename_all = "camelCase")]
 struct PlatformVpnControl {
     mode: RuntimeMode,
+    #[serde(default)]
+    global_proxy: Option<String>,
+    #[serde(default)]
+    active_profile: Option<String>,
+    #[serde(default)]
+    proxy_selections: BTreeMap<String, String>,
     updated_at: u128,
 }
 
@@ -1063,6 +1069,15 @@ impl CoreHandle {
         let runtime_rules = runtime_rule_summaries(profile_id, &loaded_rule_lines, &editable_rules);
         let tunnel = tunnel_from_config(config, mode);
         restore_proxy_selections(&tunnel, &selected_proxies);
+        let global_proxy = if mode == RuntimeMode::Global {
+            ensure_global_proxy_selected(
+                &tunnel,
+                None,
+                &preferred_global_proxy_targets(&selected_proxies),
+            )?
+        } else {
+            None
+        };
         let mut proxy_groups = proxy_groups_from_tunnel(&tunnel);
         let runtime_ready = Instant::now();
         let mut state = self.lock_state()?;
@@ -1070,6 +1085,11 @@ impl CoreHandle {
             preserve_proxy_group_member_order(&state.proxy_groups, &mut proxy_groups);
         }
         apply_provider_refresh_states(&mut providers, &state.provider_refresh);
+        if let Some(global_proxy) = global_proxy {
+            state
+                .profiles
+                .set_selected_proxy(profile_id, "GLOBAL".to_owned(), global_proxy)?;
+        }
         self.restart_api_controller(
             &mut state,
             profile_id,
@@ -1101,7 +1121,17 @@ impl CoreHandle {
     pub fn set_mode(&self, mode: RuntimeMode) -> Result<(), HMetaError> {
         let mut state = self.lock_state()?;
         sync_platform_vpn_state(&mut state);
-        persist_platform_vpn_control(&state, mode)?;
+        if mode == RuntimeMode::Global && state.tunnel.is_none() {
+            return Err(HMetaError::Core(
+                "Global mode requires an active profile with at least one proxy node".to_owned(),
+            ));
+        }
+        let global_proxy = if mode == RuntimeMode::Global {
+            apply_global_proxy_policy(&mut state, None, true)?
+        } else {
+            None
+        };
+        persist_platform_vpn_control(&state, mode, global_proxy)?;
         state.mode = mode;
         if let Some(tunnel) = &state.tunnel {
             tunnel.set_mode(mode_to_tunnel(mode));
@@ -1177,6 +1207,12 @@ impl CoreHandle {
             )?;
         }
         refresh_proxy_groups_preserving_order(&mut state, &tunnel);
+        let global_proxy = if state.mode == RuntimeMode::Global {
+            apply_global_proxy_policy(&mut state, None, true)?
+        } else {
+            None
+        };
+        persist_platform_vpn_control(&state, state.mode, global_proxy)?;
         let source = if via_controller { " via meow API" } else { "" };
         let message = if proxy_name.is_empty() {
             format!("restored automatic selection in {group_name}{source}")
@@ -2972,14 +3008,35 @@ fn persist_platform_vpn_state(state: &CoreState) -> Result<(), HMetaError> {
     })
 }
 
-fn persist_platform_vpn_control(state: &CoreState, mode: RuntimeMode) -> Result<(), HMetaError> {
+fn persist_platform_vpn_control(
+    state: &CoreState,
+    mode: RuntimeMode,
+    global_proxy: Option<String>,
+) -> Result<(), HMetaError> {
+    let active_profile = state.profiles.active_profile().map(ToOwned::to_owned);
+    let proxy_selections = match active_profile.as_deref() {
+        Some(profile_id) => state.profiles.selected_proxies(profile_id)?,
+        None => BTreeMap::new(),
+    };
+    write_platform_vpn_control(
+        state,
+        &PlatformVpnControl {
+            mode,
+            global_proxy,
+            active_profile,
+            proxy_selections,
+            updated_at: now_unix_nanos(),
+        },
+    )
+}
+
+fn write_platform_vpn_control(
+    state: &CoreState,
+    control: &PlatformVpnControl,
+) -> Result<(), HMetaError> {
     let path = platform_vpn_control_path(state);
     let temp_path = path.with_extension(format!("tmp-{}", std::process::id()));
-    let control = PlatformVpnControl {
-        mode,
-        updated_at: now_unix_nanos(),
-    };
-    let content = serde_json::to_vec(&control).map_err(|error| {
+    let content = serde_json::to_vec(control).map_err(|error| {
         HMetaError::Core(format!("serialize platform VPN control failed: {error}"))
     })?;
     fs::write(&temp_path, content)
@@ -3032,6 +3089,53 @@ fn sync_platform_vpn_state(state: &mut CoreState) {
     sync_platform_vpn_control(state);
 }
 
+fn apply_platform_proxy_selections(state: &mut CoreState, control: &PlatformVpnControl) {
+    let current_profile = state.profiles.active_profile();
+    if control
+        .active_profile
+        .as_deref()
+        .is_some_and(|profile_id| current_profile != Some(profile_id))
+    {
+        return;
+    }
+    let Some(tunnel) = state.tunnel.clone() else {
+        return;
+    };
+    let route = tunnel.route_snapshot();
+    let mut changed = false;
+    for (group_name, proxy_name) in &control.proxy_selections {
+        let Some(group) = route.proxies.get(group_name.as_str()) else {
+            continue;
+        };
+        let Some(selection) = group.selection() else {
+            continue;
+        };
+        if proxy_name.is_empty() {
+            if selection.can_unfix() && selection.fixed().as_deref() != Some("") {
+                selection.force_set(None);
+                changed = true;
+            }
+            continue;
+        }
+        if group.current().as_deref() == Some(proxy_name.as_str())
+            || !group
+                .members()
+                .is_some_and(|members| members.iter().any(|member| member == proxy_name))
+        {
+            continue;
+        }
+        selection.force_set(Some(proxy_name));
+        changed = true;
+    }
+    drop(route);
+    if changed {
+        refresh_proxy_groups_preserving_order(state, &tunnel);
+        state.logs.push(info_log(
+            "proxy selections synchronized from platform control",
+        ));
+    }
+}
+
 fn sync_platform_vpn_control(state: &mut CoreState) {
     let Ok(content) = fs::read(platform_vpn_control_path(state)) else {
         return;
@@ -3039,17 +3143,48 @@ fn sync_platform_vpn_control(state: &mut CoreState) {
     let Ok(control) = serde_json::from_slice::<PlatformVpnControl>(&content) else {
         return;
     };
-    if state.mode == control.mode {
-        return;
+    apply_platform_proxy_selections(state, &control);
+    let global_proxy = if control.mode == RuntimeMode::Global {
+        match apply_global_proxy_policy(state, control.global_proxy.as_deref(), false) {
+            Ok(global_proxy) => global_proxy,
+            Err(error) => {
+                state.logs.push(warning_log(format!(
+                    "global mode synchronization rejected: {error}"
+                )));
+                let mut corrected = control.clone();
+                corrected.mode = state.mode;
+                corrected.global_proxy = None;
+                corrected.updated_at = now_unix_nanos();
+                let _ = write_platform_vpn_control(state, &corrected);
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    if state.mode != control.mode {
+        state.mode = control.mode;
+        if let Some(tunnel) = &state.tunnel {
+            tunnel.set_mode(mode_to_tunnel(control.mode));
+        }
+        state.logs.push(info_log(format!(
+            "mode synchronized from platform control: {}",
+            control.mode.as_str()
+        )));
     }
-    state.mode = control.mode;
-    if let Some(tunnel) = &state.tunnel {
-        tunnel.set_mode(mode_to_tunnel(control.mode));
+    if control.mode == RuntimeMode::Global
+        && control.global_proxy.as_deref() != global_proxy.as_deref()
+    {
+        let mut normalized = control;
+        normalized.global_proxy = global_proxy.clone();
+        if let Some(global_proxy) = global_proxy {
+            normalized
+                .proxy_selections
+                .insert("GLOBAL".to_owned(), global_proxy);
+        }
+        normalized.updated_at = now_unix_nanos();
+        let _ = write_platform_vpn_control(state, &normalized);
     }
-    state.logs.push(info_log(format!(
-        "mode synchronized from platform control: {}",
-        control.mode.as_str()
-    )));
 }
 
 fn vpn_lifecycle(
@@ -3636,6 +3771,218 @@ fn meow_version_marker() -> String {
     format!("meow-rs@{MEOW_RS_VERSION}")
 }
 
+fn preferred_global_proxy_targets(selected_proxies: &BTreeMap<String, String>) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut push = |target: &str| {
+        if !target.is_empty() && seen.insert(target.to_owned()) {
+            targets.push(target.to_owned());
+        }
+    };
+
+    for (group, selected) in selected_proxies {
+        if group.eq_ignore_ascii_case("Proxy") {
+            push(selected);
+            push(group);
+        }
+    }
+    for (group, selected) in selected_proxies {
+        if group.eq_ignore_ascii_case("GLOBAL") || group.eq_ignore_ascii_case("Proxy") {
+            continue;
+        }
+        push(selected);
+        push(group);
+    }
+    targets
+}
+
+fn target_routes_through_proxy(
+    tunnel: &Tunnel,
+    target: &str,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    if matches!(
+        target.to_ascii_uppercase().as_str(),
+        "DIRECT" | "REJECT" | "REJECT-DROP"
+    ) {
+        return false;
+    }
+    if !visiting.insert(target.to_owned()) {
+        return false;
+    }
+
+    let routes_through_proxy = match tunnel.proxy(target) {
+        // Provider-backed group members are not always registered as
+        // top-level route entries. They are still real proxy members unless
+        // they use one of the built-in direct/reject names handled above.
+        None => true,
+        Some(proxy) => match proxy.adapter_type() {
+            AdapterType::Direct | AdapterType::Reject | AdapterType::RejectDrop => false,
+            AdapterType::Selector
+            | AdapterType::Fallback
+            | AdapterType::UrlTest
+            | AdapterType::LoadBalance
+            | AdapterType::Relay => {
+                if let Some(current) = proxy.current() {
+                    target_routes_through_proxy(tunnel, &current, visiting)
+                } else if let Some(members) = proxy.members() {
+                    !members.is_empty()
+                        && members
+                            .iter()
+                            .all(|member| target_routes_through_proxy(tunnel, member, visiting))
+                } else {
+                    false
+                }
+            }
+            _ => true,
+        },
+    };
+    visiting.remove(target);
+    routes_through_proxy
+}
+
+fn concrete_proxy_target(
+    tunnel: &Tunnel,
+    target: &str,
+    visiting: &mut BTreeSet<String>,
+) -> Option<String> {
+    if matches!(
+        target.to_ascii_uppercase().as_str(),
+        "DIRECT" | "REJECT" | "REJECT-DROP"
+    ) || !visiting.insert(target.to_owned())
+    {
+        return None;
+    }
+    let concrete = match tunnel.proxy(target) {
+        // Provider-backed leaves may only exist inside their parent group.
+        None => Some(target.to_owned()),
+        Some(proxy) => match proxy.adapter_type() {
+            AdapterType::Direct | AdapterType::Reject | AdapterType::RejectDrop => None,
+            AdapterType::Selector
+            | AdapterType::Fallback
+            | AdapterType::UrlTest
+            | AdapterType::LoadBalance
+            | AdapterType::Relay => proxy
+                .current()
+                .and_then(|current| concrete_proxy_target(tunnel, &current, visiting)),
+            _ => Some(target.to_owned()),
+        },
+    };
+    visiting.remove(target);
+    concrete
+}
+
+fn ensure_global_proxy_selected(
+    tunnel: &Tunnel,
+    required_target: Option<&str>,
+    preferred_targets: &[String],
+) -> Result<Option<String>, HMetaError> {
+    let global = tunnel
+        .proxy("GLOBAL")
+        .ok_or_else(|| HMetaError::Core("Global mode has no GLOBAL proxy selector".to_owned()))?;
+    let Some(members) = global.members() else {
+        return if target_routes_through_proxy(tunnel, "GLOBAL", &mut BTreeSet::new()) {
+            Ok(None)
+        } else {
+            Err(HMetaError::Core(
+                "Global mode requires at least one proxy node".to_owned(),
+            ))
+        };
+    };
+
+    let is_valid_target = |target: &str| {
+        members.iter().any(|member| member == target)
+            && target_routes_through_proxy(tunnel, target, &mut BTreeSet::new())
+    };
+    let concrete_global_target = |target: &str| {
+        if !is_valid_target(target) {
+            return None;
+        }
+        concrete_proxy_target(tunnel, target, &mut BTreeSet::new())
+            .filter(|concrete| members.iter().any(|member| member == concrete))
+            .or_else(|| Some(target.to_owned()))
+    };
+
+    let current = global.current();
+    let target = if let Some(required_target) = required_target {
+        if !is_valid_target(required_target) {
+            return Err(HMetaError::Core(format!(
+                "Global proxy target is unavailable or not a proxy: {required_target}"
+            )));
+        }
+        required_target.to_owned()
+    } else if let Some(current) = current.as_deref().and_then(&concrete_global_target) {
+        current
+    } else {
+        preferred_targets
+            .iter()
+            .find_map(|target| concrete_global_target(target))
+            .or_else(|| {
+                members
+                    .iter()
+                    .find_map(|target| concrete_global_target(target))
+            })
+            .ok_or_else(|| {
+                HMetaError::Core("Global mode requires at least one proxy node".to_owned())
+            })?
+    };
+
+    if current.as_deref() != Some(target.as_str()) {
+        global
+            .selection()
+            .ok_or_else(|| HMetaError::Core("GLOBAL outbound is not selectable".to_owned()))?
+            .force_set(Some(&target));
+    }
+    if !global
+        .current()
+        .as_deref()
+        .is_some_and(|current| is_valid_target(current))
+    {
+        return Err(HMetaError::Core(
+            "GLOBAL selector did not resolve to a proxy node".to_owned(),
+        ));
+    }
+    Ok(Some(target))
+}
+
+fn apply_global_proxy_policy(
+    state: &mut CoreState,
+    required_target: Option<&str>,
+    persist_profile_selection: bool,
+) -> Result<Option<String>, HMetaError> {
+    let Some(tunnel) = state.tunnel.clone() else {
+        if state.profiles.active_profile().is_none() {
+            return Err(HMetaError::Core(
+                "Global mode requires an active profile with at least one proxy node".to_owned(),
+            ));
+        }
+        return Ok(required_target.map(ToOwned::to_owned));
+    };
+    let selected_proxies = match state.profiles.active_profile().map(ToOwned::to_owned) {
+        Some(profile_id) => state.profiles.selected_proxies(&profile_id)?,
+        None => BTreeMap::new(),
+    };
+    let global_proxy = ensure_global_proxy_selected(
+        &tunnel,
+        required_target,
+        &preferred_global_proxy_targets(&selected_proxies),
+    )?;
+    if persist_profile_selection {
+        if let (Some(profile_id), Some(global_proxy)) = (
+            state.profiles.active_profile().map(ToOwned::to_owned),
+            global_proxy.as_ref(),
+        ) {
+            state.profiles.set_selected_proxy(
+                &profile_id,
+                "GLOBAL".to_owned(),
+                global_proxy.clone(),
+            )?;
+        }
+    }
+    refresh_proxy_groups_preserving_order(state, &tunnel);
+    Ok(global_proxy)
+}
+
 fn mode_to_tunnel(value: RuntimeMode) -> TunnelMode {
     match value {
         RuntimeMode::Rule => TunnelMode::Rule,
@@ -3793,6 +4140,140 @@ mod tests {
     }
 
     #[test]
+    fn global_mode_is_rejected_without_an_active_tunnel() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-global-empty-test-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+
+        let error = core.set_mode(RuntimeMode::Global).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Global mode requires an active profile"));
+        assert_eq!(core.snapshot().unwrap().mode, RuntimeMode::Rule);
+        assert!(!root.join(PLATFORM_VPN_CONTROL_FILE).exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn platform_vpn_control_accepts_legacy_mode_only_payloads() {
+        let control: PlatformVpnControl =
+            serde_json::from_str(r#"{"mode":"direct","updatedAt":1}"#).unwrap();
+        assert_eq!(control.mode, RuntimeMode::Direct);
+        assert!(control.global_proxy.is_none());
+        assert!(control.active_profile.is_none());
+        assert!(control.proxy_selections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn routing_modes_have_proxy_rule_and_direct_semantics() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-routing-mode-test-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let profile_id = core
+            .import_profile_from_content(
+                "Routing modes",
+                "test",
+                r#"
+proxies:
+  - name: HTTP-MOCK
+    type: http
+    server: 127.0.0.1
+    port: 18080
+rules:
+  - DOMAIN,rule-proxy.example,HTTP-MOCK
+  - MATCH,DIRECT
+"#,
+                None,
+            )
+            .await
+            .unwrap();
+        core.reload_config(&profile_id).await.unwrap();
+
+        let tunnel = core.lock_state().unwrap().tunnel.clone().unwrap();
+        assert_eq!(
+            tunnel.proxy("GLOBAL").unwrap().current().as_deref(),
+            Some("DIRECT"),
+            "the upstream auto-created GLOBAL selector defaults to DIRECT"
+        );
+
+        core.set_mode(RuntimeMode::Global).unwrap();
+        let global = tunnel.proxy("GLOBAL").unwrap();
+        assert_eq!(tunnel.mode(), TunnelMode::Global);
+        assert_eq!(global.current().as_deref(), Some("HTTP-MOCK"));
+        assert!(target_routes_through_proxy(
+            &tunnel,
+            global.current().as_deref().unwrap(),
+            &mut BTreeSet::new()
+        ));
+        let global_control: PlatformVpnControl =
+            serde_json::from_slice(&std::fs::read(root.join(PLATFORM_VPN_CONTROL_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(global_control.mode, RuntimeMode::Global);
+        assert_eq!(global_control.global_proxy.as_deref(), Some("HTTP-MOCK"));
+
+        core.set_mode(RuntimeMode::Rule).unwrap();
+        let proxy_metadata = Metadata {
+            network: Network::Tcp,
+            host: "rule-proxy.example".into(),
+            dst_port: 443,
+            ..Metadata::default()
+        };
+        let direct_metadata = Metadata {
+            network: Network::Tcp,
+            host: "rule-direct.example".into(),
+            dst_port: 443,
+            ..Metadata::default()
+        };
+        let (rule_proxy, _, _) = tunnel.inner().resolve_proxy(&proxy_metadata).unwrap();
+        let (rule_direct, _, _) = tunnel.inner().resolve_proxy(&direct_metadata).unwrap();
+        assert_eq!(rule_proxy.adapter_type(), AdapterType::Http);
+        assert_eq!(rule_direct.adapter_type(), AdapterType::Direct);
+
+        core.set_mode(RuntimeMode::Direct).unwrap();
+        let (direct, _, _) = tunnel.inner().resolve_proxy(&proxy_metadata).unwrap();
+        assert_eq!(tunnel.mode(), TunnelMode::Direct);
+        assert_eq!(direct.adapter_type(), AdapterType::Direct);
+
+        let snapshot = core.snapshot().unwrap();
+        assert_eq!(
+            snapshot.profiles[0]
+                .selected_proxies
+                .get("GLOBAL")
+                .map(String::as_str),
+            Some("HTTP-MOCK")
+        );
+        let control: PlatformVpnControl =
+            serde_json::from_slice(&std::fs::read(root.join(PLATFORM_VPN_CONTROL_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(control.mode, RuntimeMode::Direct);
+        assert!(control.global_proxy.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn global_mode_is_rejected_when_no_proxy_node_exists() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-global-no-proxy-test-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let profile_id = core
+            .import_profile_from_content("Direct only", "test", "rules:\n  - MATCH,DIRECT\n", None)
+            .await
+            .unwrap();
+        core.reload_config(&profile_id).await.unwrap();
+
+        let error = core.set_mode(RuntimeMode::Global).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Global mode requires at least one proxy node"));
+        let state = core.lock_state().unwrap();
+        assert_eq!(state.mode, RuntimeMode::Rule);
+        assert_eq!(state.tunnel.as_ref().unwrap().mode(), TunnelMode::Rule);
+        drop(state);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn platform_vpn_status_is_reflected_in_snapshot() {
         let root = std::env::temp_dir().join(format!(
             "hmeta-platform-vpn-status-{}",
@@ -3900,6 +4381,223 @@ mod tests {
             TunnelMode::Direct
         );
         drop(extension_state);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn global_proxy_policy_is_applied_in_the_vpn_extension_process() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-global-proxy-ipc-{}", now_unix_nanos()));
+        let ui = CoreHandle::new_with_profile_root(&root);
+        let profile_id = ui
+            .import_profile_from_content(
+                "Global IPC",
+                "test",
+                r#"
+proxies:
+  - name: HTTP-MOCK
+    type: http
+    server: 127.0.0.1
+    port: 18080
+rules:
+  - MATCH,DIRECT
+"#,
+                None,
+            )
+            .await
+            .unwrap();
+        ui.reload_config(&profile_id).await.unwrap();
+        let extension = CoreHandle::new_with_profile_root(&root);
+        extension.reload_config(&profile_id).await.unwrap();
+        assert_eq!(
+            extension
+                .lock_state()
+                .unwrap()
+                .tunnel
+                .as_ref()
+                .unwrap()
+                .proxy("GLOBAL")
+                .unwrap()
+                .current()
+                .as_deref(),
+            Some("DIRECT")
+        );
+
+        // The UI and VPN Extension own different CoreHandle instances in
+        // different processes. The shared control file must make the actual
+        // Extension tunnel select a proxy, not just update the UI label.
+        ui.set_mode(RuntimeMode::Global).unwrap();
+        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Global);
+        let extension_state = extension.lock_state().unwrap();
+        let tunnel = extension_state.tunnel.as_ref().unwrap();
+        assert_eq!(tunnel.mode(), TunnelMode::Global);
+        assert_eq!(
+            tunnel.proxy("GLOBAL").unwrap().current().as_deref(),
+            Some("HTTP-MOCK")
+        );
+        drop(extension_state);
+
+        let control: PlatformVpnControl =
+            serde_json::from_slice(&std::fs::read(root.join(PLATFORM_VPN_CONTROL_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(control.mode, RuntimeMode::Global);
+        assert_eq!(control.global_proxy.as_deref(), Some("HTTP-MOCK"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn proxy_selection_is_shared_with_rule_and_global_extension_tunnels() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-proxy-selection-ipc-{}", now_unix_nanos()));
+        let ui = CoreHandle::new_with_profile_root(&root);
+        let profile_id = ui
+            .import_profile_from_content(
+                "Selector IPC",
+                "test",
+                r#"
+proxies:
+  - name: HTTP-A
+    type: http
+    server: 127.0.0.1
+    port: 18080
+  - name: HTTP-B
+    type: http
+    server: 127.0.0.1
+    port: 18081
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies:
+      - HTTP-A
+      - HTTP-B
+      - DIRECT
+rules:
+  - MATCH,Proxy
+"#,
+                None,
+            )
+            .await
+            .unwrap();
+        ui.reload_config(&profile_id).await.unwrap();
+        let extension = CoreHandle::new_with_profile_root(&root);
+        extension.reload_config(&profile_id).await.unwrap();
+
+        ui.set_mode(RuntimeMode::Global).unwrap();
+        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Global);
+        assert_eq!(
+            extension
+                .lock_state()
+                .unwrap()
+                .tunnel
+                .as_ref()
+                .unwrap()
+                .proxy("GLOBAL")
+                .unwrap()
+                .current()
+                .as_deref(),
+            Some("HTTP-A")
+        );
+
+        // Mirrors proxy_selection_chain(): select the leaf group first, then
+        // its GLOBAL parent. The control file must carry the concrete leaf to
+        // the independently loaded Extension tunnel.
+        ui.select_proxy("Proxy", "HTTP-B").await.unwrap();
+        ui.select_proxy("GLOBAL", "Proxy").await.unwrap();
+        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Global);
+        {
+            let extension_state = extension.lock_state().unwrap();
+            let tunnel = extension_state.tunnel.as_ref().unwrap();
+            assert_eq!(
+                tunnel.proxy("Proxy").unwrap().current().as_deref(),
+                Some("HTTP-B")
+            );
+            assert_eq!(
+                tunnel.proxy("GLOBAL").unwrap().current().as_deref(),
+                Some("HTTP-B")
+            );
+        }
+
+        ui.set_mode(RuntimeMode::Rule).unwrap();
+        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Rule);
+        let extension_state = extension.lock_state().unwrap();
+        assert_eq!(
+            extension_state
+                .tunnel
+                .as_ref()
+                .unwrap()
+                .proxy("Proxy")
+                .unwrap()
+                .current()
+                .as_deref(),
+            Some("HTTP-B")
+        );
+        drop(extension_state);
+
+        let control: PlatformVpnControl =
+            serde_json::from_slice(&std::fs::read(root.join(PLATFORM_VPN_CONTROL_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(control.mode, RuntimeMode::Rule);
+        assert_eq!(
+            control.proxy_selections.get("Proxy").map(String::as_str),
+            Some("HTTP-B")
+        );
+        assert_eq!(
+            control.proxy_selections.get("GLOBAL").map(String::as_str),
+            Some("HTTP-B")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn vpn_extension_rejects_cross_process_global_mode_without_a_proxy() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-global-no-proxy-ipc-{}", now_unix_nanos()));
+        let ui = CoreHandle::new_with_profile_root(&root);
+        let profile_id = ui
+            .import_profile_from_content(
+                "Direct-only IPC",
+                "test",
+                "rules:\n  - MATCH,DIRECT\n",
+                None,
+            )
+            .await
+            .unwrap();
+        let extension = CoreHandle::new_with_profile_root(&root);
+        extension.reload_config(&profile_id).await.unwrap();
+
+        // A stale or externally written Global request must still be rejected
+        // by the Extension when the loaded profile has no proxy node.
+        {
+            let state = ui.lock_state().unwrap();
+            write_platform_vpn_control(
+                &state,
+                &PlatformVpnControl {
+                    mode: RuntimeMode::Global,
+                    global_proxy: None,
+                    active_profile: Some(profile_id.clone()),
+                    proxy_selections: BTreeMap::new(),
+                    updated_at: now_unix_nanos(),
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Rule);
+        assert_eq!(
+            extension
+                .lock_state()
+                .unwrap()
+                .tunnel
+                .as_ref()
+                .unwrap()
+                .mode(),
+            TunnelMode::Rule
+        );
+
+        let control: PlatformVpnControl =
+            serde_json::from_slice(&std::fs::read(root.join(PLATFORM_VPN_CONTROL_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(control.mode, RuntimeMode::Rule);
+        assert!(control.global_proxy.is_none());
         let _ = std::fs::remove_dir_all(root);
     }
 

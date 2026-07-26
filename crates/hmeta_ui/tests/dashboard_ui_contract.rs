@@ -51,6 +51,8 @@ fn dashboard_long_values_are_width_constrained() {
 
     assert!(page.contains("content: current_node"));
     assert!(page.contains("text_overflow: \"ellipsis\""));
+    assert!(page.contains("snapshot.mode == RuntimeMode::Direct"));
+    assert!(page.contains("s.proxies_direct.to_owned()"));
 }
 
 #[test]

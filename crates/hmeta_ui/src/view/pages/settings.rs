@@ -6,28 +6,15 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
         dns_draft_from_snapshot(&current.snapshot);
     let (initial_system_proxy, initial_dns_hijacking, initial_allow_bypass, initial_stack) =
         vpn_draft_from_snapshot(&current.snapshot);
-    let stack_options = vec![
-        FlatSelectOption {
-            value: hmeta_model::VpnStack::Smoltcp.as_str().to_owned(),
-            label: "smoltcp".to_owned(),
-            description: tr(
-                current.locale,
-                "纯 Rust，兼容性优先",
-                "Pure Rust, compatibility first",
-            )
-            .to_owned(),
-        },
-        FlatSelectOption {
-            value: hmeta_model::VpnStack::Lwip.as_str().to_owned(),
-            label: "lwIP".to_owned(),
-            description: tr(
-                current.locale,
-                "成熟 C 协议栈，适合高并发连接",
-                "Mature C stack for concurrent connections",
-            )
-            .to_owned(),
-        },
-    ];
+    // arkit Select shows the option string itself; map display labels ↔ stack values.
+    let stack_label_smoltcp = "smoltcp".to_owned();
+    let stack_label_lwip = "lwIP".to_owned();
+    let stack_options = vec![stack_label_smoltcp.clone(), stack_label_lwip.clone()];
+    let stack_selected_label =
+        match hmeta_model::VpnStack::try_from(initial_stack.as_str()).unwrap_or_default() {
+            hmeta_model::VpnStack::Lwip => stack_label_lwip.clone(),
+            hmeta_model::VpnStack::Smoltcp => stack_label_smoltcp.clone(),
+        };
 
     let mut dns_servers = use_signal({
         let value = initial_dns_servers.clone();
@@ -48,6 +35,10 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
         let value = initial_stack.clone();
         move || value
     });
+    let mut vpn_stack_label = use_signal({
+        let value = stack_selected_label.clone();
+        move || value
+    });
 
     let dns_servers_value = dns_servers();
     let dns_fallbacks_value = dns_fallbacks();
@@ -56,6 +47,7 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
     let dns_hijacking_value = dns_hijacking();
     let allow_bypass_value = allow_bypass();
     let vpn_stack_value = vpn_stack();
+    let vpn_stack_label_value = vpn_stack_label();
     let vpn_dirty = system_proxy_value != initial_system_proxy
         || dns_hijacking_value != initial_dns_hijacking
         || allow_bypass_value != initial_allow_bypass
@@ -101,10 +93,21 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                         row { height: 12.0 }
                         FormItem {
                             label: tr(current.locale, "网络栈", "Network stack").to_owned(),
-                            FlatSelect {
+                            Select {
                                 options: stack_options,
-                                selected: vpn_stack_value.clone(),
-                                on_change: move |value| vpn_stack.set(value),
+                                selected: Some(vpn_stack_label_value.clone()),
+                                default_selected: stack_selected_label.clone(),
+                                default_open: false,
+                                on_select: move |label: String| {
+                                    let value = match label.as_str() {
+                                        "lwIP" | "lwip" => {
+                                            hmeta_model::VpnStack::Lwip.as_str().to_owned()
+                                        }
+                                        _ => hmeta_model::VpnStack::Smoltcp.as_str().to_owned(),
+                                    };
+                                    vpn_stack_label.set(label);
+                                    vpn_stack.set(value);
+                                },
                             }
                         }
                         row { height: 12.0 }
