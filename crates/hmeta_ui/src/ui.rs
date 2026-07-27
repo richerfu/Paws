@@ -520,9 +520,13 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
         }
         Action::SetMode(mode) => Command::perform(
             async move {
-                hmeta_core::shared_core()
-                    .set_mode(mode)
-                    .map_err(|error| error.to_string())?;
+                let core = hmeta_core::shared_core();
+                if mode == RuntimeMode::Global {
+                    core.prepare_active_vpn()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                core.set_mode(mode).map_err(|error| error.to_string())?;
                 Ok(ModeChangeResult {
                     snapshot: load_snapshot().await,
                     mode,
@@ -1912,13 +1916,10 @@ async fn delayed_vpn_snapshot() -> RuntimeSnapshot {
 
 async fn bootstrap_active_profile() -> RuntimeSnapshot {
     let core = hmeta_core::shared_core();
-    if let Some(profile_id) = core
-        .snapshot()
-        .ok()
-        .and_then(|snapshot| snapshot.active_profile)
-    {
-        let _ = core.reload_config(&profile_id).await;
-    }
+    // State::new restores a revision-checked proxy-group cache synchronously,
+    // so the dashboard can render immediately. Parse the complete meow config
+    // only after the first frame, then replace the cache-backed snapshot.
+    let _ = core.prepare_active_vpn().await;
     let refresh_core = core.clone();
     tokio::spawn(async move {
         let _ = refresh_core.refresh_due_profiles().await;

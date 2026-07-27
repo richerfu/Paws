@@ -47,6 +47,8 @@ const MAX_TRAFFIC_HISTORY: usize = 32;
 const PLATFORM_VPN_STATE_FILE: &str = "platform-vpn-state.json";
 const PLATFORM_VPN_CONTROL_FILE: &str = "platform-vpn-control.json";
 const PLATFORM_VPN_TELEMETRY_FILE: &str = "platform-vpn-telemetry.json";
+const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
+const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = "1.0.0";
 const MEOW_RS_VERSION: &str = "0.18.0";
 const ARKIT_REV: &str = "fffbc35e0cbf7325e93a5fd849fab930b2f321ac";
@@ -88,6 +90,15 @@ struct PlatformVpnTelemetry {
     logs: Vec<LogEntry>,
     profile_upload_bytes: u64,
     profile_download_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeUiCache {
+    version: u32,
+    active_profile: String,
+    profile_updated_at: Option<String>,
+    proxy_groups: Vec<ProxyGroup>,
 }
 
 struct ApiControllerRuntime {
@@ -152,6 +163,20 @@ struct ProviderRefreshState {
 impl Default for CoreState {
     fn default() -> Self {
         let profiles = ProfileStore::open_default().unwrap_or_else(|_| ProfileStore::seed_empty());
+        let proxy_groups = load_runtime_ui_cache(&profiles)
+            .map(|cache| cache.proxy_groups)
+            .unwrap_or_default();
+        let mut logs = vec![LogEntry {
+            level: "info".to_owned(),
+            message: format!("hmeta core booted with {}", meow_version_marker()),
+            timestamp: "boot".to_owned(),
+        }];
+        if !proxy_groups.is_empty() {
+            logs.push(info_log(format!(
+                "restored {} proxy groups from runtime UI cache",
+                proxy_groups.len()
+            )));
+        }
         Self {
             engine_loaded: false,
             platform_vpn_starting: false,
@@ -162,7 +187,7 @@ impl Default for CoreState {
             profiles,
             tunnel: None,
             sniffer_config: SnifferConfig::default(),
-            proxy_groups: Vec::new(),
+            proxy_groups,
             providers: Vec::new(),
             runtime_rules: Vec::new(),
             provider_refresh: HashMap::new(),
@@ -183,11 +208,7 @@ impl Default for CoreState {
             traffic_history: VecDeque::with_capacity(MAX_TRAFFIC_HISTORY),
             last_traffic_sample: None,
             last_meow_traffic_sample: None,
-            logs: vec![LogEntry {
-                level: "info".to_owned(),
-                message: format!("hmeta core booted with {}", meow_version_marker()),
-                timestamp: "boot".to_owned(),
-            }],
+            logs,
             request_history: VecDeque::with_capacity(MAX_REQUEST_HISTORY),
             vpn_options: VpnOptions::default(),
             api_controller: None,
@@ -229,6 +250,9 @@ impl CoreHandle {
     fn new_with_profile_root(root: impl Into<std::path::PathBuf>) -> Self {
         install_runtime_log_layer();
         let profiles = ProfileStore::open(root).expect("test profile store");
+        let proxy_groups = load_runtime_ui_cache(&profiles)
+            .map(|cache| cache.proxy_groups)
+            .unwrap_or_default();
         Self {
             state: Mutex::new(CoreState {
                 engine_loaded: false,
@@ -240,7 +264,7 @@ impl CoreHandle {
                 profiles,
                 tunnel: None,
                 sniffer_config: SnifferConfig::default(),
-                proxy_groups: Vec::new(),
+                proxy_groups,
                 providers: Vec::new(),
                 runtime_rules: Vec::new(),
                 provider_refresh: HashMap::new(),
@@ -1107,6 +1131,7 @@ impl CoreHandle {
         state.vpn_options = vpn_options;
         state.engine_loaded = true;
         state.last_meow_traffic_sample = None;
+        persist_runtime_ui_cache_best_effort(&mut state);
         state.logs.push(info_log(format!(
             "config reloaded from profile {profile_id} in {} ms (YAML {} ms, meow {} ms, runtime {} ms; {} bytes)",
             reload_started.elapsed().as_millis(),
@@ -1143,6 +1168,13 @@ impl CoreHandle {
     }
 
     pub async fn select_proxy(&self, group_name: &str, proxy_name: &str) -> Result<(), HMetaError> {
+        let needs_prepare = {
+            let state = self.lock_state()?;
+            state.tunnel.is_none()
+        };
+        if needs_prepare {
+            self.prepare_active_vpn().await?;
+        }
         let tunnel = {
             let state = self.lock_state()?;
             state.tunnel.clone()
@@ -1279,6 +1311,13 @@ impl CoreHandle {
             controller_credentials(&state)
         };
         let Some((addr, secret)) = controller else {
+            let needs_prepare = {
+                let state = self.lock_state()?;
+                state.tunnel.is_none()
+            };
+            if needs_prepare {
+                self.prepare_active_vpn().await?;
+            }
             return self.unfix_proxy(group_name);
         };
         let url = controller_url(addr, &["proxies", group_name])?;
@@ -2592,9 +2631,17 @@ async fn validate_meow_config(
 }
 
 async fn load_meow_config(raw_yaml: &str) -> Result<Config, HMetaError> {
-    meow_config::load_config_from_str(raw_yaml)
-        .await
-        .map_err(|err| HMetaError::Core(format!("meow config load failed: {err}")))
+    // meow's async loader performs YAML decoding and a substantial part of
+    // proxy construction before its first await. Keep that CPU-heavy work off
+    // the UI/runtime worker that initiated a dashboard bootstrap.
+    let raw_yaml = raw_yaml.to_owned();
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        runtime.block_on(meow_config::load_config_from_str(&raw_yaml))
+    })
+    .await
+    .map_err(|err| HMetaError::Core(format!("meow config worker failed: {err}")))?
+    .map_err(|err| HMetaError::Core(format!("meow config load failed: {err}")))
 }
 
 fn tunnel_from_config(config: Config, mode: RuntimeMode) -> Tunnel {
@@ -2979,6 +3026,58 @@ fn platform_vpn_control_path(state: &CoreState) -> PathBuf {
 
 fn platform_vpn_telemetry_path(state: &CoreState) -> PathBuf {
     state.profiles.root().join(PLATFORM_VPN_TELEMETRY_FILE)
+}
+
+fn runtime_ui_cache_path(profiles: &ProfileStore) -> PathBuf {
+    profiles.root().join(RUNTIME_UI_CACHE_FILE)
+}
+
+fn active_profile_revision(profiles: &ProfileStore, profile_id: &str) -> Option<String> {
+    profiles
+        .profile(profile_id)
+        .ok()
+        .and_then(|profile| profile.updated_at.clone())
+}
+
+fn load_runtime_ui_cache(profiles: &ProfileStore) -> Option<RuntimeUiCache> {
+    let active_profile = profiles.active_profile()?;
+    let content = fs::read(runtime_ui_cache_path(profiles)).ok()?;
+    let cache = serde_json::from_slice::<RuntimeUiCache>(&content).ok()?;
+    if cache.version != RUNTIME_UI_CACHE_VERSION
+        || cache.active_profile != active_profile
+        || cache.profile_updated_at != active_profile_revision(profiles, active_profile)
+    {
+        return None;
+    }
+    Some(cache)
+}
+
+fn persist_runtime_ui_cache(state: &CoreState) -> Result<(), HMetaError> {
+    let Some(active_profile) = state.profiles.active_profile() else {
+        return Ok(());
+    };
+    let cache = RuntimeUiCache {
+        version: RUNTIME_UI_CACHE_VERSION,
+        active_profile: active_profile.to_owned(),
+        profile_updated_at: active_profile_revision(&state.profiles, active_profile),
+        proxy_groups: state.proxy_groups.clone(),
+    };
+    let path = runtime_ui_cache_path(&state.profiles);
+    let temp_path = path.with_extension(format!("tmp-{}", std::process::id()));
+    let content = serde_json::to_vec(&cache)
+        .map_err(|error| HMetaError::Core(format!("serialize runtime UI cache failed: {error}")))?;
+    fs::write(&temp_path, content)
+        .map_err(|error| HMetaError::Core(format!("write runtime UI cache failed: {error}")))?;
+    fs::rename(&temp_path, &path).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        HMetaError::Core(format!("replace runtime UI cache failed: {error}"))
+    })
+}
+
+fn persist_runtime_ui_cache_best_effort(state: &mut CoreState) {
+    if let Err(error) = persist_runtime_ui_cache(state) {
+        state.logs.push(warning_log(error.to_string()));
+    }
 }
 
 fn platform_vpn_state(state: &CoreState) -> PlatformVpnState {
@@ -3497,6 +3596,7 @@ fn refresh_proxy_groups_preserving_order(state: &mut CoreState, tunnel: &Tunnel)
     let mut refreshed = proxy_groups_from_tunnel(tunnel);
     preserve_proxy_group_member_order(&state.proxy_groups, &mut refreshed);
     state.proxy_groups = refreshed;
+    persist_runtime_ui_cache_best_effort(state);
 }
 
 fn preserve_proxy_group_member_order(previous: &[ProxyGroup], refreshed: &mut [ProxyGroup]) {
@@ -4995,6 +5095,86 @@ rules:
             .count();
         assert_eq!(reloads_after_warm_prepare, reloads_after_cold_prepare);
         assert_eq!(reloads_after_cold_prepare, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn runtime_ui_cache_populates_cold_snapshot_before_reload() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-core-ui-cache-test-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let profile_id = core
+            .import_profile_from_content(
+                "Cached dashboard",
+                "test",
+                &hmeta_profile::default_runtime_yaml(),
+                None,
+            )
+            .await
+            .unwrap();
+        core.reload_config(&profile_id).await.unwrap();
+        let loaded = core.snapshot().unwrap();
+        assert!(loaded.engine_loaded);
+        assert!(!loaded.proxy_groups.is_empty());
+        assert!(root.join(RUNTIME_UI_CACHE_FILE).is_file());
+        drop(core);
+
+        let cold_core = CoreHandle::new_with_profile_root(&root);
+        let cold = cold_core.snapshot().unwrap();
+        assert!(!cold.engine_loaded);
+        assert_eq!(cold.active_profile.as_deref(), Some(profile_id.as_str()));
+        assert_eq!(cold.proxy_groups.len(), loaded.proxy_groups.len());
+        assert_eq!(cold.proxy_groups[0].name, loaded.proxy_groups[0].name);
+
+        cold_core.select_proxy("Proxy", "DIRECT").await.unwrap();
+        let selected = cold_core.snapshot().unwrap();
+        assert!(selected.engine_loaded);
+        assert_eq!(
+            selected
+                .proxy_groups
+                .iter()
+                .find(|group| group.name == "Proxy")
+                .and_then(|group| group.selected.as_deref()),
+            Some("DIRECT")
+        );
+        assert!(!cold_core.prepare_active_vpn().await.unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn runtime_ui_cache_is_ignored_after_profile_content_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "hmeta-core-ui-cache-revision-test-{}",
+            now_unix_nanos()
+        ));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let profile_id = core
+            .import_profile_from_content(
+                "Changed dashboard",
+                "test",
+                &hmeta_profile::default_runtime_yaml(),
+                None,
+            )
+            .await
+            .unwrap();
+        core.reload_config(&profile_id).await.unwrap();
+        assert!(root.join(RUNTIME_UI_CACHE_FILE).is_file());
+        drop(core);
+
+        let mut profiles = ProfileStore::open(&root).unwrap();
+        let changed_yaml = format!(
+            "{}\n# invalidate cached dashboard\n",
+            hmeta_profile::default_runtime_yaml()
+        );
+        profiles
+            .update_profile_content(&profile_id, changed_yaml)
+            .unwrap();
+        drop(profiles);
+
+        let cold_core = CoreHandle::new_with_profile_root(&root);
+        let cold = cold_core.snapshot().unwrap();
+        assert!(!cold.engine_loaded);
+        assert!(cold.proxy_groups.is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

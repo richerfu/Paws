@@ -66,6 +66,38 @@ fn native_profile_prepare_overlaps_tun_creation() {
 }
 
 #[test]
+fn dashboard_mount_does_not_wait_for_profile_parsing() {
+    let create = section(ENTRY_ABILITY, "public async onCreate", "public onNewWant");
+    assert!(create.contains("this.configureNativeHome()"));
+    assert!(!create.contains("prepareVpn"));
+    assert!(!create.contains("prepareNativeProfileForFirstFrame"));
+
+    let bootstrap = section(
+        UI,
+        "async fn bootstrap_active_profile",
+        "fn reconcile_vpn_command",
+    );
+    assert!(bootstrap.contains("core.prepare_active_vpn().await"));
+    assert!(!bootstrap.contains("core.reload_config"));
+
+    let loader = section(
+        include_str!("../../hmeta_core/src/lib.rs"),
+        "async fn load_meow_config",
+        "fn tunnel_from_config",
+    );
+    assert!(loader.contains("tokio::task::spawn_blocking"));
+
+    let window = section(
+        ENTRY_ABILITY,
+        "public async onWindowStageCreate",
+        "\n  }\n}",
+    );
+    assert!(window.contains("win.setUIContent('pages/Index')"));
+    assert!(!window.contains("prepareVpn"));
+    assert!(!window.contains("firstFramePreparation"));
+}
+
+#[test]
 fn vpn_restart_waits_for_platform_stop_before_starting_with_new_options() {
     let restart = section(
         UI,
