@@ -66,6 +66,41 @@ fn native_profile_prepare_overlaps_tun_creation() {
 }
 
 #[test]
+fn dashboard_profile_is_prepared_before_the_first_native_frame() {
+    let prepare = section(
+        ENTRY_ABILITY,
+        "private async prepareNativeProfileForFirstFrame",
+        "private setAppColorMode",
+    );
+    assert!(prepare.contains("await hmetaUi.prepareVpn()"));
+
+    let create = section(
+        ENTRY_ABILITY,
+        "public async onCreate",
+        "public onNewWant",
+    );
+    let configure_home = create
+        .find("this.configureNativeHome()")
+        .expect("native storage configuration");
+    let prepare_profile = create
+        .find("await this.prepareNativeProfileForFirstFrame()")
+        .expect("active profile preload");
+    let finish_create = create
+        .find("await super.onCreate")
+        .expect("ability create completion");
+    assert!(configure_home < prepare_profile);
+    assert!(prepare_profile < finish_create);
+
+    let bootstrap = section(
+        UI,
+        "async fn bootstrap_active_profile",
+        "fn reconcile_vpn_command",
+    );
+    assert!(bootstrap.contains("core.prepare_active_vpn().await"));
+    assert!(!bootstrap.contains("core.reload_config"));
+}
+
+#[test]
 fn vpn_restart_waits_for_platform_stop_before_starting_with_new_options() {
     let restart = section(
         UI,

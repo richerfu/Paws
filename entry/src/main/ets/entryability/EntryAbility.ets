@@ -332,6 +332,30 @@ export default class EntryAbility extends NativeAbility {
     }
   }
 
+  private async prepareNativeProfileForFirstFrame(): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      const loaded = await hmetaUi.prepareVpn();
+      hilog.info(
+        LOG_DOMAIN,
+        LOG_TAG,
+        'prepared active profile before first frame loaded=%{public}s elapsed=%{public}d ms',
+        loaded ? 'true' : 'false',
+        Date.now() - startedAt,
+      );
+    } catch (err) {
+      // A fresh install legitimately has no active profile. Keep the page
+      // available so the user can import one; the Rust bootstrap can retry
+      // other transient failures after the first frame.
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        'active profile first-frame preparation skipped %{public}s',
+        describeError(err),
+      );
+    }
+  }
+
   private setAppColorMode(colorMode: number): void {
     let mode = ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET;
     if (colorMode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK) {
@@ -579,6 +603,7 @@ export default class EntryAbility extends NativeAbility {
         setColorMode: async (colorMode: number) => this.setAppColorMode(colorMode),
       });
       hilog.info(LOG_DOMAIN, LOG_TAG, 'registered native platform callbacks');
+      await this.prepareNativeProfileForFirstFrame();
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'register callbacks failed %{public}s', describeError(err));
     }

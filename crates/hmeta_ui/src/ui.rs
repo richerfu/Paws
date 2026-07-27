@@ -1912,13 +1912,11 @@ async fn delayed_vpn_snapshot() -> RuntimeSnapshot {
 
 async fn bootstrap_active_profile() -> RuntimeSnapshot {
     let core = hmeta_core::shared_core();
-    if let Some(profile_id) = core
-        .snapshot()
-        .ok()
-        .and_then(|snapshot| snapshot.active_profile)
-    {
-        let _ = core.reload_config(&profile_id).await;
-    }
+    // EntryAbility prepares the active profile before mounting the native UI,
+    // so the dashboard receives proxy groups in its first snapshot. Keep this
+    // idempotent prepare as a fallback for non-Harmony hosts and recovery from
+    // a failed platform preload without parsing an already-ready profile twice.
+    let _ = core.prepare_active_vpn().await;
     let refresh_core = core.clone();
     tokio::spawn(async move {
         let _ = refresh_core.refresh_due_profiles().await;
