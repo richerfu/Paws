@@ -66,30 +66,11 @@ fn native_profile_prepare_overlaps_tun_creation() {
 }
 
 #[test]
-fn dashboard_profile_is_prepared_before_the_first_native_frame() {
-    let prepare = section(
-        ENTRY_ABILITY,
-        "private async prepareNativeProfileForFirstFrame",
-        "private setAppColorMode",
-    );
-    assert!(prepare.contains("await hmetaUi.prepareVpn()"));
-
-    let create = section(
-        ENTRY_ABILITY,
-        "public async onCreate",
-        "public onNewWant",
-    );
-    let configure_home = create
-        .find("this.configureNativeHome()")
-        .expect("native storage configuration");
-    let prepare_profile = create
-        .find("await this.prepareNativeProfileForFirstFrame()")
-        .expect("active profile preload");
-    let finish_create = create
-        .find("await super.onCreate")
-        .expect("ability create completion");
-    assert!(configure_home < prepare_profile);
-    assert!(prepare_profile < finish_create);
+fn dashboard_mount_does_not_wait_for_profile_parsing() {
+    let create = section(ENTRY_ABILITY, "public async onCreate", "public onNewWant");
+    assert!(create.contains("this.configureNativeHome()"));
+    assert!(!create.contains("prepareVpn"));
+    assert!(!create.contains("prepareNativeProfileForFirstFrame"));
 
     let bootstrap = section(
         UI,
@@ -98,6 +79,22 @@ fn dashboard_profile_is_prepared_before_the_first_native_frame() {
     );
     assert!(bootstrap.contains("core.prepare_active_vpn().await"));
     assert!(!bootstrap.contains("core.reload_config"));
+
+    let loader = section(
+        include_str!("../../hmeta_core/src/lib.rs"),
+        "async fn load_meow_config",
+        "fn tunnel_from_config",
+    );
+    assert!(loader.contains("tokio::task::spawn_blocking"));
+
+    let window = section(
+        ENTRY_ABILITY,
+        "public async onWindowStageCreate",
+        "\n  }\n}",
+    );
+    assert!(window.contains("win.setUIContent('pages/Index')"));
+    assert!(!window.contains("prepareVpn"));
+    assert!(!window.contains("firstFramePreparation"));
 }
 
 #[test]
