@@ -92,6 +92,15 @@ pub(crate) enum Action {
     ControllerDiagnosticFinished(Result<(RuntimeSnapshot, String), String>),
     CloseConnection(String),
     ConnectionClosed(Result<RuntimeSnapshot, String>),
+    OpenRuleLookup,
+    CloseRuleLookup,
+    SetRuleLookupQuery(String),
+    LookupRule,
+    AddRuleFromLookup,
+    RuleLookedUp {
+        lookup_id: u64,
+        result: Result<hmeta_core::RuleLookupResult, String>,
+    },
     OpenManualRuleEditor {
         connection_id: Option<String>,
         domain: String,
@@ -209,8 +218,19 @@ pub(crate) struct State {
     proxy_selection_pending: Option<(String, String)>,
     proxy_delay_loading: bool,
     controller_diagnostic_pending: Option<String>,
+    next_rule_lookup_id: u64,
+    rule_lookup: Option<RuleLookupState>,
     manual_rule_editor: Option<ManualRuleEditorState>,
     notifications: NotificationCenter,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RuleLookupState {
+    id: u64,
+    query: String,
+    submitting: bool,
+    result: Option<hmeta_core::RuleLookupResult>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -369,6 +389,8 @@ impl State {
             proxy_selection_pending: None,
             proxy_delay_loading: false,
             controller_diagnostic_pending: None,
+            next_rule_lookup_id: 0,
+            rule_lookup: None,
             manual_rule_editor: None,
             notifications,
         }
@@ -746,33 +768,117 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 ),
             ),
         },
+        Action::OpenRuleLookup => {
+            state.next_rule_lookup_id = state.next_rule_lookup_id.wrapping_add(1);
+            state.rule_lookup = Some(RuleLookupState {
+                id: state.next_rule_lookup_id,
+                query: String::new(),
+                submitting: false,
+                result: None,
+                error: None,
+            });
+            Command::none()
+        }
+        Action::CloseRuleLookup => {
+            state.rule_lookup = None;
+            Command::none()
+        }
+        Action::SetRuleLookupQuery(query) => {
+            if let Some(lookup) = state.rule_lookup.as_mut() {
+                if lookup.submitting {
+                    return Command::none();
+                }
+                lookup.query = query;
+                lookup.result = None;
+                lookup.error = None;
+            }
+            Command::none()
+        }
+        Action::LookupRule => {
+            let Some(lookup) = state.rule_lookup.as_mut() else {
+                return Command::none();
+            };
+            if lookup.submitting {
+                return Command::none();
+            }
+            if state.snapshot.active_profile.is_none() {
+                lookup.error = Some(if state.locale == UiLocale::ZhCn {
+                    "请先启用一个订阅配置".to_owned()
+                } else {
+                    "Activate a profile before querying rules".to_owned()
+                });
+                return Command::none();
+            }
+            if lookup.query.trim().is_empty() {
+                lookup.error = Some(if state.locale == UiLocale::ZhCn {
+                    "请输入域名或 IP 地址".to_owned()
+                } else {
+                    "Enter a domain name or IP address".to_owned()
+                });
+                return Command::none();
+            }
+            lookup.submitting = true;
+            lookup.result = None;
+            lookup.error = None;
+            let lookup_id = lookup.id;
+            Command::perform(lookup_rule(lookup.query.clone()), move |result| {
+                Action::RuleLookedUp { lookup_id, result }
+            })
+        }
+        Action::RuleLookedUp { lookup_id, result } => {
+            if let Some(lookup) = state
+                .rule_lookup
+                .as_mut()
+                .filter(|lookup| lookup.id == lookup_id)
+            {
+                lookup.submitting = false;
+                match result {
+                    Ok(result) => {
+                        lookup.result = Some(result);
+                        lookup.error = None;
+                    }
+                    Err(error) => {
+                        lookup.result = None;
+                        lookup.error = Some(error);
+                    }
+                }
+            }
+            Command::none()
+        }
+        Action::AddRuleFromLookup => {
+            let Some((input_kind, query)) = state
+                .rule_lookup
+                .as_ref()
+                .and_then(|lookup| lookup.result.as_ref())
+                .map(|result| (result.input_kind, result.query.clone()))
+            else {
+                return Command::none();
+            };
+            state.rule_lookup = None;
+            let (domain, destination_ip) = match input_kind {
+                hmeta_core::RuleLookupInputKind::Domain => (query, String::new()),
+                hmeta_core::RuleLookupInputKind::Ip => (String::new(), query),
+            };
+            Command::perform(
+                async move {
+                    // Let the lookup overlay unmount before publishing the
+                    // manual-rule overlay; both share ArkUI's modal host.
+                    tokio::time::sleep(Duration::from_millis(40)).await;
+                    (domain, destination_ip)
+                },
+                |(domain, destination_ip)| Action::OpenManualRuleEditor {
+                    connection_id: None,
+                    domain,
+                    destination_ip,
+                },
+            )
+        }
         Action::OpenManualRuleEditor {
             connection_id,
             domain,
             destination_ip,
         } => {
-            let domain = domain.trim().to_owned();
-            let destination_ip = destination_ip.trim().to_owned();
-            let (match_kind, value) = if domain.is_empty() {
-                if destination_ip.is_empty() {
-                    (ManualRuleMatchKind::Domain, String::new())
-                } else {
-                    (ManualRuleMatchKind::IpCidr, destination_ip.clone())
-                }
-            } else {
-                (ManualRuleMatchKind::Domain, domain.clone())
-            };
-            state.manual_rule_editor = Some(ManualRuleEditorState {
-                connection_id,
-                domain,
-                destination_ip,
-                match_kind,
-                value,
-                target: "DIRECT".to_owned(),
-                disconnect_after_save: false,
-                submitting: false,
-                error: None,
-            });
+            open_manual_rule_editor(state, connection_id, domain, destination_ip);
             Command::none()
         }
         Action::CloseManualRuleEditor => {
@@ -1887,6 +1993,36 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
     }
 }
 
+fn open_manual_rule_editor(
+    state: &mut State,
+    connection_id: Option<String>,
+    domain: String,
+    destination_ip: String,
+) {
+    let domain = domain.trim().to_owned();
+    let destination_ip = destination_ip.trim().to_owned();
+    let (match_kind, value) = if domain.is_empty() {
+        if destination_ip.is_empty() {
+            (ManualRuleMatchKind::Domain, String::new())
+        } else {
+            (ManualRuleMatchKind::IpCidr, destination_ip.clone())
+        }
+    } else {
+        (ManualRuleMatchKind::Domain, domain.clone())
+    };
+    state.manual_rule_editor = Some(ManualRuleEditorState {
+        connection_id,
+        domain,
+        destination_ip,
+        match_kind,
+        value,
+        target: "DIRECT".to_owned(),
+        disconnect_after_save: false,
+        submitting: false,
+        error: None,
+    });
+}
+
 fn system_language() -> String {
     std::env::var("HMETA_UI_LOCALE").unwrap_or_else(|_| "zh-CN".to_owned())
 }
@@ -1925,6 +2061,13 @@ async fn bootstrap_active_profile() -> RuntimeSnapshot {
         let _ = refresh_core.refresh_due_profiles().await;
     });
     load_snapshot().await
+}
+
+async fn lookup_rule(query: String) -> Result<hmeta_core::RuleLookupResult, String> {
+    hmeta_core::shared_core()
+        .lookup_rule(&query)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 fn reconcile_vpn_command(state: &mut State) {

@@ -2621,6 +2621,7 @@ fn resources_page(state: Signal<State>) -> Element {
     };
     let actions = rsx! {
         row {
+            {icon_action("route", Action::OpenRuleLookup, state)}
             {icon_action("refresh-cw", Action::RefreshAllProviders, state)}
         }
     };
@@ -2641,6 +2642,182 @@ fn resources_page(state: Signal<State>) -> Element {
         }
         if current.manual_rule_editor.is_some() {
             {manual_rule_dialog(state, &current)}
+        }
+        if current.rule_lookup.is_some() {
+            {rule_lookup_dialog(state, &current)}
+        }
+    }
+}
+
+fn rule_lookup_dialog(state: Signal<State>, current: &State) -> Element {
+    let open = current.rule_lookup.is_some();
+    let content_key = current
+        .rule_lookup
+        .as_ref()
+        .map(|lookup| {
+            dialog_content_key(&[
+                &lookup.id.to_string(),
+                &lookup.query,
+                &lookup.submitting.to_string(),
+                &format!("{:?}", lookup.result),
+                lookup.error.as_deref().unwrap_or(""),
+            ])
+        })
+        .unwrap_or(0);
+    rsx! {
+        FlatDialog {
+            open,
+            content_key,
+            on_close: move |_| dispatch(state, Action::CloseRuleLookup),
+            RuleLookupDialogContent { state }
+        }
+    }
+}
+
+#[component]
+fn RuleLookupDialogContent(state: Signal<State>) -> Element {
+    let current = state.read().clone();
+    let Some(lookup) = current.rule_lookup.clone() else {
+        return rsx! {};
+    };
+    let locale = current.locale;
+    let can_lookup = !lookup.submitting
+        && !lookup.query.trim().is_empty()
+        && current.snapshot.active_profile.is_some();
+
+    rsx! {
+        DialogHeader {
+            title: tr(locale, "规则查询", "Rule lookup").to_owned(),
+            description: Some(tr(locale, "输入域名或 IP，查看当前配置的首条命中规则", "Enter a domain or IP to inspect the first matching rule in the active profile").to_owned()),
+        }
+        row { height: 14.0 }
+        Input {
+            value: Some(lookup.query.clone()),
+            placeholder: Some("example.com / 203.0.113.1".to_owned()),
+            width: Some("100%".into()),
+            disabled: lookup.submitting,
+            on_change: move |value| dispatch(state, Action::SetRuleLookupQuery(value)),
+        }
+        if current.snapshot.active_profile.is_none() {
+            text {
+                content: tr(locale, "请先启用一个订阅配置，再查询规则。", "Activate a profile before querying rules."),
+                margin_top: 9.0,
+                font_size: 11.0,
+                line_height: 16.0,
+                font_color: warning(),
+            }
+        }
+        if current.snapshot.mode != RuntimeMode::Rule {
+            text {
+                content: tr(locale, "这里展示规则模式下的匹配结果；当前 Global / Direct 模式不会采用该规则。", "This shows the Rule-mode result; the current Global / Direct mode does not use this rule."),
+                margin_top: 9.0,
+                font_size: 11.0,
+                line_height: 16.0,
+                font_color: warning(),
+            }
+        }
+        if let Some(error) = lookup.error {
+            text {
+                content: error,
+                margin_top: 9.0,
+                font_size: 11.0,
+                line_height: 16.0,
+                font_color: danger(),
+            }
+        }
+        if let Some(result) = lookup.result {
+            column {
+                width: "100%",
+                margin_top: 12.0,
+                padding: 12.0,
+                border_width: 1.0,
+                border_color: if result.matched { success() } else { line() },
+                border_radius: 8.0,
+                background_color: muted(),
+                row {
+                    width: "100%",
+                    align_items: "center",
+                    {arkit::icon(if result.matched { "route" } else { "x" }, 16.0, if result.matched { success() } else { subtle() })}
+                    text {
+                        content: if result.matched { tr(locale, "命中规则", "Rule matched") } else { tr(locale, "未命中规则", "No rule matched") },
+                        margin_left: 7.0,
+                        font_size: 13.0,
+                        font_weight: 700,
+                        font_color: if result.matched { success() } else { text_color() },
+                    }
+                }
+                if let Some(rule_line) = result.rule_line {
+                    text {
+                        content: rule_line,
+                        width: "100%",
+                        margin_top: 8.0,
+                        font_size: 12.0,
+                        line_height: 18.0,
+                        font_weight: 600,
+                        font_color: text_color(),
+                        max_lines: 3,
+                        text_overflow: "ellipsis",
+                    }
+                } else {
+                    text {
+                        content: tr(locale, "没有规则命中，默认使用 DIRECT。", "No rule matched; DIRECT is used by default."),
+                        width: "100%",
+                        margin_top: 8.0,
+                        font_size: 12.0,
+                        line_height: 18.0,
+                        font_color: subtle(),
+                    }
+                }
+                row { height: 7.0 }
+                {info_row(
+                    tr(locale, "输入类型", "Input type"),
+                    match result.input_kind {
+                        hmeta_core::RuleLookupInputKind::Domain => tr(locale, "域名", "Domain"),
+                        hmeta_core::RuleLookupInputKind::Ip => "IP",
+                    },
+                )}
+                if result.resolution_attempted {
+                    {info_row(
+                        tr(locale, "解析 IP", "Resolved IP"),
+                        result.resolved_ip.unwrap_or_else(|| tr(locale, "未解析", "Unresolved").to_owned()),
+                    )}
+                }
+                {info_row(tr(locale, "目标策略", "Target policy"), result.target)}
+                row { height: 8.0 }
+                FlatButton {
+                    variant: FlatButtonVariant::Outline,
+                    width: "100%",
+                    onclick: move |_| dispatch(state, Action::AddRuleFromLookup),
+                    {arkit::icon("plus", 15.0, text_color())}
+                    text {
+                        content: tr(locale, "新增当前输入规则", "Add rule for this input"),
+                        margin_left: 7.0,
+                        font_size: 12.0,
+                        font_weight: 650,
+                        font_color: text_color(),
+                    }
+                }
+            }
+        }
+        DialogFooter {
+            FlatButton {
+                variant: FlatButtonVariant::Primary,
+                width: "100%",
+                disabled: Some(!can_lookup),
+                onclick: move |_| dispatch(state, Action::LookupRule),
+                if lookup.submitting {
+                    Spinner { size: 16.0, color: Some(primary_text()) }
+                } else {
+                    {arkit::icon("search", 16.0, primary_text())}
+                }
+                text {
+                    content: if lookup.submitting { tr(locale, "正在查询", "Looking up") } else { tr(locale, "查询规则", "Look up rule") },
+                    margin_left: 8.0,
+                    font_size: 13.0,
+                    font_weight: 650,
+                    font_color: primary_text(),
+                }
+            }
         }
     }
 }

@@ -17,12 +17,13 @@ use meow_config::{
     proxy_provider::ProxyProvider, raw::RawConfig, rule_provider::RuleProvider, Config,
     NamedListener,
 };
+use meow_tunnel::rule_ir::LazyMatchOutcome;
 use meow_tunnel::Tunnel;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Once;
@@ -232,6 +233,25 @@ pub struct ManualRuleApplyResult {
     pub mutation: ManualRuleMutation,
     pub live_updated: bool,
     pub rule_mode_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleLookupInputKind {
+    Domain,
+    Ip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleLookupResult {
+    pub query: String,
+    pub input_kind: RuleLookupInputKind,
+    pub resolved_ip: Option<String>,
+    pub resolution_attempted: bool,
+    pub matched: bool,
+    pub rule_type: Option<String>,
+    pub rule_payload: Option<String>,
+    pub target: String,
+    pub rule_line: Option<String>,
 }
 
 impl CoreHandle {
@@ -835,6 +855,99 @@ impl CoreHandle {
             ));
         }
         Ok(true)
+    }
+
+    /// Evaluate a domain or IP against the active profile's compiled rules.
+    ///
+    /// This intentionally bypasses the tunnel's mode dispatch and statistics:
+    /// the result describes Rule-mode routing without counting an inspection
+    /// as real traffic.
+    pub async fn lookup_rule(&self, query: &str) -> Result<RuleLookupResult, HMetaError> {
+        let (query, input_kind, mut metadata) = rule_lookup_metadata(query)?;
+        self.prepare_active_vpn().await?;
+        let tunnel = {
+            let state = self.lock_state()?;
+            state.tunnel.clone()
+        }
+        .ok_or_else(|| HMetaError::Core("active meow tunnel is not loaded".to_owned()))?;
+
+        let route = tunnel.route_snapshot();
+        let mut resolution_attempted = false;
+        let mut resolved_ip = None;
+        let matched = match route
+            .compiled_rules
+            .match_rules_lazy(&metadata, route.rules.as_ref())
+        {
+            LazyMatchOutcome::Matched(matched) => Some((
+                matched.rule_index,
+                matched.rule_type.to_string(),
+                matched.rule_payload.to_owned(),
+                matched.adapter_name.to_owned(),
+            )),
+            LazyMatchOutcome::NeedsEnrichment {
+                needs_ip,
+                needs_process: _,
+            } => {
+                if needs_ip {
+                    resolution_attempted = true;
+                    metadata.dst_ip = tunnel.resolver().resolve_ip_real(&metadata.host).await;
+                    resolved_ip = metadata.dst_ip.map(|ip| ip.to_string());
+                }
+                route
+                    .compiled_rules
+                    .match_rules(&metadata, route.rules.as_ref())
+                    .map(|matched| {
+                        (
+                            matched.rule_index,
+                            matched.rule_type.to_string(),
+                            matched.rule_payload.to_owned(),
+                            matched.adapter_name.to_owned(),
+                        )
+                    })
+            }
+            LazyMatchOutcome::NoMatch => None,
+        };
+
+        let Some((rule_index, rule_type, rule_payload, target)) = matched else {
+            return Ok(RuleLookupResult {
+                query,
+                input_kind,
+                resolved_ip,
+                resolution_attempted,
+                matched: false,
+                rule_type: None,
+                rule_payload: None,
+                target: "DIRECT".to_owned(),
+                rule_line: None,
+            });
+        };
+        let rule_line = {
+            let state = self.lock_state()?;
+            state
+                .runtime_rules
+                .iter()
+                .find(|rule| rule.enabled && rule.order as usize == rule_index)
+                .map(|rule| rule.line.clone())
+        }
+        .or_else(|| {
+            if rule_payload.is_empty() {
+                Some(format!("{rule_type},{target}"))
+            } else {
+                Some(format!("{rule_type},{rule_payload},{target}"))
+            }
+        });
+
+        Ok(RuleLookupResult {
+            query,
+            input_kind,
+            resolved_ip,
+            resolution_attempted,
+            matched: true,
+            rule_type: Some(rule_type),
+            rule_payload: Some(rule_payload),
+            target,
+            rule_line,
+        })
     }
 
     pub fn active_vpn_options_json(&self) -> Result<String, HMetaError> {
@@ -2836,6 +2949,52 @@ fn runtime_rule_summaries(
     summaries
 }
 
+fn rule_lookup_metadata(
+    query: &str,
+) -> Result<(String, RuleLookupInputKind, Metadata), HMetaError> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Err(HMetaError::Core(
+            "enter a domain name or IP address".to_owned(),
+        ));
+    }
+
+    let ip_candidate = query
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(query);
+    let mut metadata = Metadata {
+        network: Network::Tcp,
+        conn_type: ConnType::Http,
+        dst_port: 443,
+        ..Metadata::default()
+    };
+    if let Ok(ip) = ip_candidate.parse::<IpAddr>() {
+        metadata.dst_ip = Some(ip);
+        return Ok((ip.to_string(), RuleLookupInputKind::Ip, metadata));
+    }
+
+    let domain = query.trim_end_matches('.').to_lowercase();
+    let invalid_character = domain.chars().any(|character| {
+        !(character.is_alphanumeric() || character == '-' || character == '_') && character != '.'
+    });
+    let invalid_label = domain.split('.').any(|label| {
+        label.is_empty() || label.len() > 63 || label.starts_with('-') || label.ends_with('-')
+    });
+    if domain.is_empty()
+        || domain.len() > 253
+        || invalid_character
+        || invalid_label
+        || query.contains("://")
+    {
+        return Err(HMetaError::Core(
+            "enter a valid domain name or IP address".to_owned(),
+        ));
+    }
+    metadata.host = Metadata::lower_host(&domain);
+    Ok((domain, RuleLookupInputKind::Domain, metadata))
+}
+
 fn apply_traffic_sample(state: &mut CoreState, stats: &TunStats) -> Result<(), HMetaError> {
     // Reading from a TUN descriptor receives packets written by applications
     // (device -> network), while writing to it delivers packets back to those
@@ -4348,6 +4507,87 @@ rules:
                 .unwrap();
         assert_eq!(control.mode, RuntimeMode::Direct);
         assert!(control.global_proxy.is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn rule_lookup_uses_compiled_rule_order_independently_of_runtime_mode() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-rule-lookup-test-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let profile_id = core
+            .import_profile_from_content(
+                "Rule lookup",
+                "test",
+                r#"
+proxies:
+  - name: HTTP-MOCK
+    type: http
+    server: 127.0.0.1
+    port: 18080
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [HTTP-MOCK, DIRECT]
+rules:
+  - DOMAIN-SUFFIX,example.com,Proxy
+  - IP-CIDR,203.0.113.0/24,DIRECT
+  - MATCH,Proxy
+"#,
+                None,
+            )
+            .await
+            .unwrap();
+        core.reload_config(&profile_id).await.unwrap();
+        core.set_mode(RuntimeMode::Global).unwrap();
+        let tunnel = core.lock_state().unwrap().tunnel.clone().unwrap();
+        let rule_match_count_before = tunnel
+            .statistics()
+            .rule_match
+            .snapshot()
+            .into_iter()
+            .map(|(_, count)| count)
+            .sum::<u64>();
+
+        let domain = core.lookup_rule(" API.Example.COM. ").await.unwrap();
+        assert_eq!(domain.query, "api.example.com");
+        assert_eq!(domain.input_kind, RuleLookupInputKind::Domain);
+        assert!(domain.matched);
+        assert_eq!(domain.rule_type.as_deref(), Some("DOMAIN-SUFFIX"));
+        assert_eq!(domain.rule_payload.as_deref(), Some("example.com"));
+        assert_eq!(domain.target, "Proxy");
+        assert_eq!(
+            domain.rule_line.as_deref(),
+            Some("DOMAIN-SUFFIX,example.com,Proxy")
+        );
+        assert!(!domain.resolution_attempted);
+
+        let ip = core.lookup_rule("203.0.113.42").await.unwrap();
+        assert_eq!(ip.query, "203.0.113.42");
+        assert_eq!(ip.input_kind, RuleLookupInputKind::Ip);
+        assert!(ip.matched);
+        assert_eq!(ip.rule_type.as_deref(), Some("IP-CIDR"));
+        assert_eq!(ip.target, "DIRECT");
+        assert_eq!(
+            ip.rule_line.as_deref(),
+            Some("IP-CIDR,203.0.113.0/24,DIRECT")
+        );
+
+        let error = core
+            .lookup_rule("https://example.com/path")
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("valid domain name or IP address"));
+        let rule_match_count_after = tunnel
+            .statistics()
+            .rule_match
+            .snapshot()
+            .into_iter()
+            .map(|(_, count)| count)
+            .sum::<u64>();
+        assert_eq!(rule_match_count_after, rule_match_count_before);
         let _ = std::fs::remove_dir_all(root);
     }
 
