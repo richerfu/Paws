@@ -11,6 +11,15 @@ pub(crate) fn tools_page(state: Signal<State>) -> Element {
                 vec![
                     settings_value_row("package", tr(current.locale, "版本", "Version"), about.app_version),
                     settings_value_row("cpu", tr(current.locale, "引擎", "Engine"), format!("meow-rs {}", about.meow_rs_version)),
+                    settings_route_row(
+                        Route::SubscriptionConverter {},
+                        current.locale,
+                        tr(
+                            current.locale,
+                            "在订阅链接、客户端格式与远程规则之间转换",
+                            "Convert subscription links, client formats, and remote rules",
+                        ),
+                    ),
                 ],
             )}
             row { height: spacing::LG }

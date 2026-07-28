@@ -28,6 +28,7 @@ mod proxy_grid;
 mod resource_filter;
 mod rule_feedback;
 mod settings_feedback;
+mod subscription_converter;
 mod subscription_scan;
 mod time_format;
 mod traffic_history;

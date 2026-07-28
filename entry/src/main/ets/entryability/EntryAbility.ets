@@ -1,4 +1,5 @@
 import { AbilityConstant, Configuration, ConfigurationConstant, Want } from '@kit.AbilityKit';
+import { pasteboard } from '@kit.BasicServicesKit';
 import { fileIo, picker } from '@kit.CoreFileKit';
 import { i18n } from '@kit.LocalizationKit';
 import { vpnExtension } from '@kit.NetworkKit';
@@ -241,8 +242,10 @@ export default class EntryAbility extends NativeAbility {
   }
 
   private async openExternalUrl(url: string): Promise<void> {
-    if (!url.startsWith('https://') && !url.startsWith('http://')) {
-      throw new Error('only http and https URLs can be opened');
+    const webUrl = url.startsWith('https://') || url.startsWith('http://');
+    const clashInstallUrl = url.startsWith('clash://install-config?url=');
+    if (!webUrl && !clashInstallUrl) {
+      throw new Error('unsupported external URL');
     }
     try {
       await this.context.startAbility({
@@ -253,6 +256,17 @@ export default class EntryAbility extends NativeAbility {
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'open external URL failed %{public}s', describeError(err));
       throw new Error(describeError(err) || 'open external URL failed');
+    }
+  }
+
+  private async copyText(text: string): Promise<void> {
+    try {
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
+      await pasteboard.getSystemPasteboard().setData(data);
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'copied text to system pasteboard');
+    } catch (err) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'copy text failed %{public}s', describeError(err));
+      throw new Error(describeError(err) || 'copy text failed');
     }
   }
 
@@ -575,6 +589,7 @@ export default class EntryAbility extends NativeAbility {
         requestStartVpn: async (optionsJson: string) => await this.requestStartVpn(optionsJson),
         requestStopVpn: async () => await this.requestStopVpn(),
         openExternalUrl: async (url: string) => await this.openExternalUrl(url),
+        copyText: async (text: string) => await this.copyText(text),
         exportProfile: async (requestJson: string) => await this.exportProfileToSystem(requestJson),
         setColorMode: async (colorMode: number) => this.setAppColorMode(colorMode),
       });

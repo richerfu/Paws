@@ -27,6 +27,10 @@ type OpenExternalUrlCall<'a> = Function<'a, String, Unknown<'a>>;
 type OpenExternalUrlThreadsafeFunction =
     ThreadsafeFunction<String, Unknown<'static>, String, Status, false>;
 type OpenExternalUrlSlot = LazyLock<RwLock<Option<Arc<OpenExternalUrlThreadsafeFunction>>>>;
+type CopyTextCall<'a> = Function<'a, String, Unknown<'a>>;
+type CopyTextThreadsafeFunction =
+    ThreadsafeFunction<String, Unknown<'static>, String, Status, false>;
+type CopyTextSlot = LazyLock<RwLock<Option<Arc<CopyTextThreadsafeFunction>>>>;
 type ExportProfileCall<'a> = Function<'a, String, Unknown<'a>>;
 type ExportProfileThreadsafeFunction =
     ThreadsafeFunction<String, Unknown<'static>, String, Status, false>;
@@ -40,6 +44,7 @@ static SUBSCRIPTION_SCANNER: SubscriptionScanSlot = LazyLock::new(|| RwLock::new
 static REQUEST_START_VPN: VpnStartSlot = LazyLock::new(|| RwLock::new(None));
 static REQUEST_STOP_VPN: VpnStopSlot = LazyLock::new(|| RwLock::new(None));
 static OPEN_EXTERNAL_URL: OpenExternalUrlSlot = LazyLock::new(|| RwLock::new(None));
+static COPY_TEXT: CopyTextSlot = LazyLock::new(|| RwLock::new(None));
 static EXPORT_PROFILE: ExportProfileSlot = LazyLock::new(|| RwLock::new(None));
 static SET_COLOR_MODE: SetColorModeSlot = LazyLock::new(|| RwLock::new(None));
 
@@ -68,6 +73,10 @@ pub(crate) fn register_platform_callbacks(callbacks: Object<'static>) -> Result<
         let open_external_url: OpenExternalUrlCall<'static> =
             callbacks.get_named_property("openExternalUrl")?;
         set_open_external_url(open_external_url)?;
+    }
+    if callbacks.has_named_property("copyText")? {
+        let copy_text: CopyTextCall<'static> = callbacks.get_named_property("copyText")?;
+        set_copy_text(copy_text)?;
     }
     if callbacks.has_named_property("exportProfile")? {
         let export_profile: ExportProfileCall<'static> =
@@ -138,6 +147,18 @@ fn set_open_external_url(open_external_url: OpenExternalUrlCall<'static>) -> Res
     OPEN_EXTERNAL_URL
         .write()
         .map_err(|_| Error::from_reason("failed to store external URL callback"))?
+        .replace(Arc::new(tsfn));
+    Ok(())
+}
+
+fn set_copy_text(copy_text: CopyTextCall<'static>) -> Result<()> {
+    let tsfn = copy_text
+        .build_threadsafe_function()
+        .callee_handled::<false>()
+        .build()?;
+    COPY_TEXT
+        .write()
+        .map_err(|_| Error::from_reason("failed to store copy text callback"))?
         .replace(Arc::new(tsfn));
     Ok(())
 }
@@ -243,6 +264,16 @@ pub(crate) async fn open_external_url(url: String) -> std::result::Result<(), St
         .map(Arc::clone)
         .ok_or_else(|| "external URL callback is not registered".to_owned())?;
     invoke_string_void_callback(tsfn, url, "external URL").await
+}
+
+pub(crate) async fn copy_text(text: String) -> std::result::Result<(), String> {
+    let tsfn = COPY_TEXT
+        .read()
+        .map_err(|_| "failed to read copy text callback".to_owned())?
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| "copy text callback is not registered".to_owned())?;
+    invoke_string_void_callback(tsfn, text, "copy text").await
 }
 
 pub(crate) async fn export_profile(

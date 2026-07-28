@@ -2019,6 +2019,7 @@ name = "hmeta_ui"
 version = "1.0.0"
 dependencies = [
  "arkit",
+ "base64",
  "dioxus",
  "hmeta_core",
  "hmeta_model",
@@ -2028,6 +2029,7 @@ dependencies = [
  "ohos-fileshare-binding",
  "ohos-fileuri-binding",
  "ohos-resource-manager-binding 0.3.1",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -4317,6 +4319,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",

@@ -12,11 +12,13 @@ test = false
 
 [dependencies]
 arkit.workspace = true
+base64.workspace = true
 dioxus.workspace = true
 hmeta_core.workspace = true
 hmeta_model.workspace = true
 napi-derive-ohos.workspace = true
 napi-ohos.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
