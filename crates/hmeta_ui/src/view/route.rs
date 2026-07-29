@@ -20,6 +20,8 @@ pub(super) enum Route {
     Appearance {},
     #[route("/settings/network")]
     Settings {},
+    #[route("/settings/subscription-converter")]
+    SubscriptionConverter {},
     #[route("/settings/requests")]
     Requests {},
     #[route("/settings/connections?:query")]
@@ -47,6 +49,7 @@ impl Route {
             Self::Tools {} => strings.nav_tools,
             Self::Appearance {} => tr(locale, "界面设置", "Appearance"),
             Self::Settings {} => strings.nav_settings,
+            Self::SubscriptionConverter {} => tr(locale, "订阅转化规则", "Subscription conversion"),
             Self::About {} => strings.nav_about,
         }
     }
@@ -64,6 +67,7 @@ impl Route {
             Self::Tools {} => "settings",
             Self::Appearance {} => "palette",
             Self::Settings {} => "settings",
+            Self::SubscriptionConverter {} => "refresh-cw",
             Self::About {} => "badge-info",
         }
     }
@@ -76,6 +80,7 @@ impl Route {
             Self::Tools {}
             | Self::Appearance {}
             | Self::Settings {}
+            | Self::SubscriptionConverter {}
             | Self::Requests {}
             | Self::Connections { .. }
             | Self::Resources {}
@@ -89,6 +94,7 @@ impl Route {
             Self::Proxies {} => Some(Self::Profiles {}),
             Self::Appearance {}
             | Self::Settings {}
+            | Self::SubscriptionConverter {}
             | Self::Requests {}
             | Self::Connections { .. }
             | Self::Resources {}
@@ -160,6 +166,11 @@ fn Tools() -> Element {
 #[component]
 fn Settings() -> Element {
     settings_page(state())
+}
+
+#[component]
+fn SubscriptionConverter() -> Element {
+    subscription_converter_page(state())
 }
 
 #[component]

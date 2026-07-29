@@ -10,8 +10,8 @@ use arkit::router::{use_back_handler, use_navigator, use_route, AnimatedOutlet, 
 use arkit::shadcn::components::{
     Badge, BadgeVariant, BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant,
     Card, CardContent, CardHeader, CardTitle, DialogFooter, DialogHeader, Field, FieldContent,
-    FieldDescription, FieldOrientation, FieldTitle, Form, FormItem, Input, RadioGroup, Select,
-    Separator, Spinner, Switch, Textarea,
+    FieldDescription, FieldLabel, FieldOrientation, FieldTitle, Form, FormItem, Input, RadioGroup,
+    Select, Separator, Spinner, Switch, Textarea,
 };
 use arkit::shadcn::theme::{
     spacing, typography, use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider,
@@ -28,7 +28,7 @@ mod route;
 
 use pages::{
     about_page, appearance_page, connections_page, manual_rule_dialog, requests_page,
-    settings_page, tools_page,
+    settings_page, subscription_converter_page, tools_page,
 };
 use route::Route;
 
