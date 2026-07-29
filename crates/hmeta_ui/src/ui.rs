@@ -123,6 +123,8 @@ pub(crate) enum Action {
     LogRecordingChanged(Result<LogRecordingChangeResult, String>),
     ExportLogArchive(String),
     LogArchiveExported(Result<String, String>),
+    DeleteLogArchive(String),
+    LogArchiveDeleted(Result<LogArchiveDeleteResult, String>),
     ResetProfileImportFeedback,
     ImportLocalProfile,
     ScanProfileSubscription {
@@ -223,6 +225,7 @@ pub(crate) struct State {
     log_recording: hmeta_core::LogRecordingStatus,
     log_recording_pending: bool,
     log_archive_export_pending: Option<String>,
+    log_archive_delete_pending: Option<String>,
     next_rule_lookup_id: u64,
     rule_lookup: Option<RuleLookupState>,
     manual_rule_editor: Option<ManualRuleEditorState>,
@@ -373,6 +376,12 @@ pub(crate) struct LogRecordingChangeResult {
     status: hmeta_core::LogRecordingStatus,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct LogArchiveDeleteResult {
+    file_name: String,
+    status: hmeta_core::LogRecordingStatus,
+}
+
 impl State {
     pub(crate) fn new(notifications: NotificationCenter) -> Self {
         let core = hmeta_core::shared_core();
@@ -405,6 +414,7 @@ impl State {
             log_recording,
             log_recording_pending: false,
             log_archive_export_pending: None,
+            log_archive_delete_pending: None,
             next_rule_lookup_id: 0,
             rule_lookup: None,
             manual_rule_editor: None,
@@ -1100,7 +1110,9 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             }
         }
         Action::ExportLogArchive(file_name) => {
-            if state.log_archive_export_pending.is_some() {
+            if state.log_archive_export_pending.is_some()
+                || state.log_archive_delete_pending.is_some()
+            {
                 return Command::none();
             }
             state.log_archive_export_pending = Some(file_name.clone());
@@ -1121,6 +1133,38 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     format!(
                         "{}{error}",
                         locale_text(state.locale, "日志导出失败：", "Failed to export log: ")
+                    ),
+                ),
+            }
+        }
+        Action::DeleteLogArchive(file_name) => {
+            if state.log_archive_export_pending.is_some()
+                || state.log_archive_delete_pending.is_some()
+            {
+                return Command::none();
+            }
+            state.log_archive_delete_pending = Some(file_name.clone());
+            Command::perform(delete_log_archive(file_name), Action::LogArchiveDeleted)
+        }
+        Action::LogArchiveDeleted(result) => {
+            state.log_archive_delete_pending = None;
+            match result {
+                Ok(result) => {
+                    state.log_recording = result.status;
+                    show_toast(
+                        state,
+                        format!(
+                            "{}{}",
+                            locale_text(state.locale, "日志已删除：", "Log deleted: "),
+                            result.file_name
+                        ),
+                    )
+                }
+                Err(error) => show_toast(
+                    state,
+                    format!(
+                        "{}{error}",
+                        locale_text(state.locale, "日志删除失败：", "Failed to delete log: ")
                     ),
                 ),
             }
@@ -2692,6 +2736,13 @@ async fn export_log_archive(file_name: String) -> Result<String, String> {
         .map_err(|error| error.to_string())?;
     crate::platform_callbacks::export_log(file_name.clone(), content).await?;
     Ok(file_name)
+}
+
+async fn delete_log_archive(file_name: String) -> Result<LogArchiveDeleteResult, String> {
+    let status = hmeta_core::shared_core()
+        .delete_log_archive(&file_name)
+        .map_err(|error| error.to_string())?;
+    Ok(LogArchiveDeleteResult { file_name, status })
 }
 
 async fn set_rule_enabled_and_snapshot(

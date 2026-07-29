@@ -922,6 +922,12 @@ impl CoreHandle {
         log_recording::read_archive(state.profiles.root(), file_name)
     }
 
+    pub fn delete_log_archive(&self, file_name: &str) -> Result<LogRecordingStatus, HMetaError> {
+        let state = self.lock_state()?;
+        log_recording::delete_archive(state.profiles.root(), file_name)?;
+        log_recording::recording_status(state.profiles.root())
+    }
+
     pub async fn start_vpn(&self, fd: i32, options_json: &str) -> Result<(), HMetaError> {
         let options: VpnOptions = from_json(options_json)?;
         self.prepare_active_vpn().await?;

@@ -21,6 +21,7 @@ pub struct LogArchiveSummary {
     pub date: String,
     pub bytes: u64,
     pub updated_at: Option<String>,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -226,10 +227,13 @@ pub(crate) fn set_recording_enabled(root: &Path, enabled: bool) -> Result<(), HM
 }
 
 pub(crate) fn recording_status(root: &Path) -> Result<LogRecordingStatus, HMetaError> {
-    Ok(LogRecordingStatus {
-        enabled: active_session_id(root).is_some(),
-        archives: list_archives(root)?,
-    })
+    let enabled = active_session_id(root).is_some();
+    let active_file_name = enabled.then(current_archive_file_name);
+    let mut archives = list_archives(root)?;
+    for archive in &mut archives {
+        archive.active = active_file_name.as_deref() == Some(archive.file_name.as_str());
+    }
+    Ok(LogRecordingStatus { enabled, archives })
 }
 
 pub(crate) fn read_archive(root: &Path, file_name: &str) -> Result<String, HMetaError> {
@@ -237,6 +241,18 @@ pub(crate) fn read_archive(root: &Path, file_name: &str) -> Result<String, HMeta
         return Err(HMetaError::Core("invalid log archive name".to_owned()));
     }
     fs::read_to_string(log_directory(root).join(file_name)).map_err(io_error)
+}
+
+pub(crate) fn delete_archive(root: &Path, file_name: &str) -> Result<(), HMetaError> {
+    if !is_log_file_name(file_name) {
+        return Err(HMetaError::Core("invalid log archive name".to_owned()));
+    }
+    if active_session_id(root).is_some() && file_name == current_archive_file_name() {
+        return Err(HMetaError::Core(
+            "stop log recording before deleting the active archive".to_owned(),
+        ));
+    }
+    fs::remove_file(log_directory(root).join(file_name)).map_err(io_error)
 }
 
 fn list_archives(root: &Path) -> Result<Vec<LogArchiveSummary>, HMetaError> {
@@ -260,6 +276,7 @@ fn list_archives(root: &Path) -> Result<Vec<LogArchiveSummary>, HMetaError> {
             file_name,
             bytes: metadata.len(),
             updated_at: metadata.modified().ok().and_then(system_time_secs),
+            active: false,
         });
     }
     archives.sort_by(|left, right| {
@@ -327,6 +344,16 @@ fn log_file_date(file_name: &str) -> Option<&str> {
                 .strip_prefix(prefix)
                 .and_then(|value| value.strip_suffix(LOG_FILE_SUFFIX))
         })
+}
+
+fn current_archive_file_name() -> String {
+    let date = time::OffsetDateTime::now_utc().date();
+    format!(
+        "paws.{:04}-{:02}-{:02}.log",
+        date.year(),
+        date.month() as u8,
+        date.day()
+    )
 }
 
 #[cfg(test)]
@@ -421,6 +448,36 @@ mod tests {
         let root = temp_root("safe-name");
         assert!(read_archive(&root, "../paws-2026-01-01.log").is_err());
         assert!(read_archive(&root, "other.log").is_err());
+        assert!(delete_archive(&root, "../paws-2026-01-01.log").is_err());
+        assert!(delete_archive(&root, "other.log").is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn active_archive_requires_recording_to_stop_before_deletion() {
+        let root = temp_root("delete-active");
+        set_recording_enabled(&root, true).unwrap();
+        let mut logs = RecordedLogBuffer::new(&root);
+        logs.push(LogEntry {
+            level: "info".to_owned(),
+            message: "delete me".to_owned(),
+            timestamp: "0".to_owned(),
+        });
+
+        let status = recording_status(&root).unwrap();
+        assert_eq!(status.archives.len(), 1);
+        assert!(status.archives[0].active);
+        let file_name = status.archives[0].file_name.clone();
+        assert!(delete_archive(&root, &file_name).is_err());
+
+        let old_file_name = "paws.2000-01-01.log";
+        fs::write(log_directory(&root).join(old_file_name), "old log").unwrap();
+        delete_archive(&root, old_file_name).unwrap();
+        assert!(!log_directory(&root).join(old_file_name).exists());
+
+        set_recording_enabled(&root, false).unwrap();
+        delete_archive(&root, &file_name).unwrap();
+        assert!(recording_status(&root).unwrap().archives.is_empty());
         let _ = fs::remove_dir_all(root);
     }
 
