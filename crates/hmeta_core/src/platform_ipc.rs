@@ -98,8 +98,12 @@ impl PlatformIpc {
         if ashmem_fd < 0 || notification_fd < 0 {
             return Err(PlatformIpcError::InvalidHeader);
         }
-        let ashmem_fd = unsafe { OwnedFd::from_raw_fd(ashmem_fd) };
-        let notification_fd = unsafe { OwnedFd::from_raw_fd(notification_fd) };
+        // The descriptors originate from ArkTS Want parameters and remain
+        // owned by that runtime. Keep independent duplicates so a repeated
+        // onRequest can safely rebind the same session without double-closing
+        // the descriptors managed by ArkTS.
+        let ashmem_fd = duplicate_fd(ashmem_fd)?;
+        let notification_fd = duplicate_fd(notification_fd)?;
         let mut ashmem = Ashmem::from_owned_fd(ashmem_fd)
             .map_err(|error| PlatformIpcError::Memory(error.to_string()))?;
         if ashmem.size() != REGION_SIZE {
@@ -292,7 +296,10 @@ impl PlatformIpc {
         for _ in 0..3 {
             let first = self.read_memory(slot_offset, FRAME_HEADER_SIZE)?;
             let Some(header) = FrameHeader::parse(&first, slot_size) else {
-                return Ok(None);
+                // The writer commits a frame by replacing its header after the
+                // payload. A concurrent reader can briefly observe a torn
+                // header, so retry before treating this slot as empty.
+                continue;
             };
             let content =
                 self.read_memory(slot_offset + FRAME_HEADER_SIZE, header.content_length)?;
@@ -444,6 +451,16 @@ fn configure_nonblocking(fd: RawFd) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn duplicate_fd(fd: RawFd) -> Result<OwnedFd> {
+    let duplicate = unsafe { libc::dup(fd) };
+    if duplicate < 0 {
+        return Err(PlatformIpcError::Notification(
+            io::Error::last_os_error().to_string(),
+        ));
+    }
+    Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
 }
 
 fn drain_notifications(fd: RawFd) -> Result<bool> {

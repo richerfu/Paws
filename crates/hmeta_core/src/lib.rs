@@ -392,16 +392,17 @@ impl CoreHandle {
     ) -> Result<(), HMetaError> {
         let platform = platform_ipc::PlatformIpc::attach_vpn_raw(ashmem_fd, notification_fd)
             .map_err(platform_ipc_error)?;
-        {
+        let previous = {
             let mut slot = self
                 .platform_ipc
                 .lock()
                 .map_err(|_| HMetaError::Core("platform IPC lock poisoned".to_owned()))?;
-            if slot.is_some() {
-                return Ok(());
-            }
-            *slot = Some(platform);
-        }
+            slot.replace(platform)
+        };
+        // A VPN Extension process can outlive and be reused by the UI
+        // process. Always replace the old ashmem session with the descriptors
+        // from the latest Want so state is published back to the current UI.
+        drop(previous);
         self.sync_platform_changes()
     }
 
@@ -2748,7 +2749,12 @@ impl CoreHandle {
     }
 
     fn persist_platform_vpn_state_locked(&self, state: &mut CoreState) -> Result<(), HMetaError> {
-        state.platform_vpn_state_updated_at = now_unix_nanos();
+        // SystemTime can have coarser resolution than nanoseconds on device.
+        // Starting and running may otherwise receive the same timestamp, and
+        // the receiver would permanently discard the terminal state because
+        // platform synchronization accepts only strictly newer revisions.
+        state.platform_vpn_state_updated_at =
+            now_unix_nanos().max(state.platform_vpn_state_updated_at.saturating_add(1));
         let Some(platform) = self.platform_ipc()? else {
             return Ok(());
         };
@@ -4734,6 +4740,24 @@ rules:
         assert_eq!(snapshot.vpn_lifecycle, VpnLifecycle::Failed);
         assert!(!snapshot.network_protected);
         assert_eq!(snapshot.network_protect_error.as_deref(), Some("denied"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn platform_vpn_state_revision_is_strictly_monotonic() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-platform-vpn-revision-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let future_revision = now_unix_nanos().saturating_add(3_600_000_000_000);
+        {
+            let mut state = core.lock_state().unwrap();
+            state.platform_vpn_state_updated_at = future_revision;
+        }
+
+        core.set_platform_vpn_starting(true).unwrap();
+
+        let revision = core.lock_state().unwrap().platform_vpn_state_updated_at;
+        assert_eq!(revision, future_revision + 1);
         let _ = std::fs::remove_dir_all(root);
     }
 

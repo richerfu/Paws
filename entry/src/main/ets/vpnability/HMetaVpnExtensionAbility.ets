@@ -118,14 +118,9 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
   }
 
   private startFromWant(want: Want): void {
-    if (this.starting || this.tunFd >= 0) {
-      return;
-    }
-    this.starting = true;
     this.configureNativeHome();
     const sharedMemory = readPlatformSharedMemoryFds(want);
     if (!sharedMemory) {
-      this.starting = false;
       hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN start is missing platform shared memory descriptors');
       this.recordVpnFailure('VPN start is missing platform shared memory descriptors');
       return;
@@ -139,6 +134,26 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
       this.recordVpnFailure(`attach platform shared memory failed: ${describeError(err)}`);
       return;
     }
+    if (this.tunFd >= 0) {
+      this.starting = false;
+      try {
+        hmetaUi.setPlatformVpnRunning(true);
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'reported existing VPN to rebound platform shared memory');
+      } catch (err) {
+        this.recordVpnFailure(`report existing VPN state failed: ${describeError(err)}`);
+      }
+      return;
+    }
+    if (this.starting) {
+      try {
+        hmetaUi.setPlatformVpnStarting(true);
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'reported pending VPN to rebound platform shared memory');
+      } catch (err) {
+        this.recordVpnFailure(`report pending VPN state failed: ${describeError(err)}`);
+      }
+      return;
+    }
+    this.starting = true;
     try {
       hmetaUi.setPlatformVpnStarting(true);
     } catch (err) {
