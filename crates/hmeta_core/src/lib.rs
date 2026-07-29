@@ -34,18 +34,20 @@ use tracing::Level;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::Layer;
 
+mod log_recording;
 mod platform_ipc;
 
+pub use log_recording::{LogArchiveSummary, LogRecordingStatus};
+use log_recording::{RecordedLogBuffer, RuntimeLogBuffer, MAX_IN_MEMORY_LOGS};
 use platform_ipc::PlatformIpc;
 
 static CORE: Lazy<Arc<CoreHandle>> = Lazy::new(|| Arc::new(CoreHandle::new()));
-static RUNTIME_LOGS: Lazy<Arc<Mutex<VecDeque<LogEntry>>>> =
-    Lazy::new(|| Arc::new(Mutex::new(VecDeque::with_capacity(MAX_RUNTIME_LOGS))));
+static RUNTIME_LOGS: Lazy<Arc<Mutex<RuntimeLogBuffer>>> =
+    Lazy::new(|| Arc::new(Mutex::new(RuntimeLogBuffer::default())));
 static API_LOG_TXS: Lazy<
     Arc<Mutex<VecDeque<tokio::sync::broadcast::Sender<meow_api::log_stream::LogMessage>>>>,
 > = Lazy::new(|| Arc::new(Mutex::new(VecDeque::new())));
 static INSTALL_RUNTIME_LOG_LAYER: Once = Once::new();
-const MAX_RUNTIME_LOGS: usize = 256;
 const MAX_API_LOG_SENDERS: usize = 8;
 const MAX_REQUEST_HISTORY: usize = 128;
 const MAX_TRAFFIC_HISTORY: usize = 32;
@@ -149,7 +151,7 @@ struct CoreState {
     traffic_history: VecDeque<TrafficHistoryPoint>,
     last_traffic_sample: Option<(Instant, u64, u64)>,
     last_meow_traffic_sample: Option<(Instant, u64, u64)>,
-    logs: Vec<LogEntry>,
+    logs: RecordedLogBuffer,
     request_history: VecDeque<RequestSummary>,
     vpn_options: VpnOptions,
     api_controller: Option<ApiControllerRuntime>,
@@ -170,17 +172,7 @@ impl Default for CoreState {
         let proxy_groups = load_runtime_ui_cache(&profiles)
             .map(|cache| cache.proxy_groups)
             .unwrap_or_default();
-        let mut logs = vec![LogEntry {
-            level: "info".to_owned(),
-            message: format!("hmeta core booted with {}", meow_version_marker()),
-            timestamp: "boot".to_owned(),
-        }];
-        if !proxy_groups.is_empty() {
-            logs.push(info_log(format!(
-                "restored {} proxy groups from runtime UI cache",
-                proxy_groups.len()
-            )));
-        }
+        let logs = RecordedLogBuffer::new(profiles.root());
         Self {
             engine_loaded: false,
             platform_vpn_starting: false,
@@ -283,6 +275,9 @@ impl CoreHandle {
     fn new_with_profile_root(root: impl Into<std::path::PathBuf>) -> Self {
         install_runtime_log_layer();
         let profiles = ProfileStore::open(root).expect("test profile store");
+        let log_root = profiles.root().to_path_buf();
+        log_recording::set_recording_enabled(&log_root, true)
+            .expect("enable log recording for core tests");
         let proxy_groups = load_runtime_ui_cache(&profiles)
             .map(|cache| cache.proxy_groups)
             .unwrap_or_default();
@@ -320,7 +315,7 @@ impl CoreHandle {
                 traffic_history: VecDeque::with_capacity(MAX_TRAFFIC_HISTORY),
                 last_traffic_sample: None,
                 last_meow_traffic_sample: None,
-                logs: Vec::new(),
+                logs: RecordedLogBuffer::new(log_root),
                 request_history: VecDeque::with_capacity(MAX_REQUEST_HISTORY),
                 vpn_options: VpnOptions::default(),
                 api_controller: None,
@@ -366,6 +361,14 @@ impl CoreHandle {
             }
         }
 
+        let log_root = {
+            let state = self.lock_state()?;
+            state.profiles.root().to_path_buf()
+        };
+        log_recording::reset_recording(&log_root)?;
+        if let Ok(mut logs) = RUNTIME_LOGS.lock() {
+            logs.clear();
+        }
         let (platform, fds) = platform_ipc::PlatformIpc::create_ui().map_err(platform_ipc_error)?;
         {
             let mut slot = self
@@ -877,6 +880,52 @@ impl CoreHandle {
             logs.clear();
         }
         Ok(())
+    }
+
+    pub fn log_recording_status(&self) -> Result<LogRecordingStatus, HMetaError> {
+        let state = self.lock_state()?;
+        log_recording::recording_status(state.profiles.root())
+    }
+
+    pub fn set_log_recording_enabled(
+        &self,
+        enabled: bool,
+    ) -> Result<LogRecordingStatus, HMetaError> {
+        let mut state = self.lock_state()?;
+        let root = state.profiles.root().to_path_buf();
+        let was_enabled = log_recording::recording_status(&root)?.enabled;
+        if was_enabled == enabled {
+            return log_recording::recording_status(&root);
+        }
+
+        if enabled {
+            state.logs.clear();
+            if let Ok(mut logs) = RUNTIME_LOGS.lock() {
+                logs.clear();
+            }
+            log_recording::set_recording_enabled(&root, true)?;
+            state.logs.sync_session();
+            state.logs.push(info_log("log recording enabled"));
+        } else {
+            state.logs.push(info_log("log recording disabled"));
+            log_recording::set_recording_enabled(&root, false)?;
+            state.logs.sync_session();
+            if let Ok(mut logs) = RUNTIME_LOGS.lock() {
+                logs.clear();
+            }
+        }
+        log_recording::recording_status(&root)
+    }
+
+    pub fn read_log_archive(&self, file_name: &str) -> Result<String, HMetaError> {
+        let state = self.lock_state()?;
+        log_recording::read_archive(state.profiles.root(), file_name)
+    }
+
+    pub fn delete_log_archive(&self, file_name: &str) -> Result<LogRecordingStatus, HMetaError> {
+        let state = self.lock_state()?;
+        log_recording::delete_archive(state.profiles.root(), file_name)?;
+        log_recording::recording_status(state.profiles.root())
     }
 
     pub async fn start_vpn(&self, fd: i32, options_json: &str) -> Result<(), HMetaError> {
@@ -2499,6 +2548,16 @@ impl CoreHandle {
     ) -> Result<RuntimeSnapshot, HMetaError> {
         let mut state = self.lock_state()?;
         self.sync_platform_vpn_state_locked(&mut state);
+        state.logs.sync_session();
+        if let Ok(mut runtime_logs) = RUNTIME_LOGS.lock() {
+            runtime_logs.sync(state.logs.root());
+        }
+        let recording_enabled = state.logs.enabled();
+        let local_logs = if recording_enabled {
+            merged_logs(&state.logs)
+        } else {
+            Vec::new()
+        };
         let native_vpn_running = self.vpn.is_running();
         let tun_stats = self.vpn.stats();
         let active_profile = state.profiles.active_profile().map(ToOwned::to_owned);
@@ -2520,7 +2579,11 @@ impl CoreHandle {
                     telemetry.connections.clone(),
                     telemetry.dns.clone(),
                     telemetry.request_history.clone(),
-                    merge_platform_logs(merged_logs(&state.logs), &telemetry.logs),
+                    if recording_enabled {
+                        merge_platform_logs(local_logs, &telemetry.logs)
+                    } else {
+                        Vec::new()
+                    },
                 )
             } else {
                 if let Some(stats) = &tun_stats {
@@ -2547,7 +2610,7 @@ impl CoreHandle {
                     connections,
                     dns_snapshot(&state.vpn_options, tun_stats.as_ref()),
                     state.request_history.iter().cloned().rev().collect(),
-                    merged_logs(&state.logs),
+                    local_logs,
                 )
             };
 
@@ -3948,7 +4011,7 @@ fn info_log(message: impl Into<String>) -> LogEntry {
     LogEntry {
         level: "info".to_owned(),
         message: message.into(),
-        timestamp: "now".to_owned(),
+        timestamp: unix_timestamp_string(),
     }
 }
 
@@ -3956,7 +4019,7 @@ fn warning_log(message: impl Into<String>) -> LogEntry {
     LogEntry {
         level: "warning".to_owned(),
         message: message.into(),
-        timestamp: "now".to_owned(),
+        timestamp: unix_timestamp_string(),
     }
 }
 
@@ -3970,7 +4033,7 @@ fn install_runtime_log_layer() {
 }
 
 struct HMetaLogLayer {
-    logs: Arc<Mutex<VecDeque<LogEntry>>>,
+    logs: Arc<Mutex<RuntimeLogBuffer>>,
 }
 
 impl<S> Layer<S> for HMetaLogLayer
@@ -4071,22 +4134,19 @@ impl tracing::field::Visit for LogMessageVisitor {
     }
 }
 
-fn push_runtime_log(logs: &Mutex<VecDeque<LogEntry>>, entry: LogEntry) {
+fn push_runtime_log(logs: &Mutex<RuntimeLogBuffer>, entry: LogEntry) {
     if let Ok(mut logs) = logs.lock() {
-        if logs.len() >= MAX_RUNTIME_LOGS {
-            logs.pop_front();
-        }
-        logs.push_back(entry);
+        logs.capture(entry);
     }
 }
 
 fn merged_logs(state_logs: &[LogEntry]) -> Vec<LogEntry> {
-    let state_start = state_logs.len().saturating_sub(MAX_RUNTIME_LOGS);
+    let state_start = state_logs.len().saturating_sub(MAX_IN_MEMORY_LOGS);
     let mut logs: Vec<_> = state_logs[state_start..].to_vec();
-    let remaining = MAX_RUNTIME_LOGS.saturating_sub(logs.len());
+    let remaining = MAX_IN_MEMORY_LOGS.saturating_sub(logs.len());
     if let Ok(runtime_logs) = RUNTIME_LOGS.lock() {
         let runtime_start = runtime_logs.len().saturating_sub(remaining);
-        logs.extend(runtime_logs.iter().skip(runtime_start).cloned());
+        logs.extend(runtime_logs.entries().skip(runtime_start).cloned());
     }
     logs
 }
@@ -4101,8 +4161,8 @@ fn merge_platform_logs(mut local: Vec<LogEntry>, platform: &[LogEntry]) -> Vec<L
             local.push(entry.clone());
         }
     }
-    if local.len() > MAX_RUNTIME_LOGS {
-        local.drain(..local.len() - MAX_RUNTIME_LOGS);
+    if local.len() > MAX_IN_MEMORY_LOGS {
+        local.drain(..local.len() - MAX_IN_MEMORY_LOGS);
     }
     local
 }
@@ -4118,11 +4178,6 @@ fn system_time_secs(time: SystemTime) -> Option<String> {
     time.duration_since(UNIX_EPOCH)
         .ok()
         .map(|duration| duration.as_secs().to_string())
-}
-
-fn meow_version_marker() -> String {
-    let _ = std::any::type_name::<meow_tunnel::Tunnel>();
-    format!("meow-rs@{MEOW_RS_VERSION}")
 }
 
 fn preferred_global_proxy_targets(selected_proxies: &BTreeMap<String, String>) -> Vec<String> {
@@ -4895,7 +4950,9 @@ rules:
     #[test]
     fn snapshot_includes_runtime_tracing_logs() {
         let _guard = TEST_LOG_LOCK.lock().unwrap();
-        let core = CoreHandle::new();
+        let root =
+            std::env::temp_dir().join(format!("hmeta-runtime-log-test-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
         let message = format!(
             "hmeta runtime log test {}",
             std::time::SystemTime::now()
@@ -4911,12 +4968,15 @@ rules:
             .logs
             .iter()
             .any(|log| log.level == "warning" && log.message.contains(&message)));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn runtime_log_page_excludes_arkit_framework_targets() {
         let _guard = TEST_LOG_LOCK.lock().unwrap();
-        let core = CoreHandle::new();
+        let root =
+            std::env::temp_dir().join(format!("hmeta-runtime-filter-test-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
         let message = format!("arkit framework log {}", now_unix_nanos());
 
         tracing::warn!(target: "arkit::renderer", "{}", message);
@@ -4930,12 +4990,14 @@ rules:
         assert!(is_vpn_log_target("hmeta_vpn::tun"));
         assert!(is_vpn_log_target("meow_tunnel::dispatcher"));
         assert!(!is_vpn_log_target("arkit::renderer"));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn clear_logs_removes_state_and_runtime_logs() {
         let _guard = TEST_LOG_LOCK.lock().unwrap();
-        let core = CoreHandle::new();
+        let root = std::env::temp_dir().join(format!("hmeta-clear-log-test-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
         {
             let mut state = core.lock_state().unwrap();
             state.logs.push(warning_log("state log to clear"));
@@ -4946,6 +5008,7 @@ rules:
         core.clear_logs().unwrap();
 
         assert!(core.snapshot().unwrap().logs.is_empty());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

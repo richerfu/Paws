@@ -119,8 +119,12 @@ pub(crate) enum Action {
     ExternalUrlOpened(Result<(), String>),
     ClearRequestHistory,
     RequestHistoryCleared(Result<RuntimeSnapshot, String>),
-    ClearLogs,
-    LogsCleared(Result<RuntimeSnapshot, String>),
+    ToggleLogRecording,
+    LogRecordingChanged(Result<LogRecordingChangeResult, String>),
+    ExportLogArchive(String),
+    LogArchiveExported(Result<String, String>),
+    DeleteLogArchive(String),
+    LogArchiveDeleted(Result<LogArchiveDeleteResult, String>),
     ResetProfileImportFeedback,
     ImportLocalProfile,
     ScanProfileSubscription {
@@ -218,6 +222,10 @@ pub(crate) struct State {
     proxy_selection_pending: Option<(String, String)>,
     proxy_delay_loading: bool,
     controller_diagnostic_pending: Option<String>,
+    log_recording: hmeta_core::LogRecordingStatus,
+    log_recording_pending: bool,
+    log_archive_export_pending: Option<String>,
+    log_archive_delete_pending: Option<String>,
     next_rule_lookup_id: u64,
     rule_lookup: Option<RuleLookupState>,
     manual_rule_editor: Option<ManualRuleEditorState>,
@@ -362,9 +370,23 @@ pub(crate) struct RuleImportResult {
     restart_error: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct LogRecordingChangeResult {
+    snapshot: RuntimeSnapshot,
+    status: hmeta_core::LogRecordingStatus,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LogArchiveDeleteResult {
+    file_name: String,
+    status: hmeta_core::LogRecordingStatus,
+}
+
 impl State {
     pub(crate) fn new(notifications: NotificationCenter) -> Self {
-        let snapshot = hmeta_core::shared_core().snapshot().unwrap_or_default();
+        let core = hmeta_core::shared_core();
+        let snapshot = core.snapshot().unwrap_or_default();
+        let log_recording = core.log_recording_status().unwrap_or_default();
         let preferences = UiPreferences::load();
         let locale = preferences.language.resolve(&system_language());
         let theme_dark = preferences.theme.resolve_dark(system_color_mode());
@@ -389,6 +411,10 @@ impl State {
             proxy_selection_pending: None,
             proxy_delay_loading: false,
             controller_diagnostic_pending: None,
+            log_recording,
+            log_recording_pending: false,
+            log_archive_export_pending: None,
+            log_archive_delete_pending: None,
             next_rule_lookup_id: 0,
             rule_lookup: None,
             manual_rule_editor: None,
@@ -419,12 +445,14 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
         Action::RefreshSnapshot => Command::perform(load_snapshot(), Action::SnapshotLoaded),
         Action::SnapshotLoaded(snapshot) => {
             state.snapshot = snapshot;
+            refresh_log_recording_status(state);
             reconcile_vpn_command(state);
             state.refresh_system_preferences();
             Command::none()
         }
         Action::TickSnapshot(snapshot) => {
             state.snapshot = snapshot;
+            refresh_log_recording_status(state);
             reconcile_vpn_command(state);
             state.refresh_system_preferences();
             Command::perform(delayed_snapshot(), Action::TickSnapshot)
@@ -1041,24 +1069,106 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 ),
             ),
         },
-        Action::ClearLogs => Command::perform(clear_logs_and_snapshot(), Action::LogsCleared),
-        Action::LogsCleared(result) => match result {
-            Ok(snapshot) => {
-                state.snapshot = snapshot;
-                show_toast(
-                    state,
-                    strings(state.locale).feedback_logs_cleared.to_owned(),
-                )
+        Action::ToggleLogRecording => {
+            if state.log_recording_pending {
+                return Command::none();
             }
-            Err(error) => show_toast(
-                state,
-                format!(
-                    "{}{}",
-                    strings(state.locale).feedback_logs_clear_failed_prefix,
-                    error
+            state.log_recording_pending = true;
+            let enabled = !state.log_recording.enabled;
+            Command::perform(
+                set_log_recording_and_snapshot(enabled),
+                Action::LogRecordingChanged,
+            )
+        }
+        Action::LogRecordingChanged(result) => {
+            state.log_recording_pending = false;
+            match result {
+                Ok(result) => {
+                    state.snapshot = result.snapshot;
+                    state.log_recording = result.status;
+                    show_toast(
+                        state,
+                        if state.log_recording.enabled {
+                            locale_text(state.locale, "已开始记录日志", "Log recording started")
+                        } else {
+                            locale_text(state.locale, "已停止记录日志", "Log recording stopped")
+                        }
+                        .to_owned(),
+                    )
+                }
+                Err(error) => show_toast(
+                    state,
+                    format!(
+                        "{}{error}",
+                        locale_text(
+                            state.locale,
+                            "切换日志记录失败：",
+                            "Failed to change log recording: "
+                        )
+                    ),
                 ),
-            ),
-        },
+            }
+        }
+        Action::ExportLogArchive(file_name) => {
+            if state.log_archive_export_pending.is_some()
+                || state.log_archive_delete_pending.is_some()
+            {
+                return Command::none();
+            }
+            state.log_archive_export_pending = Some(file_name.clone());
+            Command::perform(export_log_archive(file_name), Action::LogArchiveExported)
+        }
+        Action::LogArchiveExported(result) => {
+            state.log_archive_export_pending = None;
+            match result {
+                Ok(file_name) => show_toast(
+                    state,
+                    format!(
+                        "{}{file_name}",
+                        locale_text(state.locale, "日志已导出：", "Log exported: ")
+                    ),
+                ),
+                Err(error) => show_toast(
+                    state,
+                    format!(
+                        "{}{error}",
+                        locale_text(state.locale, "日志导出失败：", "Failed to export log: ")
+                    ),
+                ),
+            }
+        }
+        Action::DeleteLogArchive(file_name) => {
+            if state.log_archive_export_pending.is_some()
+                || state.log_archive_delete_pending.is_some()
+            {
+                return Command::none();
+            }
+            state.log_archive_delete_pending = Some(file_name.clone());
+            Command::perform(delete_log_archive(file_name), Action::LogArchiveDeleted)
+        }
+        Action::LogArchiveDeleted(result) => {
+            state.log_archive_delete_pending = None;
+            match result {
+                Ok(result) => {
+                    state.log_recording = result.status;
+                    show_toast(
+                        state,
+                        format!(
+                            "{}{}",
+                            locale_text(state.locale, "日志已删除：", "Log deleted: "),
+                            result.file_name
+                        ),
+                    )
+                }
+                Err(error) => show_toast(
+                    state,
+                    format!(
+                        "{}{error}",
+                        locale_text(state.locale, "日志删除失败：", "Failed to delete log: ")
+                    ),
+                ),
+            }
+        }
         Action::ResetProfileImportFeedback => {
             state.profile_import_error = None;
             state.profile_import_succeeded = false;
@@ -2596,11 +2706,43 @@ async fn clear_request_history_and_snapshot() -> Result<RuntimeSnapshot, String>
     Ok(load_snapshot().await)
 }
 
-async fn clear_logs_and_snapshot() -> Result<RuntimeSnapshot, String> {
-    hmeta_core::shared_core()
-        .clear_logs()
+fn refresh_log_recording_status(state: &mut State) {
+    if let Ok(status) = hmeta_core::shared_core().log_recording_status() {
+        state.log_recording = status;
+    }
+}
+
+fn locale_text(locale: UiLocale, zh: &'static str, en: &'static str) -> &'static str {
+    if locale == UiLocale::ZhCn {
+        zh
+    } else {
+        en
+    }
+}
+
+async fn set_log_recording_and_snapshot(enabled: bool) -> Result<LogRecordingChangeResult, String> {
+    let status = hmeta_core::shared_core()
+        .set_log_recording_enabled(enabled)
         .map_err(|error| error.to_string())?;
-    Ok(load_snapshot().await)
+    Ok(LogRecordingChangeResult {
+        snapshot: load_snapshot().await,
+        status,
+    })
+}
+
+async fn export_log_archive(file_name: String) -> Result<String, String> {
+    let content = hmeta_core::shared_core()
+        .read_log_archive(&file_name)
+        .map_err(|error| error.to_string())?;
+    crate::platform_callbacks::export_log(file_name.clone(), content).await?;
+    Ok(file_name)
+}
+
+async fn delete_log_archive(file_name: String) -> Result<LogArchiveDeleteResult, String> {
+    let status = hmeta_core::shared_core()
+        .delete_log_archive(&file_name)
+        .map_err(|error| error.to_string())?;
+    Ok(LogArchiveDeleteResult { file_name, status })
 }
 
 async fn set_rule_enabled_and_snapshot(

@@ -41,7 +41,7 @@ interface HMetaSnapshot {
   vpnOptions?: Record<string, Object>;
 }
 
-interface HMetaProfileExportRequest {
+interface HMetaTextExportRequest {
   suggestedName?: string;
   content?: string;
 }
@@ -118,27 +118,57 @@ export default class EntryAbility extends NativeAbility {
   }
 
   private async exportProfileToSystem(requestJson: string): Promise<void> {
-    let request: HMetaProfileExportRequest;
+    await this.exportTextToSystem(
+      requestJson,
+      'profile',
+      '.yaml',
+      ['.yaml', '.yml'],
+      ['YAML|.yaml,.yml'],
+      'profile YAML',
+    );
+  }
+
+  private async exportLogToSystem(requestJson: string): Promise<void> {
+    await this.exportTextToSystem(
+      requestJson,
+      'paws-log',
+      '.log',
+      ['.log'],
+      ['Log|.log', 'Text|.txt'],
+      'log',
+    );
+  }
+
+  private async exportTextToSystem(
+    requestJson: string,
+    fallbackName: string,
+    extension: string,
+    acceptedExtensions: Array<string>,
+    suffixChoices: Array<string>,
+    label: string,
+  ): Promise<void> {
+    let request: HMetaTextExportRequest;
     try {
-      request = JSON.parse(requestJson) as HMetaProfileExportRequest;
+      request = JSON.parse(requestJson) as HMetaTextExportRequest;
     } catch (err) {
-      throw new Error(`invalid profile export request: ${describeError(err)}`);
+      throw new Error(`invalid ${label} export request: ${describeError(err)}`);
     }
     const content = request.content ?? '';
     if (content.length === 0) {
-      throw new Error('profile export content is empty');
+      throw new Error(`${label} export content is empty`);
     }
-    const baseName = (request.suggestedName ?? 'profile')
+    const baseName = (request.suggestedName ?? fallbackName)
       .replace(/[\\/:*?"<>|]/g, '_')
-      .trim() || 'profile';
-    const fileName = baseName.endsWith('.yaml') || baseName.endsWith('.yml') ? baseName : `${baseName}.yaml`;
+      .trim() || fallbackName;
+    const hasExtension = acceptedExtensions.some((value: string) => baseName.endsWith(value));
+    const fileName = hasExtension ? baseName : `${baseName}${extension}`;
     const documentPicker = new picker.DocumentViewPicker();
     const options = new picker.DocumentSaveOptions();
     options.newFileNames = [fileName];
-    options.fileSuffixChoices = ['YAML|.yaml,.yml'];
+    options.fileSuffixChoices = suffixChoices;
     const result = await documentPicker.save(options);
     if (!result || result.length === 0 || result[0].length === 0) {
-      throw new Error('profile export cancelled');
+      throw new Error(`${label} export cancelled`);
     }
     let file: fileIo.File | undefined = undefined;
     try {
@@ -147,15 +177,15 @@ export default class EntryAbility extends NativeAbility {
         fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC,
       );
       fileIo.writeSync(file.fd, content);
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'exported profile YAML');
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'exported %{public}s', label);
     } catch (err) {
-      throw new Error(describeError(err) || 'write exported profile failed');
+      throw new Error(describeError(err) || `write exported ${label} failed`);
     } finally {
       if (file) {
         try {
           fileIo.closeSync(file);
         } catch (err) {
-          hilog.error(LOG_DOMAIN, LOG_TAG, 'close exported profile failed %{public}s', describeError(err));
+          hilog.error(LOG_DOMAIN, LOG_TAG, 'close exported file failed %{public}s', describeError(err));
         }
       }
     }
@@ -609,6 +639,7 @@ export default class EntryAbility extends NativeAbility {
         openExternalUrl: async (url: string) => await this.openExternalUrl(url),
         copyText: async (text: string) => await this.copyText(text),
         exportProfile: async (requestJson: string) => await this.exportProfileToSystem(requestJson),
+        exportLog: async (requestJson: string) => await this.exportLogToSystem(requestJson),
         setColorMode: async (colorMode: number) => this.setAppColorMode(colorMode),
       });
       hilog.info(LOG_DOMAIN, LOG_TAG, 'registered native platform callbacks');

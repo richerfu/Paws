@@ -119,6 +119,36 @@ fn profile_export_reaches_the_harmony_document_picker() {
 }
 
 #[test]
+fn log_recording_is_opt_in_with_daily_history_and_export() {
+    let page = section(VIEW, "fn logs_page", "struct VirtualLogRow");
+
+    assert!(page.contains("Action::ToggleLogRecording"));
+    assert!(page.contains("\"play\""));
+    assert!(page.contains("\"square\""));
+    assert!(page.contains("history_open"));
+    assert!(page.contains("log_recording.archives"));
+    assert!(page.contains("VirtualLogArchiveList"));
+    assert!(page.contains("Action::ExportLogArchive"));
+    assert!(page.contains("Action::DeleteLogArchive"));
+    assert!(page.contains("log_archive_delete_dialog"));
+    assert!(page.contains("此操作无法撤销"));
+    assert!(!page.contains("archive_rows"));
+    let archive_list = section(VIEW, "fn VirtualLogArchiveList(", "fn VirtualLogList(");
+    assert!(archive_list.contains("VirtualKind::List"));
+    assert!(archive_list.contains("use_virtual_node_adapter_items_keyed"));
+    assert!(archive_list.contains("list_cached_count: 12_i32"));
+    assert!(archive_list.contains("on_delete"));
+    assert!(UI.contains("set_log_recording_enabled"));
+    assert!(UI.contains("read_log_archive"));
+    assert!(UI.contains("delete_log_archive"));
+    assert!(UI.contains("platform_callbacks::export_log"));
+    assert!(PLATFORM_CALLBACKS.contains("exportLog"));
+    assert!(ENTRY_ABILITY.contains("exportLog: async"));
+    assert!(ENTRY_ABILITY.contains("DocumentSaveOptions"));
+    assert!(ENTRY_ABILITY.contains("'.log'"));
+}
+
+#[test]
 fn subscription_scan_reaches_scankit_and_the_import_pipeline() {
     let dialog = section(VIEW, "fn profile_import_dialog", "fn yaml_editor_dialog");
 

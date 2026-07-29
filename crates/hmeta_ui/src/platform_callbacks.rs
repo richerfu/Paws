@@ -35,6 +35,10 @@ type ExportProfileCall<'a> = Function<'a, String, Unknown<'a>>;
 type ExportProfileThreadsafeFunction =
     ThreadsafeFunction<String, Unknown<'static>, String, Status, false>;
 type ExportProfileSlot = LazyLock<RwLock<Option<Arc<ExportProfileThreadsafeFunction>>>>;
+type ExportLogCall<'a> = Function<'a, String, Unknown<'a>>;
+type ExportLogThreadsafeFunction =
+    ThreadsafeFunction<String, Unknown<'static>, String, Status, false>;
+type ExportLogSlot = LazyLock<RwLock<Option<Arc<ExportLogThreadsafeFunction>>>>;
 type SetColorModeCall<'a> = Function<'a, i32, Unknown<'a>>;
 type SetColorModeThreadsafeFunction = ThreadsafeFunction<i32, Unknown<'static>, i32, Status, false>;
 type SetColorModeSlot = LazyLock<RwLock<Option<Arc<SetColorModeThreadsafeFunction>>>>;
@@ -46,6 +50,7 @@ static REQUEST_STOP_VPN: VpnStopSlot = LazyLock::new(|| RwLock::new(None));
 static OPEN_EXTERNAL_URL: OpenExternalUrlSlot = LazyLock::new(|| RwLock::new(None));
 static COPY_TEXT: CopyTextSlot = LazyLock::new(|| RwLock::new(None));
 static EXPORT_PROFILE: ExportProfileSlot = LazyLock::new(|| RwLock::new(None));
+static EXPORT_LOG: ExportLogSlot = LazyLock::new(|| RwLock::new(None));
 static SET_COLOR_MODE: SetColorModeSlot = LazyLock::new(|| RwLock::new(None));
 
 pub(crate) fn register_platform_callbacks(callbacks: Object<'static>) -> Result<()> {
@@ -82,6 +87,10 @@ pub(crate) fn register_platform_callbacks(callbacks: Object<'static>) -> Result<
         let export_profile: ExportProfileCall<'static> =
             callbacks.get_named_property("exportProfile")?;
         set_export_profile(export_profile)?;
+    }
+    if callbacks.has_named_property("exportLog")? {
+        let export_log: ExportLogCall<'static> = callbacks.get_named_property("exportLog")?;
+        set_export_log(export_log)?;
     }
     if callbacks.has_named_property("setColorMode")? {
         let set_color_mode: SetColorModeCall<'static> =
@@ -171,6 +180,18 @@ fn set_export_profile(export_profile: ExportProfileCall<'static>) -> Result<()> 
     EXPORT_PROFILE
         .write()
         .map_err(|_| Error::from_reason("failed to store profile export callback"))?
+        .replace(Arc::new(tsfn));
+    Ok(())
+}
+
+fn set_export_log(export_log: ExportLogCall<'static>) -> Result<()> {
+    let tsfn = export_log
+        .build_threadsafe_function()
+        .callee_handled::<false>()
+        .build()?;
+    EXPORT_LOG
+        .write()
+        .map_err(|_| Error::from_reason("failed to store log export callback"))?
         .replace(Arc::new(tsfn));
     Ok(())
 }
@@ -292,6 +313,24 @@ pub(crate) async fn export_profile(
     })
     .to_string();
     invoke_string_void_callback(tsfn, request, "profile export").await
+}
+
+pub(crate) async fn export_log(
+    suggested_name: String,
+    content: String,
+) -> std::result::Result<(), String> {
+    let tsfn = EXPORT_LOG
+        .read()
+        .map_err(|_| "failed to read log export callback".to_owned())?
+        .as_ref()
+        .map(Arc::clone)
+        .ok_or_else(|| "log export callback is not registered".to_owned())?;
+    let request = serde_json::json!({
+        "suggestedName": suggested_name,
+        "content": content,
+    })
+    .to_string();
+    invoke_string_void_callback(tsfn, request, "log export").await
 }
 
 async fn pick_files() -> Result<Vec<String>> {
