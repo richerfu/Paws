@@ -1975,6 +1975,7 @@ dependencies = [
  "meow-listener",
  "meow-proxy",
  "meow-tunnel",
+ "ohos-ashmem-binding",
  "once_cell",
  "parking_lot",
  "reqwest",
@@ -2027,7 +2028,7 @@ dependencies = [
  "napi-ohos",
  "ohos-fileshare-binding",
  "ohos-fileuri-binding",
- "ohos-resource-manager-binding 0.3.1",
+ "ohos-resource-manager-binding 0.3.2",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -3483,6 +3484,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ohos-ashmem-binding"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0341c866ff5fcb51dfa30f583f68d0434f965fdbcc9d67d92b4fcd53a07dabd"
+dependencies = [
+ "bitflags 2.11.1",
+ "libc",
+]
+
+[[package]]
 name = "ohos-display-binding"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3522,7 +3533,7 @@ dependencies = [
 
 [[package]]
 name = "ohos-fileshare-binding"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "libc",
  "ohos-fileshare-sys",
@@ -3530,11 +3541,11 @@ dependencies = [
 
 [[package]]
 name = "ohos-fileshare-sys"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "ohos-fileuri-binding"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "libc",
  "ohos-fileuri-sys",
@@ -3542,7 +3553,7 @@ dependencies = [
 
 [[package]]
 name = "ohos-fileuri-sys"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "ohos-hilog-binding"
@@ -3570,7 +3581,7 @@ dependencies = [
  "napi-sys-ohos",
  "ohos-enum-derive",
  "ohos-image-sys",
- "ohos-resource-manager-sys 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ohos-resource-manager-sys 0.3.1",
 ]
 
 [[package]]
@@ -3585,7 +3596,7 @@ dependencies = [
  "ohos-image-native-sys",
  "ohos-native-buffer-binding",
  "ohos-native-buffer-sys",
- "ohos-resource-manager-sys 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ohos-resource-manager-sys 0.3.1",
 ]
 
 [[package]]
@@ -3596,7 +3607,7 @@ checksum = "ecaf660fe05ccff647ab201307e5d739eb01edc821744f3a9c6840032006d40b"
 dependencies = [
  "napi-sys-ohos",
  "ohos-native-buffer-sys",
- "ohos-resource-manager-sys 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ohos-resource-manager-sys 0.3.1",
 ]
 
 [[package]]
@@ -3606,7 +3617,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4a94ccf32afe0522c34647e17a9ba1ab39b39399207b3b3ffc21d03cd9cb152"
 dependencies = [
  "napi-sys-ohos",
- "ohos-resource-manager-sys 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ohos-resource-manager-sys 0.3.1",
 ]
 
 [[package]]
@@ -3663,6 +3674,8 @@ dependencies = [
 [[package]]
 name = "ohos-resource-manager-binding"
 version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da00ab3e5b1322647c40b2c49f2fadc42df04b51884f3e5817ee62a235224ce7"
 dependencies = [
  "napi-ohos",
  "ohos-resource-manager-sys 0.3.1",
@@ -3670,19 +3683,10 @@ dependencies = [
 
 [[package]]
 name = "ohos-resource-manager-binding"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da00ab3e5b1322647c40b2c49f2fadc42df04b51884f3e5817ee62a235224ce7"
+version = "0.3.2"
 dependencies = [
  "napi-ohos",
- "ohos-resource-manager-sys 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
-]
-
-[[package]]
-name = "ohos-resource-manager-sys"
-version = "0.3.1"
-dependencies = [
- "napi-sys-ohos",
+ "ohos-resource-manager-sys 0.3.2",
 ]
 
 [[package]]
@@ -3690,6 +3694,13 @@ name = "ohos-resource-manager-sys"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf0e3a4f14001ff137b01a80d021b436c4777a4b8cd2a318c9575b796ba9c918"
+dependencies = [
+ "napi-sys-ohos",
+]
+
+[[package]]
+name = "ohos-resource-manager-sys"
+version = "0.3.2"
 dependencies = [
  "napi-sys-ohos",
 ]
@@ -3794,7 +3805,7 @@ dependencies = [
  "ohos-arkui-binding",
  "ohos-display-binding",
  "ohos-ime-binding",
- "ohos-resource-manager-binding 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ohos-resource-manager-binding 0.3.1",
  "ohos-web-binding",
  "ohos-xcomponent-binding",
 ]

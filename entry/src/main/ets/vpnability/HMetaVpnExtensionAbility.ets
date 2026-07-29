@@ -9,6 +9,7 @@ import {
   HMETA_ENTRY_ABILITY,
   HMETA_MODULE_NAME,
   parseOptions,
+  readPlatformSharedMemoryFds,
   readOptionsJson,
   currentHMetaBundleName,
   setHMetaBundleName,
@@ -87,6 +88,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
   private lastNotificationText: string = '';
   private notificationWantAgent?: WantAgent;
   private notificationWantAgentRequest?: Promise<WantAgent>;
+  private platformSubscriptionActive: boolean = false;
 
   public onCreate(want: Want): void {
     super.onCreate(want);
@@ -121,6 +123,22 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     }
     this.starting = true;
     this.configureNativeHome();
+    const sharedMemory = readPlatformSharedMemoryFds(want);
+    if (!sharedMemory) {
+      this.starting = false;
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN start is missing platform shared memory descriptors');
+      this.recordVpnFailure('VPN start is missing platform shared memory descriptors');
+      return;
+    }
+    try {
+      hmetaUi.attachPlatformSharedMemory(sharedMemory.ashmemFd, sharedMemory.notificationFd);
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'attached platform shared memory');
+      this.startPlatformSubscription();
+    } catch (err) {
+      this.starting = false;
+      this.recordVpnFailure(`attach platform shared memory failed: ${describeError(err)}`);
+      return;
+    }
     try {
       hmetaUi.setPlatformVpnStarting(true);
     } catch (err) {
@@ -206,6 +224,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
   }
 
   private destroyVpn(): void {
+    this.stopPlatformSubscription();
     this.stopTelemetry();
     this.stopSpeedNotification();
     hmetaUi.stopVpn()
@@ -222,6 +241,32 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     this.vpnConnection = undefined;
     this.tunFd = -1;
     this.starting = false;
+  }
+
+  private startPlatformSubscription(): void {
+    if (this.platformSubscriptionActive) {
+      return;
+    }
+    this.platformSubscriptionActive = true;
+    this.runPlatformSubscription();
+  }
+
+  private stopPlatformSubscription(): void {
+    this.platformSubscriptionActive = false;
+  }
+
+  private async runPlatformSubscription(): Promise<void> {
+    while (this.platformSubscriptionActive) {
+      try {
+        const changed = await hmetaUi.waitForPlatformChange(1000);
+        if (changed && this.platformSubscriptionActive) {
+          hmetaUi.syncPlatformChanges();
+        }
+      } catch (err) {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'platform subscription failed %{public}s', describeError(err));
+        this.platformSubscriptionActive = false;
+      }
+    }
   }
 
   private startTelemetry(): void {
