@@ -1975,6 +1975,7 @@ dependencies = [
  "meow-listener",
  "meow-proxy",
  "meow-tunnel",
+ "ohos-ashmem-binding",
  "once_cell",
  "parking_lot",
  "reqwest",
@@ -3482,6 +3483,16 @@ dependencies = [
  "ohos-image-native-sys",
  "ohos-native-drawing-sys",
  "ohos-udmf-sys",
+]
+
+[[package]]
+name = "ohos-ashmem-binding"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0341c866ff5fcb51dfa30f583f68d0434f965fdbcc9d67d92b4fcd53a07dabd"
+dependencies = [
+ "bitflags 2.11.1",
+ "libc",
 ]
 
 [[package]]

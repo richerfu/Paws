@@ -49,6 +49,36 @@ pub fn configure_app_home(home_dir: String) -> Result<()> {
 }
 
 #[napi]
+pub fn initialize_platform_shared_memory() -> Result<String> {
+    let fds = hmeta_core::shared_core()
+        .initialize_platform_shared_memory()
+        .map_err(to_napi_error)?;
+    Ok(format!("{},{}", fds.ashmem_fd, fds.notification_fd))
+}
+
+#[napi]
+pub fn attach_platform_shared_memory(ashmem_fd: i32, notification_fd: i32) -> Result<()> {
+    hmeta_core::shared_core()
+        .attach_platform_shared_memory(ashmem_fd, notification_fd)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub async fn wait_for_platform_change(timeout_ms: u32) -> Result<bool> {
+    hmeta_core::shared_core()
+        .wait_for_platform_change(std::time::Duration::from_millis(u64::from(timeout_ms)))
+        .await
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn sync_platform_changes() -> Result<()> {
+    hmeta_core::shared_core()
+        .sync_platform_changes()
+        .map_err(to_napi_error)
+}
+
+#[napi]
 pub fn configure_ui_locale(locale: String) -> Result<()> {
     std::env::set_var("HMETA_UI_LOCALE", locale);
     Ok(())

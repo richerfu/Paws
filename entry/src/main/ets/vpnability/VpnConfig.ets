@@ -119,16 +119,52 @@ export class HMetaVpnConfig {
   }
 }
 
-export function buildVpnWant(optionsJson?: string): Want {
+const HMETA_ASHMEM_FD_KEY = 'hmetaPlatformAshmem';
+const HMETA_NOTIFICATION_FD_KEY = 'hmetaPlatformNotification';
+
+export interface HMetaPlatformSharedMemoryFds {
+  ashmemFd: number;
+  notificationFd: number;
+}
+
+class HMetaWantFileDescriptor {
+  public type: string = 'FD';
+  public value: number;
+
+  constructor(value: number) {
+    this.value = value;
+  }
+}
+
+interface HMetaVpnWantParameters extends Record<string, Object> {
+  optionsJson: string;
+}
+
+export function buildVpnWant(optionsJson?: string, sharedMemory?: HMetaPlatformSharedMemoryFds): Want {
+  const parameters: HMetaVpnWantParameters = {
+    optionsJson: optionsJson ?? '',
+  };
+  if (sharedMemory) {
+    parameters[HMETA_ASHMEM_FD_KEY] = new HMetaWantFileDescriptor(sharedMemory.ashmemFd);
+    parameters[HMETA_NOTIFICATION_FD_KEY] = new HMetaWantFileDescriptor(sharedMemory.notificationFd);
+  }
   return {
     deviceId: '',
     bundleName: currentHMetaBundleName(),
     moduleName: HMETA_MODULE_NAME,
     abilityName: HMETA_VPN_ABILITY,
-    parameters: {
-      optionsJson: optionsJson ?? '',
-    },
+    parameters,
   };
+}
+
+export function readPlatformSharedMemoryFds(want: Want): HMetaPlatformSharedMemoryFds | undefined {
+  const ashmemFd = want.fds?.[HMETA_ASHMEM_FD_KEY];
+  const notificationFd = want.fds?.[HMETA_NOTIFICATION_FD_KEY];
+  if (typeof ashmemFd !== 'number' || ashmemFd < 0 ||
+    typeof notificationFd !== 'number' || notificationFd < 0) {
+    return undefined;
+  }
+  return { ashmemFd, notificationFd };
 }
 
 export function readOptionsJson(value?: string): string {

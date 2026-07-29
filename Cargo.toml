@@ -15,6 +15,7 @@ hmeta_core = { path = "crates/hmeta_core" }
 hmeta_vpn = { path = "crates/hmeta_vpn" }
 
 arkit = { git = "https://github.com/richerfu/arkit.git", rev = "fffbc35e0cbf7325e93a5fd849fab930b2f321ac", package = "arkit", features = ["router", "shadcn"] }
+ohos-ashmem-binding = "0.1.0"
 
 meow-api = "0.18.0"
 meow-common = "0.18.0"

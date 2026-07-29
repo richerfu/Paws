@@ -13,6 +13,14 @@ export declare function clearRequestHistory(): void
 
 export declare function configureAppHome(homeDir: string): void
 
+export declare function initializePlatformSharedMemory(): string
+
+export declare function attachPlatformSharedMemory(ashmemFd: number, notificationFd: number): void
+
+export declare function waitForPlatformChange(timeoutMs: number): Promise<boolean>
+
+export declare function syncPlatformChanges(): void
+
 export declare function configureSystemColorMode(colorMode: number): void
 
 export declare function configureUiLocale(locale: string): void
