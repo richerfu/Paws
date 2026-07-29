@@ -2041,7 +2041,9 @@ async fn load_snapshot() -> RuntimeSnapshot {
 }
 
 async fn delayed_snapshot() -> RuntimeSnapshot {
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    let _ = hmeta_core::shared_core()
+        .wait_for_platform_change(Duration::from_millis(1000))
+        .await;
     load_snapshot().await
 }
 

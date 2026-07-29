@@ -8,7 +8,11 @@ import { scanBarcode, scanCore } from '@kit.ScanKit';
 import { NativeAbility } from '@ohos-rs/ability';
 import hmetaUi from 'libhmeta_ui.so';
 import window from '@ohos.window';
-import { buildVpnWant, setHMetaBundleName } from '../vpnability/VpnConfig';
+import {
+  buildVpnWant,
+  HMetaPlatformSharedMemoryFds,
+  setHMetaBundleName,
+} from '../vpnability/VpnConfig';
 
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'HMetaEntry';
@@ -75,6 +79,7 @@ export default class EntryAbility extends NativeAbility {
   public moduleName: string | string[] = 'hmeta_ui';
   public defaultPage: boolean = false;
   private vpnStartRequest: Promise<void> | undefined = undefined;
+  private platformSharedMemory?: HMetaPlatformSharedMemoryFds;
 
   private async pickProfileFileFromSystem(): Promise<Array<string>> {
     try {
@@ -189,7 +194,7 @@ export default class EntryAbility extends NativeAbility {
       });
       try {
         await Promise.race([
-          vpnExtension.startVpnExtensionAbility(buildVpnWant(optionsJson)),
+          vpnExtension.startVpnExtensionAbility(buildVpnWant(optionsJson, this.platformSharedMemory)),
           startupTimeout,
         ]);
       } finally {
@@ -304,6 +309,18 @@ export default class EntryAbility extends NativeAbility {
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'configure native home failed %{public}s', describeError(err));
     }
+  }
+
+  private initializePlatformSharedMemory(): void {
+    const fields = hmetaUi.initializePlatformSharedMemory().split(',');
+    const ashmemFd = Number(fields[0]);
+    const notificationFd = Number(fields[1]);
+    if (fields.length !== 2 || !Number.isInteger(ashmemFd) || ashmemFd < 0 ||
+      !Number.isInteger(notificationFd) || notificationFd < 0) {
+      throw new Error('native platform shared memory returned invalid file descriptors');
+    }
+    this.platformSharedMemory = { ashmemFd, notificationFd };
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'initialized platform shared memory');
   }
 
   private configureNativeLocale(language?: string): void {
@@ -566,6 +583,7 @@ export default class EntryAbility extends NativeAbility {
     try {
       setHMetaBundleName(this.context.applicationInfo.name);
       this.configureNativeHome();
+      this.initializePlatformSharedMemory();
       this.configureNativeLocale();
       this.configureNativeAppearance();
       this.seedGeodataFromRawfiles();

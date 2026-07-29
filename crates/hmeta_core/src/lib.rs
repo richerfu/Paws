@@ -28,11 +28,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Once;
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::Level;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::Layer;
+
+mod platform_ipc;
+
+use platform_ipc::PlatformIpc;
 
 static CORE: Lazy<Arc<CoreHandle>> = Lazy::new(|| Arc::new(CoreHandle::new()));
 static RUNTIME_LOGS: Lazy<Arc<Mutex<VecDeque<LogEntry>>>> =
@@ -45,9 +49,6 @@ const MAX_RUNTIME_LOGS: usize = 256;
 const MAX_API_LOG_SENDERS: usize = 8;
 const MAX_REQUEST_HISTORY: usize = 128;
 const MAX_TRAFFIC_HISTORY: usize = 32;
-const PLATFORM_VPN_STATE_FILE: &str = "platform-vpn-state.json";
-const PLATFORM_VPN_CONTROL_FILE: &str = "platform-vpn-control.json";
-const PLATFORM_VPN_TELEMETRY_FILE: &str = "platform-vpn-telemetry.json";
 const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = "1.0.0";
@@ -134,6 +135,8 @@ struct CoreState {
     platform_vpn_running: bool,
     platform_network_protected: bool,
     platform_network_protect_error: Option<String>,
+    platform_vpn_state_updated_at: u128,
+    platform_vpn_control_updated_at: u128,
     mode: RuntimeMode,
     profiles: ProfileStore,
     tunnel: Option<Tunnel>,
@@ -184,6 +187,8 @@ impl Default for CoreState {
             platform_vpn_running: false,
             platform_network_protected: false,
             platform_network_protect_error: None,
+            platform_vpn_state_updated_at: 0,
+            platform_vpn_control_updated_at: 0,
             mode: RuntimeMode::Rule,
             profiles,
             tunnel: None,
@@ -222,10 +227,17 @@ impl Default for CoreState {
 
 pub struct CoreHandle {
     state: Mutex<CoreState>,
+    platform_ipc: Mutex<Option<Arc<PlatformIpc>>>,
     config_reload_lock: tokio::sync::Mutex<()>,
     vpn: TunSession,
     api_controller_enabled: bool,
     api_controller_addr_override: Option<SocketAddr>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlatformSharedMemoryFds {
+    pub ashmem_fd: i32,
+    pub notification_fd: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +271,7 @@ impl CoreHandle {
         install_runtime_log_layer();
         Self {
             state: Mutex::new(CoreState::default()),
+            platform_ipc: Mutex::new(None),
             config_reload_lock: tokio::sync::Mutex::new(()),
             vpn: TunSession::default(),
             api_controller_enabled: true,
@@ -280,6 +293,8 @@ impl CoreHandle {
                 platform_vpn_running: false,
                 platform_network_protected: false,
                 platform_network_protect_error: None,
+                platform_vpn_state_updated_at: 0,
+                platform_vpn_control_updated_at: 0,
                 mode: RuntimeMode::Rule,
                 profiles,
                 tunnel: None,
@@ -313,6 +328,7 @@ impl CoreHandle {
                 last_controller_config_sync_at: None,
                 last_controller_config_sync_error: None,
             }),
+            platform_ipc: Mutex::new(None),
             config_reload_lock: tokio::sync::Mutex::new(()),
             vpn: TunSession::default(),
             api_controller_enabled: false,
@@ -333,6 +349,87 @@ impl CoreHandle {
 
     pub fn shared() -> Arc<Self> {
         CORE.clone()
+    }
+
+    pub fn initialize_platform_shared_memory(&self) -> Result<PlatformSharedMemoryFds, HMetaError> {
+        {
+            let platform = self
+                .platform_ipc
+                .lock()
+                .map_err(|_| HMetaError::Core("platform IPC lock poisoned".to_owned()))?;
+            if let Some(platform) = platform.as_ref() {
+                let fds = platform.ui_fds().map_err(platform_ipc_error)?;
+                return Ok(PlatformSharedMemoryFds {
+                    ashmem_fd: fds.ashmem,
+                    notification_fd: fds.notification,
+                });
+            }
+        }
+
+        let (platform, fds) = platform_ipc::PlatformIpc::create_ui().map_err(platform_ipc_error)?;
+        {
+            let mut slot = self
+                .platform_ipc
+                .lock()
+                .map_err(|_| HMetaError::Core("platform IPC lock poisoned".to_owned()))?;
+            *slot = Some(platform);
+        }
+        let mut state = self.lock_state()?;
+        self.persist_platform_vpn_state_locked(&mut state)?;
+        let mode = state.mode;
+        let global_proxy = current_global_proxy(&state);
+        self.persist_platform_vpn_control_locked(&mut state, mode, global_proxy)?;
+        Ok(PlatformSharedMemoryFds {
+            ashmem_fd: fds.ashmem,
+            notification_fd: fds.notification,
+        })
+    }
+
+    pub fn attach_platform_shared_memory(
+        &self,
+        ashmem_fd: i32,
+        notification_fd: i32,
+    ) -> Result<(), HMetaError> {
+        let platform = platform_ipc::PlatformIpc::attach_vpn_raw(ashmem_fd, notification_fd)
+            .map_err(platform_ipc_error)?;
+        let previous = {
+            let mut slot = self
+                .platform_ipc
+                .lock()
+                .map_err(|_| HMetaError::Core("platform IPC lock poisoned".to_owned()))?;
+            slot.replace(platform)
+        };
+        // A VPN Extension process can outlive and be reused by the UI
+        // process. Always replace the old ashmem session with the descriptors
+        // from the latest Want so state is published back to the current UI.
+        drop(previous);
+        self.sync_platform_changes()
+    }
+
+    pub fn sync_platform_changes(&self) -> Result<(), HMetaError> {
+        let mut state = self.lock_state()?;
+        self.sync_platform_vpn_state_locked(&mut state);
+        Ok(())
+    }
+
+    pub async fn wait_for_platform_change(&self, timeout: Duration) -> Result<bool, HMetaError> {
+        let Some(platform) = self.platform_ipc()? else {
+            tokio::time::sleep(timeout).await;
+            return Ok(false);
+        };
+        tokio::task::spawn_blocking(move || platform.wait_for_change(timeout))
+            .await
+            .map_err(|error| {
+                HMetaError::Core(format!("platform subscription task failed: {error}"))
+            })?
+            .map_err(platform_ipc_error)
+    }
+
+    fn platform_ipc(&self) -> Result<Option<Arc<PlatformIpc>>, HMetaError> {
+        self.platform_ipc
+            .lock()
+            .map(|platform| platform.clone())
+            .map_err(|_| HMetaError::Core("platform IPC lock poisoned".to_owned()))
     }
 
     pub async fn import_profile_from_url(
@@ -794,7 +891,7 @@ impl CoreHandle {
         self.vpn
             .start(fd, options.clone(), tunnel, sniffer_config)?;
         let mut state = self.lock_state()?;
-        sync_platform_vpn_state(&mut state);
+        self.sync_platform_vpn_state_locked(&mut state);
         state.vpn_options = options;
         state.engine_loaded = true;
         state.platform_vpn_starting = false;
@@ -802,7 +899,7 @@ impl CoreHandle {
         state
             .logs
             .push(info_log(format!("vpn started with tun fd {fd}")));
-        persist_platform_vpn_state(&state)?;
+        self.persist_platform_vpn_state_locked(&mut state)?;
         Ok(())
     }
 
@@ -971,13 +1068,13 @@ impl CoreHandle {
         state.traffic.download_speed = 0;
         state.last_traffic_sample = None;
         state.logs.push(info_log("vpn stopped"));
-        persist_platform_vpn_state(&state)?;
+        self.persist_platform_vpn_state_locked(&mut state)?;
         Ok(())
     }
 
     pub fn set_platform_vpn_starting(&self, starting: bool) -> Result<(), HMetaError> {
         let mut state = self.lock_state()?;
-        sync_platform_vpn_state(&mut state);
+        self.sync_platform_vpn_state_locked(&mut state);
         state.platform_vpn_starting = starting;
         if starting {
             state.platform_vpn_running = false;
@@ -989,12 +1086,12 @@ impl CoreHandle {
         } else {
             "platform vpn start request cleared"
         }));
-        persist_platform_vpn_state(&state)
+        self.persist_platform_vpn_state_locked(&mut state)
     }
 
     pub fn expire_platform_vpn_start(&self) -> Result<bool, HMetaError> {
         let mut state = self.lock_state()?;
-        sync_platform_vpn_state(&mut state);
+        self.sync_platform_vpn_state_locked(&mut state);
         if !state.platform_vpn_starting || state.platform_vpn_running {
             return Ok(false);
         }
@@ -1005,13 +1102,13 @@ impl CoreHandle {
         state
             .logs
             .push(warning_log("platform vpn startup timed out"));
-        persist_platform_vpn_state(&state)?;
+        self.persist_platform_vpn_state_locked(&mut state)?;
         Ok(true)
     }
 
     pub fn set_platform_vpn_failed(&self, error: String) -> Result<(), HMetaError> {
         let mut state = self.lock_state()?;
-        sync_platform_vpn_state(&mut state);
+        self.sync_platform_vpn_state_locked(&mut state);
         state.platform_vpn_starting = false;
         state.platform_vpn_running = false;
         state.platform_network_protected = false;
@@ -1019,13 +1116,13 @@ impl CoreHandle {
         state
             .logs
             .push(warning_log(format!("platform vpn start failed: {error}")));
-        persist_platform_vpn_state(&state)
+        self.persist_platform_vpn_state_locked(&mut state)
     }
 
     pub fn set_platform_vpn_running(&self, running: bool) -> Result<(), HMetaError> {
         let stats = if running { None } else { self.vpn.stats() };
         let mut state = self.lock_state()?;
-        sync_platform_vpn_state(&mut state);
+        self.sync_platform_vpn_state_locked(&mut state);
         state.platform_vpn_starting = false;
         state.platform_vpn_running = running;
         if !running {
@@ -1038,7 +1135,7 @@ impl CoreHandle {
         } else {
             "platform vpn stopped"
         }));
-        persist_platform_vpn_state(&state)
+        self.persist_platform_vpn_state_locked(&mut state)
     }
 
     pub fn set_platform_network_protected(
@@ -1047,7 +1144,7 @@ impl CoreHandle {
         error: Option<String>,
     ) -> Result<(), HMetaError> {
         let mut state = self.lock_state()?;
-        sync_platform_vpn_state(&mut state);
+        self.sync_platform_vpn_state_locked(&mut state);
         state.platform_network_protected = protected;
         state.platform_network_protect_error = error.filter(|value| !value.trim().is_empty());
         if protected {
@@ -1063,7 +1160,7 @@ impl CoreHandle {
                 .logs
                 .push(info_log("platform network protection cleared"));
         }
-        persist_platform_vpn_state(&state)
+        self.persist_platform_vpn_state_locked(&mut state)
     }
 
     pub async fn reload_config(&self, profile_id: &str) -> Result<(), HMetaError> {
@@ -1258,7 +1355,7 @@ impl CoreHandle {
 
     pub fn set_mode(&self, mode: RuntimeMode) -> Result<(), HMetaError> {
         let mut state = self.lock_state()?;
-        sync_platform_vpn_state(&mut state);
+        self.sync_platform_vpn_state_locked(&mut state);
         if mode == RuntimeMode::Global && state.tunnel.is_none() {
             return Err(HMetaError::Core(
                 "Global mode requires an active profile with at least one proxy node".to_owned(),
@@ -1269,7 +1366,7 @@ impl CoreHandle {
         } else {
             None
         };
-        persist_platform_vpn_control(&state, mode, global_proxy)?;
+        self.persist_platform_vpn_control_locked(&mut state, mode, global_proxy)?;
         state.mode = mode;
         if let Some(tunnel) = &state.tunnel {
             tunnel.set_mode(mode_to_tunnel(mode));
@@ -1357,7 +1454,8 @@ impl CoreHandle {
         } else {
             None
         };
-        persist_platform_vpn_control(&state, state.mode, global_proxy)?;
+        let mode = state.mode;
+        self.persist_platform_vpn_control_locked(&mut state, mode, global_proxy)?;
         let source = if via_controller { " via meow API" } else { "" };
         let message = if proxy_name.is_empty() {
             format!("restored automatic selection in {group_name}{source}")
@@ -2400,12 +2498,12 @@ impl CoreHandle {
         allow_platform_telemetry: bool,
     ) -> Result<RuntimeSnapshot, HMetaError> {
         let mut state = self.lock_state()?;
-        sync_platform_vpn_state(&mut state);
+        self.sync_platform_vpn_state_locked(&mut state);
         let native_vpn_running = self.vpn.is_running();
         let tun_stats = self.vpn.stats();
         let active_profile = state.profiles.active_profile().map(ToOwned::to_owned);
         let platform_telemetry = if allow_platform_telemetry && tun_stats.is_none() {
-            read_platform_vpn_telemetry(&state).filter(|telemetry| {
+            self.read_platform_vpn_telemetry().filter(|telemetry| {
                 telemetry.active_profile.as_deref() == active_profile.as_deref()
             })
         } else {
@@ -2557,11 +2655,12 @@ impl CoreHandle {
             profile_upload_bytes,
             profile_download_bytes,
         };
-        let path = {
-            let state = self.lock_state()?;
-            platform_vpn_telemetry_path(&state)
+        let Some(platform) = self.platform_ipc()? else {
+            return Ok(());
         };
-        persist_platform_vpn_telemetry_at(&path, &telemetry)
+        platform
+            .publish_telemetry(telemetry)
+            .map_err(platform_ipc_error)
     }
 
     pub fn snapshot_json(&self) -> Result<String, HMetaError> {
@@ -2647,6 +2746,143 @@ impl CoreHandle {
             "meow external-controller listening on {addr}"
         )));
         Ok(())
+    }
+
+    fn persist_platform_vpn_state_locked(&self, state: &mut CoreState) -> Result<(), HMetaError> {
+        // SystemTime can have coarser resolution than nanoseconds on device.
+        // Starting and running may otherwise receive the same timestamp, and
+        // the receiver would permanently discard the terminal state because
+        // platform synchronization accepts only strictly newer revisions.
+        state.platform_vpn_state_updated_at =
+            now_unix_nanos().max(state.platform_vpn_state_updated_at.saturating_add(1));
+        let Some(platform) = self.platform_ipc()? else {
+            return Ok(());
+        };
+        platform
+            .publish_state(platform_vpn_state(state))
+            .map_err(platform_ipc_error)
+    }
+
+    fn persist_platform_vpn_control_locked(
+        &self,
+        state: &mut CoreState,
+        mode: RuntimeMode,
+        global_proxy: Option<String>,
+    ) -> Result<(), HMetaError> {
+        let active_profile = state.profiles.active_profile().map(ToOwned::to_owned);
+        let proxy_selections = match active_profile.as_deref() {
+            Some(profile_id) => state.profiles.selected_proxies(profile_id)?,
+            None => BTreeMap::new(),
+        };
+        self.write_platform_vpn_control_locked(
+            state,
+            PlatformVpnControl {
+                mode,
+                global_proxy,
+                active_profile,
+                proxy_selections,
+                updated_at: now_unix_nanos(),
+            },
+        )
+    }
+
+    fn write_platform_vpn_control_locked(
+        &self,
+        state: &mut CoreState,
+        mut control: PlatformVpnControl,
+    ) -> Result<(), HMetaError> {
+        control.updated_at = now_unix_nanos().max(control.updated_at.saturating_add(1));
+        state.platform_vpn_control_updated_at = control.updated_at;
+        let Some(platform) = self.platform_ipc()? else {
+            return Ok(());
+        };
+        platform
+            .publish_control(control)
+            .map_err(platform_ipc_error)
+    }
+
+    fn read_platform_vpn_telemetry(&self) -> Option<PlatformVpnTelemetry> {
+        let platform = self.platform_ipc().ok().flatten()?;
+        platform.read_remote().ok().flatten()?.telemetry
+    }
+
+    fn sync_platform_vpn_state_locked(&self, state: &mut CoreState) {
+        let Some(platform) = self.platform_ipc().ok().flatten() else {
+            return;
+        };
+        let envelope = match platform.read_remote() {
+            Ok(Some(envelope)) => envelope,
+            Ok(None) => return,
+            Err(error) => {
+                state.logs.push(warning_log(format!(
+                    "read platform shared memory failed: {error}"
+                )));
+                return;
+            }
+        };
+        if let Some(remote) = envelope
+            .state
+            .filter(|remote| remote.updated_at > state.platform_vpn_state_updated_at)
+        {
+            state.platform_vpn_starting = remote.starting;
+            state.platform_vpn_running = remote.running;
+            state.platform_network_protected = remote.network_protected;
+            state.platform_network_protect_error = remote.network_protect_error;
+            state.platform_vpn_state_updated_at = remote.updated_at;
+        }
+        if let Some(control) = envelope
+            .control
+            .filter(|control| control.updated_at > state.platform_vpn_control_updated_at)
+        {
+            self.sync_platform_vpn_control_locked(state, control);
+        }
+    }
+
+    fn sync_platform_vpn_control_locked(&self, state: &mut CoreState, control: PlatformVpnControl) {
+        apply_platform_proxy_selections(state, &control);
+        let global_proxy = if control.mode == RuntimeMode::Global {
+            match apply_global_proxy_policy(state, control.global_proxy.as_deref(), false) {
+                Ok(global_proxy) => global_proxy,
+                Err(error) => {
+                    state.logs.push(warning_log(format!(
+                        "global mode synchronization rejected: {error}"
+                    )));
+                    let corrected = PlatformVpnControl {
+                        mode: state.mode,
+                        global_proxy: None,
+                        updated_at: now_unix_nanos(),
+                        ..control
+                    };
+                    let _ = self.write_platform_vpn_control_locked(state, corrected);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        if state.mode != control.mode {
+            state.mode = control.mode;
+            if let Some(tunnel) = &state.tunnel {
+                tunnel.set_mode(mode_to_tunnel(control.mode));
+            }
+            state.logs.push(info_log(format!(
+                "mode synchronized from platform control: {}",
+                control.mode.as_str()
+            )));
+        }
+        state.platform_vpn_control_updated_at = control.updated_at;
+        if control.mode == RuntimeMode::Global
+            && control.global_proxy.as_deref() != global_proxy.as_deref()
+        {
+            let mut normalized = control;
+            normalized.global_proxy = global_proxy.clone();
+            if let Some(global_proxy) = global_proxy {
+                normalized
+                    .proxy_selections
+                    .insert("GLOBAL".to_owned(), global_proxy);
+            }
+            let _ = self.write_platform_vpn_control_locked(state, normalized);
+        }
     }
 
     fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, CoreState>, HMetaError> {
@@ -3175,18 +3411,6 @@ fn dns_snapshot(options: &VpnOptions, tun_stats: Option<&TunStats>) -> DnsSnapsh
     }
 }
 
-fn platform_vpn_state_path(state: &CoreState) -> PathBuf {
-    state.profiles.root().join(PLATFORM_VPN_STATE_FILE)
-}
-
-fn platform_vpn_control_path(state: &CoreState) -> PathBuf {
-    state.profiles.root().join(PLATFORM_VPN_CONTROL_FILE)
-}
-
-fn platform_vpn_telemetry_path(state: &CoreState) -> PathBuf {
-    state.profiles.root().join(PLATFORM_VPN_TELEMETRY_FILE)
-}
-
 fn runtime_ui_cache_path(profiles: &ProfileStore) -> PathBuf {
     profiles.root().join(RUNTIME_UI_CACHE_FILE)
 }
@@ -3245,86 +3469,8 @@ fn platform_vpn_state(state: &CoreState) -> PlatformVpnState {
         running: state.platform_vpn_running,
         network_protected: state.platform_network_protected,
         network_protect_error: state.platform_network_protect_error.clone(),
-        updated_at: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0),
+        updated_at: state.platform_vpn_state_updated_at,
     }
-}
-
-fn persist_platform_vpn_state(state: &CoreState) -> Result<(), HMetaError> {
-    let path = platform_vpn_state_path(state);
-    let temp_path = path.with_extension(format!("tmp-{}", std::process::id()));
-    let content = serde_json::to_vec(&platform_vpn_state(state)).map_err(|error| {
-        HMetaError::Core(format!("serialize platform VPN state failed: {error}"))
-    })?;
-    fs::write(&temp_path, content)
-        .map_err(|error| HMetaError::Core(format!("write platform VPN state failed: {error}")))?;
-    fs::rename(&temp_path, &path).map_err(|error| {
-        let _ = fs::remove_file(&temp_path);
-        HMetaError::Core(format!("replace platform VPN state failed: {error}"))
-    })
-}
-
-fn persist_platform_vpn_control(
-    state: &CoreState,
-    mode: RuntimeMode,
-    global_proxy: Option<String>,
-) -> Result<(), HMetaError> {
-    let active_profile = state.profiles.active_profile().map(ToOwned::to_owned);
-    let proxy_selections = match active_profile.as_deref() {
-        Some(profile_id) => state.profiles.selected_proxies(profile_id)?,
-        None => BTreeMap::new(),
-    };
-    write_platform_vpn_control(
-        state,
-        &PlatformVpnControl {
-            mode,
-            global_proxy,
-            active_profile,
-            proxy_selections,
-            updated_at: now_unix_nanos(),
-        },
-    )
-}
-
-fn write_platform_vpn_control(
-    state: &CoreState,
-    control: &PlatformVpnControl,
-) -> Result<(), HMetaError> {
-    let path = platform_vpn_control_path(state);
-    let temp_path = path.with_extension(format!("tmp-{}", std::process::id()));
-    let content = serde_json::to_vec(control).map_err(|error| {
-        HMetaError::Core(format!("serialize platform VPN control failed: {error}"))
-    })?;
-    fs::write(&temp_path, content)
-        .map_err(|error| HMetaError::Core(format!("write platform VPN control failed: {error}")))?;
-    fs::rename(&temp_path, &path).map_err(|error| {
-        let _ = fs::remove_file(&temp_path);
-        HMetaError::Core(format!("replace platform VPN control failed: {error}"))
-    })
-}
-
-fn persist_platform_vpn_telemetry_at(
-    path: &Path,
-    telemetry: &PlatformVpnTelemetry,
-) -> Result<(), HMetaError> {
-    let temp_path = path.with_extension(format!("tmp-{}", std::process::id()));
-    let content = serde_json::to_vec(telemetry).map_err(|error| {
-        HMetaError::Core(format!("serialize platform VPN telemetry failed: {error}"))
-    })?;
-    fs::write(&temp_path, content).map_err(|error| {
-        HMetaError::Core(format!("write platform VPN telemetry failed: {error}"))
-    })?;
-    fs::rename(&temp_path, path).map_err(|error| {
-        let _ = fs::remove_file(&temp_path);
-        HMetaError::Core(format!("replace platform VPN telemetry failed: {error}"))
-    })
-}
-
-fn read_platform_vpn_telemetry(state: &CoreState) -> Option<PlatformVpnTelemetry> {
-    let content = fs::read(platform_vpn_telemetry_path(state)).ok()?;
-    serde_json::from_slice(&content).ok()
 }
 
 fn now_unix_nanos() -> u128 {
@@ -3334,17 +3480,17 @@ fn now_unix_nanos() -> u128 {
         .unwrap_or(0)
 }
 
-fn sync_platform_vpn_state(state: &mut CoreState) {
-    let path = platform_vpn_state_path(state);
-    if let Ok(content) = fs::read(&path) {
-        if let Ok(platform) = serde_json::from_slice::<PlatformVpnState>(&content) {
-            state.platform_vpn_starting = platform.starting;
-            state.platform_vpn_running = platform.running;
-            state.platform_network_protected = platform.network_protected;
-            state.platform_network_protect_error = platform.network_protect_error;
-        }
-    }
-    sync_platform_vpn_control(state);
+fn current_global_proxy(state: &CoreState) -> Option<String> {
+    let profile_id = state.profiles.active_profile()?;
+    state
+        .profiles
+        .selected_proxies(profile_id)
+        .ok()?
+        .remove("GLOBAL")
+}
+
+fn platform_ipc_error(error: platform_ipc::PlatformIpcError) -> HMetaError {
+    HMetaError::Core(error.to_string())
 }
 
 fn apply_platform_proxy_selections(state: &mut CoreState, control: &PlatformVpnControl) {
@@ -3391,57 +3537,6 @@ fn apply_platform_proxy_selections(state: &mut CoreState, control: &PlatformVpnC
         state.logs.push(info_log(
             "proxy selections synchronized from platform control",
         ));
-    }
-}
-
-fn sync_platform_vpn_control(state: &mut CoreState) {
-    let Ok(content) = fs::read(platform_vpn_control_path(state)) else {
-        return;
-    };
-    let Ok(control) = serde_json::from_slice::<PlatformVpnControl>(&content) else {
-        return;
-    };
-    apply_platform_proxy_selections(state, &control);
-    let global_proxy = if control.mode == RuntimeMode::Global {
-        match apply_global_proxy_policy(state, control.global_proxy.as_deref(), false) {
-            Ok(global_proxy) => global_proxy,
-            Err(error) => {
-                state.logs.push(warning_log(format!(
-                    "global mode synchronization rejected: {error}"
-                )));
-                let mut corrected = control.clone();
-                corrected.mode = state.mode;
-                corrected.global_proxy = None;
-                corrected.updated_at = now_unix_nanos();
-                let _ = write_platform_vpn_control(state, &corrected);
-                return;
-            }
-        }
-    } else {
-        None
-    };
-    if state.mode != control.mode {
-        state.mode = control.mode;
-        if let Some(tunnel) = &state.tunnel {
-            tunnel.set_mode(mode_to_tunnel(control.mode));
-        }
-        state.logs.push(info_log(format!(
-            "mode synchronized from platform control: {}",
-            control.mode.as_str()
-        )));
-    }
-    if control.mode == RuntimeMode::Global
-        && control.global_proxy.as_deref() != global_proxy.as_deref()
-    {
-        let mut normalized = control;
-        normalized.global_proxy = global_proxy.clone();
-        if let Some(global_proxy) = global_proxy {
-            normalized
-                .proxy_selections
-                .insert("GLOBAL".to_owned(), global_proxy);
-        }
-        normalized.updated_at = now_unix_nanos();
-        let _ = write_platform_vpn_control(state, &normalized);
     }
 }
 
@@ -4410,7 +4505,6 @@ mod tests {
             .to_string()
             .contains("Global mode requires an active profile"));
         assert_eq!(core.snapshot().unwrap().mode, RuntimeMode::Rule);
-        assert!(!root.join(PLATFORM_VPN_CONTROL_FILE).exists());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -4465,12 +4559,6 @@ rules:
             global.current().as_deref().unwrap(),
             &mut BTreeSet::new()
         ));
-        let global_control: PlatformVpnControl =
-            serde_json::from_slice(&std::fs::read(root.join(PLATFORM_VPN_CONTROL_FILE)).unwrap())
-                .unwrap();
-        assert_eq!(global_control.mode, RuntimeMode::Global);
-        assert_eq!(global_control.global_proxy.as_deref(), Some("HTTP-MOCK"));
-
         core.set_mode(RuntimeMode::Rule).unwrap();
         let proxy_metadata = Metadata {
             network: Network::Tcp,
@@ -4502,11 +4590,6 @@ rules:
                 .map(String::as_str),
             Some("HTTP-MOCK")
         );
-        let control: PlatformVpnControl =
-            serde_json::from_slice(&std::fs::read(root.join(PLATFORM_VPN_CONTROL_FILE)).unwrap())
-                .unwrap();
-        assert_eq!(control.mode, RuntimeMode::Direct);
-        assert!(control.global_proxy.is_none());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -4661,339 +4744,20 @@ rules:
     }
 
     #[test]
-    fn platform_vpn_state_is_shared_between_ui_and_extension_process_handles() {
-        let root = std::env::temp_dir().join(format!(
-            "hmeta-platform-vpn-ipc-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let ui = CoreHandle::new_with_profile_root(&root);
-        let extension = CoreHandle::new_with_profile_root(&root);
-
-        ui.set_platform_vpn_starting(true).unwrap();
-        let extension_snapshot = extension.snapshot().unwrap();
-        assert_eq!(extension_snapshot.vpn_lifecycle, VpnLifecycle::Starting);
-        assert!(!extension_snapshot.vpn_running);
-
-        extension
-            .set_platform_network_protected(true, None)
-            .unwrap();
-        extension.set_platform_vpn_running(true).unwrap();
-        let ui_snapshot = ui.snapshot().unwrap();
-        assert_eq!(ui_snapshot.vpn_lifecycle, VpnLifecycle::Connected);
-        assert!(ui_snapshot.vpn_running);
-        assert!(ui_snapshot.network_protected);
-        assert!(!ui.expire_platform_vpn_start().unwrap());
-
-        extension.stop_vpn().unwrap();
-        let ui_snapshot = ui.snapshot().unwrap();
-        assert_eq!(ui_snapshot.vpn_lifecycle, VpnLifecycle::Stopped);
-        assert!(!ui_snapshot.vpn_running);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test]
-    async fn runtime_mode_is_shared_with_the_vpn_extension_process_tunnel() {
+    fn platform_vpn_state_revision_is_strictly_monotonic() {
         let root =
-            std::env::temp_dir().join(format!("hmeta-platform-mode-ipc-{}", now_unix_nanos()));
-        let ui = CoreHandle::new_with_profile_root(&root);
-        let profile_id = ui
-            .import_profile_from_content(
-                "Mode IPC",
-                "test",
-                &hmeta_profile::default_runtime_yaml(),
-                None,
-            )
-            .await
-            .unwrap();
-        let extension = CoreHandle::new_with_profile_root(&root);
-        extension.reload_config(&profile_id).await.unwrap();
-        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Rule);
-
-        ui.set_mode(RuntimeMode::Direct).unwrap();
-
-        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Direct);
-        let extension_state = extension.lock_state().unwrap();
-        assert_eq!(
-            extension_state.tunnel.as_ref().unwrap().mode(),
-            TunnelMode::Direct
-        );
-        drop(extension_state);
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn global_proxy_policy_is_applied_in_the_vpn_extension_process() {
-        let root =
-            std::env::temp_dir().join(format!("hmeta-global-proxy-ipc-{}", now_unix_nanos()));
-        let ui = CoreHandle::new_with_profile_root(&root);
-        let profile_id = ui
-            .import_profile_from_content(
-                "Global IPC",
-                "test",
-                r#"
-proxies:
-  - name: HTTP-MOCK
-    type: http
-    server: 127.0.0.1
-    port: 18080
-rules:
-  - MATCH,DIRECT
-"#,
-                None,
-            )
-            .await
-            .unwrap();
-        ui.reload_config(&profile_id).await.unwrap();
-        let extension = CoreHandle::new_with_profile_root(&root);
-        extension.reload_config(&profile_id).await.unwrap();
-        assert_eq!(
-            extension
-                .lock_state()
-                .unwrap()
-                .tunnel
-                .as_ref()
-                .unwrap()
-                .proxy("GLOBAL")
-                .unwrap()
-                .current()
-                .as_deref(),
-            Some("DIRECT")
-        );
-
-        // The UI and VPN Extension own different CoreHandle instances in
-        // different processes. The shared control file must make the actual
-        // Extension tunnel select a proxy, not just update the UI label.
-        ui.set_mode(RuntimeMode::Global).unwrap();
-        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Global);
-        let extension_state = extension.lock_state().unwrap();
-        let tunnel = extension_state.tunnel.as_ref().unwrap();
-        assert_eq!(tunnel.mode(), TunnelMode::Global);
-        assert_eq!(
-            tunnel.proxy("GLOBAL").unwrap().current().as_deref(),
-            Some("HTTP-MOCK")
-        );
-        drop(extension_state);
-
-        let control: PlatformVpnControl =
-            serde_json::from_slice(&std::fs::read(root.join(PLATFORM_VPN_CONTROL_FILE)).unwrap())
-                .unwrap();
-        assert_eq!(control.mode, RuntimeMode::Global);
-        assert_eq!(control.global_proxy.as_deref(), Some("HTTP-MOCK"));
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn proxy_selection_is_shared_with_rule_and_global_extension_tunnels() {
-        let root =
-            std::env::temp_dir().join(format!("hmeta-proxy-selection-ipc-{}", now_unix_nanos()));
-        let ui = CoreHandle::new_with_profile_root(&root);
-        let profile_id = ui
-            .import_profile_from_content(
-                "Selector IPC",
-                "test",
-                r#"
-proxies:
-  - name: HTTP-A
-    type: http
-    server: 127.0.0.1
-    port: 18080
-  - name: HTTP-B
-    type: http
-    server: 127.0.0.1
-    port: 18081
-proxy-groups:
-  - name: Proxy
-    type: select
-    proxies:
-      - HTTP-A
-      - HTTP-B
-      - DIRECT
-rules:
-  - MATCH,Proxy
-"#,
-                None,
-            )
-            .await
-            .unwrap();
-        ui.reload_config(&profile_id).await.unwrap();
-        let extension = CoreHandle::new_with_profile_root(&root);
-        extension.reload_config(&profile_id).await.unwrap();
-
-        ui.set_mode(RuntimeMode::Global).unwrap();
-        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Global);
-        assert_eq!(
-            extension
-                .lock_state()
-                .unwrap()
-                .tunnel
-                .as_ref()
-                .unwrap()
-                .proxy("GLOBAL")
-                .unwrap()
-                .current()
-                .as_deref(),
-            Some("HTTP-A")
-        );
-
-        // Mirrors proxy_selection_chain(): select the leaf group first, then
-        // its GLOBAL parent. The control file must carry the concrete leaf to
-        // the independently loaded Extension tunnel.
-        ui.select_proxy("Proxy", "HTTP-B").await.unwrap();
-        ui.select_proxy("GLOBAL", "Proxy").await.unwrap();
-        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Global);
+            std::env::temp_dir().join(format!("hmeta-platform-vpn-revision-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let future_revision = now_unix_nanos().saturating_add(3_600_000_000_000);
         {
-            let extension_state = extension.lock_state().unwrap();
-            let tunnel = extension_state.tunnel.as_ref().unwrap();
-            assert_eq!(
-                tunnel.proxy("Proxy").unwrap().current().as_deref(),
-                Some("HTTP-B")
-            );
-            assert_eq!(
-                tunnel.proxy("GLOBAL").unwrap().current().as_deref(),
-                Some("HTTP-B")
-            );
+            let mut state = core.lock_state().unwrap();
+            state.platform_vpn_state_updated_at = future_revision;
         }
 
-        ui.set_mode(RuntimeMode::Rule).unwrap();
-        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Rule);
-        let extension_state = extension.lock_state().unwrap();
-        assert_eq!(
-            extension_state
-                .tunnel
-                .as_ref()
-                .unwrap()
-                .proxy("Proxy")
-                .unwrap()
-                .current()
-                .as_deref(),
-            Some("HTTP-B")
-        );
-        drop(extension_state);
+        core.set_platform_vpn_starting(true).unwrap();
 
-        let control: PlatformVpnControl =
-            serde_json::from_slice(&std::fs::read(root.join(PLATFORM_VPN_CONTROL_FILE)).unwrap())
-                .unwrap();
-        assert_eq!(control.mode, RuntimeMode::Rule);
-        assert_eq!(
-            control.proxy_selections.get("Proxy").map(String::as_str),
-            Some("HTTP-B")
-        );
-        assert_eq!(
-            control.proxy_selections.get("GLOBAL").map(String::as_str),
-            Some("HTTP-B")
-        );
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn vpn_extension_rejects_cross_process_global_mode_without_a_proxy() {
-        let root =
-            std::env::temp_dir().join(format!("hmeta-global-no-proxy-ipc-{}", now_unix_nanos()));
-        let ui = CoreHandle::new_with_profile_root(&root);
-        let profile_id = ui
-            .import_profile_from_content(
-                "Direct-only IPC",
-                "test",
-                "rules:\n  - MATCH,DIRECT\n",
-                None,
-            )
-            .await
-            .unwrap();
-        let extension = CoreHandle::new_with_profile_root(&root);
-        extension.reload_config(&profile_id).await.unwrap();
-
-        // A stale or externally written Global request must still be rejected
-        // by the Extension when the loaded profile has no proxy node.
-        {
-            let state = ui.lock_state().unwrap();
-            write_platform_vpn_control(
-                &state,
-                &PlatformVpnControl {
-                    mode: RuntimeMode::Global,
-                    global_proxy: None,
-                    active_profile: Some(profile_id.clone()),
-                    proxy_selections: BTreeMap::new(),
-                    updated_at: now_unix_nanos(),
-                },
-            )
-            .unwrap();
-        }
-        assert_eq!(extension.snapshot().unwrap().mode, RuntimeMode::Rule);
-        assert_eq!(
-            extension
-                .lock_state()
-                .unwrap()
-                .tunnel
-                .as_ref()
-                .unwrap()
-                .mode(),
-            TunnelMode::Rule
-        );
-
-        let control: PlatformVpnControl =
-            serde_json::from_slice(&std::fs::read(root.join(PLATFORM_VPN_CONTROL_FILE)).unwrap())
-                .unwrap();
-        assert_eq!(control.mode, RuntimeMode::Rule);
-        assert!(control.global_proxy.is_none());
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn platform_vpn_telemetry_is_visible_to_the_ui_process() {
-        let root =
-            std::env::temp_dir().join(format!("hmeta-platform-vpn-telemetry-{}", now_unix_nanos()));
-        let extension = CoreHandle::new_with_profile_root(&root);
-        let profile_id = extension
-            .import_profile_from_content(
-                "Telemetry",
-                "test",
-                &hmeta_profile::default_runtime_yaml(),
-                None,
-            )
-            .await
-            .unwrap();
-        let telemetry = PlatformVpnTelemetry {
-            updated_at: now_unix_nanos(),
-            active_profile: Some(profile_id.clone()),
-            traffic: TrafficSnapshot {
-                upload_bytes: 321,
-                download_bytes: 654,
-                upload_speed: 32,
-                download_speed: 65,
-                ..TrafficSnapshot::default()
-            },
-            traffic_history: vec![TrafficHistoryPoint {
-                upload_speed: 32,
-                download_speed: 65,
-            }],
-            dns: DnsSnapshot {
-                handled_packets: 7,
-                ..DnsSnapshot::default()
-            },
-            profile_upload_bytes: 321,
-            profile_download_bytes: 654,
-            ..PlatformVpnTelemetry::default()
-        };
-        persist_platform_vpn_telemetry_at(&root.join(PLATFORM_VPN_TELEMETRY_FILE), &telemetry)
-            .unwrap();
-
-        let ui = CoreHandle::new_with_profile_root(&root);
-        let snapshot = ui.snapshot().unwrap();
-        assert_eq!(snapshot.traffic.upload_bytes, 321);
-        assert_eq!(snapshot.traffic.download_bytes, 654);
-        assert_eq!(snapshot.traffic.upload_speed, 32);
-        assert_eq!(snapshot.traffic.download_speed, 65);
-        assert_eq!(snapshot.dns.handled_packets, 7);
-        let profile = snapshot
-            .profiles
-            .iter()
-            .find(|profile| profile.id == profile_id)
-            .unwrap();
-        assert_eq!(profile.upload_bytes, 321);
-        assert_eq!(profile.download_bytes, 654);
+        let revision = core.lock_state().unwrap().platform_vpn_state_updated_at;
+        assert_eq!(revision, future_revision + 1);
         let _ = std::fs::remove_dir_all(root);
     }
 
