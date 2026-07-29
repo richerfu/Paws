@@ -621,11 +621,7 @@ impl Default for RuntimeSnapshot {
             rules: Vec::new(),
             providers: Vec::new(),
             geodata: Vec::new(),
-            logs: vec![LogEntry {
-                level: "info".to_owned(),
-                message: "hmeta core initialized".to_owned(),
-                timestamp: "boot".to_owned(),
-            }],
+            logs: Vec::new(),
             connections: Vec::new(),
             request_history: Vec::new(),
             about: AboutSnapshot::default(),

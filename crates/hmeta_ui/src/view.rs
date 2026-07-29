@@ -3116,8 +3116,21 @@ fn reordered_rule_ids(
 fn logs_page(state: Signal<State>) -> Element {
     let mut log_query = use_signal(String::new);
     let mut log_filter = use_signal(|| LogLevelFilter::All);
+    let mut history_open = use_signal(|| false);
     let mut selected_log = use_signal(|| None::<VirtualLogRow>);
     let current = state.read().clone();
+    let locale = current.locale;
+    let recording_enabled = current.log_recording.enabled;
+    let recording_pending = current.log_recording_pending;
+    let export_pending = current.log_archive_export_pending.clone();
+    let current_tab = tr(locale, "当前日志", "Current").to_owned();
+    let history_tab = tr(locale, "历史记录", "History").to_owned();
+    let tab_options = vec![current_tab.clone(), history_tab.clone()];
+    let selected_tab = if history_open() {
+        history_tab.clone()
+    } else {
+        current_tab.clone()
+    };
     let query_value = log_query();
     let normalized_query = normalize_log_query(&query_value);
     let filter_value = log_filter();
@@ -3176,78 +3189,219 @@ fn logs_page(state: Signal<State>) -> Element {
         border: line(),
     };
     let selected_log_value = selected_log();
+    let archives_empty = current.log_recording.archives.is_empty();
+    let archive_rows = current
+        .log_recording
+        .archives
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(index, archive)| {
+            let file_name = archive.file_name.clone();
+            let exporting = export_pending.as_deref() == Some(file_name.as_str());
+            let export_disabled = export_pending.is_some();
+            let updated_at = archive
+                .updated_at
+                .as_deref()
+                .and_then(time_format::format_unix_seconds)
+                .unwrap_or_else(|| archive.date.clone());
+            rsx! {
+                if index > 0 {
+                    Separator {}
+                }
+                row {
+                    width: "100%",
+                    height: 72.0,
+                    padding_left: 14.0,
+                    padding_right: 8.0,
+                    align_items: "center",
+                    background_color: surface(),
+                    column {
+                        layout_weight: 1.0,
+                        text {
+                            content: archive.file_name,
+                            font_size: 14.0,
+                            font_weight: 600,
+                            font_color: text_color(),
+                        }
+                        text {
+                            content: format!("{} · {}", format_total(archive.bytes), updated_at),
+                            margin_top: 4.0,
+                            font_size: 11.0,
+                            font_color: subtle(),
+                            max_lines: 1,
+                        }
+                    }
+                    FlatButton {
+                        variant: FlatButtonVariant::Ghost,
+                        size: ButtonSize::Icon,
+                        disabled: Some(export_disabled),
+                        onclick: move |_| dispatch(state, Action::ExportLogArchive(file_name.clone())),
+                        if exporting {
+                            Spinner { size: 16.0, color: Some(text_color()) }
+                        } else {
+                            {arkit::icon("download", 17.0, text_color())}
+                        }
+                    }
+                }
+            }
+        });
     let body = rsx! {
         column {
             width: "100%",
             height: "100%",
-            Input {
-                value: Some(query_value),
-                placeholder: Some(strings(current.locale).logs_search_placeholder.to_owned()),
-                width: Some("100%".into()),
-                on_change: move |value| log_query.set(value),
-            }
-            row { height: 12.0 }
-            row {
-                width: "100%",
-                justify_content: "center",
-                FlatSegmented {
-                    options: filter_options,
-                    selected: selected_filter,
-                    on_change: move |value: String| {
-                        let filter = if value == info_label {
-                            LogLevelFilter::Info
-                        } else if value == warn_label {
-                            LogLevelFilter::Warning
-                        } else if value == error_label {
-                            LogLevelFilter::Error
-                        } else if value == debug_label {
-                            LogLevelFilter::Debug
-                        } else {
-                            LogLevelFilter::All
-                        };
-                        log_filter.set(filter);
-                    },
-                }
-            }
             row {
                 width: "100%",
                 height: 32.0,
                 align_items: "center",
                 text {
-                    content: format!("{} / {} {}", shown_log_count, total_log_count, tr(current.locale, "条日志", "logs")),
+                    content: if recording_enabled {
+                        tr(locale, "正在记录并按天保存", "Recording and saving daily")
+                    } else {
+                        tr(locale, "日志记录已关闭", "Log recording is off")
+                    },
+                    font_size: 12.0,
+                    font_weight: 600,
+                    font_color: if recording_enabled { success() } else { subtle() },
+                }
+                row { layout_weight: 1.0 }
+                text {
+                    content: format!(
+                        "{} {}",
+                        current.log_recording.archives.len(),
+                        tr(locale, "个日志文件", "log files")
+                    ),
                     font_size: 11.0,
                     font_color: subtle(),
                 }
-                row { layout_weight: 1.0 }
-                if !empty {
-                    text { content: tr(current.locale, "点击日志查看全文", "Tap a log for details"), font_size: 11.0, font_color: subtle() }
+            }
+            row { height: 6.0 }
+            row {
+                width: "100%",
+                justify_content: "center",
+                FlatSegmented {
+                    options: tab_options,
+                    selected: selected_tab,
+                    on_change: move |value: String| {
+                        history_open.set(value == history_tab);
+                    },
                 }
             }
-            row {
-                layout_weight: 1.0,
-                width: "100%",
-                if empty {
-                    {empty_state("scroll-text", strings(current.locale).logs_empty_title, strings(current.locale).logs_empty_subtitle)}
-                } else {
-                    VirtualLogList {
-                        items: logs,
-                        palette,
-                        on_open: move |row: VirtualLogRow| selected_log.set(Some(row)),
+            row { height: 12.0 }
+            if history_open() {
+                row {
+                    layout_weight: 1.0,
+                    width: "100%",
+                    if archives_empty {
+                        {empty_state(
+                            "history",
+                            tr(locale, "暂无历史日志", "No log history"),
+                            tr(locale, "开启日志记录后会按天生成文件", "Daily files appear after recording is enabled"),
+                        )}
+                    } else {
+                        scroll {
+                            width: "100%",
+                            height: "100%",
+                            column {
+                                width: "100%",
+                                background_color: surface(),
+                                border_width: 1.0,
+                                border_color: line(),
+                                border_radius: 12.0,
+                                clip: true,
+                                {archive_rows}
+                            }
+                        }
+                    }
+                }
+            } else {
+                Input {
+                    value: Some(query_value),
+                    placeholder: Some(strings(locale).logs_search_placeholder.to_owned()),
+                    width: Some("100%".into()),
+                    on_change: move |value| log_query.set(value),
+                }
+                row { height: 12.0 }
+                row {
+                    width: "100%",
+                    justify_content: "center",
+                    FlatSegmented {
+                        options: filter_options,
+                        selected: selected_filter,
+                        on_change: move |value: String| {
+                            let filter = if value == info_label {
+                                LogLevelFilter::Info
+                            } else if value == warn_label {
+                                LogLevelFilter::Warning
+                            } else if value == error_label {
+                                LogLevelFilter::Error
+                            } else if value == debug_label {
+                                LogLevelFilter::Debug
+                            } else {
+                                LogLevelFilter::All
+                            };
+                            log_filter.set(filter);
+                        },
+                    }
+                }
+                row {
+                    width: "100%",
+                    height: 32.0,
+                    align_items: "center",
+                    text {
+                        content: format!("{} / {} {}", shown_log_count, total_log_count, tr(locale, "条日志", "logs")),
+                        font_size: 11.0,
+                        font_color: subtle(),
+                    }
+                    row { layout_weight: 1.0 }
+                    if !empty {
+                        text { content: tr(locale, "点击日志查看全文", "Tap a log for details"), font_size: 11.0, font_color: subtle() }
+                    }
+                }
+                row {
+                    layout_weight: 1.0,
+                    width: "100%",
+                    if empty {
+                        {empty_state(
+                            "scroll-text",
+                            strings(locale).logs_empty_title,
+                            if recording_enabled {
+                                strings(locale).logs_empty_subtitle
+                            } else {
+                                tr(locale, "点击右上角开始记录日志", "Tap the top-right button to start recording")
+                            },
+                        )}
+                    } else {
+                        VirtualLogList {
+                            items: logs,
+                            palette,
+                            on_open: move |row: VirtualLogRow| selected_log.set(Some(row)),
+                        }
                     }
                 }
             }
         }
     };
-    let page = fixed_scaffold(
-        state,
-        Route::Logs {},
-        destructive_icon_action("trash-2", Action::ClearLogs, state),
-        body,
-    );
+    let action = rsx! {
+        FlatButton {
+            variant: FlatButtonVariant::Ghost,
+            size: ButtonSize::Icon,
+            disabled: Some(recording_pending),
+            onclick: move |_| dispatch(state, Action::ToggleLogRecording),
+            if recording_pending {
+                Spinner { size: 17.0, color: Some(text_color()) }
+            } else if recording_enabled {
+                {arkit::icon("square", 17.0, danger())}
+            } else {
+                {arkit::icon("play", 17.0, success())}
+            }
+        }
+    };
+    let page = fixed_scaffold(state, Route::Logs {}, action, body);
     rsx! {
         {page}
         if let Some(log) = selected_log_value {
-            {log_detail_dialog(current.locale, log, selected_log)}
+            {log_detail_dialog(locale, log, selected_log)}
         }
     }
 }
