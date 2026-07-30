@@ -31,15 +31,15 @@ fn imported_subscription_cards_follow_the_reference_mobile_interaction() {
 }
 
 #[test]
-fn proxy_nodes_use_arkit_native_virtual_list_and_grid() {
+fn proxy_nodes_use_arkit_rsx_virtual_list_and_grid() {
     let page = section(VIEW, "fn proxies_page", "fn profiles_page");
 
     assert!(page.contains("flatten_proxy_groups"));
     assert!(page.contains("use_virtual_node_adapter_items_keyed"));
-    assert!(!page.contains("use_virtual_node_adapter_keyed("));
+    assert!(!page.contains("use_virtual_node_adapter_rsx_items_keyed"));
     assert!(page.contains("VirtualKind::Grid"));
     assert!(page.contains("VirtualKind::List"));
-    assert!(page.contains("NodeBuilder::new"));
+    assert!(!page.contains("NodeBuilder::new"));
     assert!(page.contains("grid_column_template: \"1fr 1fr\""));
     assert!(page.contains("grid_cached_count"));
     assert!(page.contains("list_cached_count"));
@@ -50,9 +50,11 @@ fn proxy_nodes_use_arkit_native_virtual_list_and_grid() {
     assert!(page.contains("fixed_scaffold"));
     assert!(page.contains("EventHandler<(String, String)>"));
     assert!(page.contains("on_select.call"));
-    assert!(page.contains(".on_click(move ||"));
+    assert!(page.contains("onclick: move |_|"));
     assert!(!page.contains("NodeEventType::OnClick"));
-    assert!(page.contains("VirtualProxyGridRenderState"));
+    assert!(page.contains("fn VirtualProxyCard("));
+    assert!(page.contains("fn VirtualQuickProxyRow("));
+    assert!(!page.contains("VirtualProxyGridRenderState"));
     assert!(page.contains("selection_pending && item.selected"));
     assert!(page.contains("if item.selected {"));
     assert!(!page.contains("if !item.selected && !selection_pending"));
@@ -136,6 +138,8 @@ fn log_recording_is_opt_in_with_daily_history_and_export() {
     let archive_list = section(VIEW, "fn VirtualLogArchiveList(", "fn VirtualLogList(");
     assert!(archive_list.contains("VirtualKind::List"));
     assert!(archive_list.contains("use_virtual_node_adapter_items_keyed"));
+    assert!(!archive_list.contains("use_virtual_node_adapter_rsx_items_keyed"));
+    assert!(!archive_list.contains("NodeBuilder::new"));
     assert!(archive_list.contains("list_cached_count: 12_i32"));
     assert!(archive_list.contains("on_delete"));
     assert!(UI.contains("set_log_recording_enabled"));
@@ -196,7 +200,7 @@ fn proxy_node_names_use_native_width_based_ellipsis() {
     let page = section(VIEW, "fn proxies_page", "fn profiles_page");
 
     assert!(page.contains("item.name.clone()"));
-    assert!(page.contains("ArkUINodeAttributeType::TextOverflow, 2_i32"));
+    assert!(page.contains("text_overflow: \"ellipsis\""));
     assert!(!page.contains("selected_title_limit"));
     assert!(!page.contains("title_limit"));
 }
