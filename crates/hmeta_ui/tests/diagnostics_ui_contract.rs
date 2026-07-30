@@ -9,13 +9,16 @@ fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 }
 
 #[test]
-fn logs_use_arkit_native_virtual_rows_and_expose_full_details() {
+fn logs_use_arkit_rsx_virtual_rows_and_expose_full_details() {
     assert!(VIEW_SOURCE.contains("fn VirtualLogList("));
     assert!(
         VIEW_SOURCE.contains("use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys")
     );
+    assert!(!VIEW_SOURCE.contains("use_virtual_node_adapter_rsx_items_keyed"));
     assert!(VIEW_SOURCE.contains("use_layout_frame_node(move |host_node, _frame|"));
-    assert!(VIEW_SOURCE.contains(".on_click(move || on_open.call(item.clone()))"));
+    assert!(VIEW_SOURCE.contains("onclick: move |_| on_open.call(open_item.clone())"));
+    assert!(VIEW_SOURCE.contains("fn VirtualLogRowView("));
+    assert!(!VIEW_SOURCE.contains("NodeBuilder::new"));
     assert!(!VIEW_SOURCE.contains("NodeEventType::OnClick"));
     assert!(VIEW_SOURCE.contains("list_cached_count: 18_i32"));
     assert!(VIEW_SOURCE.contains("fn log_detail_dialog("));
@@ -30,7 +33,7 @@ fn geodata_rows_open_file_metadata_and_paths() {
 }
 
 #[test]
-fn activity_lists_use_compact_arkit_virtual_rows() {
+fn activity_lists_use_compact_arkit_rsx_virtual_rows() {
     assert!(ACTIVITY_SOURCE.contains("fn VirtualRequestList("));
     assert!(ACTIVITY_SOURCE.contains("fn VirtualConnectionList("));
     assert_eq!(
@@ -39,6 +42,7 @@ fn activity_lists_use_compact_arkit_virtual_rows() {
             .count(),
         2,
     );
+    assert!(!ACTIVITY_SOURCE.contains("use_virtual_node_adapter_rsx_items_keyed"));
     assert_eq!(
         ACTIVITY_SOURCE
             .matches("use_layout_frame_node(move |host_node, _frame|")
@@ -51,7 +55,10 @@ fn activity_lists_use_compact_arkit_virtual_rows() {
     );
     assert!(ACTIVITY_SOURCE.contains("const REQUEST_ROW_HEIGHT: f32 = 88.0;"));
     assert!(ACTIVITY_SOURCE.contains("const CONNECTION_ROW_HEIGHT: f32 = 88.0;"));
-    assert!(ACTIVITY_SOURCE.contains("virtual_status_badge("));
+    assert!(ACTIVITY_SOURCE.contains("fn VirtualStatusBadge("));
+    assert!(ACTIVITY_SOURCE.contains("fn VirtualRequestRowView("));
+    assert!(ACTIVITY_SOURCE.contains("fn VirtualConnectionRowView("));
+    assert!(!ACTIVITY_SOURCE.contains("NodeBuilder::new"));
     assert!(ACTIVITY_SOURCE.contains("format_activity_timestamp("));
     assert!(!ACTIVITY_SOURCE.contains("compact_connection_card"));
     assert!(!ACTIVITY_SOURCE.contains("{spaced(rows)}"));

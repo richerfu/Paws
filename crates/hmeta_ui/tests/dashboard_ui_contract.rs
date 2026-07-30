@@ -61,7 +61,7 @@ fn quick_switch_owns_an_internal_virtual_scroll_list() {
     let virtual_list = section(
         VIEW,
         "fn VirtualQuickProxyList",
-        "fn render_virtual_proxy_card",
+        "fn virtual_quick_proxy_item_keys",
     );
 
     assert!(page.contains("layout_weight: 1.0"));
@@ -72,17 +72,13 @@ fn quick_switch_owns_an_internal_virtual_scroll_list() {
     let keys = section(
         VIEW,
         "fn virtual_quick_proxy_item_keys",
-        "fn render_virtual_proxy_card",
+        "fn VirtualProxyCard",
     );
     assert!(keys.contains("item.name.hash"));
     assert!(keys.contains("item.selected.hash"));
 
-    let quick_row = section(
-        VIEW,
-        "fn render_virtual_quick_proxy_row",
-        "fn virtual_proxy_text",
-    );
-    assert!(quick_row.contains("selection_marker"));
+    let quick_row = section(VIEW, "fn VirtualQuickProxyRow", "fn profiles_page");
+    assert!(quick_row.contains("width: 3.0"));
     assert!(quick_row.contains("palette.success"));
 }
 

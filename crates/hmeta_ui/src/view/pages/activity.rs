@@ -278,13 +278,6 @@ struct ManualRuleContext {
     destination_ip: String,
 }
 
-#[derive(Clone, Copy)]
-enum VirtualActivityTextWidth {
-    Intrinsic,
-    FillRow,
-    FullWidth,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct VirtualActivityPalette {
     surface: u32,
@@ -314,22 +307,6 @@ impl Hash for VirtualActivityPalette {
     }
 }
 
-#[derive(Clone)]
-struct VirtualRequestRenderState {
-    items: Vec<VirtualRequestRow>,
-    palette: VirtualActivityPalette,
-    on_open: EventHandler<String>,
-    on_add_rule: EventHandler<ManualRuleContext>,
-}
-
-#[derive(Clone)]
-struct VirtualConnectionRenderState {
-    items: Vec<VirtualConnectionRow>,
-    palette: VirtualActivityPalette,
-    on_close: EventHandler<String>,
-    on_add_rule: EventHandler<ManualRuleContext>,
-}
-
 #[component]
 fn VirtualRequestList(
     items: Vec<VirtualRequestRow>,
@@ -338,28 +315,14 @@ fn VirtualRequestList(
     on_add_rule: EventHandler<ManualRuleContext>,
 ) -> Element {
     let item_keys = activity_item_keys(&items, palette);
-    let render_state = use_hook(|| {
-        Rc::new(RefCell::new(VirtualRequestRenderState {
-            items: items.clone(),
-            palette,
-            on_open,
-            on_add_rule,
-        }))
-    });
-    *render_state.borrow_mut() = VirtualRequestRenderState {
-        items,
-        palette,
-        on_open,
-        on_add_rule,
-    };
-    let render_state_for_adapter = render_state.clone();
+    let render_items = items;
     let handle = use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys, move |index| {
-        let state = render_state_for_adapter.borrow();
-        render_virtual_request_row(
-            &state.items[index as usize],
-            state.palette,
-            render_state_for_adapter.clone(),
-        )
+        let Some(item) = render_items.get(index as usize).cloned() else {
+            return rsx! {};
+        };
+        rsx! {
+            VirtualRequestRowView { item, palette, on_open, on_add_rule }
+        }
     });
     let attach_handle = handle.clone();
     use_layout_frame_node(move |host_node, _frame| {
@@ -383,28 +346,14 @@ fn VirtualConnectionList(
     on_add_rule: EventHandler<ManualRuleContext>,
 ) -> Element {
     let item_keys = activity_item_keys(&items, palette);
-    let render_state = use_hook(|| {
-        Rc::new(RefCell::new(VirtualConnectionRenderState {
-            items: items.clone(),
-            palette,
-            on_close,
-            on_add_rule,
-        }))
-    });
-    *render_state.borrow_mut() = VirtualConnectionRenderState {
-        items,
-        palette,
-        on_close,
-        on_add_rule,
-    };
-    let render_state_for_adapter = render_state.clone();
+    let render_items = items;
     let handle = use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys, move |index| {
-        let state = render_state_for_adapter.borrow();
-        render_virtual_connection_row(
-            &state.items[index as usize],
-            state.palette,
-            render_state_for_adapter.clone(),
-        )
+        let Some(item) = render_items.get(index as usize).cloned() else {
+            return rsx! {};
+        };
+        rsx! {
+            VirtualConnectionRowView { item, palette, on_close, on_add_rule }
+        }
     });
     let attach_handle = handle.clone();
     use_layout_frame_node(move |host_node, _frame| {
@@ -432,282 +381,275 @@ fn activity_item_keys<T: Hash>(items: &[T], palette: VirtualActivityPalette) -> 
         .collect()
 }
 
-fn render_virtual_request_row(
-    item: &VirtualRequestRow,
+#[component]
+fn VirtualRequestRowView(
+    item: VirtualRequestRow,
     palette: VirtualActivityPalette,
-    interaction_state: Rc<RefCell<VirtualRequestRenderState>>,
-) -> arkit::ohos_arkui_binding::common::error::ArkUIResult<ArkUINode> {
-    let host = virtual_activity_text(
-        item.host.clone(),
-        typography::SM,
-        6,
-        palette.foreground,
-        20.0,
-        VirtualActivityTextWidth::FillRow,
-    )?;
-    let host = if item.active {
-        let connection_query = item.connection_query.clone();
-        let open_state = interaction_state.clone();
-        // Navigation lives on the title, not inside the status badge.
-        NodeBuilder::new("row")?
-            .attr(ArkUINodeAttributeType::LayoutWeight, 1.0_f32)?
-            .height(20.0)?
-            .attr(ArkUINodeAttributeType::RowAlignItems, 1_i32)?
-            .child(host)?
-            .on_click(move || {
-                let on_open = open_state.borrow().on_open;
-                on_open.call(connection_query.clone());
-            })?
-            .build()
-    } else {
-        host
-    };
-    // shadcn Badge: status only — never embed navigation chevrons in the label.
-    let status = virtual_status_badge(
-        item.status.clone(),
-        if item.active {
-            // soft success chip (common extension of shadcn Badge)
-            palette.success_soft
-        } else {
-            // Badge variant="secondary"
-            palette.secondary
-        },
-        if item.active {
-            palette.success
-        } else {
-            palette.muted_foreground
-        },
-    )?;
+    on_open: EventHandler<String>,
+    on_add_rule: EventHandler<ManualRuleContext>,
+) -> Element {
+    let connection_query = item.connection_query.clone();
     let rule_context = ManualRuleContext {
         connection_id: item.active.then(|| item.id.clone()),
         domain: item.domain.clone(),
         destination_ip: item.destination_ip.clone(),
     };
-    // shadcn Button size="icon" variant="ghost": no fill, thin stroke glyph.
-    let add_rule = virtual_icon_action(
-        VirtualIconGlyph::Plus,
-        palette.muted_foreground,
-        0x0000_0000,
-        0.0,
-        item.rule_accessibility.clone(),
-        {
-            let add_rule_state = interaction_state.clone();
-            move || {
-                let on_add_rule = add_rule_state.borrow().on_add_rule;
-                on_add_rule.call(rule_context.clone());
+    let accessibility_text = format!(
+        "{}，{}，{}，{}，{}",
+        item.host, item.status, item.metadata, item.traffic, item.updated_at,
+    );
+    rsx! {
+        column {
+            width: "100%",
+            height: REQUEST_ROW_HEIGHT,
+            background_color: palette.surface,
+            padding_top: 12.0,
+            padding_right: 14.0,
+            padding_bottom: 12.0,
+            padding_left: 14.0,
+            margin_bottom: ACTIVITY_CARD_GAP,
+            border_width: 1.0,
+            border_color: palette.border,
+            border_radius: palette.radius,
+            clip: true,
+            align_items: "start",
+            justify_content: "center",
+            row {
+                width: "100%",
+                height: ACTIVITY_ACTION_SIZE,
+                align_items: "center",
+                if item.active {
+                    row {
+                        layout_weight: 1.0,
+                        height: 20.0,
+                        align_items: "center",
+                        onclick: move |_| on_open.call(connection_query.clone()),
+                        text {
+                            width: "100%",
+                            content: item.host.clone(),
+                            font_size: typography::SM,
+                            font_weight: 600,
+                            font_color: palette.foreground,
+                            line_height: 20.0,
+                            max_lines: 1,
+                            text_overflow: "ellipsis",
+                        }
+                    }
+                } else {
+                    row {
+                        layout_weight: 1.0,
+                        height: 20.0,
+                        align_items: "center",
+                        text {
+                            width: "100%",
+                            content: item.host.clone(),
+                            font_size: typography::SM,
+                            font_weight: 600,
+                            font_color: palette.foreground,
+                            line_height: 20.0,
+                            max_lines: 1,
+                            text_overflow: "ellipsis",
+                        }
+                    }
+                }
+                VirtualStatusBadge {
+                    label: item.status.clone(),
+                    background: if item.active { palette.success_soft } else { palette.secondary },
+                    foreground: if item.active { palette.success } else { palette.muted_foreground },
+                }
+                VirtualIconAction {
+                    content: "+".to_owned(),
+                    font_size: 18.0,
+                    foreground: palette.muted_foreground,
+                    margin_right: 0.0,
+                    accessibility: item.rule_accessibility.clone(),
+                    on_click: move |_| on_add_rule.call(rule_context.clone()),
+                }
             }
-        },
-    )?;
-    let header = NodeBuilder::new("row")?
-        .percent_width(1.0)?
-        .height(ACTIVITY_ACTION_SIZE)?
-        .attr(ArkUINodeAttributeType::RowAlignItems, 1_i32)?
-        .child(host)?
-        .child(status)?
-        .child(add_rule)?
-        .build();
-    let metadata = virtual_activity_text(
-        item.metadata.clone(),
-        typography::XS,
-        4,
-        palette.muted_foreground,
-        16.0,
-        VirtualActivityTextWidth::FullWidth,
-    )?;
-    let traffic = virtual_activity_text(
-        item.traffic.clone(),
-        typography::XS,
-        5,
-        palette.foreground,
-        16.0,
-        VirtualActivityTextWidth::FillRow,
-    )?;
-    let updated_at = virtual_activity_text(
-        item.updated_at.clone(),
-        typography::XS,
-        4,
-        palette.muted_foreground,
-        16.0,
-        VirtualActivityTextWidth::Intrinsic,
-    )?;
-    let footer = NodeBuilder::new("row")?
-        .percent_width(1.0)?
-        .height(16.0)?
-        .attr(ArkUINodeAttributeType::RowAlignItems, 1_i32)?
-        .child(traffic)?
-        .child(updated_at)?
-        .build();
-    Ok(NodeBuilder::new("column")?
-        .percent_width(1.0)?
-        .height(REQUEST_ROW_HEIGHT)?
-        .background_color(format!("#{:08x}", palette.surface))?
-        .padding([12.0, 14.0, 12.0, 14.0])?
-        .margin([0.0, 0.0, ACTIVITY_CARD_GAP, 0.0])?
-        .attr(ArkUINodeAttributeType::BorderWidth, vec![1.0; 4])?
-        .attr(ArkUINodeAttributeType::BorderColor, palette.border)?
-        .attr(ArkUINodeAttributeType::BorderRadius, vec![palette.radius; 4])?
-        .attr(ArkUINodeAttributeType::Clip, true)?
-        .attr(ArkUINodeAttributeType::ColumnAlignItems, 0_i32)?
-        .attr(ArkUINodeAttributeType::ColumnJustifyContent, 2_i32)?
-        .attr(
-            ArkUINodeAttributeType::AccessibilityText,
-            format!(
-                "{}，{}，{}，{}，{}",
-                item.host, item.status, item.metadata, item.traffic, item.updated_at,
-            ),
-        )?
-        .child(header)?
-        .child(metadata)?
-        .child(footer)?
-        .build())
+            text {
+                width: "100%",
+                content: item.metadata.clone(),
+                font_size: typography::XS,
+                font_weight: 400,
+                font_color: palette.muted_foreground,
+                line_height: 16.0,
+                max_lines: 1,
+                text_overflow: "ellipsis",
+            }
+            row {
+                width: "100%",
+                height: 16.0,
+                align_items: "center",
+                row {
+                    layout_weight: 1.0,
+                    height: 16.0,
+                    align_items: "center",
+                    text {
+                        width: "100%",
+                        content: item.traffic.clone(),
+                        font_size: typography::XS,
+                        font_weight: 500,
+                        font_color: palette.foreground,
+                        line_height: 16.0,
+                        max_lines: 1,
+                        text_overflow: "ellipsis",
+                    }
+                }
+                text {
+                    content: item.updated_at.clone(),
+                    font_size: typography::XS,
+                    font_weight: 400,
+                    font_color: palette.muted_foreground,
+                    line_height: 16.0,
+                    max_lines: 1,
+                    text_overflow: "ellipsis",
+                }
+            }
+            text { content: accessibility_text, width: 0.0, height: 0.0, opacity: 0.0 }
+        }
+    }
 }
 
-fn render_virtual_connection_row(
-    item: &VirtualConnectionRow,
+#[component]
+fn VirtualConnectionRowView(
+    item: VirtualConnectionRow,
     palette: VirtualActivityPalette,
-    interaction_state: Rc<RefCell<VirtualConnectionRenderState>>,
-) -> arkit::ohos_arkui_binding::common::error::ArkUIResult<ArkUINode> {
+    on_close: EventHandler<String>,
+    on_add_rule: EventHandler<ManualRuleContext>,
+) -> Element {
     // Mirror request-row layout:
     // [host                    ] [+] [×]
     // [metadata]
     // [traffic                     ] [time]
-    let host = virtual_activity_text(
-        item.host.clone(),
-        typography::SM,
-        6,
-        palette.foreground,
-        20.0,
-        VirtualActivityTextWidth::FillRow,
-    )?;
     let rule_context = ManualRuleContext {
         connection_id: Some(item.id.clone()),
         domain: item.domain.clone(),
         destination_ip: item.destination_ip.clone(),
     };
-    let add_rule = virtual_icon_action(
-        VirtualIconGlyph::Plus,
-        palette.muted_foreground,
-        0x0000_0000,
-        // Gap before close matches Badge→+ spacing on the requests page.
-        spacing::MD,
-        item.rule_accessibility.clone(),
-        {
-            let add_rule_state = interaction_state.clone();
-            move || {
-                let on_add_rule = add_rule_state.borrow().on_add_rule;
-                on_add_rule.call(rule_context.clone());
-            }
-        },
-    )?;
     let close_id = item.id.clone();
-    let close = virtual_icon_action(
-        VirtualIconGlyph::Close,
-        palette.danger,
-        0x0000_0000,
-        0.0,
-        item.close_accessibility.clone(),
-        {
-            let close_state = interaction_state.clone();
-            move || {
-                let on_close = close_state.borrow().on_close;
-                on_close.call(close_id.clone());
+    let accessibility_text = format!(
+        "{}，{}，{}，{}",
+        item.host, item.metadata, item.traffic, item.started_at,
+    );
+    rsx! {
+        column {
+            width: "100%",
+            height: CONNECTION_ROW_HEIGHT,
+            background_color: palette.surface,
+            padding_top: 12.0,
+            padding_right: 14.0,
+            padding_bottom: 12.0,
+            padding_left: 14.0,
+            margin_bottom: ACTIVITY_CARD_GAP,
+            border_width: 1.0,
+            border_color: palette.border,
+            border_radius: palette.radius,
+            clip: true,
+            align_items: "start",
+            justify_content: "center",
+            row {
+                width: "100%",
+                height: ACTIVITY_ACTION_SIZE,
+                align_items: "center",
+                row {
+                    layout_weight: 1.0,
+                    height: 20.0,
+                    align_items: "center",
+                    text {
+                        width: "100%",
+                        content: item.host.clone(),
+                        font_size: typography::SM,
+                        font_weight: 600,
+                        font_color: palette.foreground,
+                        line_height: 20.0,
+                        max_lines: 1,
+                        text_overflow: "ellipsis",
+                    }
+                }
+                VirtualIconAction {
+                    content: "+".to_owned(),
+                    font_size: 18.0,
+                    foreground: palette.muted_foreground,
+                    margin_right: spacing::MD,
+                    accessibility: item.rule_accessibility.clone(),
+                    on_click: move |_| on_add_rule.call(rule_context.clone()),
+                }
+                VirtualIconAction {
+                    content: "×".to_owned(),
+                    font_size: 16.0,
+                    foreground: palette.danger,
+                    margin_right: 0.0,
+                    accessibility: item.close_accessibility.clone(),
+                    on_click: move |_| on_close.call(close_id.clone()),
+                }
             }
-        },
-    )?;
-    let header = NodeBuilder::new("row")?
-        .percent_width(1.0)?
-        .height(ACTIVITY_ACTION_SIZE)?
-        .attr(ArkUINodeAttributeType::RowAlignItems, 1_i32)?
-        .child(host)?
-        .child(add_rule)?
-        .child(close)?
-        .build();
-    let metadata = virtual_activity_text(
-        item.metadata.clone(),
-        typography::XS,
-        4,
-        palette.muted_foreground,
-        16.0,
-        VirtualActivityTextWidth::FullWidth,
-    )?;
-    let traffic = virtual_activity_text(
-        item.traffic.clone(),
-        typography::XS,
-        5,
-        palette.foreground,
-        16.0,
-        VirtualActivityTextWidth::FillRow,
-    )?;
-    let started_at = virtual_activity_text(
-        item.started_at.clone(),
-        typography::XS,
-        4,
-        palette.muted_foreground,
-        16.0,
-        VirtualActivityTextWidth::Intrinsic,
-    )?;
-    let footer = NodeBuilder::new("row")?
-        .percent_width(1.0)?
-        .height(16.0)?
-        .attr(ArkUINodeAttributeType::RowAlignItems, 1_i32)?
-        .child(traffic)?
-        .child(started_at)?
-        .build();
-    Ok(NodeBuilder::new("column")?
-        .percent_width(1.0)?
-        .height(CONNECTION_ROW_HEIGHT)?
-        .background_color(format!("#{:08x}", palette.surface))?
-        .padding([12.0, 14.0, 12.0, 14.0])?
-        .margin([0.0, 0.0, ACTIVITY_CARD_GAP, 0.0])?
-        .attr(ArkUINodeAttributeType::BorderWidth, vec![1.0; 4])?
-        .attr(ArkUINodeAttributeType::BorderColor, palette.border)?
-        .attr(ArkUINodeAttributeType::BorderRadius, vec![palette.radius; 4])?
-        .attr(ArkUINodeAttributeType::Clip, true)?
-        .attr(ArkUINodeAttributeType::ColumnAlignItems, 0_i32)?
-        .attr(ArkUINodeAttributeType::ColumnJustifyContent, 2_i32)?
-        .attr(
-            ArkUINodeAttributeType::AccessibilityText,
-            format!(
-                "{}，{}，{}，{}",
-                item.host, item.metadata, item.traffic, item.started_at,
-            ),
-        )?
-        .child(header)?
-        .child(metadata)?
-        .child(footer)?
-        .build())
+            text {
+                width: "100%",
+                content: item.metadata.clone(),
+                font_size: typography::XS,
+                font_weight: 400,
+                font_color: palette.muted_foreground,
+                line_height: 16.0,
+                max_lines: 1,
+                text_overflow: "ellipsis",
+            }
+            row {
+                width: "100%",
+                height: 16.0,
+                align_items: "center",
+                row {
+                    layout_weight: 1.0,
+                    height: 16.0,
+                    align_items: "center",
+                    text {
+                        width: "100%",
+                        content: item.traffic.clone(),
+                        font_size: typography::XS,
+                        font_weight: 500,
+                        font_color: palette.foreground,
+                        line_height: 16.0,
+                        max_lines: 1,
+                        text_overflow: "ellipsis",
+                    }
+                }
+                text {
+                    content: item.started_at.clone(),
+                    font_size: typography::XS,
+                    font_weight: 400,
+                    font_color: palette.muted_foreground,
+                    line_height: 16.0,
+                    max_lines: 1,
+                    text_overflow: "ellipsis",
+                }
+            }
+            text { content: accessibility_text, width: 0.0, height: 0.0, opacity: 0.0 }
+        }
+    }
 }
 
 /// shadcn Badge (pill): height ~22, XS text, medium weight, status label only.
-fn virtual_status_badge(
-    label: String,
-    background: u32,
-    foreground: u32,
-) -> arkit::ohos_arkui_binding::common::error::ArkUIResult<ArkUINode> {
-    let text = NodeBuilder::new("text")?
-        .font_size(typography::XS)?
-        .font_color(format!("#{foreground:08x}"))?
-        .text_content(label)?
-        .attr(ArkUINodeAttributeType::FontWeight, 5_i32)?
-        .attr(ArkUINodeAttributeType::TextMaxLines, 1_i32)?
-        .build();
-    Ok(NodeBuilder::new("row")?
-        .height(22.0)?
-        // [top, right, bottom, left] — right gap keeps Badge away from the + action.
-        .margin([0.0, spacing::MD, 0.0, spacing::XXS])?
-        .padding([0.0, 8.0, 0.0, 8.0])?
-        .background_color(format!("#{background:08x}"))?
-        .attr(ArkUINodeAttributeType::BorderRadius, vec![999.0; 4])?
-        .attr(ArkUINodeAttributeType::RowAlignItems, 1_i32)?
-        .attr(ArkUINodeAttributeType::RowJustifyContent, 1_i32)?
-        .child(text)?
-        .build())
-}
-
-#[derive(Clone, Copy)]
-enum VirtualIconGlyph {
-    Plus,
-    Close,
+#[component]
+fn VirtualStatusBadge(label: String, background: u32, foreground: u32) -> Element {
+    rsx! {
+        row {
+            height: 22.0,
+            margin_right: spacing::MD,
+            margin_left: spacing::XXS,
+            padding_right: 8.0,
+            padding_left: 8.0,
+            background_color: background,
+            border_radius: 999.0,
+            align_items: "center",
+            justify_content: "center",
+            text {
+                content: label,
+                font_size: typography::XS,
+                font_color: foreground,
+                font_weight: 500,
+                max_lines: 1,
+            }
+        }
+    }
 }
 
 /// shadcn Button size="icon" variant="ghost".
@@ -717,36 +659,33 @@ enum VirtualIconGlyph {
 ///
 /// `margin_right` is the trailing gap after this action (space before the next
 /// icon, matching Badge→+ spacing on request rows).
-fn virtual_icon_action(
-    glyph: VirtualIconGlyph,
+#[component]
+fn VirtualIconAction(
+    content: String,
+    font_size: f32,
     foreground: u32,
-    background: u32,
     margin_right: f32,
     accessibility: String,
-    on_click: impl Fn() + 'static,
-) -> arkit::ohos_arkui_binding::common::error::ArkUIResult<ArkUINode> {
-    // Same hit box for every action. Slightly smaller close glyph so the wider
-    // "×" glyph matches the optical weight/center of "+".
-    let (content, font_size) = match glyph {
-        VirtualIconGlyph::Plus => ("+", 18.0_f32),
-        VirtualIconGlyph::Close => ("×", 16.0_f32),
-    };
-    Ok(NodeBuilder::new("text")?
-        .width(ACTIVITY_ACTION_SIZE)?
-        .height(ACTIVITY_ACTION_SIZE)?
-        .margin([0.0, margin_right, 0.0, 0.0])?
-        .background_color(format!("#{background:08x}"))?
-        .font_size(font_size)?
-        .font_color(format!("#{foreground:08x}"))?
-        .text_content(content.to_owned())?
-        .attr(ArkUINodeAttributeType::FontWeight, 4_i32)?
-        .attr(ArkUINodeAttributeType::TextAlign, 1_i32)? // center
-        .attr(ArkUINodeAttributeType::TextLineHeight, ACTIVITY_ACTION_SIZE)?
-        .attr(ArkUINodeAttributeType::TextMaxLines, 1_i32)?
-        .attr(ArkUINodeAttributeType::BorderRadius, vec![6.0; 4])?
-        .attr(ArkUINodeAttributeType::AccessibilityText, accessibility)?
-        .on_click(on_click)?
-        .build())
+    on_click: EventHandler<()>,
+) -> Element {
+    rsx! {
+        text {
+            width: ACTIVITY_ACTION_SIZE,
+            height: ACTIVITY_ACTION_SIZE,
+            margin_right,
+            background_color: 0x0000_0000,
+            content,
+            font_size,
+            font_color: foreground,
+            font_weight: 400,
+            text_align: "center",
+            line_height: ACTIVITY_ACTION_SIZE,
+            max_lines: 1,
+            border_radius: 6.0,
+            onclick: move |_| on_click.call(()),
+        }
+        text { content: accessibility, width: 0.0, height: 0.0, opacity: 0.0 }
+    }
 }
 
 fn format_activity_timestamp(value: &str) -> String {
@@ -967,30 +906,4 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
             }
         }
     }
-}
-
-fn virtual_activity_text(
-    content: String,
-    size: f32,
-    weight: i32,
-    color: u32,
-    line_height: f32,
-    width: VirtualActivityTextWidth,
-) -> arkit::ohos_arkui_binding::common::error::ArkUIResult<ArkUINode> {
-    let node = NodeBuilder::new("text")?
-        .font_size(size)?
-        .font_color(format!("#{color:08x}"))?
-        .text_content(content)?
-        .attr(ArkUINodeAttributeType::FontWeight, weight)?
-        .attr(ArkUINodeAttributeType::TextLineHeight, line_height)?
-        .attr(ArkUINodeAttributeType::TextMaxLines, 1_i32)?
-        .attr(ArkUINodeAttributeType::TextOverflow, 2_i32)?;
-    let node = match width {
-        VirtualActivityTextWidth::Intrinsic => node,
-        VirtualActivityTextWidth::FillRow => {
-            node.attr(ArkUINodeAttributeType::LayoutWeight, 1.0_f32)?
-        }
-        VirtualActivityTextWidth::FullWidth => node.percent_width(1.0)?,
-    };
-    Ok(node.build())
 }
