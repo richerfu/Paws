@@ -55,7 +55,7 @@ const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = "1.0.0";
 const MEOW_RS_VERSION: &str = "0.18.0";
-const ARKIT_REV: &str = "fffbc35e0cbf7325e93a5fd849fab930b2f321ac";
+const ARKIT_REV: &str = "765b1f4ff591fcd02af6fdbc115d28d297f70d6a";
 const RUST_VERSION: &str = "1.89";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
