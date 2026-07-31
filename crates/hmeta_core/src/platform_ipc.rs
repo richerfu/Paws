@@ -198,6 +198,10 @@ impl PlatformIpc {
         self.notification.wait(timeout)
     }
 
+    pub(crate) fn is_ui(&self) -> bool {
+        self.role == PlatformRole::Ui
+    }
+
     fn publish(&self, envelope: &PlatformEnvelope) -> Result<()> {
         let content = serde_json::to_vec(envelope)?;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);

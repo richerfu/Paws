@@ -121,6 +121,8 @@ export class HMetaVpnConfig {
 
 const HMETA_ASHMEM_FD_KEY = 'hmetaPlatformAshmem';
 const HMETA_NOTIFICATION_FD_KEY = 'hmetaPlatformNotification';
+const HMETA_START_ATTEMPT_ID_KEY = 'hmetaStartAttemptId';
+const HMETA_SYSTEM_PARAMETERS_KEY = 'myParams';
 
 export interface HMetaPlatformSharedMemoryFds {
   ashmemFd: number;
@@ -140,13 +142,20 @@ interface HMetaVpnWantParameters extends Record<string, Object> {
   optionsJson: string;
 }
 
-export function buildVpnWant(optionsJson?: string, sharedMemory?: HMetaPlatformSharedMemoryFds): Want {
+export function buildVpnWant(
+  optionsJson?: string,
+  sharedMemory?: HMetaPlatformSharedMemoryFds,
+  startAttemptId?: string,
+): Want {
   const parameters: HMetaVpnWantParameters = {
     optionsJson: optionsJson ?? '',
   };
   if (sharedMemory) {
     parameters[HMETA_ASHMEM_FD_KEY] = new HMetaWantFileDescriptor(sharedMemory.ashmemFd);
     parameters[HMETA_NOTIFICATION_FD_KEY] = new HMetaWantFileDescriptor(sharedMemory.notificationFd);
+  }
+  if (startAttemptId && startAttemptId.length > 0) {
+    parameters[HMETA_START_ATTEMPT_ID_KEY] = startAttemptId;
   }
   return {
     deviceId: '',
@@ -157,21 +166,72 @@ export function buildVpnWant(optionsJson?: string, sharedMemory?: HMetaPlatformS
   };
 }
 
-export function readPlatformSharedMemoryFds(want: Want): HMetaPlatformSharedMemoryFds | undefined {
-  const ashmemFd = want.fds?.[HMETA_ASHMEM_FD_KEY];
-  const notificationFd = want.fds?.[HMETA_NOTIFICATION_FD_KEY];
-  if (typeof ashmemFd !== 'number' || ashmemFd < 0 ||
-    typeof notificationFd !== 'number' || notificationFd < 0) {
+/**
+ * The first VPN authorization flow preserves the original WantParams under
+ * `myParams`. Later starts deliver them directly, so both layouts must be
+ * accepted without retrying the extension ability.
+ */
+function readVpnParameters(want?: Want): Record<string, Object> | undefined {
+  const parameters = want?.parameters as Record<string, Object> | undefined;
+  if (!parameters) {
     return undefined;
   }
-  return { ashmemFd, notificationFd };
+  if (typeof parameters['optionsJson'] === 'string') {
+    return parameters;
+  }
+  const nested = parameters[HMETA_SYSTEM_PARAMETERS_KEY];
+  if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
+    return nested as Record<string, Object>;
+  }
+  return parameters;
 }
 
-export function readOptionsJson(value?: string): string {
+export function readPlatformSharedMemoryFds(want: Want): HMetaPlatformSharedMemoryFds | undefined {
+  let ashmemFd = want.fds?.[HMETA_ASHMEM_FD_KEY];
+  let notificationFd = want.fds?.[HMETA_NOTIFICATION_FD_KEY];
+  if (!isValidFileDescriptor(ashmemFd) || !isValidFileDescriptor(notificationFd)) {
+    const parameters = readVpnParameters(want);
+    ashmemFd = readFileDescriptorParameter(parameters, HMETA_ASHMEM_FD_KEY);
+    notificationFd = readFileDescriptorParameter(parameters, HMETA_NOTIFICATION_FD_KEY);
+  }
+  if (!isValidFileDescriptor(ashmemFd) || !isValidFileDescriptor(notificationFd)) {
+    return undefined;
+  }
+  return {
+    ashmemFd: ashmemFd as number,
+    notificationFd: notificationFd as number,
+  };
+}
+
+export function readPlatformStartAttemptId(want?: Want): string {
+  const value = readVpnParameters(want)?.[HMETA_START_ATTEMPT_ID_KEY];
+  if (typeof value === 'string' && value.length > 0) {
+    return value;
+  }
+  throw new Error('VPN extension request is missing start attempt id');
+}
+
+export function readOptionsJson(want?: Want): string {
+  const value = readVpnParameters(want)?.['optionsJson'];
   if (typeof value === 'string' && value.length > 0) {
     return value;
   }
   return DEFAULT_OPTIONS_JSON;
+}
+
+function readFileDescriptorParameter(
+  parameters: Record<string, Object> | undefined,
+  key: string,
+): number | undefined {
+  const descriptor = parameters?.[key] as HMetaWantFileDescriptor | undefined;
+  if (!descriptor || descriptor.type !== 'FD' || !isValidFileDescriptor(descriptor.value)) {
+    return undefined;
+  }
+  return descriptor.value;
+}
+
+function isValidFileDescriptor(value?: number): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }
 
 export function parseOptions(optionsJson: string): VpnOptions {

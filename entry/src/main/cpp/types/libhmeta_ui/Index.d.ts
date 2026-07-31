@@ -21,6 +21,20 @@ export declare function waitForPlatformChange(timeoutMs: number): Promise<boolea
 
 export declare function syncPlatformChanges(): void
 
+export declare function beginPlatformVpnStart(): string
+
+export declare function bindPlatformVpnStart(attemptId: string): void
+
+export declare function awaitPlatformVpnStartAttachment(attemptId: string, timeoutMs: number): Promise<boolean>
+
+export declare function awaitPlatformVpnStart(attemptId: string): Promise<string>
+
+export declare function failPlatformVpnStart(attemptId: string, error: string): boolean
+
+export declare function failUnattachedPlatformVpnStart(attemptId: string, error: string): boolean
+
+export declare function cancelPlatformVpnStart(attemptId: string): boolean
+
 export declare function configureSystemColorMode(colorMode: number): void
 
 export declare function configureUiLocale(locale: string): void

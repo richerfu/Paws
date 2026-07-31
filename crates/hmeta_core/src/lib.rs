@@ -51,6 +51,7 @@ static INSTALL_RUNTIME_LOG_LAYER: Once = Once::new();
 const MAX_API_LOG_SENDERS: usize = 8;
 const MAX_REQUEST_HISTORY: usize = 128;
 const MAX_TRAFFIC_HISTORY: usize = 32;
+const PLATFORM_VPN_START_DEADLINE: Duration = Duration::from_secs(120);
 const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = "1.0.0";
@@ -58,9 +59,23 @@ const MEOW_RS_VERSION: &str = "0.19.0";
 const ARKIT_REV: &str = "75ff91c619f5e4774fe6badea5cd9c619f189b2f";
 const RUST_VERSION: &str = "1.89";
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub enum PlatformStartOutcome {
+    #[default]
+    Idle,
+    Pending,
+    Connected,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 struct PlatformVpnState {
+    start_attempt_id: String,
+    start_outcome: PlatformStartOutcome,
+    extension_attached: bool,
     starting: bool,
     running: bool,
     network_protected: bool,
@@ -135,6 +150,10 @@ struct CoreState {
     engine_loaded: bool,
     platform_vpn_starting: bool,
     platform_vpn_running: bool,
+    platform_start_sequence: u64,
+    platform_start_attempt_id: String,
+    platform_start_outcome: PlatformStartOutcome,
+    platform_extension_attached: bool,
     platform_network_protected: bool,
     platform_network_protect_error: Option<String>,
     platform_vpn_state_updated_at: u128,
@@ -177,6 +196,10 @@ impl Default for CoreState {
             engine_loaded: false,
             platform_vpn_starting: false,
             platform_vpn_running: false,
+            platform_start_sequence: 0,
+            platform_start_attempt_id: String::new(),
+            platform_start_outcome: PlatformStartOutcome::Idle,
+            platform_extension_attached: false,
             platform_network_protected: false,
             platform_network_protect_error: None,
             platform_vpn_state_updated_at: 0,
@@ -220,6 +243,7 @@ impl Default for CoreState {
 pub struct CoreHandle {
     state: Mutex<CoreState>,
     platform_ipc: Mutex<Option<Arc<PlatformIpc>>>,
+    platform_start_tx: tokio::sync::watch::Sender<PlatformStartEvent>,
     config_reload_lock: tokio::sync::Mutex<()>,
     vpn: TunSession,
     api_controller_enabled: bool,
@@ -230,6 +254,14 @@ pub struct CoreHandle {
 pub struct PlatformSharedMemoryFds {
     pub ashmem_fd: i32,
     pub notification_fd: i32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PlatformStartEvent {
+    attempt_id: String,
+    outcome: PlatformStartOutcome,
+    extension_attached: bool,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -261,9 +293,11 @@ pub struct RuleLookupResult {
 impl CoreHandle {
     fn new() -> Self {
         install_runtime_log_layer();
+        let (platform_start_tx, _) = tokio::sync::watch::channel(PlatformStartEvent::default());
         Self {
             state: Mutex::new(CoreState::default()),
             platform_ipc: Mutex::new(None),
+            platform_start_tx,
             config_reload_lock: tokio::sync::Mutex::new(()),
             vpn: TunSession::default(),
             api_controller_enabled: true,
@@ -274,6 +308,7 @@ impl CoreHandle {
     #[cfg(test)]
     fn new_with_profile_root(root: impl Into<std::path::PathBuf>) -> Self {
         install_runtime_log_layer();
+        let (platform_start_tx, _) = tokio::sync::watch::channel(PlatformStartEvent::default());
         let profiles = ProfileStore::open(root).expect("test profile store");
         let log_root = profiles.root().to_path_buf();
         log_recording::set_recording_enabled(&log_root, true)
@@ -286,6 +321,10 @@ impl CoreHandle {
                 engine_loaded: false,
                 platform_vpn_starting: false,
                 platform_vpn_running: false,
+                platform_start_sequence: 0,
+                platform_start_attempt_id: String::new(),
+                platform_start_outcome: PlatformStartOutcome::Idle,
+                platform_extension_attached: false,
                 platform_network_protected: false,
                 platform_network_protect_error: None,
                 platform_vpn_state_updated_at: 0,
@@ -324,6 +363,7 @@ impl CoreHandle {
                 last_controller_config_sync_error: None,
             }),
             platform_ipc: Mutex::new(None),
+            platform_start_tx,
             config_reload_lock: tokio::sync::Mutex::new(()),
             vpn: TunSession::default(),
             api_controller_enabled: false,
@@ -945,6 +985,9 @@ impl CoreHandle {
         state.engine_loaded = true;
         state.platform_vpn_starting = false;
         state.platform_vpn_running = true;
+        if state.platform_start_outcome == PlatformStartOutcome::Pending {
+            state.platform_start_outcome = PlatformStartOutcome::Connected;
+        }
         state
             .logs
             .push(info_log(format!("vpn started with tun fd {fd}")));
@@ -1101,6 +1144,252 @@ impl CoreHandle {
         to_json(&state.profiles.active_vpn_options()?)
     }
 
+    /// Begin one platform VPN start transaction.
+    ///
+    /// The system ability-start Promise is only a dispatch acknowledgement.
+    /// Completion is determined by the matching VPN Extension terminal state
+    /// published through shared memory.
+    pub fn begin_platform_vpn_start(&self) -> Result<String, HMetaError> {
+        let mut state = self.lock_state()?;
+        self.sync_platform_vpn_state_locked(&mut state);
+        if state.platform_start_outcome == PlatformStartOutcome::Pending {
+            return Err(HMetaError::Core(
+                "platform VPN start is already pending".to_owned(),
+            ));
+        }
+        if state.platform_vpn_running || self.vpn.is_running() {
+            return Err(HMetaError::Core(
+                "platform VPN is already connected".to_owned(),
+            ));
+        }
+
+        state.platform_start_sequence = state.platform_start_sequence.saturating_add(1);
+        let attempt_id = format!("{}-{}", now_unix_nanos(), state.platform_start_sequence);
+        state.platform_start_attempt_id = attempt_id.clone();
+        state.platform_start_outcome = PlatformStartOutcome::Pending;
+        state.platform_extension_attached = false;
+        state.platform_vpn_starting = true;
+        state.platform_vpn_running = false;
+        state.platform_network_protected = false;
+        state.platform_network_protect_error = None;
+        state.logs.push(info_log(format!(
+            "platform VPN start transaction {attempt_id}"
+        )));
+        self.persist_platform_vpn_state_locked(&mut state)?;
+        Ok(attempt_id)
+    }
+
+    /// Bind the VPN Extension process to the transaction delivered in its Want.
+    pub fn bind_platform_vpn_start(&self, attempt_id: &str) -> Result<(), HMetaError> {
+        if attempt_id.is_empty() {
+            return Err(HMetaError::Core(
+                "platform VPN start attempt id is empty".to_owned(),
+            ));
+        }
+        let mut state = self.lock_state()?;
+        self.sync_platform_vpn_state_locked(&mut state);
+        if state.platform_start_attempt_id != attempt_id {
+            return Err(HMetaError::Core(format!(
+                "stale platform VPN start attempt {attempt_id}"
+            )));
+        }
+        if matches!(
+            state.platform_start_outcome,
+            PlatformStartOutcome::Failed | PlatformStartOutcome::Cancelled
+        ) {
+            return Err(HMetaError::Core(format!(
+                "platform VPN start attempt {attempt_id} is already terminal"
+            )));
+        }
+        if !state.platform_extension_attached {
+            state.platform_extension_attached = true;
+            state.logs.push(info_log(format!(
+                "platform VPN extension attached to {attempt_id}"
+            )));
+            self.persist_platform_vpn_state_locked(&mut state)?;
+        }
+        Ok(())
+    }
+
+    /// Wait briefly for the VPN Extension to accept the matching Want.
+    ///
+    /// Some HarmonyOS authorization dialogs start the Extension with a new,
+    /// parameter-free Want. Callers use this signal to decide whether the
+    /// original Want containing the shared-memory descriptors must be sent
+    /// again after authorization succeeds.
+    pub async fn await_platform_vpn_start_attachment(
+        &self,
+        attempt_id: &str,
+        timeout: Duration,
+    ) -> Result<bool, HMetaError> {
+        if attempt_id.is_empty() {
+            return Err(HMetaError::Core(
+                "platform VPN start attempt id is empty".to_owned(),
+            ));
+        }
+        let mut receiver = self.platform_start_tx.subscribe();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let event = {
+                let mut state = self.lock_state()?;
+                self.sync_platform_vpn_state_locked(&mut state);
+                self.platform_start_event_locked(&state)
+            };
+            if event.attempt_id != attempt_id || event.outcome != PlatformStartOutcome::Pending {
+                return Ok(event.attempt_id == attempt_id && event.extension_attached);
+            }
+            if event.extension_attached {
+                return Ok(true);
+            }
+
+            tokio::select! {
+                changed = receiver.changed() => {
+                    changed.map_err(|_| HMetaError::Core(
+                        "platform VPN start coordinator closed".to_owned()
+                    ))?;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+                _ = tokio::time::sleep_until(deadline) => return Ok(false),
+            }
+        }
+    }
+
+    pub async fn await_platform_vpn_start(
+        &self,
+        attempt_id: &str,
+    ) -> Result<PlatformStartOutcome, HMetaError> {
+        self.await_platform_vpn_start_with_deadline(attempt_id, PLATFORM_VPN_START_DEADLINE)
+            .await
+    }
+
+    async fn await_platform_vpn_start_with_deadline(
+        &self,
+        attempt_id: &str,
+        timeout: Duration,
+    ) -> Result<PlatformStartOutcome, HMetaError> {
+        if attempt_id.is_empty() {
+            return Err(HMetaError::Core(
+                "platform VPN start attempt id is empty".to_owned(),
+            ));
+        }
+        let mut receiver = self.platform_start_tx.subscribe();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let event = {
+                let mut state = self.lock_state()?;
+                self.sync_platform_vpn_state_locked(&mut state);
+                self.platform_start_event_locked(&state)
+            };
+            if event.attempt_id != attempt_id {
+                return Err(HMetaError::Core(format!(
+                    "platform VPN start attempt {attempt_id} was superseded"
+                )));
+            }
+            match event.outcome {
+                PlatformStartOutcome::Connected => {
+                    return Ok(PlatformStartOutcome::Connected);
+                }
+                PlatformStartOutcome::Failed => {
+                    return Err(HMetaError::Core(
+                        event
+                            .error
+                            .unwrap_or_else(|| "VPN extension failed to start".to_owned()),
+                    ));
+                }
+                PlatformStartOutcome::Cancelled => {
+                    return Err(HMetaError::Core(
+                        "VPN extension start was cancelled".to_owned(),
+                    ));
+                }
+                PlatformStartOutcome::Idle => {
+                    return Err(HMetaError::Core(format!(
+                        "platform VPN start attempt {attempt_id} is not active"
+                    )));
+                }
+                PlatformStartOutcome::Pending => {}
+            }
+
+            tokio::select! {
+                changed = receiver.changed() => {
+                    changed.map_err(|_| HMetaError::Core(
+                        "platform VPN start coordinator closed".to_owned()
+                    ))?;
+                }
+                changed = self.wait_for_platform_change(Duration::from_secs(1)) => {
+                    changed?;
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    self.fail_platform_vpn_start(
+                        attempt_id,
+                        "VPN extension did not reach a terminal state before the startup deadline".to_owned(),
+                    )?;
+                }
+            }
+        }
+    }
+
+    /// Fail a matching request only before the VPN Extension accepts its Want.
+    pub fn fail_unattached_platform_vpn_start(
+        &self,
+        attempt_id: &str,
+        error: String,
+    ) -> Result<bool, HMetaError> {
+        self.fail_platform_vpn_start_if(attempt_id, error, true)
+    }
+
+    /// Publish exactly one failure for the matching start transaction.
+    pub fn fail_platform_vpn_start(
+        &self,
+        attempt_id: &str,
+        error: String,
+    ) -> Result<bool, HMetaError> {
+        self.fail_platform_vpn_start_if(attempt_id, error, false)
+    }
+
+    fn fail_platform_vpn_start_if(
+        &self,
+        attempt_id: &str,
+        error: String,
+        require_unattached: bool,
+    ) -> Result<bool, HMetaError> {
+        let mut state = self.lock_state()?;
+        self.sync_platform_vpn_state_locked(&mut state);
+        if !self.platform_start_is_pending_locked(&state, attempt_id)
+            || (require_unattached && state.platform_extension_attached)
+        {
+            return Ok(false);
+        }
+        state.platform_vpn_starting = false;
+        state.platform_vpn_running = false;
+        state.platform_network_protected = false;
+        state.platform_network_protect_error = Some(error.clone());
+        state.platform_start_outcome = PlatformStartOutcome::Failed;
+        state.logs.push(warning_log(format!(
+            "platform VPN start transaction {attempt_id} failed: {error}"
+        )));
+        self.persist_platform_vpn_state_locked(&mut state)?;
+        Ok(true)
+    }
+
+    /// Cancel only the matching pending start transaction.
+    pub fn cancel_platform_vpn_start(&self, attempt_id: &str) -> Result<bool, HMetaError> {
+        let mut state = self.lock_state()?;
+        self.sync_platform_vpn_state_locked(&mut state);
+        if !self.platform_start_is_pending_locked(&state, attempt_id) {
+            return Ok(false);
+        }
+        state.platform_vpn_starting = false;
+        state.platform_vpn_running = false;
+        state.platform_network_protected = false;
+        state.platform_network_protect_error = None;
+        state.platform_start_outcome = PlatformStartOutcome::Cancelled;
+        state.logs.push(info_log(format!(
+            "platform VPN start transaction {attempt_id} cancelled"
+        )));
+        self.persist_platform_vpn_state_locked(&mut state)?;
+        Ok(true)
+    }
+
     pub fn stop_vpn(&self) -> Result<(), HMetaError> {
         let stats = self.vpn.stats();
         self.vpn.stop()?;
@@ -1111,6 +1400,9 @@ impl CoreHandle {
         baseline_meow_traffic_sample(&mut state);
         state.platform_vpn_starting = false;
         state.platform_vpn_running = false;
+        if state.platform_start_outcome == PlatformStartOutcome::Pending {
+            state.platform_start_outcome = PlatformStartOutcome::Cancelled;
+        }
         state.platform_network_protected = false;
         state.platform_network_protect_error = None;
         state.traffic.upload_speed = 0;
@@ -1148,6 +1440,9 @@ impl CoreHandle {
         state.platform_network_protected = false;
         state.platform_network_protect_error =
             Some("VPN extension did not report readiness before the startup timeout".to_owned());
+        if state.platform_start_outcome == PlatformStartOutcome::Pending {
+            state.platform_start_outcome = PlatformStartOutcome::Failed;
+        }
         state
             .logs
             .push(warning_log("platform vpn startup timed out"));
@@ -1162,6 +1457,9 @@ impl CoreHandle {
         state.platform_vpn_running = false;
         state.platform_network_protected = false;
         state.platform_network_protect_error = Some(error.clone());
+        if state.platform_start_outcome == PlatformStartOutcome::Pending {
+            state.platform_start_outcome = PlatformStartOutcome::Failed;
+        }
         state
             .logs
             .push(warning_log(format!("platform vpn start failed: {error}")));
@@ -1174,7 +1472,14 @@ impl CoreHandle {
         self.sync_platform_vpn_state_locked(&mut state);
         state.platform_vpn_starting = false;
         state.platform_vpn_running = running;
-        if !running {
+        if running {
+            if state.platform_start_outcome == PlatformStartOutcome::Pending {
+                state.platform_start_outcome = PlatformStartOutcome::Connected;
+            }
+        } else {
+            if state.platform_start_outcome == PlatformStartOutcome::Pending {
+                state.platform_start_outcome = PlatformStartOutcome::Cancelled;
+            }
             settle_traffic_before_platform_stop(&mut state, stats.as_ref())?;
             state.platform_network_protected = false;
             state.platform_network_protect_error = None;
@@ -2820,8 +3125,10 @@ impl CoreHandle {
         state.platform_vpn_state_updated_at =
             now_unix_nanos().max(state.platform_vpn_state_updated_at.saturating_add(1));
         let Some(platform) = self.platform_ipc()? else {
+            self.notify_platform_start_locked(state);
             return Ok(());
         };
+        self.notify_platform_start_locked(state);
         platform
             .publish_state(platform_vpn_state(state))
             .map_err(platform_ipc_error)
@@ -2884,21 +3191,79 @@ impl CoreHandle {
                 return;
             }
         };
+        let is_ui = platform.is_ui();
         if let Some(remote) = envelope
             .state
             .filter(|remote| remote.updated_at > state.platform_vpn_state_updated_at)
         {
-            state.platform_vpn_starting = remote.starting;
-            state.platform_vpn_running = remote.running;
-            state.platform_network_protected = remote.network_protected;
-            state.platform_network_protect_error = remote.network_protect_error;
-            state.platform_vpn_state_updated_at = remote.updated_at;
+            let remote_attempt_matches = !remote.start_attempt_id.is_empty()
+                && remote.start_attempt_id == state.platform_start_attempt_id;
+            if !is_ui || remote_attempt_matches {
+                if !is_ui && !remote.start_attempt_id.is_empty() && !remote_attempt_matches {
+                    state.platform_start_attempt_id = remote.start_attempt_id.clone();
+                    state.platform_start_outcome = remote.start_outcome;
+                    state.platform_extension_attached = remote.extension_attached;
+                } else if remote_attempt_matches
+                    && state.platform_start_outcome == PlatformStartOutcome::Pending
+                    && matches!(
+                        remote.start_outcome,
+                        PlatformStartOutcome::Connected
+                            | PlatformStartOutcome::Failed
+                            | PlatformStartOutcome::Cancelled
+                    )
+                {
+                    state.platform_start_outcome = remote.start_outcome;
+                }
+                if remote_attempt_matches && remote.extension_attached {
+                    state.platform_extension_attached = true;
+                }
+                state.platform_vpn_starting = !remote.running && remote.starting;
+                state.platform_vpn_running = remote.running;
+                if remote.running && state.platform_start_outcome == PlatformStartOutcome::Pending {
+                    state.platform_start_outcome = PlatformStartOutcome::Connected;
+                } else if !remote.running
+                    && state.platform_start_outcome == PlatformStartOutcome::Pending
+                    && remote.start_outcome == PlatformStartOutcome::Failed
+                {
+                    state.platform_start_outcome = PlatformStartOutcome::Failed;
+                }
+                state.platform_network_protected = remote.network_protected;
+                state.platform_network_protect_error = remote.network_protect_error;
+                state.platform_vpn_state_updated_at = remote.updated_at;
+                self.notify_platform_start_locked(state);
+            }
         }
         if let Some(control) = envelope
             .control
             .filter(|control| control.updated_at > state.platform_vpn_control_updated_at)
         {
             self.sync_platform_vpn_control_locked(state, control);
+        }
+    }
+
+    fn platform_start_is_pending_locked(&self, state: &CoreState, attempt_id: &str) -> bool {
+        !attempt_id.is_empty()
+            && state.platform_start_attempt_id == attempt_id
+            && state.platform_start_outcome == PlatformStartOutcome::Pending
+    }
+
+    fn platform_start_event_locked(&self, state: &CoreState) -> PlatformStartEvent {
+        PlatformStartEvent {
+            attempt_id: state.platform_start_attempt_id.clone(),
+            outcome: state.platform_start_outcome,
+            extension_attached: state.platform_extension_attached,
+            error: state.platform_network_protect_error.clone(),
+        }
+    }
+
+    fn notify_platform_start_locked(&self, state: &CoreState) {
+        let event = self.platform_start_event_locked(state);
+        let changed = {
+            let current = self.platform_start_tx.borrow();
+            *current != event
+        };
+        if changed {
+            self.platform_start_tx.send_replace(event);
         }
     }
 
@@ -3529,6 +3894,9 @@ fn persist_runtime_ui_cache_best_effort(state: &mut CoreState) {
 
 fn platform_vpn_state(state: &CoreState) -> PlatformVpnState {
     PlatformVpnState {
+        start_attempt_id: state.platform_start_attempt_id.clone(),
+        start_outcome: state.platform_start_outcome,
+        extension_attached: state.platform_extension_attached,
         starting: state.platform_vpn_starting,
         running: state.platform_vpn_running,
         network_protected: state.platform_network_protected,
@@ -4929,6 +5297,122 @@ rules:
             .network_protect_error
             .as_deref()
             .is_some_and(|error| error.contains("startup timeout")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn platform_vpn_state_accepts_legacy_frames_without_start_transaction() {
+        let state: PlatformVpnState =
+            serde_json::from_str(r#"{"starting":true,"running":false,"updatedAt":1}"#).unwrap();
+
+        assert_eq!(state.start_outcome, PlatformStartOutcome::Idle);
+        assert!(state.start_attempt_id.is_empty());
+        assert!(!state.extension_attached);
+        assert!(state.starting);
+    }
+
+    #[tokio::test]
+    async fn platform_start_completes_only_on_matching_connected_terminal() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-platform-vpn-connected-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let attempt_id = core.begin_platform_vpn_start().unwrap();
+
+        assert!(!core
+            .fail_platform_vpn_start("older-attempt", "late rejection".to_owned())
+            .unwrap());
+        core.set_platform_vpn_running(true).unwrap();
+
+        assert_eq!(
+            core.await_platform_vpn_start(&attempt_id).await.unwrap(),
+            PlatformStartOutcome::Connected
+        );
+        assert!(!core
+            .fail_platform_vpn_start(&attempt_id, "late rejection".to_owned())
+            .unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn platform_start_failure_is_exactly_once() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-platform-vpn-failed-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let attempt_id = core.begin_platform_vpn_start().unwrap();
+
+        assert!(core
+            .fail_platform_vpn_start(&attempt_id, "system rejected".to_owned())
+            .unwrap());
+        assert!(!core.cancel_platform_vpn_start(&attempt_id).unwrap());
+        let error = core
+            .await_platform_vpn_start(&attempt_id)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("system rejected"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn platform_start_attachment_wait_distinguishes_authorization_bootstrap() {
+        let root = std::env::temp_dir().join(format!(
+            "hmeta-platform-vpn-attachment-wait-{}",
+            now_unix_nanos()
+        ));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let attempt_id = core.begin_platform_vpn_start().unwrap();
+
+        assert!(!core
+            .await_platform_vpn_start_attachment(&attempt_id, Duration::from_millis(10))
+            .await
+            .unwrap());
+        core.bind_platform_vpn_start(&attempt_id).unwrap();
+        assert!(core
+            .await_platform_vpn_start_attachment(&attempt_id, Duration::from_millis(10))
+            .await
+            .unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn system_rejection_only_fails_before_extension_attachment() {
+        let root = std::env::temp_dir().join(format!(
+            "hmeta-platform-vpn-attachment-{}",
+            now_unix_nanos()
+        ));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let unattached = core.begin_platform_vpn_start().unwrap();
+        assert!(core
+            .fail_unattached_platform_vpn_start(&unattached, "system rejected".to_owned())
+            .unwrap());
+
+        let attached = core.begin_platform_vpn_start().unwrap();
+        core.bind_platform_vpn_start(&attached).unwrap();
+        assert!(!core
+            .fail_unattached_platform_vpn_start(&attached, "late system rejection".to_owned())
+            .unwrap());
+        core.set_platform_vpn_running(true).unwrap();
+        assert!(!core
+            .fail_unattached_platform_vpn_start(&attached, "late timeout".to_owned())
+            .unwrap());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn platform_start_deadline_produces_one_failed_terminal() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-platform-vpn-deadline-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let attempt_id = core.begin_platform_vpn_start().unwrap();
+
+        let error = core
+            .await_platform_vpn_start_with_deadline(&attempt_id, Duration::from_millis(10))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("startup deadline"));
+        assert!(!core
+            .fail_platform_vpn_start(&attempt_id, "late failure".to_owned())
+            .unwrap());
+        assert!(!core.cancel_platform_vpn_start(&attempt_id).unwrap());
         let _ = std::fs::remove_dir_all(root);
     }
 

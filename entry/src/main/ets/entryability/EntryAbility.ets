@@ -18,6 +18,8 @@ import {
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'HMetaEntry';
 const SCAN_CANCELLED_CODE: number = 1000500002;
+const VPN_EXTENSION_ATTACH_GRACE_MS: number = 350;
+const VPN_EXTENSION_REDISPATCH_ATTACH_TIMEOUT_MS: number = 5000;
 
 interface HMetaAutomationParams {
   hmetaProfileContent?: string;
@@ -80,6 +82,7 @@ export default class EntryAbility extends NativeAbility {
   public moduleName: string | string[] = 'hmeta_ui';
   public defaultPage: boolean = false;
   private vpnStartRequest: Promise<void> | undefined = undefined;
+  private activeVpnStartAttemptId: string = '';
   private platformSharedMemory?: HMetaPlatformSharedMemoryFds;
 
   private async pickProfileFileFromSystem(): Promise<Array<string>> {
@@ -207,47 +210,98 @@ export default class EntryAbility extends NativeAbility {
     }
   }
 
-  private async performStartVpn(optionsJson: string): Promise<void> {
-    try {
-      const startedAt = Date.now();
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'request VPN start received');
-      hmetaUi.setPlatformVpnStarting(true);
-      let timeoutId: number = -1;
-      const startupTimeout = new Promise<void>((_resolve, reject) => {
-        timeoutId = setTimeout(() => {
-          try {
-            hmetaUi.expirePlatformVpnStart();
-          } catch (err) {
-            hilog.error(LOG_DOMAIN, LOG_TAG, 'expire VPN start failed %{public}s', describeError(err));
-          }
-          reject(new Error('VPN extension startup timed out'));
-        }, 15000);
-      });
+  private dispatchVpnStart(optionsJson: string, attemptId: string): void {
+    this.runVpnStartDispatch(optionsJson, attemptId).catch((err: Error) => {
+      const message = describeError(err) || 'system rejected VPN start';
       try {
-        await Promise.race([
-          vpnExtension.startVpnExtensionAbility(buildVpnWant(optionsJson, this.platformSharedMemory)),
-          startupTimeout,
-        ]);
-      } finally {
-        if (timeoutId >= 0) {
-          clearTimeout(timeoutId);
-        }
+        hmetaUi.failUnattachedPlatformVpnStart(attemptId, message);
+      } catch (innerErr) {
+        hilog.error(
+          LOG_DOMAIN,
+          LOG_TAG,
+          'publish system VPN rejection failed %{public}s',
+          describeError(innerErr),
+        );
       }
-      hilog.info(
-        LOG_DOMAIN,
-        LOG_TAG,
-        'VPN start ability resolved in %{public}d ms',
-        Date.now() - startedAt,
+    });
+  }
+
+  private async invokeVpnExtensionStart(optionsJson: string, attemptId: string): Promise<void> {
+    try {
+      await vpnExtension.startVpnExtensionAbility(
+        buildVpnWant(optionsJson, this.platformSharedMemory, attemptId),
       );
+    } catch (err) {
+      throw new Error(describeError(err) || 'system rejected VPN start');
+    }
+  }
+
+  private async runVpnStartDispatch(optionsJson: string, attemptId: string): Promise<void> {
+    await this.invokeVpnExtensionStart(optionsJson, attemptId);
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'system acknowledged VPN start attempt %{public}s', attemptId);
+
+    if (await hmetaUi.awaitPlatformVpnStartAttachment(attemptId, VPN_EXTENSION_ATTACH_GRACE_MS)) {
+      return;
+    }
+
+    // The first-authorization dialog on some HarmonyOS builds starts the VPN
+    // Extension with a new Want containing only bundleName/abilityName. Once
+    // authorization succeeds, send the original payload again so the running
+    // Extension receives the ashmem descriptors and attempt id via onRequest.
+    hilog.warn(
+      LOG_DOMAIN,
+      LOG_TAG,
+      'VPN Extension did not receive the authorized Want; redispatching attempt %{public}s',
+      attemptId,
+    );
+    await this.invokeVpnExtensionStart(optionsJson, attemptId);
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'redispatched VPN start attempt %{public}s', attemptId);
+
+    if (!(await hmetaUi.awaitPlatformVpnStartAttachment(
+      attemptId,
+      VPN_EXTENSION_REDISPATCH_ATTACH_TIMEOUT_MS,
+    ))) {
+      throw new Error('VPN Extension did not receive the shared-memory descriptors after authorization');
+    }
+  }
+
+  private async performStartVpn(optionsJson: string): Promise<void> {
+    let attemptId: string = '';
+    try {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'request VPN start received');
+      attemptId = hmetaUi.beginPlatformVpnStart();
+      this.activeVpnStartAttemptId = attemptId;
+
+      this.dispatchVpnStart(optionsJson, attemptId);
+
+      const outcome = await hmetaUi.awaitPlatformVpnStart(attemptId);
+      if (outcome !== 'connected') {
+        throw new Error(`unexpected VPN start outcome: ${outcome}`);
+      }
       this.ensureSpeedNotificationPermission().catch((err: Error) => {
         hilog.warn(LOG_DOMAIN, LOG_TAG, 'deferred notification permission failed %{public}s', describeError(err));
       });
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'requested VPN start');
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN start completed attempt %{public}s', attemptId);
     } catch (err) {
       const message = describeError(err) || 'request VPN start failed';
-      hmetaUi.setPlatformVpnFailed(message);
+      if (attemptId.length > 0) {
+        try {
+          hmetaUi.failPlatformVpnStart(attemptId, message);
+        } catch (innerErr) {
+          hilog.error(
+            LOG_DOMAIN,
+            LOG_TAG,
+            'publish VPN start failure failed %{public}s',
+            describeError(innerErr),
+          );
+        }
+      }
       hilog.error(LOG_DOMAIN, LOG_TAG, 'request VPN start failed %{public}s', message);
       throw new Error(message);
+    } finally {
+      if (this.activeVpnStartAttemptId === attemptId) {
+        this.activeVpnStartAttemptId = '';
+      }
     }
   }
 
@@ -267,6 +321,9 @@ export default class EntryAbility extends NativeAbility {
   private async requestStopVpn(): Promise<void> {
     try {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'request VPN stop received');
+      if (this.activeVpnStartAttemptId.length > 0) {
+        hmetaUi.cancelPlatformVpnStart(this.activeVpnStartAttemptId);
+      }
       await vpnExtension.stopVpnExtensionAbility(buildVpnWant());
       hmetaUi.setPlatformVpnRunning(false);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'requested VPN stop');
@@ -663,6 +720,18 @@ export default class EntryAbility extends NativeAbility {
     this.configureNativeLocale(newConfig.language);
     this.configureNativeAppearance(newConfig.colorMode);
     super.onConfigurationUpdate(newConfig);
+  }
+
+  public onDestroy(): void {
+    if (this.activeVpnStartAttemptId.length > 0) {
+      try {
+        hmetaUi.cancelPlatformVpnStart(this.activeVpnStartAttemptId);
+      } catch (err) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'cancel active VPN start failed %{public}s', describeError(err));
+      }
+      this.activeVpnStartAttemptId = '';
+    }
+    super.onDestroy();
   }
 
   public async onWindowStageCreate(windowStage: window.WindowStage): Promise<void> {
