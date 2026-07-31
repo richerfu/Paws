@@ -1,4 +1,6 @@
 const VIEW: &str = include_str!("../src/view.rs");
+const DASHBOARD: &str = include_str!("../src/view/pages/dashboard.rs");
+const PROXIES: &str = include_str!("../src/view/pages/proxies.rs");
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let start = source.find(start).expect("section start");
@@ -7,9 +9,14 @@ fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     &tail[..end]
 }
 
+fn section_to_end<'a>(source: &'a str, start: &str) -> &'a str {
+    let start = source.find(start).expect("section start");
+    &source[start..]
+}
+
 #[test]
 fn dashboard_stays_flat_and_decision_focused() {
-    let page = section(VIEW, "fn dashboard_page", "fn proxies_page");
+    let page = DASHBOARD;
 
     assert!(page.contains("FlatSegmented"));
     assert!(page.contains("grouped_proxy_rows"));
@@ -38,7 +45,7 @@ fn dashboard_stays_flat_and_decision_focused() {
 
 #[test]
 fn dashboard_mode_selector_dispatches_every_runtime_mode() {
-    let picker = section(VIEW, "fn mode_picker", "fn proxies_page");
+    let picker = section_to_end(DASHBOARD, "fn mode_picker");
 
     assert!(picker.contains("RuntimeMode::Rule"));
     assert!(picker.contains("RuntimeMode::Global"));
@@ -48,7 +55,7 @@ fn dashboard_mode_selector_dispatches_every_runtime_mode() {
 
 #[test]
 fn dashboard_long_values_are_width_constrained() {
-    let page = section(VIEW, "fn dashboard_page", "fn proxies_page");
+    let page = DASHBOARD;
 
     assert!(page.contains("content: current_node"));
     assert!(page.contains("text_overflow: \"ellipsis\""));
@@ -65,9 +72,9 @@ fn dashboard_long_values_are_width_constrained() {
 
 #[test]
 fn quick_switch_owns_an_internal_virtual_scroll_list() {
-    let page = section(VIEW, "fn dashboard_page", "fn proxies_page");
+    let page = DASHBOARD;
     let virtual_list = section(
-        VIEW,
+        PROXIES,
         "fn VirtualProxyGroupList",
         "fn VirtualProxySectionRow",
     );
@@ -78,26 +85,37 @@ fn quick_switch_owns_an_internal_virtual_scroll_list() {
     assert!(virtual_list.contains("list_cached_count: 20_i32"));
 
     let keys = section(
-        VIEW,
+        PROXIES,
         "fn virtual_proxy_row_keys",
         "fn VirtualProxyGroupList",
     );
-    assert!(keys.contains("row.hash"));
-    assert!(keys.contains("pending_proxy.hash"));
+    assert!(keys.contains("VirtualProxyRowKey::Group"));
+    assert!(keys.contains("VirtualProxyRowKey::Member"));
+    assert!(!keys.contains("selection_pending"));
+    assert!(virtual_list.contains("use_signal"));
+    assert!(virtual_list.contains("VirtualProxyRow"));
 
-    let group_row = section(VIEW, "fn VirtualProxyGroupRow", "fn VirtualProxyMemberRow");
-    assert!(group_row.contains("group.selected"));
+    let group_row = section(
+        PROXIES,
+        "fn VirtualProxyGroupRow",
+        "fn VirtualProxyMemberRow",
+    );
+    assert!(group_row.contains("let selected = group"));
+    assert!(group_row.contains(".selected"));
     assert!(group_row.contains("group.expanded"));
+    assert!(!group_row.contains("selection_pending"));
+    assert!(!group_row.contains("切换中"));
 
-    let member_row = section(VIEW, "fn VirtualProxyMemberRow", "fn profiles_page");
+    let member_row = section_to_end(PROXIES, "fn VirtualProxyMemberRow");
     assert!(member_row.contains("member.selected"));
     assert!(member_row.contains("member.subgroup"));
+    assert!(member_row.contains("let can_select = member.selectable;"));
 }
 
 #[test]
 fn dashboard_list_meets_bottom_navigation_without_a_padding_strip() {
     let layout = section(VIEW, "fn scaffold", "fn use_parent_back_handler");
-    let page = section(VIEW, "fn dashboard_page", "fn proxies_page");
+    let page = DASHBOARD;
 
     assert!(layout.contains("fn fixed_scaffold_flush_bottom"));
     assert!(layout.contains("if flush_fixed_bottom { 0.0 } else { spacing::LG }"));

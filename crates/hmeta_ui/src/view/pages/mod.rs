@@ -1,11 +1,25 @@
 mod activity;
 mod appearance;
+mod dashboard;
+mod logs;
+mod profiles;
+mod proxies;
+mod resources;
 mod settings;
 mod subscription_converter;
 mod tools;
+mod traffic;
+mod yaml_editor;
 
 pub(super) use activity::{connections_page, manual_rule_dialog, requests_page};
 pub(super) use appearance::appearance_page;
+pub(super) use dashboard::dashboard_page;
+pub(super) use logs::logs_page;
+pub(super) use profiles::profiles_page;
+pub(super) use proxies::{proxies_page, VirtualProxyGroupList, VirtualProxyPalette};
+pub(super) use resources::resources_page;
 pub(super) use settings::settings_page;
 pub(super) use subscription_converter::subscription_converter_page;
 pub(super) use tools::{about_page, tools_page};
+pub(super) use traffic::traffic_page;
+pub(super) use yaml_editor::yaml_editor_dialog;

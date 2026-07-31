@@ -1,5 +1,8 @@
-const VIEW: &str = include_str!("../src/view.rs");
-const UI: &str = include_str!("../src/ui.rs");
+const VIEW: &str = include_str!("../src/view/pages/resources.rs");
+const UI: &str = concat!(
+    include_str!("../src/ui.rs"),
+    include_str!("../src/ui/tasks.rs")
+);
 const CORE: &str = include_str!("../../hmeta_core/src/lib.rs");
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {

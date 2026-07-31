@@ -1,5 +1,15 @@
-const VIEW: &str = include_str!("../src/view.rs");
-const UI: &str = include_str!("../src/ui.rs");
+const VIEW: &str = concat!(
+    include_str!("../src/view/pages/proxies.rs"),
+    include_str!("../src/view/pages/profiles.rs"),
+    include_str!("../src/view/pages/traffic.rs"),
+    include_str!("../src/view/pages/logs.rs"),
+    include_str!("../src/view/pages/yaml_editor.rs"),
+    include_str!("../src/view.rs"),
+);
+const UI: &str = concat!(
+    include_str!("../src/ui.rs"),
+    include_str!("../src/ui/tasks.rs")
+);
 const PLATFORM_CALLBACKS: &str = include_str!("../src/platform_callbacks.rs");
 const ENTRY_ABILITY: &str =
     include_str!("../../../entry/src/main/ets/entryability/EntryAbility.ets");

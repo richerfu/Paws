@@ -1,4 +1,8 @@
-const VIEW_SOURCE: &str = include_str!("../src/view.rs");
+const VIEW_SOURCE: &str = concat!(
+    include_str!("../src/view/pages/logs.rs"),
+    include_str!("../src/view/pages/resources.rs"),
+    include_str!("../src/view.rs"),
+);
 const ACTIVITY_SOURCE: &str = include_str!("../src/view/pages/activity.rs");
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
