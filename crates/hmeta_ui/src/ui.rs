@@ -2154,9 +2154,11 @@ async fn load_snapshot() -> RuntimeSnapshot {
 }
 
 async fn delayed_snapshot() -> RuntimeSnapshot {
-    let _ = hmeta_core::shared_core()
-        .wait_for_platform_change(Duration::from_millis(1000))
-        .await;
+    // A pending platform start transaction owns the ashmem notification
+    // waiter. Regular UI refreshes use a bounded timer and synchronize the
+    // latest frame while loading the snapshot, avoiding competing reads from
+    // the single notification socket.
+    tokio::time::sleep(Duration::from_millis(1000)).await;
     load_snapshot().await
 }
 

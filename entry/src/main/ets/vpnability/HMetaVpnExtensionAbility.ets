@@ -4,12 +4,12 @@ import { notificationManager } from '@kit.NotificationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import hmetaUi from 'libhmeta_ui.so';
 import {
-  DEFAULT_OPTIONS_JSON,
   HMetaVpnConfig,
   HMETA_ENTRY_ABILITY,
   HMETA_MODULE_NAME,
   parseOptions,
   readPlatformSharedMemoryFds,
+  readPlatformStartAttemptId,
   readOptionsJson,
   currentHMetaBundleName,
   setHMetaBundleName,
@@ -121,8 +121,15 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     this.configureNativeHome();
     const sharedMemory = readPlatformSharedMemoryFds(want);
     if (!sharedMemory) {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN start is missing platform shared memory descriptors');
-      this.recordVpnFailure('VPN start is missing platform shared memory descriptors');
+      // The first-authorization system dialog may bootstrap the Extension with
+      // a replacement Want that contains no application parameters. Keep the
+      // Extension idle until EntryAbility redispatches the original Want via
+      // onRequest; it owns the bounded failure if that rebound never arrives.
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        'VPN authorization bootstrap has no shared-memory descriptors; waiting for rebound request',
+      );
       return;
     }
     try {
@@ -132,6 +139,18 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     } catch (err) {
       this.starting = false;
       this.recordVpnFailure(`attach platform shared memory failed: ${describeError(err)}`);
+      return;
+    }
+    let attemptId: string;
+    try {
+      attemptId = readPlatformStartAttemptId(want);
+      hmetaUi.bindPlatformVpnStart(attemptId);
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'bound VPN start attempt %{public}s', attemptId);
+    } catch (err) {
+      const message = describeError(err) || 'VPN request has no valid start attempt';
+      this.recordVpnFailure(message);
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN request rejected %{public}s', message);
+      this.starting = false;
       return;
     }
     if (this.tunFd >= 0) {
@@ -159,10 +178,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'record VPN starting failed %{public}s', describeError(err));
     }
-    const rawOptionsJson = want.parameters?.optionsJson;
-    const optionsJson = typeof rawOptionsJson === 'string'
-      ? readOptionsJson(rawOptionsJson)
-      : DEFAULT_OPTIONS_JSON;
+    const optionsJson = readOptionsJson(want);
     const options = parseOptions(optionsJson);
     const config = new HMetaVpnConfig(options);
     const startedAt = Date.now();

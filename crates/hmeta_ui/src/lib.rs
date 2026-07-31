@@ -79,6 +79,71 @@ pub fn sync_platform_changes() -> Result<()> {
 }
 
 #[napi]
+pub fn begin_platform_vpn_start() -> Result<String> {
+    hmeta_core::shared_core()
+        .begin_platform_vpn_start()
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn bind_platform_vpn_start(attempt_id: String) -> Result<()> {
+    hmeta_core::shared_core()
+        .bind_platform_vpn_start(&attempt_id)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub async fn await_platform_vpn_start_attachment(
+    attempt_id: String,
+    timeout_ms: u32,
+) -> Result<bool> {
+    hmeta_core::shared_core()
+        .await_platform_vpn_start_attachment(
+            &attempt_id,
+            std::time::Duration::from_millis(u64::from(timeout_ms)),
+        )
+        .await
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub async fn await_platform_vpn_start(attempt_id: String) -> Result<String> {
+    let outcome = hmeta_core::shared_core()
+        .await_platform_vpn_start(&attempt_id)
+        .await
+        .map_err(to_napi_error)?;
+    Ok(match outcome {
+        hmeta_core::PlatformStartOutcome::Connected => "connected",
+        hmeta_core::PlatformStartOutcome::Failed => "failed",
+        hmeta_core::PlatformStartOutcome::Cancelled => "cancelled",
+        hmeta_core::PlatformStartOutcome::Idle => "idle",
+        hmeta_core::PlatformStartOutcome::Pending => "pending",
+    }
+    .to_owned())
+}
+
+#[napi]
+pub fn fail_platform_vpn_start(attempt_id: String, error: String) -> Result<bool> {
+    hmeta_core::shared_core()
+        .fail_platform_vpn_start(&attempt_id, error)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn fail_unattached_platform_vpn_start(attempt_id: String, error: String) -> Result<bool> {
+    hmeta_core::shared_core()
+        .fail_unattached_platform_vpn_start(&attempt_id, error)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn cancel_platform_vpn_start(attempt_id: String) -> Result<bool> {
+    hmeta_core::shared_core()
+        .cancel_platform_vpn_start(&attempt_id)
+        .map_err(to_napi_error)
+}
+
+#[napi]
 pub fn configure_ui_locale(locale: String) -> Result<()> {
     std::env::set_var("HMETA_UI_LOCALE", locale);
     Ok(())

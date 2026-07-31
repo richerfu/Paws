@@ -1,4 +1,5 @@
 import { describe, beforeAll, beforeEach, afterEach, afterAll, it, expect } from '@ohos/hypium';
+import { Want } from '@kit.AbilityKit';
 import {
   buildVpnWant,
   currentHMetaBundleName,
@@ -10,6 +11,8 @@ import {
   parseLinkAddress,
   parseOptions,
   readOptionsJson,
+  readPlatformSharedMemoryFds,
+  readPlatformStartAttemptId,
   setHMetaBundleName,
 } from '../main/ets/vpnability/VpnConfig';
 
@@ -84,6 +87,72 @@ export default function localUnitTest() {
       const ipv6 = parseLinkAddress('fdfe:dcba:9876::1/126', 128);
       expect(ipv6.address.family).assertEqual(2);
       expect(ipv6.prefixLength).assertEqual(126);
+    });
+
+    it('readsDirectVpnExtensionWant', 0, () => {
+      const want = {
+        parameters: {
+          optionsJson: '{"addresses":["172.19.0.1/30"]}',
+          hmetaStartAttemptId: 'attempt-direct',
+        },
+        fds: {
+          hmetaPlatformAshmem: 21,
+          hmetaPlatformNotification: 22,
+        },
+      } as Want;
+
+      const sharedMemory = readPlatformSharedMemoryFds(want);
+      expect(readOptionsJson(want)).assertEqual('{"addresses":["172.19.0.1/30"]}');
+      expect(readPlatformStartAttemptId(want)).assertEqual('attempt-direct');
+      expect(sharedMemory?.ashmemFd).assertEqual(21);
+      expect(sharedMemory?.notificationFd).assertEqual(22);
+    });
+
+    it('readsFirstAuthorizationVpnExtensionWant', 0, () => {
+      const want = {
+        parameters: {
+          callingUid: 20010048,
+          callingPid: 1234,
+          myParams: {
+            optionsJson: '{"addresses":["172.19.0.1/30"]}',
+            hmetaStartAttemptId: 'attempt-first-authorization',
+            hmetaPlatformAshmem: {
+              type: 'FD',
+              value: 31,
+            },
+            hmetaPlatformNotification: {
+              type: 'FD',
+              value: 32,
+            },
+          },
+        },
+      } as Want;
+
+      const sharedMemory = readPlatformSharedMemoryFds(want);
+      expect(readOptionsJson(want)).assertEqual('{"addresses":["172.19.0.1/30"]}');
+      expect(readPlatformStartAttemptId(want)).assertEqual('attempt-first-authorization');
+      expect(sharedMemory?.ashmemFd).assertEqual(31);
+      expect(sharedMemory?.notificationFd).assertEqual(32);
+    });
+
+    it('rejectsMalformedNestedFileDescriptors', 0, () => {
+      const want = {
+        parameters: {
+          myParams: {
+            optionsJson: '{"addresses":["172.19.0.1/30"]}',
+            hmetaPlatformAshmem: {
+              type: 'not-an-fd',
+              value: 31,
+            },
+            hmetaPlatformNotification: {
+              type: 'FD',
+              value: -1,
+            },
+          },
+        },
+      } as Want;
+
+      expect(readPlatformSharedMemoryFds(want) === undefined).assertEqual(true);
     });
   });
 }
