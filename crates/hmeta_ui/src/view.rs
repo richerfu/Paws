@@ -652,28 +652,19 @@ fn dashboard_page(state: Signal<State>) -> Element {
     } else {
         subtle()
     };
-    let quick_scope = if snapshot.mode == RuntimeMode::Global {
-        ProxyGroupScope::Global
-    } else {
-        ProxyGroupScope::Subscription
-    };
     let quick_rows = grouped_proxy_rows(
         &snapshot.proxy_groups,
         "",
         quick_expanded_group().as_deref(),
-        quick_scope,
     );
-    let quick_summary = proxy_group_summary(&snapshot.proxy_groups, quick_scope);
+    let quick_summary = proxy_group_summary(&snapshot.proxy_groups);
     let current_node = match snapshot.mode {
         RuntimeMode::Direct => s.proxies_direct.to_owned(),
         RuntimeMode::Global => effective_group_leaf(&snapshot.proxy_groups, "GLOBAL")
             .unwrap_or_else(|| tr(current.locale, "未选择", "Unselected").to_owned()),
-        RuntimeMode::Rule => tr(
-            current.locale,
-            "由命中规则的策略分组决定",
-            "Selected by the matched policy group",
-        )
-        .to_owned(),
+        RuntimeMode::Rule => latest_active_rule_node(&snapshot.connections)
+            .or_else(|| primary_selected_group_leaf(&snapshot.proxy_groups))
+            .unwrap_or_else(|| tr(current.locale, "未选择", "Unselected").to_owned()),
     };
     let quick_count = quick_summary.members;
     let quick_group_count = quick_summary.groups;
@@ -809,11 +800,7 @@ fn dashboard_page(state: Signal<State>) -> Element {
                     layout_weight: 1.0,
                     align_items: "start",
                     text {
-                        content: if snapshot.mode == RuntimeMode::Global {
-                            tr(current.locale, "全局出口", "Global outbound")
-                        } else {
-                            tr(current.locale, "策略分组", "Policy groups")
-                        },
+                        content: tr(current.locale, "策略分组", "Policy groups"),
                         font_size: 17.0,
                         line_height: 22.0,
                         font_weight: 700,
@@ -921,26 +908,13 @@ fn proxies_page(state: Signal<State>) -> Element {
     let query_value = query();
     let expanded = expanded_group();
     let mut rows = Vec::new();
-    if current.snapshot.mode == RuntimeMode::Global {
-        let global_rows = grouped_proxy_rows(
-            &current.snapshot.proxy_groups,
-            &query_value,
-            expanded.as_deref(),
-            ProxyGroupScope::Global,
-        );
-        if !global_rows.is_empty() {
-            rows.push(ProxyGroupRow::Section(ProxyGroupScope::Global));
-            rows.extend(global_rows);
-        }
-    }
     let subscription_rows = grouped_proxy_rows(
         &current.snapshot.proxy_groups,
         &query_value,
         expanded.as_deref(),
-        ProxyGroupScope::Subscription,
     );
     if !subscription_rows.is_empty() {
-        rows.push(ProxyGroupRow::Section(ProxyGroupScope::Subscription));
+        rows.push(ProxyGroupRow::Section);
         rows.extend(subscription_rows);
     }
     let matching_group_count = rows
@@ -1107,8 +1081,8 @@ fn VirtualProxyGroupList(
             return rsx! {};
         };
         match row {
-            ProxyGroupRow::Section(scope) => rsx! {
-                VirtualProxySectionRow { scope, locale, palette }
+            ProxyGroupRow::Section => rsx! {
+                VirtualProxySectionRow { locale, palette }
             },
             ProxyGroupRow::Group(group) => rsx! {
                 VirtualProxyGroupRow {
@@ -1145,29 +1119,13 @@ fn VirtualProxyGroupList(
 }
 
 #[component]
-fn VirtualProxySectionRow(
-    scope: ProxyGroupScope,
-    locale: UiLocale,
-    palette: VirtualProxyPalette,
-) -> Element {
-    let (title, description) = match scope {
-        ProxyGroupScope::Global => (
-            tr(locale, "全局模式策略", "Global mode policy"),
-            tr(
-                locale,
-                "仅在全局模式下生效，与订阅规则分组相互独立",
-                "Used only by Global mode and independent from subscription policy groups",
-            ),
-        ),
-        ProxyGroupScope::Subscription => (
-            tr(locale, "订阅策略分组", "Subscription policy groups"),
-            tr(
-                locale,
-                "规则按分组名称命中，每个分组保留独立选择",
-                "Rules target groups by name; every group keeps its own selection",
-            ),
-        ),
-    };
+fn VirtualProxySectionRow(locale: UiLocale, palette: VirtualProxyPalette) -> Element {
+    let title = tr(locale, "订阅策略分组", "Subscription policy groups");
+    let description = tr(
+        locale,
+        "规则按分组名称命中，每个分组保留独立选择",
+        "Rules target groups by name; every group keeps its own selection",
+    );
     rsx! {
         column {
             width: "100%",
@@ -1217,11 +1175,7 @@ fn VirtualProxyGroupRow(
         None if !group.selectable => tr(locale, "自动策略", "Automatic policy"),
         None => tr(locale, "手动选择", "Manual selection"),
     };
-    let title = if group.name.eq_ignore_ascii_case("GLOBAL") {
-        tr(locale, "GLOBAL · 全局出口", "GLOBAL · Global outbound").to_owned()
-    } else {
-        group.name.clone()
-    };
+    let title = group.name.clone();
     let group_name = group.name.clone();
     rsx! {
         row {

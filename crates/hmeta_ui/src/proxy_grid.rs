@@ -1,15 +1,9 @@
 use crate::proxy_filter::matches_proxy_query;
 use hmeta_model::{ProxyGroup, ProxyItem};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum ProxyGroupScope {
-    Global,
-    Subscription,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum ProxyGroupRow {
-    Section(ProxyGroupScope),
+    Section,
     Group(ProxyGroupHeaderRow),
     Member(ProxyGroupMemberRow),
 }
@@ -49,21 +43,20 @@ pub(crate) fn grouped_proxy_rows(
     groups: &[ProxyGroup],
     query: &str,
     expanded_group: Option<&str>,
-    scope: ProxyGroupScope,
 ) -> Vec<ProxyGroupRow> {
     let normalized_query = query.trim().to_ascii_lowercase();
     let group_names = groups
         .iter()
         .map(|group| group.name.as_str())
         .collect::<std::collections::BTreeSet<_>>();
-    let mut scoped_groups = groups
+    let mut visible_groups = groups
         .iter()
-        .filter(|group| group_in_scope(group, scope))
+        .filter(|group| !group.name.eq_ignore_ascii_case("GLOBAL"))
         .collect::<Vec<_>>();
-    scoped_groups.sort_by_cached_key(|group| group.name.to_ascii_lowercase());
+    visible_groups.sort_by_cached_key(|group| group.name.to_ascii_lowercase());
 
     let mut rows = Vec::new();
-    for group in scoped_groups {
+    for group in visible_groups {
         let selected = selected_member(group);
         let group_matches = normalized_query.is_empty()
             || text_matches(&group.name, &normalized_query)
@@ -108,13 +101,10 @@ pub(crate) fn grouped_proxy_rows(
     rows
 }
 
-pub(crate) fn proxy_group_summary(
-    groups: &[ProxyGroup],
-    scope: ProxyGroupScope,
-) -> ProxyGroupSummary {
+pub(crate) fn proxy_group_summary(groups: &[ProxyGroup]) -> ProxyGroupSummary {
     groups
         .iter()
-        .filter(|group| group_in_scope(group, scope))
+        .filter(|group| !group.name.eq_ignore_ascii_case("GLOBAL"))
         .fold(ProxyGroupSummary::default(), |summary, group| {
             ProxyGroupSummary {
                 groups: summary.groups + 1,
@@ -139,12 +129,21 @@ pub(crate) fn effective_group_leaf(groups: &[ProxyGroup], root: &str) -> Option<
     }
 }
 
-fn group_in_scope(group: &ProxyGroup, scope: ProxyGroupScope) -> bool {
-    let global = group.name.eq_ignore_ascii_case("GLOBAL");
-    match scope {
-        ProxyGroupScope::Global => global,
-        ProxyGroupScope::Subscription => !global,
-    }
+pub(crate) fn primary_selected_group_leaf(groups: &[ProxyGroup]) -> Option<String> {
+    let visible_groups = groups
+        .iter()
+        .filter(|group| !group.name.eq_ignore_ascii_case("GLOBAL"))
+        .collect::<Vec<_>>();
+    let primary = visible_groups
+        .iter()
+        .copied()
+        .find(|group| group.name.eq_ignore_ascii_case("Proxy") && selected_member(group).is_some())
+        .or_else(|| {
+            visible_groups
+                .into_iter()
+                .find(|group| selected_member(group).is_some())
+        })?;
+    effective_group_leaf(groups, &primary.name)
 }
 
 fn selected_member(group: &ProxyGroup) -> Option<String> {

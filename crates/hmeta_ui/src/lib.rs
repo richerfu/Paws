@@ -26,6 +26,7 @@ mod provider_refresh_feedback;
 mod proxy_filter;
 mod proxy_grid;
 mod resource_filter;
+mod route_status;
 mod rule_feedback;
 mod settings_feedback;
 mod subscription_converter;

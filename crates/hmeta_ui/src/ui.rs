@@ -11,10 +11,11 @@ use crate::profile_refresh_feedback::{
 };
 use crate::provider_refresh_feedback::provider_batch_refresh_message;
 use crate::proxy_grid::{
-    effective_group_leaf, grouped_proxy_rows, proxy_group_summary, ProxyGroupHeaderRow,
-    ProxyGroupMemberRow, ProxyGroupRow, ProxyGroupScope,
+    effective_group_leaf, grouped_proxy_rows, primary_selected_group_leaf, proxy_group_summary,
+    ProxyGroupHeaderRow, ProxyGroupMemberRow, ProxyGroupRow,
 };
 use crate::resource_filter::{matches_geodata_query, matches_provider_query, matches_rule_query};
+use crate::route_status::latest_active_rule_node;
 use crate::rule_feedback::rule_import_message;
 use crate::settings_feedback::settings_saved_message;
 use crate::subscription_scan::{parse_scanned_subscription, ScannedSubscriptionError};
