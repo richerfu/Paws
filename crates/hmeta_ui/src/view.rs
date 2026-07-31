@@ -13,7 +13,7 @@ use arkit::shadcn::components::{
 use arkit::shadcn::theme::{
     spacing, typography, use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider,
 };
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -614,7 +614,7 @@ fn dashboard_page(state: Signal<State>) -> Element {
     let snapshot = current.snapshot;
     let s = strings(current.locale);
     let navigator = use_navigator();
-    let quick_item_order = use_hook(|| Rc::new(RefCell::new(Vec::<(String, String)>::new())));
+    let mut quick_expanded_group = use_signal(|| None::<String>);
     let vpn_starting = current.vpn_command_pending == Some(VpnCommandAction::Start)
         || matches!(snapshot.vpn_lifecycle, VpnLifecycle::Starting);
     let vpn_stopping = current.vpn_command_pending == Some(VpnCommandAction::Stop);
@@ -652,35 +652,36 @@ fn dashboard_page(state: Signal<State>) -> Element {
     } else {
         subtle()
     };
-    let mut quick_items = flatten_proxy_groups(&snapshot.proxy_groups, "");
-    if let Some((pending_group, pending_proxy)) = &current.proxy_selection_pending {
-        if !pending_proxy.is_empty() {
-            for item in &mut quick_items {
-                item.selected = item.group == *pending_group && item.name == *pending_proxy;
-            }
-        }
-    }
-    let selected_proxy_node = quick_items
-        .iter()
-        .find(|item| item.selected)
-        .map(|item| item.name.clone())
-        .unwrap_or_else(|| tr(current.locale, "未选择", "Unselected").to_owned());
-    let current_node = if snapshot.mode == RuntimeMode::Direct {
-        s.proxies_direct.to_owned()
+    let quick_scope = if snapshot.mode == RuntimeMode::Global {
+        ProxyGroupScope::Global
     } else {
-        selected_proxy_node
+        ProxyGroupScope::Subscription
     };
-    let quick_count = quick_items.len();
-    let quick_group_count = quick_items
-        .iter()
-        .map(|item| item.group.as_str())
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
+    let quick_rows = grouped_proxy_rows(
+        &snapshot.proxy_groups,
+        "",
+        quick_expanded_group().as_deref(),
+        quick_scope,
+    );
+    let quick_summary = proxy_group_summary(&snapshot.proxy_groups, quick_scope);
+    let current_node = match snapshot.mode {
+        RuntimeMode::Direct => s.proxies_direct.to_owned(),
+        RuntimeMode::Global => effective_group_leaf(&snapshot.proxy_groups, "GLOBAL")
+            .unwrap_or_else(|| tr(current.locale, "未选择", "Unselected").to_owned()),
+        RuntimeMode::Rule => tr(
+            current.locale,
+            "由命中规则的策略分组决定",
+            "Selected by the matched policy group",
+        )
+        .to_owned(),
+    };
+    let quick_count = quick_summary.members;
+    let quick_group_count = quick_summary.groups;
     let proxy_group_context = match current.locale {
         UiLocale::ZhCn => format!("{quick_count} 个节点 · {quick_group_count} 个分组"),
         UiLocale::En => format!("{quick_count} nodes · {quick_group_count} groups"),
     };
-    let quick_palette = VirtualProxyGridPalette {
+    let quick_palette = VirtualProxyPalette {
         surface: surface(),
         selected_surface: muted(),
         foreground: text_color(),
@@ -688,11 +689,6 @@ fn dashboard_page(state: Signal<State>) -> Element {
         border: line(),
         success: success(),
     };
-    // Preserve the first-seen order independently from selection. Selection
-    // remains a row-local visual input, so the keyed adapter only reloads the
-    // previous and next rows without moving the list or its scroll anchor.
-    let quick_list_items =
-        stabilize_proxy_items(&mut quick_item_order.borrow_mut(), quick_items.clone());
     let subscriptions_navigator = navigator.clone();
     let all_nodes_navigator = navigator.clone();
     let vpn_ip = if connected {
@@ -812,7 +808,17 @@ fn dashboard_page(state: Signal<State>) -> Element {
                 column {
                     layout_weight: 1.0,
                     align_items: "start",
-                    text { content: tr(current.locale, "快速切换", "Quick switch"), font_size: 17.0, line_height: 22.0, font_weight: 700, font_color: text_color() }
+                    text {
+                        content: if snapshot.mode == RuntimeMode::Global {
+                            tr(current.locale, "全局出口", "Global outbound")
+                        } else {
+                            tr(current.locale, "策略分组", "Policy groups")
+                        },
+                        font_size: 17.0,
+                        line_height: 22.0,
+                        font_weight: 700,
+                        font_color: text_color(),
+                    }
                     text { content: proxy_group_context, margin_top: 1.0, font_size: 10.0, line_height: 14.0, font_color: subtle(), max_lines: 1 }
                 }
                 if quick_count > 0 {
@@ -829,7 +835,7 @@ fn dashboard_page(state: Signal<State>) -> Element {
                 }
             }
             row { height: 6.0 }
-            if quick_count == 0 {
+            if quick_group_count == 0 {
                 column {
                     layout_weight: 1.0,
                     width: "100%",
@@ -855,13 +861,23 @@ fn dashboard_page(state: Signal<State>) -> Element {
                     layout_weight: 1.0,
                     width: "100%",
                     clip: true,
-                    VirtualQuickProxyList {
+                    VirtualProxyGroupList {
                         key: "dashboard-quick-proxy-list",
-                        items: quick_list_items,
+                        rows: quick_rows,
                         locale: current.locale,
                         palette: quick_palette,
+                        selection_pending: current.proxy_selection_pending.clone(),
+                        on_toggle: move |group: String| {
+                            let next = (quick_expanded_group().as_deref() != Some(group.as_str()))
+                                .then_some(group);
+                            quick_expanded_group.set(next);
+                        },
                         on_select: move |(group, proxy): (String, String)| {
-                            dispatch(state, Action::SelectProxy { group, proxy });
+                            if proxy.is_empty() {
+                                dispatch(state, Action::UnfixProxy { group });
+                            } else {
+                                dispatch(state, Action::SelectProxy { group, proxy });
+                            }
                         },
                     }
                 }
@@ -900,28 +916,55 @@ fn mode_picker(state: Signal<State>, selected: RuntimeMode, locale: UiLocale) ->
 
 fn proxies_page(state: Signal<State>) -> Element {
     let mut query = use_signal(String::new);
-    let mut layout_mode = use_signal(ProxyLayoutMode::default);
+    let mut expanded_group = use_signal(|| None::<String>);
     let current = state.read().clone();
     let query_value = query();
-    let current_layout = layout_mode();
-    let mut items = flatten_proxy_groups(&current.snapshot.proxy_groups, &query_value);
-    if let Some((pending_group, pending_proxy)) = &current.proxy_selection_pending {
-        if !pending_proxy.is_empty() {
-            for item in &mut items {
-                item.selected = item.group == *pending_group && item.name == *pending_proxy;
-            }
+    let expanded = expanded_group();
+    let mut rows = Vec::new();
+    if current.snapshot.mode == RuntimeMode::Global {
+        let global_rows = grouped_proxy_rows(
+            &current.snapshot.proxy_groups,
+            &query_value,
+            expanded.as_deref(),
+            ProxyGroupScope::Global,
+        );
+        if !global_rows.is_empty() {
+            rows.push(ProxyGroupRow::Section(ProxyGroupScope::Global));
+            rows.extend(global_rows);
         }
     }
-    let matching_group_count = items
+    let subscription_rows = grouped_proxy_rows(
+        &current.snapshot.proxy_groups,
+        &query_value,
+        expanded.as_deref(),
+        ProxyGroupScope::Subscription,
+    );
+    if !subscription_rows.is_empty() {
+        rows.push(ProxyGroupRow::Section(ProxyGroupScope::Subscription));
+        rows.extend(subscription_rows);
+    }
+    let matching_group_count = rows
         .iter()
-        .map(|item| item.group.as_str())
-        .collect::<std::collections::BTreeSet<_>>()
-        .len();
+        .filter(|row| matches!(row, ProxyGroupRow::Group(group) if !group.name.eq_ignore_ascii_case("GLOBAL")))
+        .count();
+    let matching_member_count = rows
+        .iter()
+        .filter_map(|row| match row {
+            ProxyGroupRow::Group(group) if !group.name.eq_ignore_ascii_case("GLOBAL") => {
+                Some(group.member_count)
+            }
+            _ => None,
+        })
+        .sum::<usize>();
     let result_summary = match current.locale {
-        UiLocale::ZhCn => format!("{} 个节点 · {} 个分组", items.len(), matching_group_count),
-        UiLocale::En => format!("{} nodes · {} groups", items.len(), matching_group_count),
+        UiLocale::ZhCn => {
+            format!("{matching_group_count} 个分组 · {matching_member_count} 个成员")
+        }
+        UiLocale::En => {
+            format!("{matching_group_count} groups · {matching_member_count} members")
+        }
     };
-    let palette = VirtualProxyGridPalette {
+    let palette = VirtualProxyPalette {
         surface: surface(),
         selected_surface: muted(),
         foreground: text_color(),
@@ -929,7 +972,9 @@ fn proxies_page(state: Signal<State>) -> Element {
         border: line(),
         success: success(),
     };
-    let empty = items.is_empty();
+    let empty = !rows
+        .iter()
+        .any(|row| matches!(row, ProxyGroupRow::Group(_)));
     let body = rsx! {
         column {
             width: "100%",
@@ -961,34 +1006,23 @@ fn proxies_page(state: Signal<State>) -> Element {
                 column {
                     layout_weight: 1.0,
                     width: "100%",
-                    if current_layout == ProxyLayoutMode::Grid {
-                        VirtualProxyGrid {
-                            items,
-                            locale: current.locale,
-                            palette,
-                            selection_pending: current.proxy_selection_pending.is_some(),
-                            on_select: move |(group, proxy): (String, String)| {
-                                if proxy.is_empty() {
-                                    dispatch(state, Action::UnfixProxy { group });
-                                } else {
-                                    dispatch(state, Action::SelectProxy { group, proxy });
-                                }
-                            },
-                        }
-                    } else {
-                        VirtualProxyList {
-                            items,
-                            locale: current.locale,
-                            palette,
-                            selection_pending: current.proxy_selection_pending.is_some(),
-                            on_select: move |(group, proxy): (String, String)| {
-                                if proxy.is_empty() {
-                                    dispatch(state, Action::UnfixProxy { group });
-                                } else {
-                                    dispatch(state, Action::SelectProxy { group, proxy });
-                                }
-                            },
-                        }
+                    VirtualProxyGroupList {
+                        rows,
+                        locale: current.locale,
+                        palette,
+                        selection_pending: current.proxy_selection_pending.clone(),
+                        on_toggle: move |group: String| {
+                            let next = (expanded_group().as_deref() != Some(group.as_str()))
+                                .then_some(group);
+                            expanded_group.set(next);
+                        },
+                        on_select: move |(group, proxy): (String, String)| {
+                            if proxy.is_empty() {
+                                dispatch(state, Action::UnfixProxy { group });
+                            } else {
+                                dispatch(state, Action::SelectProxy { group, proxy });
+                            }
+                        },
                     }
                 }
             }
@@ -997,13 +1031,6 @@ fn proxies_page(state: Signal<State>) -> Element {
     let proxy_delay_loading = current.proxy_delay_loading;
     let actions = rsx! {
         row {
-            FlatButton {
-                variant: FlatButtonVariant::Outline,
-                size: ButtonSize::Icon,
-                onclick: move |_| layout_mode.set(current_layout.toggled()),
-                {arkit::icon(current_layout.toggle_icon(), 17.0, text_color())}
-            }
-            column { width: 8.0 }
             FlatButton {
                 variant: FlatButtonVariant::Outline,
                 size: ButtonSize::Icon,
@@ -1024,34 +1051,8 @@ fn proxies_page(state: Signal<State>) -> Element {
     fixed_scaffold(state, Route::Proxies {}, actions, body)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-enum ProxyLayoutMode {
-    #[default]
-    Grid,
-    List,
-    Compact,
-}
-
-impl ProxyLayoutMode {
-    fn toggled(self) -> Self {
-        match self {
-            Self::Grid => Self::List,
-            Self::List => Self::Grid,
-            Self::Compact => Self::List,
-        }
-    }
-
-    fn toggle_icon(self) -> &'static str {
-        match self {
-            Self::Grid => "list",
-            Self::List => "layout-grid",
-            Self::Compact => "list",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct VirtualProxyGridPalette {
+struct VirtualProxyPalette {
     surface: u32,
     selected_surface: u32,
     foreground: u32,
@@ -1060,145 +1061,73 @@ struct VirtualProxyGridPalette {
     success: u32,
 }
 
-fn virtual_proxy_item_keys(
-    items: &[ProxyGridItem],
+fn virtual_proxy_row_keys(
+    rows: &[ProxyGroupRow],
     locale: UiLocale,
-    palette: VirtualProxyGridPalette,
-    layout: ProxyLayoutMode,
-    selection_pending: bool,
+    palette: VirtualProxyPalette,
+    selection_pending: Option<&(String, String)>,
 ) -> Vec<u64> {
-    items
-        .iter()
-        .map(|item| {
+    rows.iter()
+        .map(|row| {
             let mut hasher = DefaultHasher::new();
-            item.hash(&mut hasher);
+            row.hash(&mut hasher);
             locale.language_tag().hash(&mut hasher);
             palette.hash(&mut hasher);
-            layout.hash(&mut hasher);
-            // Pending text is rendered only on the selected card. Keeping the
-            // flag item-local means a selection updates the previous and next
-            // cards instead of rebuilding the entire visible collection.
-            (selection_pending && item.selected).hash(&mut hasher);
+            match (row, selection_pending) {
+                (ProxyGroupRow::Group(group), Some((pending_group, pending_proxy)))
+                    if group.name == *pending_group =>
+                {
+                    pending_proxy.hash(&mut hasher);
+                }
+                (ProxyGroupRow::Member(member), Some((pending_group, pending_proxy)))
+                    if member.group == *pending_group =>
+                {
+                    pending_proxy.hash(&mut hasher);
+                }
+                _ => {}
+            }
             hasher.finish()
         })
         .collect()
 }
 
 #[component]
-fn VirtualProxyGrid(
-    items: Vec<ProxyGridItem>,
+fn VirtualProxyGroupList(
+    rows: Vec<ProxyGroupRow>,
     locale: UiLocale,
-    palette: VirtualProxyGridPalette,
-    selection_pending: bool,
+    palette: VirtualProxyPalette,
+    selection_pending: Option<(String, String)>,
+    on_toggle: EventHandler<String>,
     on_select: EventHandler<(String, String)>,
 ) -> Element {
-    let item_keys = virtual_proxy_item_keys(
-        &items,
-        locale,
-        palette,
-        ProxyLayoutMode::Grid,
-        selection_pending,
-    );
-    let render_items = items;
-    let handle = use_virtual_node_adapter_items_keyed(VirtualKind::Grid, item_keys, move |index| {
-        let Some(item) = render_items.get(index as usize).cloned() else {
-            return rsx! {};
-        };
-        rsx! {
-            VirtualProxyCard {
-                item,
-                locale,
-                palette,
-                layout: ProxyLayoutMode::Grid,
-                selection_pending,
-                on_select,
-            }
-        }
-    });
-    let attach_handle = handle.clone();
-    use_layout_frame_node(move |host_node, _frame| {
-        let _ = attach_handle.attach(&host_node);
-    });
-
-    rsx! {
-        grid {
-            width: "100%",
-            height: "100%",
-            grid_column_template: "1fr 1fr",
-            grid_column_gap: 10.0,
-            grid_row_gap: 10.0,
-            grid_cached_count: 12_i32,
-        }
-    }
-}
-
-#[component]
-fn VirtualProxyList(
-    items: Vec<ProxyGridItem>,
-    locale: UiLocale,
-    palette: VirtualProxyGridPalette,
-    selection_pending: bool,
-    on_select: EventHandler<(String, String)>,
-) -> Element {
-    let item_keys = virtual_proxy_item_keys(
-        &items,
-        locale,
-        palette,
-        ProxyLayoutMode::List,
-        selection_pending,
-    );
-    let render_items = items;
+    let item_keys = virtual_proxy_row_keys(&rows, locale, palette, selection_pending.as_ref());
+    let render_rows = rows;
     let handle = use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys, move |index| {
-        let Some(item) = render_items.get(index as usize).cloned() else {
+        let Some(row) = render_rows.get(index as usize).cloned() else {
             return rsx! {};
         };
-        rsx! {
-            VirtualProxyCard {
-                item,
-                locale,
-                palette,
-                layout: ProxyLayoutMode::List,
-                selection_pending,
-                on_select,
-            }
-        }
-    });
-    let attach_handle = handle.clone();
-    use_layout_frame_node(move |host_node, _frame| {
-        let _ = attach_handle.attach(&host_node);
-    });
-
-    rsx! {
-        list {
-            width: "100%",
-            height: "100%",
-            list_cached_count: 16_i32,
-        }
-    }
-}
-
-#[component]
-fn VirtualQuickProxyList(
-    items: Vec<ProxyGridItem>,
-    locale: UiLocale,
-    palette: VirtualProxyGridPalette,
-    on_select: EventHandler<(String, String)>,
-) -> Element {
-    let item_keys = virtual_quick_proxy_item_keys(&items, locale, palette);
-    let render_items = items;
-    let handle = use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys, move |index| {
-        let Some(item) = render_items.get(index as usize).cloned() else {
-            return rsx! {};
-        };
-        rsx! {
-            VirtualProxyCard {
-                item,
-                locale,
-                palette,
-                layout: ProxyLayoutMode::Compact,
-                selection_pending: false,
-                on_select,
-            }
+        match row {
+            ProxyGroupRow::Section(scope) => rsx! {
+                VirtualProxySectionRow { scope, locale, palette }
+            },
+            ProxyGroupRow::Group(group) => rsx! {
+                VirtualProxyGroupRow {
+                    group,
+                    locale,
+                    palette,
+                    selection_pending: selection_pending.clone(),
+                    on_toggle,
+                }
+            },
+            ProxyGroupRow::Member(member) => rsx! {
+                VirtualProxyMemberRow {
+                    member,
+                    locale,
+                    palette,
+                    selection_pending: selection_pending.clone(),
+                    on_select,
+                }
+            },
         }
     });
     let attach_handle = handle.clone();
@@ -1215,209 +1144,258 @@ fn VirtualQuickProxyList(
     }
 }
 
-fn virtual_quick_proxy_item_keys(
-    items: &[ProxyGridItem],
-    locale: UiLocale,
-    palette: VirtualProxyGridPalette,
-) -> Vec<u64> {
-    items
-        .iter()
-        .map(|item| {
-            let mut hasher = DefaultHasher::new();
-            item.group.hash(&mut hasher);
-            item.group_type.hash(&mut hasher);
-            item.name.hash(&mut hasher);
-            item.proxy_type.hash(&mut hasher);
-            item.delay_ms.hash(&mut hasher);
-            item.selected.hash(&mut hasher);
-            item.automatic.hash(&mut hasher);
-            item.pinned.hash(&mut hasher);
-            locale.language_tag().hash(&mut hasher);
-            palette.hash(&mut hasher);
-            hasher.finish()
-        })
-        .collect()
-}
-
 #[component]
-fn VirtualProxyCard(
-    item: ProxyGridItem,
+fn VirtualProxySectionRow(
+    scope: ProxyGroupScope,
     locale: UiLocale,
-    palette: VirtualProxyGridPalette,
-    layout: ProxyLayoutMode,
-    selection_pending: bool,
-    on_select: EventHandler<(String, String)>,
+    palette: VirtualProxyPalette,
 ) -> Element {
-    if layout == ProxyLayoutMode::Compact {
-        return rsx! {
-            VirtualQuickProxyRow { item, locale, palette, selection_pending, on_select }
-        };
-    }
-    let selected_label = tr(locale, "当前", "Current");
-    let delay = item
-        .delay_ms
-        .map(|value| format!("{value} ms"))
-        .unwrap_or_else(|| strings(locale).proxies_untested.to_owned());
-    let (height, padding, margin_bottom) = match layout {
-        ProxyLayoutMode::Grid => (92.0, 12.0, 0.0),
-        ProxyLayoutMode::List => (82.0, 11.0, 8.0),
-        ProxyLayoutMode::Compact => unreachable!("compact rows use their dedicated renderer"),
+    let (title, description) = match scope {
+        ProxyGroupScope::Global => (
+            tr(locale, "全局模式策略", "Global mode policy"),
+            tr(
+                locale,
+                "仅在全局模式下生效，与订阅规则分组相互独立",
+                "Used only by Global mode and independent from subscription policy groups",
+            ),
+        ),
+        ProxyGroupScope::Subscription => (
+            tr(locale, "订阅策略分组", "Subscription policy groups"),
+            tr(
+                locale,
+                "规则按分组名称命中，每个分组保留独立选择",
+                "Rules target groups by name; every group keeps its own selection",
+            ),
+        ),
     };
-    let emphasized = item.selected || item.pinned;
-    let title = if item.selected {
-        format!("✓ {}", item.name)
-    } else if item.pinned {
-        format!("◆ {}", item.name)
-    } else {
-        item.name.clone()
-    };
-    let metadata = format!("{} · {}", item.group, item.proxy_type.to_ascii_uppercase(),);
-    let status = if item.selected && selection_pending {
-        tr(locale, "切换中…", "Switching…").to_owned()
-    } else if item.pinned {
-        format!(
-            "{} · {} · {delay}",
-            tr(locale, "已固定，点击恢复自动", "Pinned, tap for auto"),
-            item.group_type
-        )
-    } else if item.automatic && item.selected {
-        format!(
-            "{} · {selected_label} · {delay}",
-            tr(locale, "自动", "Auto")
-        )
-    } else if item.selected {
-        format!("{selected_label} · {} · {delay}", item.group_type)
-    } else {
-        format!("{} · {delay}", item.group_type)
-    };
-
-    let accessibility_text = format!("{}，{}，{}", item.name, item.group, delay);
-    let group = item.group.clone();
-    let proxy = item.name.clone();
-    let unfix = item.pinned && layout != ProxyLayoutMode::Compact;
     rsx! {
         column {
             width: "100%",
-            height,
-            background_color: if emphasized { palette.selected_surface } else { palette.surface },
-            padding,
-            margin_bottom,
-            border_width: 1.0,
-            border_color: palette.border,
-            border_radius: 10.0,
-            clip: true,
+            height: 52.0,
+            padding_top: 8.0,
             align_items: "start",
             justify_content: "center",
-            onclick: move |_| {
-                if !selection_pending {
-                    let proxy = if unfix { String::new() } else { proxy.clone() };
-                    on_select.call((group.clone(), proxy));
-                }
-            },
             text {
-                width: "100%",
                 content: title,
-                font_size: 13.0,
-                font_weight: if emphasized { 600 } else { 400 },
-                font_color: if emphasized { palette.success } else { palette.foreground },
-                line_height: 18.0,
-                max_lines: 1,
-                text_overflow: "ellipsis",
+                font_size: 12.0,
+                line_height: 17.0,
+                font_weight: 700,
+                font_color: palette.foreground,
             }
             text {
+                content: description,
                 width: "100%",
-                content: metadata,
-                font_size: 10.0,
-                font_weight: 300,
+                font_size: 9.0,
+                line_height: 14.0,
                 font_color: palette.muted_foreground,
-                line_height: 15.0,
                 max_lines: 1,
                 text_overflow: "ellipsis",
             }
-            text {
-                width: "100%",
-                content: status,
-                font_size: 10.0,
-                font_weight: if emphasized { 500 } else { 300 },
-                font_color: if item.delay_ms.is_some() || emphasized {
-                    palette.success
-                } else {
-                    palette.muted_foreground
-                },
-                line_height: 15.0,
-                max_lines: 1,
-                text_overflow: "ellipsis",
-            }
-            // Keep the combined label in the RSX tree for assistive text extraction.
-            text { content: accessibility_text, width: 0.0, height: 0.0, opacity: 0.0 }
         }
     }
 }
 
 #[component]
-fn VirtualQuickProxyRow(
-    item: ProxyGridItem,
+fn VirtualProxyGroupRow(
+    group: ProxyGroupHeaderRow,
     locale: UiLocale,
-    palette: VirtualProxyGridPalette,
-    selection_pending: bool,
-    on_select: EventHandler<(String, String)>,
+    palette: VirtualProxyPalette,
+    selection_pending: Option<(String, String)>,
+    on_toggle: EventHandler<String>,
 ) -> Element {
-    let delay = item
-        .delay_ms
-        .map(|value| format!("{value} ms"))
-        .unwrap_or_else(|| strings(locale).proxies_untested.to_owned());
-    let detail = if item.pinned {
-        format!(
-            "{} · {} · {} · {delay}",
-            item.group,
-            tr(locale, "已固定", "Pinned"),
-            item.proxy_type.to_ascii_uppercase()
-        )
-    } else {
-        format!(
-            "{} · {} · {delay}",
-            item.group,
-            item.proxy_type.to_ascii_uppercase()
-        )
+    let pending_selected = selection_pending
+        .as_ref()
+        .filter(|(pending_group, _)| pending_group == &group.name)
+        .map(|(_, pending_proxy)| pending_proxy.clone());
+    let selected = pending_selected
+        .filter(|selected| !selected.is_empty())
+        .or_else(|| group.selected.clone())
+        .unwrap_or_else(|| tr(locale, "未选择", "Unselected").to_owned());
+    let selection_mode = match group.fixed.as_deref() {
+        Some("") => tr(locale, "自动", "Auto"),
+        Some(_) => tr(locale, "已固定", "Pinned"),
+        None if !group.selectable => tr(locale, "自动策略", "Automatic policy"),
+        None => tr(locale, "手动选择", "Manual selection"),
     };
-    let accessibility_text = format!("{}，{}，{}", item.name, item.group, delay);
-    let group = item.group.clone();
-    let proxy = item.name.clone();
+    let title = if group.name.eq_ignore_ascii_case("GLOBAL") {
+        tr(locale, "GLOBAL · 全局出口", "GLOBAL · Global outbound").to_owned()
+    } else {
+        group.name.clone()
+    };
+    let group_name = group.name.clone();
     rsx! {
         row {
             width: "100%",
-            height: 56.0,
+            height: 78.0,
             background_color: palette.surface,
-            padding_top: 7.0,
-            padding_right: 10.0,
-            padding_bottom: 7.0,
-            padding_left: 7.0,
-            border_width: "0 0 1 0",
+            padding_left: 13.0,
+            padding_right: 12.0,
+            margin_bottom: 6.0,
+            border_width: 1.0,
             border_color: palette.border,
+            border_radius: 10.0,
             clip: true,
             align_items: "center",
-            onclick: move |_| {
-                if !selection_pending {
-                    on_select.call((group.clone(), proxy.clone()));
-                }
-            },
-            column {
-                width: 3.0,
-                height: 28.0,
-                margin_right: 8.0,
-                background_color: if item.selected { palette.success } else { 0x0000_0000 },
-                border_radius: 2.0,
+            justify_content: "center",
+            onclick: move |_| on_toggle.call(group_name.clone()),
+            row {
+                width: 34.0,
+                height: 34.0,
+                align_items: "center",
+                justify_content: "center",
+                background_color: palette.selected_surface,
+                border_radius: 8.0,
+                {arkit::icon("git-branch", 17.0, palette.foreground)}
             }
             column {
                 layout_weight: 1.0,
+                margin_left: 10.0,
+                align_items: "start",
+                text {
+                    width: "100%",
+                    content: title,
+                    font_size: 13.0,
+                    font_weight: 650,
+                    font_color: palette.foreground,
+                    line_height: 18.0,
+                    max_lines: 1,
+                    text_overflow: "ellipsis",
+                }
+                text {
+                    width: "100%",
+                    content: format!(
+                        "{} · {} · {}",
+                        group.group_type,
+                        selection_mode,
+                        match locale {
+                            UiLocale::ZhCn => format!("{} 个成员", group.member_count),
+                            UiLocale::En => format!("{} members", group.member_count),
+                        }
+                    ),
+                    font_size: 9.0,
+                    line_height: 14.0,
+                    font_color: palette.muted_foreground,
+                    max_lines: 1,
+                    text_overflow: "ellipsis",
+                }
+                text {
+                    width: "100%",
+                    content: if selection_pending
+                        .as_ref()
+                        .is_some_and(|(pending_group, _)| pending_group == &group.name)
+                    {
+                        format!("{} · {}", tr(locale, "切换中", "Switching"), selected)
+                    } else {
+                        format!("{} · {}", tr(locale, "当前", "Current"), selected)
+                    },
+                    font_size: 10.0,
+                    line_height: 15.0,
+                    font_weight: 600,
+                    font_color: palette.success,
+                    max_lines: 1,
+                    text_overflow: "ellipsis",
+                }
+            }
+            row {
+                width: 26.0,
+                height: 36.0,
+                align_items: "center",
+                justify_content: "center",
+                {arkit::icon(if group.expanded { "chevron-up" } else { "chevron-down" }, 16.0, palette.muted_foreground)}
+            }
+        }
+    }
+}
+
+#[component]
+fn VirtualProxyMemberRow(
+    member: ProxyGroupMemberRow,
+    locale: UiLocale,
+    palette: VirtualProxyPalette,
+    selection_pending: Option<(String, String)>,
+    on_select: EventHandler<(String, String)>,
+) -> Element {
+    let pending_for_group = selection_pending
+        .as_ref()
+        .filter(|(pending_group, _)| pending_group == &member.group);
+    let selected = pending_for_group
+        .map(|(_, pending_proxy)| pending_proxy == &member.name)
+        .unwrap_or(member.selected);
+    let pending = pending_for_group.is_some();
+    let delay = member
+        .delay_ms
+        .map(|value| format!("{value} ms"))
+        .unwrap_or_else(|| strings(locale).proxies_untested.to_owned());
+    let detail = if member.subgroup {
+        format!(
+            "{} · {}",
+            tr(locale, "子分组", "Subgroup"),
+            member.proxy_type
+        )
+    } else if member.pinned {
+        format!(
+            "{} · {}",
+            tr(locale, "已固定", "Pinned"),
+            member.proxy_type.to_ascii_uppercase()
+        )
+    } else {
+        member.proxy_type.to_ascii_uppercase()
+    };
+    let group = member.group.clone();
+    let proxy = member.name.clone();
+    let can_select = member.selectable && selection_pending.is_none();
+    let unfix = member.pinned;
+    rsx! {
+        row {
+            width: "100%",
+            height: 62.0,
+            background_color: if selected || member.pinned {
+                palette.selected_surface
+            } else {
+                palette.surface
+            },
+            padding_right: 12.0,
+            padding_left: 22.0,
+            margin_bottom: 4.0,
+            border_width: 1.0,
+            border_color: palette.border,
+            border_radius: 9.0,
+            clip: true,
+            align_items: "center",
+            onclick: move |_| {
+                if can_select {
+                    on_select.call((
+                        group.clone(),
+                        if unfix { String::new() } else { proxy.clone() },
+                    ));
+                }
+            },
+            row {
+                width: 24.0,
+                height: 32.0,
+                align_items: "center",
+                justify_content: "center",
+                if pending && selected {
+                    Spinner { size: 15.0, color: Some(palette.success) }
+                } else {
+                    {arkit::icon(
+                        if selected { "circle-check" } else if member.subgroup { "folder-tree" } else { "circle" },
+                        16.0,
+                        if selected { palette.success } else { palette.muted_foreground },
+                    )}
+                }
+            }
+            column {
+                layout_weight: 1.0,
+                margin_left: 7.0,
                 align_items: "start",
                 justify_content: "center",
                 text {
                     width: "100%",
-                    content: item.name,
+                    content: member.name,
                     font_size: 13.0,
-                    font_weight: if item.selected { 600 } else { 400 },
-                    font_color: if item.selected { palette.success } else { palette.foreground },
+                    font_weight: if selected { 650 } else { 450 },
+                    font_color: if selected { palette.success } else { palette.foreground },
                     line_height: 18.0,
                     max_lines: 1,
                     text_overflow: "ellipsis",
@@ -1425,14 +1403,29 @@ fn VirtualQuickProxyRow(
                 text {
                     width: "100%",
                     content: detail,
-                    font_size: 10.0,
-                    font_weight: 300,
+                    font_size: 9.0,
                     font_color: palette.muted_foreground,
-                    line_height: 15.0,
+                    line_height: 14.0,
                     max_lines: 1,
                     text_overflow: "ellipsis",
                 }
-                text { content: accessibility_text, width: 0.0, height: 0.0, opacity: 0.0 }
+            }
+            text {
+                content: if !member.selectable {
+                    tr(locale, "自动", "Auto").to_owned()
+                } else if member.pinned {
+                    tr(locale, "恢复自动", "Use auto").to_owned()
+                } else {
+                    delay
+                },
+                margin_left: 8.0,
+                font_size: 10.0,
+                font_weight: if selected { 600 } else { 400 },
+                font_color: if member.delay_ms.is_some() || selected {
+                    palette.success
+                } else {
+                    palette.muted_foreground
+                },
             }
         }
     }

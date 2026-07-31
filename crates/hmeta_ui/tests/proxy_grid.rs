@@ -4,204 +4,197 @@ mod proxy_filter;
 mod proxy_grid;
 
 use hmeta_model::{ProxyGroup, ProxyItem};
-use proxy_grid::{flatten_proxy_groups, proxy_selection_chain, stabilize_proxy_items};
+use proxy_grid::{
+    effective_group_leaf, grouped_proxy_rows, proxy_group_summary, ProxyGroupRow, ProxyGroupScope,
+};
 
-fn proxy(name: String, selected: bool) -> ProxyItem {
+fn proxy(name: impl Into<String>, selected: bool) -> ProxyItem {
     ProxyItem {
-        name,
+        name: name.into(),
         proxy_type: "vless".to_owned(),
         delay_ms: Some(42),
         selected,
     }
 }
 
-#[test]
-fn flattens_large_proxy_groups_without_losing_group_context() {
-    let groups = vec![ProxyGroup {
-        name: "自动选择".to_owned(),
-        group_type: "url-test".to_owned(),
-        selected: Some("node-09999".to_owned()),
-        fixed: Some(String::new()),
-        proxies: (0..10_000)
-            .map(|index| proxy(format!("node-{index:05}"), false))
-            .collect(),
-    }];
-
-    let items = flatten_proxy_groups(&groups, "");
-
-    assert_eq!(items.len(), 10_000);
-    assert_eq!(items[0].name, "node-00000");
-    assert_eq!(items[0].group, "自动选择");
-    assert_eq!(items[0].group_type, "url-test");
-    assert!(items[0].automatic);
-    assert!(!items[0].pinned);
-    assert!(!items[0].selected);
-    assert_eq!(items[9_999].name, "node-09999");
-    assert!(items[9_999].selected);
-}
-
-#[test]
-fn automatic_group_exposes_its_pinned_node() {
-    let groups = vec![ProxyGroup {
-        name: "Auto".to_owned(),
-        group_type: "URLTest".to_owned(),
-        selected: Some("Singapore".to_owned()),
-        fixed: Some("Singapore".to_owned()),
-        proxies: vec![
-            proxy("Hong Kong".to_owned(), false),
-            proxy("Singapore".to_owned(), true),
-        ],
-    }];
-
-    let items = flatten_proxy_groups(&groups, "");
-
-    assert!(items.iter().all(|item| item.automatic));
-    assert!(!items[0].pinned);
-    assert!(items[1].pinned);
-}
-
-#[test]
-fn changing_selection_never_reorders_subscription_nodes() {
-    let build_group = |selected: &str| ProxyGroup {
-        name: "Proxy".to_owned(),
-        group_type: "select".to_owned(),
+fn group(name: &str, selected: &str, members: impl IntoIterator<Item = ProxyItem>) -> ProxyGroup {
+    ProxyGroup {
+        name: name.to_owned(),
+        group_type: "Selector".to_owned(),
         selected: Some(selected.to_owned()),
         fixed: None,
-        proxies: ["Hong Kong", "Singapore", "Japan"]
-            .into_iter()
-            .map(|name| proxy(name.to_owned(), name == selected))
-            .collect(),
-    };
-
-    let before = flatten_proxy_groups(&[build_group("Hong Kong")], "")
-        .into_iter()
-        .map(|item| item.name)
-        .collect::<Vec<_>>();
-    let after = flatten_proxy_groups(&[build_group("Japan")], "")
-        .into_iter()
-        .map(|item| item.name)
-        .collect::<Vec<_>>();
-
-    assert_eq!(before, vec!["Hong Kong", "Singapore", "Japan"]);
-    assert_eq!(after, before);
+        proxies: members.into_iter().collect(),
+    }
 }
 
 #[test]
-fn quick_switch_keeps_first_seen_order_when_runtime_groups_move() {
-    let item = |group: &str, name: &str| proxy_grid::ProxyGridItem {
-        group: group.to_owned(),
-        group_type: "Selector".to_owned(),
-        name: name.to_owned(),
-        proxy_type: "vless".to_owned(),
-        delay_ms: None,
-        selected: false,
-        automatic: false,
-        pinned: false,
-    };
-    let mut order = Vec::new();
-    let initial = stabilize_proxy_items(&mut order, vec![item("GLOBAL", "A"), item("Proxy", "B")]);
-    let refreshed =
-        stabilize_proxy_items(&mut order, vec![item("Proxy", "B"), item("GLOBAL", "A")]);
+fn collapsed_groups_render_headers_without_eagerly_building_members() {
+    let groups = vec![group(
+        "Proxy",
+        "Hong Kong",
+        [proxy("Hong Kong", true), proxy("Japan", false)],
+    )];
 
-    let names = |items: Vec<proxy_grid::ProxyGridItem>| {
-        items.into_iter().map(|item| item.name).collect::<Vec<_>>()
+    let rows = grouped_proxy_rows(&groups, "", None, ProxyGroupScope::Subscription);
+
+    assert_eq!(rows.len(), 1);
+    let ProxyGroupRow::Group(header) = &rows[0] else {
+        panic!("group header");
     };
-    assert_eq!(names(initial), vec!["A", "B"]);
-    assert_eq!(names(refreshed), vec!["A", "B"]);
+    assert_eq!(header.name, "Proxy");
+    assert_eq!(header.selected.as_deref(), Some("Hong Kong"));
+    assert_eq!(header.member_count, 2);
+    assert!(!header.expanded);
 }
 
 #[test]
-fn flat_grid_search_matches_node_and_group_metadata() {
+fn every_group_keeps_its_own_selected_member() {
     let groups = vec![
-        ProxyGroup {
-            name: "香港节点".to_owned(),
-            group_type: "select".to_owned(),
-            selected: None,
-            fixed: None,
-            proxies: vec![proxy("HK Premium".to_owned(), false)],
-        },
-        ProxyGroup {
-            name: "Fallback".to_owned(),
-            group_type: "fallback".to_owned(),
-            selected: None,
-            fixed: Some(String::new()),
-            proxies: vec![proxy("US Premium".to_owned(), false)],
-        },
+        group(
+            "Google",
+            "Hong Kong",
+            [proxy("Hong Kong", true), proxy("Japan", false)],
+        ),
+        group(
+            "Streaming",
+            "United States",
+            [proxy("Japan", false), proxy("United States", true)],
+        ),
     ];
 
-    assert_eq!(flatten_proxy_groups(&groups, "香港").len(), 1);
-    assert_eq!(flatten_proxy_groups(&groups, "fallback").len(), 1);
-    assert_eq!(flatten_proxy_groups(&groups, "premium").len(), 2);
+    let google = grouped_proxy_rows(&groups, "", Some("Google"), ProxyGroupScope::Subscription);
+    let streaming = grouped_proxy_rows(
+        &groups,
+        "",
+        Some("Streaming"),
+        ProxyGroupScope::Subscription,
+    );
+
+    let selected_member = |rows: &[ProxyGroupRow]| {
+        rows.iter().find_map(|row| match row {
+            ProxyGroupRow::Member(member) if member.selected => Some(member.name.clone()),
+            _ => None,
+        })
+    };
+    assert_eq!(selected_member(&google).as_deref(), Some("Hong Kong"));
+    assert_eq!(
+        selected_member(&streaming).as_deref(),
+        Some("United States")
+    );
 }
 
 #[test]
-fn selector_chain_marks_only_the_effective_leaf_node() {
+fn nested_group_members_remain_selectable_edges() {
     let groups = vec![
-        ProxyGroup {
-            name: "GLOBAL".to_owned(),
-            group_type: "Selector".to_owned(),
-            selected: Some("Proxy".to_owned()),
-            fixed: None,
-            proxies: vec![
-                proxy("Proxy".to_owned(), true),
-                proxy("DIRECT".to_owned(), false),
-            ],
-        },
-        ProxyGroup {
-            name: "Proxy".to_owned(),
-            group_type: "Selector".to_owned(),
-            selected: Some("HK Premium".to_owned()),
-            fixed: None,
-            proxies: vec![
-                proxy("HK Premium".to_owned(), true),
-                proxy("US Premium".to_owned(), false),
-            ],
-        },
+        group(
+            "Parent",
+            "Child",
+            [proxy("Child", true), proxy("DIRECT", false)],
+        ),
+        group(
+            "Child",
+            "Hong Kong",
+            [proxy("Hong Kong", true), proxy("Japan", false)],
+        ),
     ];
 
-    let items = flatten_proxy_groups(&groups, "");
-    let selected = items
+    let rows = grouped_proxy_rows(&groups, "", Some("Parent"), ProxyGroupScope::Subscription);
+    let child = rows.iter().find_map(|row| match row {
+        ProxyGroupRow::Member(member) if member.name == "Child" => Some(member),
+        _ => None,
+    });
+
+    assert!(child.is_some_and(|member| member.subgroup && member.selected));
+}
+
+#[test]
+fn global_is_separated_from_subscription_groups() {
+    let groups = vec![
+        group("GLOBAL", "Proxy", [proxy("Proxy", true)]),
+        group("Proxy", "Hong Kong", [proxy("Hong Kong", true)]),
+    ];
+
+    let global = grouped_proxy_rows(&groups, "", None, ProxyGroupScope::Global);
+    let subscriptions = grouped_proxy_rows(&groups, "", None, ProxyGroupScope::Subscription);
+    let global_section = ProxyGroupRow::Section(ProxyGroupScope::Global);
+
+    assert!(matches!(
+        global_section,
+        ProxyGroupRow::Section(ProxyGroupScope::Global)
+    ));
+    assert!(global
         .iter()
-        .filter(|item| item.selected)
-        .collect::<Vec<_>>();
-
-    assert_eq!(items.len(), 3);
-    assert_eq!(selected.len(), 1);
-    assert_eq!(selected[0].group, "Proxy");
-    assert_eq!(selected[0].name, "HK Premium");
-    assert!(!items.iter().any(|item| item.name == "Proxy"));
+        .any(|row| matches!(row, ProxyGroupRow::Group(group) if group.name == "GLOBAL")));
+    assert!(!subscriptions
+        .iter()
+        .any(|row| matches!(row, ProxyGroupRow::Group(group) if group.name == "GLOBAL")));
+    assert_eq!(
+        proxy_group_summary(&groups, ProxyGroupScope::Subscription).groups,
+        1
+    );
 }
 
 #[test]
-fn selecting_a_flat_leaf_activates_its_parent_chain() {
+fn searching_members_expands_only_matching_groups() {
     let groups = vec![
-        ProxyGroup {
-            name: "GLOBAL".to_owned(),
-            group_type: "Selector".to_owned(),
-            selected: Some("DIRECT".to_owned()),
-            fixed: None,
-            proxies: vec![
-                proxy("Proxy".to_owned(), false),
-                proxy("DIRECT".to_owned(), true),
-            ],
-        },
-        ProxyGroup {
-            name: "Proxy".to_owned(),
-            group_type: "Selector".to_owned(),
-            selected: Some("US Premium".to_owned()),
-            fixed: None,
-            proxies: vec![
-                proxy("HK Premium".to_owned(), false),
-                proxy("US Premium".to_owned(), true),
-            ],
-        },
+        group("Fallback", "US Premium", [proxy("US Premium", true)]),
+        group("香港节点", "HK Premium", [proxy("HK Premium", true)]),
+    ];
+
+    let rows = grouped_proxy_rows(&groups, "premium", None, ProxyGroupScope::Subscription);
+    assert_eq!(
+        rows.iter()
+            .filter(|row| matches!(row, ProxyGroupRow::Group(_)))
+            .count(),
+        2
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| matches!(row, ProxyGroupRow::Member(_)))
+            .count(),
+        2
+    );
+
+    let fallback = grouped_proxy_rows(&groups, "fallback", None, ProxyGroupScope::Subscription);
+    assert!(matches!(
+        fallback.as_slice(),
+        [ProxyGroupRow::Group(_), ProxyGroupRow::Member(_)]
+    ));
+}
+
+#[test]
+fn effective_leaf_resolution_is_scoped_to_the_requested_group() {
+    let groups = vec![
+        group("GLOBAL", "Parent", [proxy("Parent", true)]),
+        group("Parent", "Child", [proxy("Child", true)]),
+        group("Child", "Hong Kong", [proxy("Hong Kong", true)]),
+        group("Streaming", "Japan", [proxy("Japan", true)]),
     ];
 
     assert_eq!(
-        proxy_selection_chain(&groups, "Proxy", "HK Premium"),
-        vec![
-            ("Proxy".to_owned(), "HK Premium".to_owned()),
-            ("GLOBAL".to_owned(), "Proxy".to_owned()),
-        ]
+        effective_group_leaf(&groups, "GLOBAL").as_deref(),
+        Some("Hong Kong")
     );
+    assert_eq!(
+        effective_group_leaf(&groups, "Streaming").as_deref(),
+        Some("Japan")
+    );
+}
+
+#[test]
+fn group_order_is_deterministic_and_case_insensitive() {
+    let groups = vec![
+        group("zulu", "Z", [proxy("Z", true)]),
+        group("Alpha", "A", [proxy("A", true)]),
+    ];
+    let rows = grouped_proxy_rows(&groups, "", None, ProxyGroupScope::Subscription);
+    let names = rows
+        .iter()
+        .filter_map(|row| match row {
+            ProxyGroupRow::Group(group) => Some(group.name.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(names, vec!["Alpha", "zulu"]);
 }

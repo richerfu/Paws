@@ -31,44 +31,52 @@ fn imported_subscription_cards_follow_the_reference_mobile_interaction() {
 }
 
 #[test]
-fn proxy_nodes_use_arkit_rsx_virtual_list_and_grid() {
+fn proxy_groups_use_an_arkit_rsx_heterogeneous_virtual_list() {
     let page = section(VIEW, "fn proxies_page", "fn profiles_page");
 
-    assert!(page.contains("flatten_proxy_groups"));
+    assert!(page.contains("grouped_proxy_rows"));
     assert!(page.contains("use_virtual_node_adapter_items_keyed"));
     assert!(!page.contains("use_virtual_node_adapter_rsx_items_keyed"));
-    assert!(page.contains("VirtualKind::Grid"));
     assert!(page.contains("VirtualKind::List"));
+    assert!(!page.contains("VirtualKind::Grid"));
     assert!(!page.contains("NodeBuilder::new"));
-    assert!(page.contains("grid_column_template: \"1fr 1fr\""));
-    assert!(page.contains("grid_cached_count"));
     assert!(page.contains("list_cached_count"));
-    assert!(page.contains("ProxyLayoutMode"));
-    assert!(page.contains("toggle_icon"));
-    assert!(page.contains("\"list\""));
-    assert!(page.contains("\"layout-grid\""));
     assert!(page.contains("fixed_scaffold"));
     assert!(page.contains("EventHandler<(String, String)>"));
     assert!(page.contains("on_select.call"));
+    assert!(page.contains("EventHandler<String>"));
+    assert!(page.contains("on_toggle.call"));
     assert!(page.contains("onclick: move |_|"));
     assert!(!page.contains("NodeEventType::OnClick"));
-    assert!(page.contains("fn VirtualProxyCard("));
-    assert!(page.contains("fn VirtualQuickProxyRow("));
-    assert!(!page.contains("VirtualProxyGridRenderState"));
-    assert!(page.contains("selection_pending && item.selected"));
-    assert!(page.contains("if item.selected {"));
-    assert!(!page.contains("if !item.selected && !selection_pending"));
+    assert!(page.contains("fn VirtualProxyGroupList("));
+    assert!(page.contains("fn VirtualProxySectionRow("));
+    assert!(page.contains("fn VirtualProxyGroupRow("));
+    assert!(page.contains("fn VirtualProxyMemberRow("));
+    assert!(page.contains("ProxyGroupRow::Section"));
+    assert!(page.contains("ProxyGroupRow::Group"));
+    assert!(page.contains("ProxyGroupRow::Member"));
     assert!(!page.contains("mounted.adapter.detach()"));
     assert!(!page.contains("arkit::queue_ui_loop"));
-    assert!(page.contains("item.group"));
-    assert!(page.contains("item.proxy_type"));
+    assert!(page.contains("member.group"));
+    assert!(page.contains("member.proxy_type"));
+    assert!(page.contains("member.subgroup"));
     assert!(page.contains("proxies_untested"));
 
-    // The grid owns scrolling and creates visible native nodes on demand;
-    // nested expandable groups would eagerly instantiate every proxy again.
-    assert!(!page.contains("expanded_group"));
+    // Expansion changes only the heterogeneous adapter's row model; ArkUI
+    // continues to instantiate visible group/member rows on demand.
+    assert!(page.contains("expanded_group"));
+    assert!(page.contains("ProxyGroupScope::Global"));
+    assert!(page.contains("ProxyGroupScope::Subscription"));
+    assert!(!page.contains("ProxyLayoutMode"));
     assert!(!page.contains("Action::TestProxyGroupDelays"));
     assert!(!page.contains("Action::TestProxyDelay"));
+}
+
+#[test]
+fn proxy_selection_updates_only_the_exact_rule_group() {
+    assert!(!UI.contains("proxy_selection_chain"));
+    assert!(UI.contains("select_proxy_and_snapshot(group, proxy)"));
+    assert!(UI.contains("select_proxy_via_controller(&group, &proxy)"));
 }
 
 #[test]
@@ -199,7 +207,7 @@ fn network_import_has_a_real_pending_and_success_lifecycle() {
 fn proxy_node_names_use_native_width_based_ellipsis() {
     let page = section(VIEW, "fn proxies_page", "fn profiles_page");
 
-    assert!(page.contains("item.name.clone()"));
+    assert!(page.contains("content: member.name"));
     assert!(page.contains("text_overflow: \"ellipsis\""));
     assert!(!page.contains("selected_title_limit"));
     assert!(!page.contains("title_limit"));
