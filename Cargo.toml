@@ -17,14 +17,14 @@ hmeta_vpn = { path = "crates/hmeta_vpn" }
 arkit = { git = "https://github.com/richerfu/arkit.git", rev = "75ff91c619f5e4774fe6badea5cd9c619f189b2f", package = "arkit", features = ["router", "shadcn"] }
 ohos-ashmem-binding = "0.1.0"
 
-meow-api = "0.18.0"
-meow-common = "0.18.0"
-meow-config = { version = "0.18.0", features = ["anytls"] }
-meow-dns = "0.18.0"
-meow-listener = "0.18.0"
-meow-proxy = { version = "0.18.0", features = ["anytls"] }
-meow-trie = "0.18.0"
-meow-tunnel = "0.18.0"
+meow-api = "0.19.0"
+meow-common = "0.19.0"
+meow-config = { version = "0.19.0", features = ["anytls"] }
+meow-dns = "0.19.0"
+meow-listener = "0.19.0"
+meow-proxy = { version = "0.19.0", features = ["anytls"] }
+meow-trie = "0.19.0"
+meow-tunnel = "0.19.0"
 
 anyhow = "1"
 async-trait = "0.1"
