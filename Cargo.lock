@@ -1486,7 +1486,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2200,7 +2200,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tokio",
  "tower-service",
  "tracing",
@@ -2831,9 +2831,9 @@ dependencies = [
 
 [[package]]
 name = "meow-anytls"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa8615a1c34b19b8966dc9e3b196a849b0722f5d4b5e8f7a91c295f4721ce519"
+checksum = "d7f7807d9dc7e8fce1370bb124a19fc30800a1b9f180347e6cfe7a48b6d2b3ad"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2862,9 +2862,9 @@ dependencies = [
 
 [[package]]
 name = "meow-api"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46076635874b49174cd4fec4a66f984bc0e9f8956e0dd558c2787ebc069b6791"
+checksum = "1e735bc2d7eb8a852c5c7faccd05d723c842f83ce1e49cd1bbb084f74252a47e"
 dependencies = [
  "axum",
  "base64",
@@ -2896,9 +2896,9 @@ dependencies = [
 
 [[package]]
 name = "meow-common"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e647e3138067d4db00f9da5ba0d419dd0449e27839da74e4b46daccea020bdcf"
+checksum = "e32610f4aa4d80777e6c650a8066dd36e63650ff757f950b7baa4c38e500ae8d"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2921,9 +2921,9 @@ dependencies = [
 
 [[package]]
 name = "meow-config"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b54314668ff54aa30509232bee1aa18921ce719edb8337dd26129c3e639a6b09"
+checksum = "4fb899ff5d6e7b6ed0e8acd69b8a6e8a92f4a66a8353d764efaeee8841d0054a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2956,9 +2956,9 @@ dependencies = [
 
 [[package]]
 name = "meow-dns"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12a8a0984a74b245703c34ddd797f24b0384f74946cc23437e5f187c7e4fda0a"
+checksum = "38a1a53c4866ee892e31a054570f2f287ce69e9d3538fc1e22ab5dc77b6cc292"
 dependencies = [
  "async-trait",
  "dashmap",
@@ -2985,9 +2985,9 @@ dependencies = [
 
 [[package]]
 name = "meow-listener"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "606ba91c3e1ee8517e38f0dd9f5e2039b29ab0d6293a64a0c08a1d31314b32cc"
+checksum = "3308555c51e328b8bc3e817e5afb8b5a2ec5af2d0180e9ab88cc064a3fdd5c10"
 dependencies = [
  "base64",
  "libc",
@@ -3001,9 +3001,9 @@ dependencies = [
 
 [[package]]
 name = "meow-proxy"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4ca6c7cff80d64706f79d34853df8789f903e52a5b14a60a0e88da446e5519a"
+checksum = "b7f12bf7a7eb70cd81a2b6dd304aa516d2e40d702bfdf3364b46885c5740ed2c"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3049,9 +3049,9 @@ dependencies = [
 
 [[package]]
 name = "meow-rules"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94895a0b36f90c47120b10e77ebf3cbeb4c000b78f0aba6be499b29f36d7c8b5"
+checksum = "61e4616773b95940affb55bf6b0d7239ee99749783a2a68732ef46a8cbd94eb9"
 dependencies = [
  "ipnet",
  "iprange",
@@ -3067,9 +3067,9 @@ dependencies = [
 
 [[package]]
 name = "meow-transport"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50bbf8f7815ab2ec2d311ac41575361424389489b1a4f2ad075e31f8a310aaeb"
+checksum = "9f17b39f2a50ecfa17e8bbcf3df9ac02535703aa14b69dac97a25124515e0330"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -3093,15 +3093,15 @@ dependencies = [
 
 [[package]]
 name = "meow-trie"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "281a062425ba8b171dde4577d98fa4c5cc8e22160de0dc7082604493a890e4ad"
+checksum = "9caecdcb18e65457f598910b7d8e2ffee55050acda748c8f0a01b52fae60be0b"
 
 [[package]]
 name = "meow-tunnel"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ddf419cae1e1f240f65f8f4a7c328d8fc2d4560ee005d8ceb056db48631699f6"
+checksum = "790deb15c3fcdf868c30fcafc3c823c380a3eb3352d0f92e1b6650fbddf1b127"
 dependencies = [
  "async-trait",
  "dashmap",
@@ -3406,7 +3406,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4132,7 +4132,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash 2.1.3",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4169,9 +4169,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4520,7 +4520,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5945,7 +5945,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

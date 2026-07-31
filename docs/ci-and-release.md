@@ -53,7 +53,7 @@ whose icon resources are compressed. Its default output is
 - `rust`: runs on GitHub-hosted macOS and checks Rust formatting, workspace tests, and generated local protocol profiles.
 - `harmony`: runs on a self-hosted macOS runner labelled `harmonyos`, builds the aarch debug HAP with `ohrs build --arch aarch`, and uploads any generated `.hap` files.
 
-The workspace resolves `meow-*` 0.18.0 from crates.io and pins arkit to a reviewed upstream commit. CI calls `scripts/prepare-ci-cargo.sh` to report that reproducible dependency policy; no machine-local path patches are used.
+The workspace resolves `meow-*` 0.19.0 from crates.io and pins arkit to a reviewed upstream commit. CI calls `scripts/prepare-ci-cargo.sh` to report that reproducible dependency policy; no machine-local path patches are used.
 
 ## Self-Hosted Runner Requirements
 

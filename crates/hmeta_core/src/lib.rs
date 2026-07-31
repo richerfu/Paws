@@ -54,7 +54,7 @@ const MAX_TRAFFIC_HISTORY: usize = 32;
 const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = "1.0.0";
-const MEOW_RS_VERSION: &str = "0.18.0";
+const MEOW_RS_VERSION: &str = "0.19.0";
 const ARKIT_REV: &str = "75ff91c619f5e4774fe6badea5cd9c619f189b2f";
 const RUST_VERSION: &str = "1.89";
 
@@ -2780,6 +2780,7 @@ impl CoreHandle {
             rule_providers: Arc::new(parking_lot::RwLock::new(rule_providers)),
             listeners,
             external_ui: None,
+            config_mutation_lock: tokio::sync::Mutex::new(()),
         });
         let task_revision = Arc::clone(&config_revision);
         let task = tokio::spawn(async move {
