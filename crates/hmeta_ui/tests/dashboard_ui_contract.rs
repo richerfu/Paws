@@ -15,8 +15,8 @@ fn dashboard_stays_flat_and_decision_focused() {
     assert!(page.contains("grouped_proxy_rows"));
     assert!(page.contains("VirtualProxyGroupList"));
     assert!(page.contains("fixed_scaffold_flush_bottom"));
-    assert!(page.contains("ProxyGroupScope::Global"));
-    assert!(page.contains("ProxyGroupScope::Subscription"));
+    assert!(!page.contains("ProxyGroupScope"));
+    assert!(!page.contains("snapshot.mode == RuntimeMode::Global"));
     assert!(page.contains("key: \"dashboard-quick-proxy-list\""));
     assert!(!page.contains("preview_proxies.truncate(3)"));
     assert!(!page.contains("row { height: 72.0 }"));
@@ -56,6 +56,10 @@ fn dashboard_long_values_are_width_constrained() {
     assert!(page.contains("RuntimeMode::Global"));
     assert!(page.contains("RuntimeMode::Rule"));
     assert!(page.contains("effective_group_leaf"));
+    assert!(page.contains("latest_active_rule_node"));
+    assert!(page.contains("primary_selected_group_leaf"));
+    assert!(!page.contains("由命中规则的策略分组决定"));
+    assert!(!page.contains("暂无命中"));
     assert!(page.contains("s.proxies_direct.to_owned()"));
 }
 

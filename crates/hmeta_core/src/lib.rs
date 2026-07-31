@@ -1353,11 +1353,7 @@ impl CoreHandle {
         let tunnel = tunnel_from_config(config, mode);
         restore_proxy_selections(&tunnel, &selected_proxies);
         let global_proxy = if mode == RuntimeMode::Global {
-            ensure_global_proxy_selected(
-                &tunnel,
-                None,
-                &preferred_global_proxy_targets(&selected_proxies),
-            )?
+            ensure_global_proxy_selected(&tunnel, None)?
         } else {
             None
         };
@@ -4181,31 +4177,6 @@ fn system_time_secs(time: SystemTime) -> Option<String> {
         .map(|duration| duration.as_secs().to_string())
 }
 
-fn preferred_global_proxy_targets(selected_proxies: &BTreeMap<String, String>) -> Vec<String> {
-    let mut targets = Vec::new();
-    let mut seen = BTreeSet::new();
-    let mut push = |target: &str| {
-        if !target.is_empty() && seen.insert(target.to_owned()) {
-            targets.push(target.to_owned());
-        }
-    };
-
-    for (group, selected) in selected_proxies {
-        if group.eq_ignore_ascii_case("Proxy") {
-            push(selected);
-            push(group);
-        }
-    }
-    for (group, selected) in selected_proxies {
-        if group.eq_ignore_ascii_case("GLOBAL") || group.eq_ignore_ascii_case("Proxy") {
-            continue;
-        }
-        push(selected);
-        push(group);
-    }
-    targets
-}
-
 fn target_routes_through_proxy(
     tunnel: &Tunnel,
     target: &str,
@@ -4251,41 +4222,9 @@ fn target_routes_through_proxy(
     routes_through_proxy
 }
 
-fn concrete_proxy_target(
-    tunnel: &Tunnel,
-    target: &str,
-    visiting: &mut BTreeSet<String>,
-) -> Option<String> {
-    if matches!(
-        target.to_ascii_uppercase().as_str(),
-        "DIRECT" | "REJECT" | "REJECT-DROP"
-    ) || !visiting.insert(target.to_owned())
-    {
-        return None;
-    }
-    let concrete = match tunnel.proxy(target) {
-        // Provider-backed leaves may only exist inside their parent group.
-        None => Some(target.to_owned()),
-        Some(proxy) => match proxy.adapter_type() {
-            AdapterType::Direct | AdapterType::Reject | AdapterType::RejectDrop => None,
-            AdapterType::Selector
-            | AdapterType::Fallback
-            | AdapterType::UrlTest
-            | AdapterType::LoadBalance
-            | AdapterType::Relay => proxy
-                .current()
-                .and_then(|current| concrete_proxy_target(tunnel, &current, visiting)),
-            _ => Some(target.to_owned()),
-        },
-    };
-    visiting.remove(target);
-    concrete
-}
-
 fn ensure_global_proxy_selected(
     tunnel: &Tunnel,
     required_target: Option<&str>,
-    preferred_targets: &[String],
 ) -> Result<Option<String>, HMetaError> {
     let global = tunnel
         .proxy("GLOBAL")
@@ -4300,17 +4239,27 @@ fn ensure_global_proxy_selected(
         };
     };
 
+    let is_concrete_proxy = |target: &str| {
+        match tunnel.proxy(target) {
+            // Provider-backed leaves may only exist inside their parent group.
+            None => true,
+            Some(proxy) => !matches!(
+                proxy.adapter_type(),
+                AdapterType::Direct
+                    | AdapterType::Reject
+                    | AdapterType::RejectDrop
+                    | AdapterType::Selector
+                    | AdapterType::Fallback
+                    | AdapterType::UrlTest
+                    | AdapterType::LoadBalance
+                    | AdapterType::Relay
+            ),
+        }
+    };
     let is_valid_target = |target: &str| {
         members.iter().any(|member| member == target)
+            && is_concrete_proxy(target)
             && target_routes_through_proxy(tunnel, target, &mut BTreeSet::new())
-    };
-    let concrete_global_target = |target: &str| {
-        if !is_valid_target(target) {
-            return None;
-        }
-        concrete_proxy_target(tunnel, target, &mut BTreeSet::new())
-            .filter(|concrete| members.iter().any(|member| member == concrete))
-            .or_else(|| Some(target.to_owned()))
     };
 
     let current = global.current();
@@ -4321,17 +4270,13 @@ fn ensure_global_proxy_selected(
             )));
         }
         required_target.to_owned()
-    } else if let Some(current) = current.as_deref().and_then(&concrete_global_target) {
-        current
+    } else if let Some(current) = current.as_deref().filter(|target| is_valid_target(target)) {
+        current.to_owned()
     } else {
-        preferred_targets
+        members
             .iter()
-            .find_map(|target| concrete_global_target(target))
-            .or_else(|| {
-                members
-                    .iter()
-                    .find_map(|target| concrete_global_target(target))
-            })
+            .find(|target| is_valid_target(target))
+            .cloned()
             .ok_or_else(|| {
                 HMetaError::Core("Global mode requires at least one proxy node".to_owned())
             })?
@@ -4368,15 +4313,7 @@ fn apply_global_proxy_policy(
         }
         return Ok(required_target.map(ToOwned::to_owned));
     };
-    let selected_proxies = match state.profiles.active_profile().map(ToOwned::to_owned) {
-        Some(profile_id) => state.profiles.selected_proxies(&profile_id)?,
-        None => BTreeMap::new(),
-    };
-    let global_proxy = ensure_global_proxy_selected(
-        &tunnel,
-        required_target,
-        &preferred_global_proxy_targets(&selected_proxies),
-    )?;
+    let global_proxy = ensure_global_proxy_selected(&tunnel, required_target)?;
     if persist_profile_selection {
         if let (Some(profile_id), Some(global_proxy)) = (
             state.profiles.active_profile().map(ToOwned::to_owned),
@@ -4771,6 +4708,8 @@ rules:
             .unwrap();
         core.reload_config(&profile_id).await.unwrap();
         core.select_proxy("Child", "HTTP-B").await.unwrap();
+        core.select_proxy("Parent", "Child").await.unwrap();
+        core.select_proxy("Streaming", "DIRECT").await.unwrap();
 
         let snapshot = core.snapshot().unwrap();
         let child = snapshot
@@ -4789,12 +4728,63 @@ rules:
             .find(|group| group.name == "Streaming")
             .expect("Streaming group");
         assert_eq!(child.selected.as_deref(), Some("HTTP-B"));
-        assert_eq!(parent.selected.as_deref(), Some("DIRECT"));
-        assert_eq!(streaming.selected.as_deref(), Some("HTTP-B"));
+        assert_eq!(parent.selected.as_deref(), Some("Child"));
+        assert_eq!(streaming.selected.as_deref(), Some("DIRECT"));
         assert!(parent
             .proxies
             .iter()
             .any(|proxy| proxy.name == "Child" && proxy.proxy_type == "Selector"));
+
+        let subscription_selections = |snapshot: &RuntimeSnapshot| {
+            snapshot
+                .proxy_groups
+                .iter()
+                .filter(|group| !group.name.eq_ignore_ascii_case("GLOBAL"))
+                .map(|group| (group.name.clone(), group.selected.clone()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let selections_before_mode_change = subscription_selections(&snapshot);
+        core.set_mode(RuntimeMode::Global).unwrap();
+        let global_snapshot = core.snapshot().unwrap();
+        assert_eq!(
+            subscription_selections(&global_snapshot),
+            selections_before_mode_change
+        );
+        assert_eq!(
+            global_snapshot
+                .proxy_groups
+                .iter()
+                .find(|group| group.name == "GLOBAL")
+                .and_then(|group| group.selected.as_deref()),
+            Some("HTTP-A"),
+            "Global mode chooses its own concrete proxy instead of a subscription group selection"
+        );
+
+        core.select_proxy("Streaming", "HTTP-B").await.unwrap();
+        let changed_in_global_mode = core.snapshot().unwrap();
+        assert_eq!(
+            changed_in_global_mode
+                .proxy_groups
+                .iter()
+                .find(|group| group.name == "GLOBAL")
+                .and_then(|group| group.selected.as_deref()),
+            Some("HTTP-A"),
+            "changing a subscription group must not rewrite the Global outbound"
+        );
+        let mut selections_after_group_change = selections_before_mode_change.clone();
+        selections_after_group_change.insert("Streaming".to_owned(), Some("HTTP-B".to_owned()));
+        assert_eq!(
+            subscription_selections(&changed_in_global_mode),
+            selections_after_group_change
+        );
+        for mode in [RuntimeMode::Direct, RuntimeMode::Global, RuntimeMode::Rule] {
+            core.set_mode(mode).unwrap();
+            assert_eq!(
+                subscription_selections(&core.snapshot().unwrap()),
+                selections_after_group_change,
+                "switching to {mode:?} must preserve subscription group selections"
+            );
+        }
 
         for (domain, target) in [
             ("parent.example", "Parent"),

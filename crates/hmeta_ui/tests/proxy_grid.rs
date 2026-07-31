@@ -5,7 +5,8 @@ mod proxy_grid;
 
 use hmeta_model::{ProxyGroup, ProxyItem};
 use proxy_grid::{
-    effective_group_leaf, grouped_proxy_rows, proxy_group_summary, ProxyGroupRow, ProxyGroupScope,
+    effective_group_leaf, grouped_proxy_rows, primary_selected_group_leaf, proxy_group_summary,
+    ProxyGroupRow,
 };
 
 fn proxy(name: impl Into<String>, selected: bool) -> ProxyItem {
@@ -35,7 +36,7 @@ fn collapsed_groups_render_headers_without_eagerly_building_members() {
         [proxy("Hong Kong", true), proxy("Japan", false)],
     )];
 
-    let rows = grouped_proxy_rows(&groups, "", None, ProxyGroupScope::Subscription);
+    let rows = grouped_proxy_rows(&groups, "", None);
 
     assert_eq!(rows.len(), 1);
     let ProxyGroupRow::Group(header) = &rows[0] else {
@@ -62,13 +63,8 @@ fn every_group_keeps_its_own_selected_member() {
         ),
     ];
 
-    let google = grouped_proxy_rows(&groups, "", Some("Google"), ProxyGroupScope::Subscription);
-    let streaming = grouped_proxy_rows(
-        &groups,
-        "",
-        Some("Streaming"),
-        ProxyGroupScope::Subscription,
-    );
+    let google = grouped_proxy_rows(&groups, "", Some("Google"));
+    let streaming = grouped_proxy_rows(&groups, "", Some("Streaming"));
 
     let selected_member = |rows: &[ProxyGroupRow]| {
         rows.iter().find_map(|row| match row {
@@ -98,7 +94,7 @@ fn nested_group_members_remain_selectable_edges() {
         ),
     ];
 
-    let rows = grouped_proxy_rows(&groups, "", Some("Parent"), ProxyGroupScope::Subscription);
+    let rows = grouped_proxy_rows(&groups, "", Some("Parent"));
     let child = rows.iter().find_map(|row| match row {
         ProxyGroupRow::Member(member) if member.name == "Child" => Some(member),
         _ => None,
@@ -108,30 +104,23 @@ fn nested_group_members_remain_selectable_edges() {
 }
 
 #[test]
-fn global_is_separated_from_subscription_groups() {
+fn global_aggregator_is_never_user_facing() {
     let groups = vec![
         group("GLOBAL", "Proxy", [proxy("Proxy", true)]),
         group("Proxy", "Hong Kong", [proxy("Hong Kong", true)]),
     ];
 
-    let global = grouped_proxy_rows(&groups, "", None, ProxyGroupScope::Global);
-    let subscriptions = grouped_proxy_rows(&groups, "", None, ProxyGroupScope::Subscription);
-    let global_section = ProxyGroupRow::Section(ProxyGroupScope::Global);
+    let rows = grouped_proxy_rows(&groups, "", None);
+    let section = ProxyGroupRow::Section;
 
-    assert!(matches!(
-        global_section,
-        ProxyGroupRow::Section(ProxyGroupScope::Global)
-    ));
-    assert!(global
+    assert!(matches!(section, ProxyGroupRow::Section));
+    assert!(!rows
         .iter()
         .any(|row| matches!(row, ProxyGroupRow::Group(group) if group.name == "GLOBAL")));
-    assert!(!subscriptions
+    assert!(rows
         .iter()
-        .any(|row| matches!(row, ProxyGroupRow::Group(group) if group.name == "GLOBAL")));
-    assert_eq!(
-        proxy_group_summary(&groups, ProxyGroupScope::Subscription).groups,
-        1
-    );
+        .any(|row| matches!(row, ProxyGroupRow::Group(group) if group.name == "Proxy")));
+    assert_eq!(proxy_group_summary(&groups).groups, 1);
 }
 
 #[test]
@@ -141,7 +130,7 @@ fn searching_members_expands_only_matching_groups() {
         group("香港节点", "HK Premium", [proxy("HK Premium", true)]),
     ];
 
-    let rows = grouped_proxy_rows(&groups, "premium", None, ProxyGroupScope::Subscription);
+    let rows = grouped_proxy_rows(&groups, "premium", None);
     assert_eq!(
         rows.iter()
             .filter(|row| matches!(row, ProxyGroupRow::Group(_)))
@@ -155,7 +144,7 @@ fn searching_members_expands_only_matching_groups() {
         2
     );
 
-    let fallback = grouped_proxy_rows(&groups, "fallback", None, ProxyGroupScope::Subscription);
+    let fallback = grouped_proxy_rows(&groups, "fallback", None);
     assert!(matches!(
         fallback.as_slice(),
         [ProxyGroupRow::Group(_), ProxyGroupRow::Member(_)]
@@ -182,12 +171,40 @@ fn effective_leaf_resolution_is_scoped_to_the_requested_group() {
 }
 
 #[test]
+fn primary_rule_selection_prefers_proxy_and_resolves_its_final_node() {
+    let groups = vec![
+        group("GLOBAL", "Hong Kong", [proxy("Hong Kong", true)]),
+        group("Streaming", "United States", [proxy("United States", true)]),
+        group("Proxy", "Regional", [proxy("Regional", true)]),
+        group("Regional", "Japan", [proxy("Japan", true)]),
+    ];
+
+    assert_eq!(
+        primary_selected_group_leaf(&groups).as_deref(),
+        Some("Japan")
+    );
+}
+
+#[test]
+fn primary_rule_selection_falls_back_to_the_first_selected_subscription_group() {
+    let groups = vec![
+        group("GLOBAL", "Hong Kong", [proxy("Hong Kong", true)]),
+        group("节点选择", "Hong Kong", [proxy("Hong Kong", true)]),
+    ];
+
+    assert_eq!(
+        primary_selected_group_leaf(&groups).as_deref(),
+        Some("Hong Kong")
+    );
+}
+
+#[test]
 fn group_order_is_deterministic_and_case_insensitive() {
     let groups = vec![
         group("zulu", "Z", [proxy("Z", true)]),
         group("Alpha", "A", [proxy("A", true)]),
     ];
-    let rows = grouped_proxy_rows(&groups, "", None, ProxyGroupScope::Subscription);
+    let rows = grouped_proxy_rows(&groups, "", None);
     let names = rows
         .iter()
         .filter_map(|row| match row {
