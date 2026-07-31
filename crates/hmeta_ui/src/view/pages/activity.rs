@@ -756,7 +756,9 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
     let ip_option = ip_label.clone();
     let mut targets = vec!["DIRECT".to_owned()];
     for group in &current.snapshot.proxy_groups {
-        if !targets.iter().any(|target| target == &group.name) {
+        if !group.name.eq_ignore_ascii_case("GLOBAL")
+            && !targets.iter().any(|target| target == &group.name)
+        {
             targets.push(group.name.clone());
         }
     }

@@ -12,10 +12,11 @@ fn dashboard_stays_flat_and_decision_focused() {
     let page = section(VIEW, "fn dashboard_page", "fn proxies_page");
 
     assert!(page.contains("FlatSegmented"));
-    assert!(page.contains("flatten_proxy_groups"));
-    assert!(page.contains("VirtualQuickProxyList"));
+    assert!(page.contains("grouped_proxy_rows"));
+    assert!(page.contains("VirtualProxyGroupList"));
     assert!(page.contains("fixed_scaffold_flush_bottom"));
-    assert!(page.contains("stabilize_proxy_items"));
+    assert!(page.contains("ProxyGroupScope::Global"));
+    assert!(page.contains("ProxyGroupScope::Subscription"));
     assert!(page.contains("key: \"dashboard-quick-proxy-list\""));
     assert!(!page.contains("preview_proxies.truncate(3)"));
     assert!(!page.contains("row { height: 72.0 }"));
@@ -51,7 +52,10 @@ fn dashboard_long_values_are_width_constrained() {
 
     assert!(page.contains("content: current_node"));
     assert!(page.contains("text_overflow: \"ellipsis\""));
-    assert!(page.contains("snapshot.mode == RuntimeMode::Direct"));
+    assert!(page.contains("RuntimeMode::Direct"));
+    assert!(page.contains("RuntimeMode::Global"));
+    assert!(page.contains("RuntimeMode::Rule"));
+    assert!(page.contains("effective_group_leaf"));
     assert!(page.contains("s.proxies_direct.to_owned()"));
 }
 
@@ -60,8 +64,8 @@ fn quick_switch_owns_an_internal_virtual_scroll_list() {
     let page = section(VIEW, "fn dashboard_page", "fn proxies_page");
     let virtual_list = section(
         VIEW,
-        "fn VirtualQuickProxyList",
-        "fn virtual_quick_proxy_item_keys",
+        "fn VirtualProxyGroupList",
+        "fn VirtualProxySectionRow",
     );
 
     assert!(page.contains("layout_weight: 1.0"));
@@ -71,15 +75,19 @@ fn quick_switch_owns_an_internal_virtual_scroll_list() {
 
     let keys = section(
         VIEW,
-        "fn virtual_quick_proxy_item_keys",
-        "fn VirtualProxyCard",
+        "fn virtual_proxy_row_keys",
+        "fn VirtualProxyGroupList",
     );
-    assert!(keys.contains("item.name.hash"));
-    assert!(keys.contains("item.selected.hash"));
+    assert!(keys.contains("row.hash"));
+    assert!(keys.contains("pending_proxy.hash"));
 
-    let quick_row = section(VIEW, "fn VirtualQuickProxyRow", "fn profiles_page");
-    assert!(quick_row.contains("width: 3.0"));
-    assert!(quick_row.contains("palette.success"));
+    let group_row = section(VIEW, "fn VirtualProxyGroupRow", "fn VirtualProxyMemberRow");
+    assert!(group_row.contains("group.selected"));
+    assert!(group_row.contains("group.expanded"));
+
+    let member_row = section(VIEW, "fn VirtualProxyMemberRow", "fn profiles_page");
+    assert!(member_row.contains("member.selected"));
+    assert!(member_row.contains("member.subgroup"));
 }
 
 #[test]

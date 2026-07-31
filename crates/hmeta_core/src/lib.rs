@@ -4730,6 +4730,99 @@ rules:
     }
 
     #[tokio::test]
+    async fn rule_groups_keep_independent_selections_and_nested_edges() {
+        let root =
+            std::env::temp_dir().join(format!("hmeta-rule-groups-test-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let profile_id = core
+            .import_profile_from_content(
+                "Independent rule groups",
+                "test",
+                r#"
+proxies:
+  - name: HTTP-A
+    type: http
+    server: 127.0.0.1
+    port: 18080
+  - name: HTTP-B
+    type: http
+    server: 127.0.0.1
+    port: 18081
+proxy-groups:
+  - name: Child
+    type: select
+    proxies: [HTTP-A, HTTP-B]
+  - name: Parent
+    type: select
+    proxies: [DIRECT, Child]
+  - name: Streaming
+    type: select
+    proxies: [HTTP-B, DIRECT]
+rules:
+  - DOMAIN,parent.example,Parent
+  - DOMAIN,child.example,Child
+  - DOMAIN,stream.example,Streaming
+  - MATCH,DIRECT
+"#,
+                None,
+            )
+            .await
+            .unwrap();
+        core.reload_config(&profile_id).await.unwrap();
+        core.select_proxy("Child", "HTTP-B").await.unwrap();
+
+        let snapshot = core.snapshot().unwrap();
+        let child = snapshot
+            .proxy_groups
+            .iter()
+            .find(|group| group.name == "Child")
+            .expect("Child group");
+        let parent = snapshot
+            .proxy_groups
+            .iter()
+            .find(|group| group.name == "Parent")
+            .expect("Parent group");
+        let streaming = snapshot
+            .proxy_groups
+            .iter()
+            .find(|group| group.name == "Streaming")
+            .expect("Streaming group");
+        assert_eq!(child.selected.as_deref(), Some("HTTP-B"));
+        assert_eq!(parent.selected.as_deref(), Some("DIRECT"));
+        assert_eq!(streaming.selected.as_deref(), Some("HTTP-B"));
+        assert!(parent
+            .proxies
+            .iter()
+            .any(|proxy| proxy.name == "Child" && proxy.proxy_type == "Selector"));
+
+        for (domain, target) in [
+            ("parent.example", "Parent"),
+            ("child.example", "Child"),
+            ("stream.example", "Streaming"),
+        ] {
+            let lookup = core.lookup_rule(domain).await.unwrap();
+            assert_eq!(lookup.target, target);
+        }
+
+        let tunnel = core.lock_state().unwrap().tunnel.clone().unwrap();
+        for (domain, expected_group) in [
+            ("parent.example", "Parent"),
+            ("child.example", "Child"),
+            ("stream.example", "Streaming"),
+        ] {
+            let metadata = Metadata {
+                network: Network::Tcp,
+                host: domain.into(),
+                dst_port: 443,
+                ..Metadata::default()
+            };
+            let (proxy, _, _) = tunnel.inner().resolve_proxy(&metadata).unwrap();
+            assert_eq!(proxy.name(), expected_group);
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn global_mode_is_rejected_when_no_proxy_node_exists() {
         let root =
             std::env::temp_dir().join(format!("hmeta-global-no-proxy-test-{}", now_unix_nanos()));

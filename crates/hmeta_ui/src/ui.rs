@@ -11,7 +11,8 @@ use crate::profile_refresh_feedback::{
 };
 use crate::provider_refresh_feedback::provider_batch_refresh_message;
 use crate::proxy_grid::{
-    flatten_proxy_groups, proxy_selection_chain, stabilize_proxy_items, ProxyGridItem,
+    effective_group_leaf, grouped_proxy_rows, proxy_group_summary, ProxyGroupHeaderRow,
+    ProxyGroupMemberRow, ProxyGroupRow, ProxyGroupScope,
 };
 use crate::resource_filter::{matches_geodata_query, matches_provider_query, matches_rule_query};
 use crate::rule_feedback::rule_import_message;
@@ -605,9 +606,11 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             if state.proxy_selection_pending.is_some() {
                 return Command::none();
             }
-            let selections = proxy_selection_chain(&state.snapshot.proxy_groups, &group, &proxy);
-            state.proxy_selection_pending = Some((group, proxy));
-            Command::perform(select_proxy_and_snapshot(selections), Action::ProxySelected)
+            state.proxy_selection_pending = Some((group.clone(), proxy.clone()));
+            Command::perform(
+                select_proxy_and_snapshot(group, proxy),
+                Action::ProxySelected,
+            )
         }
         Action::UnfixProxy { group } => {
             if state.proxy_selection_pending.is_some() {
@@ -2604,14 +2607,13 @@ async fn delete_profile_and_snapshot(
 }
 
 async fn select_proxy_and_snapshot(
-    selections: Vec<(String, String)>,
+    group: String,
+    proxy: String,
 ) -> Result<RuntimeSnapshot, String> {
-    for (group, proxy) in selections {
-        hmeta_core::shared_core()
-            .select_proxy_via_controller(&group, &proxy)
-            .await
-            .map_err(|error| error.to_string())?;
-    }
+    hmeta_core::shared_core()
+        .select_proxy_via_controller(&group, &proxy)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(load_snapshot().await)
 }
 
@@ -2651,7 +2653,7 @@ fn proxy_groups_for_delay_test(snapshot: &RuntimeSnapshot) -> Vec<(String, usize
     snapshot
         .proxy_groups
         .iter()
-        .filter(|group| !group.proxies.is_empty())
+        .filter(|group| !group.name.eq_ignore_ascii_case("GLOBAL") && !group.proxies.is_empty())
         .map(|group| (group.name.clone(), group.proxies.len()))
         .collect()
 }
