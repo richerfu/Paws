@@ -1,4 +1,7 @@
-const UI: &str = include_str!("../src/ui.rs");
+const UI: &str = concat!(
+    include_str!("../src/ui.rs"),
+    include_str!("../src/ui/tasks.rs")
+);
 const ENTRY_ABILITY: &str =
     include_str!("../../../entry/src/main/ets/entryability/EntryAbility.ets");
 const VPN_ABILITY: &str =
@@ -159,7 +162,7 @@ fn dashboard_mount_does_not_wait_for_profile_parsing() {
     assert!(!bootstrap.contains("core.reload_config"));
 
     let loader = section(
-        include_str!("../../hmeta_core/src/lib.rs"),
+        include_str!("../../hmeta_core/src/controller.rs"),
         "async fn load_meow_config",
         "fn tunnel_from_config",
     );
