@@ -363,7 +363,7 @@ fn VirtualLogArchiveList(
         })
         .collect::<Vec<_>>();
     let render_items = items;
-    let handle = use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys, move |index| {
+    let source = use_virtual_source_items_keyed(VirtualKind::List, item_keys, move |index| {
         let Some(item) = render_items.get(index as usize).cloned() else {
             return rsx! {};
         };
@@ -371,13 +371,10 @@ fn VirtualLogArchiveList(
             VirtualLogArchiveRowView { item, palette, on_export, on_delete }
         }
     });
-    let attach_handle = handle.clone();
-    use_layout_frame_node(move |host_node, _frame| {
-        let _ = attach_handle.attach(&host_node);
-    });
 
     rsx! {
         list {
+            virtual_source: source,
             width: "100%",
             height: "100%",
             list_cached_count: 12_i32,
@@ -401,7 +398,7 @@ fn VirtualLogList(
         })
         .collect::<Vec<_>>();
     let render_items = items;
-    let handle = use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys, move |index| {
+    let source = use_virtual_source_items_keyed(VirtualKind::List, item_keys, move |index| {
         let Some(item) = render_items.get(index as usize).cloned() else {
             return rsx! {};
         };
@@ -409,13 +406,10 @@ fn VirtualLogList(
             VirtualLogRowView { item, palette, on_open }
         }
     });
-    let attach_handle = handle.clone();
-    use_layout_frame_node(move |host_node, _frame| {
-        let _ = attach_handle.attach(&host_node);
-    });
 
     rsx! {
         list {
+            virtual_source: source,
             width: "100%",
             height: "100%",
             list_cached_count: 18_i32,

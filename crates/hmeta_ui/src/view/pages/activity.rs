@@ -316,7 +316,7 @@ fn VirtualRequestList(
 ) -> Element {
     let item_keys = activity_item_keys(&items, palette);
     let render_items = items;
-    let handle = use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys, move |index| {
+    let source = use_virtual_source_items_keyed(VirtualKind::List, item_keys, move |index| {
         let Some(item) = render_items.get(index as usize).cloned() else {
             return rsx! {};
         };
@@ -324,13 +324,10 @@ fn VirtualRequestList(
             VirtualRequestRowView { item, palette, on_open, on_add_rule }
         }
     });
-    let attach_handle = handle.clone();
-    use_layout_frame_node(move |host_node, _frame| {
-        let _ = attach_handle.attach(&host_node);
-    });
 
     rsx! {
         list {
+            virtual_source: source,
             width: "100%",
             height: "100%",
             list_cached_count: 18_i32,
@@ -347,7 +344,7 @@ fn VirtualConnectionList(
 ) -> Element {
     let item_keys = activity_item_keys(&items, palette);
     let render_items = items;
-    let handle = use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys, move |index| {
+    let source = use_virtual_source_items_keyed(VirtualKind::List, item_keys, move |index| {
         let Some(item) = render_items.get(index as usize).cloned() else {
             return rsx! {};
         };
@@ -355,13 +352,10 @@ fn VirtualConnectionList(
             VirtualConnectionRowView { item, palette, on_close, on_add_rule }
         }
     });
-    let attach_handle = handle.clone();
-    use_layout_frame_node(move |host_node, _frame| {
-        let _ = attach_handle.attach(&host_node);
-    });
 
     rsx! {
         list {
+            virtual_source: source,
             width: "100%",
             height: "100%",
             list_cached_count: 18_i32,

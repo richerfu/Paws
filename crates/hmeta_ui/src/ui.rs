@@ -204,6 +204,10 @@ pub(crate) enum Action {
 
 #[derive(Clone)]
 pub(crate) struct State {
+    /// The arkit runtime for this exact mounted UI root. Async work and UI
+    /// callbacks must stay scoped to it so a replacement root cannot receive
+    /// stale updates.
+    runtime: arkit::RuntimeHandle,
     locale: UiLocale,
     preferences: UiPreferences,
     theme_dark: bool,
@@ -385,7 +389,7 @@ pub(crate) struct LogArchiveDeleteResult {
 }
 
 impl State {
-    pub(crate) fn new(notifications: NotificationCenter) -> Self {
+    pub(crate) fn new(notifications: NotificationCenter, runtime: arkit::RuntimeHandle) -> Self {
         let core = hmeta_core::shared_core();
         let snapshot = core.snapshot().unwrap_or_default();
         let log_recording = core.log_recording_status().unwrap_or_default();
@@ -393,6 +397,7 @@ impl State {
         let locale = preferences.language.resolve(&system_language());
         let theme_dark = preferences.theme.resolve_dark(system_color_mode());
         Self {
+            runtime,
             locale,
             preferences,
             theme_dark,

@@ -142,7 +142,7 @@ struct VirtualProxyListState {
     selection_pending: Option<(String, String)>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum VirtualProxyRowKey {
     Section,
     Group(String),
@@ -188,7 +188,7 @@ pub(crate) fn VirtualProxyGroupList(
         },
     ));
 
-    let handle = use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys, move |index| {
+    let source = use_virtual_source_items_keyed(VirtualKind::List, item_keys, move |index| {
         rsx! {
             VirtualProxyRow {
                 index,
@@ -198,13 +198,10 @@ pub(crate) fn VirtualProxyGroupList(
             }
         }
     });
-    let attach_handle = handle.clone();
-    use_layout_frame_node(move |host_node, _frame| {
-        let _ = attach_handle.attach(&host_node);
-    });
 
     rsx! {
         list {
+            virtual_source: source,
             width: "100%",
             height: "100%",
             list_cached_count: 20_i32,

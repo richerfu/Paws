@@ -15,11 +15,10 @@ fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 #[test]
 fn logs_use_arkit_rsx_virtual_rows_and_expose_full_details() {
     assert!(VIEW_SOURCE.contains("fn VirtualLogList("));
-    assert!(
-        VIEW_SOURCE.contains("use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys")
-    );
-    assert!(!VIEW_SOURCE.contains("use_virtual_node_adapter_rsx_items_keyed"));
-    assert!(VIEW_SOURCE.contains("use_layout_frame_node(move |host_node, _frame|"));
+    assert!(VIEW_SOURCE.contains("use_virtual_source_items_keyed(VirtualKind::List, item_keys"));
+    assert!(!VIEW_SOURCE.contains("use_virtual_node_adapter_items_keyed"));
+    assert_eq!(VIEW_SOURCE.matches("virtual_source: source").count(), 2);
+    assert!(!VIEW_SOURCE.contains("use_layout_frame_node(move |host_node, _frame|"));
     assert!(VIEW_SOURCE.contains("onclick: move |_| on_open.call(open_item.clone())"));
     assert!(VIEW_SOURCE.contains("fn VirtualLogRowView("));
     assert!(!VIEW_SOURCE.contains("NodeBuilder::new"));
@@ -42,17 +41,12 @@ fn activity_lists_use_compact_arkit_rsx_virtual_rows() {
     assert!(ACTIVITY_SOURCE.contains("fn VirtualConnectionList("));
     assert_eq!(
         ACTIVITY_SOURCE
-            .matches("use_virtual_node_adapter_items_keyed(VirtualKind::List, item_keys")
+            .matches("use_virtual_source_items_keyed(VirtualKind::List, item_keys")
             .count(),
         2,
     );
-    assert!(!ACTIVITY_SOURCE.contains("use_virtual_node_adapter_rsx_items_keyed"));
-    assert_eq!(
-        ACTIVITY_SOURCE
-            .matches("use_layout_frame_node(move |host_node, _frame|")
-            .count(),
-        2,
-    );
+    assert!(!ACTIVITY_SOURCE.contains("use_virtual_node_adapter_items_keyed"));
+    assert_eq!(ACTIVITY_SOURCE.matches("virtual_source: source").count(), 2,);
     assert_eq!(
         ACTIVITY_SOURCE.matches("list_cached_count: 18_i32").count(),
         2,

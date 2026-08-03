@@ -45,12 +45,13 @@ fn proxy_groups_use_an_arkit_rsx_heterogeneous_virtual_list() {
     let page = section(VIEW, "fn proxies_page", "fn profiles_page");
 
     assert!(page.contains("grouped_proxy_rows"));
-    assert!(page.contains("use_virtual_node_adapter_items_keyed"));
-    assert!(!page.contains("use_virtual_node_adapter_rsx_items_keyed"));
+    assert!(page.contains("use_virtual_source_items_keyed"));
+    assert!(!page.contains("use_virtual_node_adapter_items_keyed"));
     assert!(page.contains("VirtualKind::List"));
     assert!(!page.contains("VirtualKind::Grid"));
     assert!(!page.contains("NodeBuilder::new"));
     assert!(page.contains("list_cached_count"));
+    assert!(page.contains("virtual_source: source"));
     assert!(page.contains("fixed_scaffold"));
     assert!(page.contains("EventHandler<(String, String)>"));
     assert!(page.contains("on_select.call"));
@@ -155,9 +156,10 @@ fn log_recording_is_opt_in_with_daily_history_and_export() {
     assert!(!page.contains("archive_rows"));
     let archive_list = section(VIEW, "fn VirtualLogArchiveList(", "fn VirtualLogList(");
     assert!(archive_list.contains("VirtualKind::List"));
-    assert!(archive_list.contains("use_virtual_node_adapter_items_keyed"));
-    assert!(!archive_list.contains("use_virtual_node_adapter_rsx_items_keyed"));
+    assert!(archive_list.contains("use_virtual_source_items_keyed"));
+    assert!(!archive_list.contains("use_virtual_node_adapter_items_keyed"));
     assert!(!archive_list.contains("NodeBuilder::new"));
+    assert!(archive_list.contains("virtual_source: source"));
     assert!(archive_list.contains("list_cached_count: 12_i32"));
     assert!(archive_list.contains("on_delete"));
     assert!(UI.contains("set_log_recording_enabled"));

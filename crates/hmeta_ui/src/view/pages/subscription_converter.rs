@@ -173,7 +173,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                                         onclick: move |_| {
                                             busy.set(Some(tr(current.locale, "检测后端", "Checking backend").to_owned()));
                                             let backend = draft().backend;
-                                            let task = arkit::tokio_handle().spawn(async move {
+                                            let task = state.read().runtime.tokio().spawn(async move {
                                                 fetch_backend_version(&backend).await
                                             });
                                             arkit::dioxus_core::spawn_forever(async move {
@@ -412,7 +412,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                                     let generated = generated_url();
                                     let api = draft().short_url_api;
                                     busy.set(Some(tr(current.locale, "生成短链接", "Generating short URL").to_owned()));
-                                    let task = arkit::tokio_handle().spawn(async move {
+                                    let task = state.read().runtime.tokio().spawn(async move {
                                         generate_short_url(&api, &generated).await
                                     });
                                     arkit::dioxus_core::spawn_forever(async move {
@@ -502,7 +502,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                             onclick: move |_| {
                                 let input = parse_url();
                                 busy.set(Some(tr(current.locale, "解析链接", "Parsing URL").to_owned()));
-                                let task = arkit::tokio_handle().spawn(async move {
+                                let task = state.read().runtime.tokio().spawn(async move {
                                     resolve_and_parse_conversion_url(&input).await
                                 });
                                 arkit::dioxus_core::spawn_forever(async move {
@@ -592,7 +592,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                                 let content = upload_content();
                                 let api = draft().config_upload_api;
                                 busy.set(Some(tr(current.locale, "上传配置", "Uploading config").to_owned()));
-                                let task = arkit::tokio_handle().spawn(async move {
+                                let task = state.read().runtime.tokio().spawn(async move {
                                     upload_remote_config(&api, &content).await
                                 });
                                 arkit::dioxus_core::spawn_forever(async move {
@@ -695,8 +695,11 @@ fn converter_notice(state: Signal<State>, message: impl Into<String>) {
 }
 
 fn copy_converter_text(state: Signal<State>, text: String, success: &'static str) {
-    let task =
-        arkit::tokio_handle().spawn(async move { platform_callbacks::copy_text(text).await });
+    let task = state
+        .read()
+        .runtime
+        .tokio()
+        .spawn(async move { platform_callbacks::copy_text(text).await });
     arkit::dioxus_core::spawn_forever(async move {
         match task.await {
             Ok(Ok(())) => converter_notice(state, success),
@@ -707,7 +710,10 @@ fn copy_converter_text(state: Signal<State>, text: String, success: &'static str
 }
 
 fn open_converter_url(state: Signal<State>, url: String) {
-    let task = arkit::tokio_handle()
+    let task = state
+        .read()
+        .runtime
+        .tokio()
         .spawn(async move { platform_callbacks::open_external_url(url).await });
     arkit::dioxus_core::spawn_forever(async move {
         match task.await {
