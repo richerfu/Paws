@@ -163,6 +163,7 @@ fn FlatSegmented(props: FlatSegmentedProps) -> Element {
                         button_type: "normal",
                         width: "100%",
                         height: 32.0,
+                        padding: 0.0,
                         background_color: if active { theme.colors.background } else { 0x00000000 },
                         foreground_color: theme.colors.foreground,
                         border_width: if active { 1.0 } else { 0.0 },
