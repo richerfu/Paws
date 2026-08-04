@@ -25,8 +25,10 @@ fn settings_route_rows_do_not_inherit_native_button_insets() {
 #[test]
 fn every_route_owns_its_scroll_node() {
     let source = fs::read_to_string("src/view.rs").unwrap();
-    assert!(source.contains("page-scroll-{page:?}"));
-    assert!(source.contains("key: \"{scroll_key}\""));
+    // RouteProvider restores the route's saved scroll position when the
+    // page is mounted again after navigation back.
+    assert!(source.contains("RouteProvider {"));
+    assert!(!source.contains("page-scroll-{page:?}"));
 }
 
 #[test]

@@ -3,7 +3,9 @@ use crate::manual_rule::{find_manual_rule_conflict, manual_rule_preview};
 use crate::notification::{use_notification_center, NotificationHost};
 use crate::platform_callbacks;
 use arkit::prelude::*;
-use arkit::router::{use_back_handler, use_navigator, use_route, AnimatedOutlet, Router};
+use arkit::router::{
+    use_back_handler, use_navigator, use_route, AnimatedOutlet, RouteProvider, Router,
+};
 use arkit::shadcn::components::{
     Badge, BadgeVariant, BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant,
     Card, CardContent, CardHeader, CardTitle, DialogFooter, DialogHeader, Field, FieldContent,
@@ -490,7 +492,6 @@ fn scaffold_layout(
     let current = state.read().clone();
     let parent = page.parent();
     use_parent_back_handler(parent.clone());
-    let scroll_key = format!("page-scroll-{page:?}");
     let navigator = use_navigator();
     let theme = use_theme();
     rsx! {
@@ -539,13 +540,10 @@ fn scaffold_layout(
                 layout_weight: 1.0,
                 width: "100%",
                 if scrollable {
-                    scroll {
-                        key: "{scroll_key}",
-                        width: "100%",
-                        height: "100%",
-                        alignment: "top-start",
-                        background_color: theme.colors.background,
-                        scroll_bar: "off",
+                    // RouteProvider records ArkUI's per-frame scroll deltas and
+                    // restores the route's saved position when the page is
+                    // mounted again after navigation back.
+                    RouteProvider {
                         column {
                             width: "100%",
                             padding: spacing::LG,
