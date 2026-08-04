@@ -299,7 +299,18 @@ pub(crate) fn App() -> Element {
         }
     });
 
+    let mut bootstrapped = use_signal(|| false);
     use_effect(move || {
+        // One-shot startup dispatch. dioxus 0.7 effects re-run reactively
+        // whenever a signal they *read* changes; `run_command` reads `state`
+        // and the dispatched bootstrap completion then writes it back, which
+        // re-triggered the effect: an unbounded self-referential loop that
+        // pegged the UI thread (thousands of reloads per second) and ANR'd
+        // on device. The guard makes the effect a no-op after the first run.
+        if *bootstrapped.peek() {
+            return;
+        }
+        bootstrapped.set(true);
         run_command(
             state,
             Command::batch([
