@@ -565,10 +565,8 @@ pub(super) async fn clear_request_history_and_snapshot() -> Result<RuntimeSnapsh
     Ok(load_snapshot().await)
 }
 
-pub(super) fn refresh_log_recording_status(state: &mut State) {
-    if let Ok(status) = hmeta_core::shared_core().log_recording_status() {
-        state.log_recording = status;
-    }
+pub(super) async fn load_log_recording_status() -> Option<hmeta_core::LogRecordingStatus> {
+    hmeta_core::shared_core().log_recording_status().ok()
 }
 
 pub(super) fn locale_text(locale: UiLocale, zh: &'static str, en: &'static str) -> &'static str {

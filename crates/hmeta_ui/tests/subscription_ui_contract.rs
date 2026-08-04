@@ -76,6 +76,8 @@ fn proxy_groups_use_an_arkit_rsx_heterogeneous_virtual_list() {
     // Expansion changes only the heterogeneous adapter's row model; ArkUI
     // continues to instantiate visible group/member rows on demand.
     assert!(page.contains("expanded_group"));
+    assert!(page.contains("全局节点与策略分组"));
+    assert!(page.contains("Global node and policy groups"));
     assert!(!page.contains("ProxyGroupScope"));
     assert!(!page.contains("GLOBAL ·"));
     assert!(!page.contains("ProxyLayoutMode"));
