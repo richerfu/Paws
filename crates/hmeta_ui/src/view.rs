@@ -434,7 +434,11 @@ fn dispatch(mut state: Signal<State>, action: Action) {
 }
 
 fn run_command(state: Signal<State>, command: Command<Action>) {
-    let runtime = state.read().runtime.clone();
+    // Runtime ownership is stable for the lifetime of this root. In
+    // particular, do not subscribe the caller's reactive effect to the entire
+    // application State merely to obtain its executor: doing so makes every
+    // snapshot update rerun the bootstrap effect and multiply polling tasks.
+    let runtime = state.peek().runtime.clone();
     let async_runtime = runtime.tokio();
     for future in command.into_futures() {
         let task = async_runtime.spawn(future);

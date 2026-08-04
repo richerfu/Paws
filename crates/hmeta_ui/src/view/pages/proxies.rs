@@ -29,12 +29,25 @@ pub(crate) fn proxies_page(state: Signal<State>) -> Element {
             _ => None,
         })
         .sum::<usize>();
+    let global_node_count = rows
+        .iter()
+        .find_map(|row| match row {
+            ProxyGroupRow::Group(group) if group.name.eq_ignore_ascii_case("GLOBAL") => {
+                Some(group.member_count)
+            }
+            _ => None,
+        })
+        .unwrap_or(0);
     let result_summary = match current.locale {
         UiLocale::ZhCn => {
-            format!("{matching_group_count} 个分组 · {matching_member_count} 个成员")
+            format!(
+                "{global_node_count} 个全局节点 · {matching_group_count} 个策略分组 · {matching_member_count} 个成员"
+            )
         }
         UiLocale::En => {
-            format!("{matching_group_count} groups · {matching_member_count} members")
+            format!(
+                "{global_node_count} global nodes · {matching_group_count} policy groups · {matching_member_count} members"
+            )
         }
     };
     let palette = VirtualProxyPalette {
@@ -251,11 +264,15 @@ fn VirtualProxyRow(
 
 #[component]
 fn VirtualProxySectionRow(locale: UiLocale, palette: VirtualProxyPalette) -> Element {
-    let title = tr(locale, "订阅策略分组", "Subscription policy groups");
+    let title = tr(
+        locale,
+        "全局节点与策略分组",
+        "Global node and policy groups",
+    );
     let description = tr(
         locale,
-        "规则按分组名称命中，每个分组保留独立选择",
-        "Rules target groups by name; every group keeps its own selection",
+        "全局模式使用所选节点；规则按分组名称命中并保留独立选择",
+        "Global mode uses the selected node; rules keep independent group selections",
     );
     rsx! {
         column {
@@ -301,7 +318,17 @@ fn VirtualProxyGroupRow(
         None if !group.selectable => tr(locale, "自动策略", "Automatic policy"),
         None => tr(locale, "手动选择", "Manual selection"),
     };
-    let title = group.name.clone();
+    let global_selector = group.name.eq_ignore_ascii_case("GLOBAL");
+    let title = if global_selector {
+        tr(locale, "全局节点", "Global node").to_owned()
+    } else {
+        group.name.clone()
+    };
+    let group_kind = if global_selector {
+        tr(locale, "全局模式", "Global mode")
+    } else {
+        group.group_type.as_str()
+    };
     let group_name = group.name.clone();
     rsx! {
         row {
@@ -345,7 +372,7 @@ fn VirtualProxyGroupRow(
                     width: "100%",
                     content: format!(
                         "{} · {} · {}",
-                        group.group_type,
+                        group_kind,
                         selection_mode,
                         match locale {
                             UiLocale::ZhCn => format!("{} 个成员", group.member_count),
