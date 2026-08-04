@@ -60,11 +60,26 @@ pub(crate) fn grouped_proxy_rows(
     let mut rows = Vec::new();
     for group in visible_groups {
         let global_selector = group.name.eq_ignore_ascii_case("GLOBAL");
-        let visible_members = group
-            .proxies
-            .iter()
-            .filter(|proxy| !global_selector || is_global_subscription_node(proxy, &group_names))
-            .collect::<Vec<_>>();
+        let visible_members = if global_selector {
+            let mut nodes = group
+                .proxies
+                .iter()
+                .filter(|proxy| is_global_subscription_node(proxy, &group_names))
+                .collect::<Vec<_>>();
+            if nodes.is_empty() {
+                // Community (meow/mihomo) semantics: without subscription
+                // nodes the GLOBAL selector falls back to its built-in
+                // DIRECT outbound.
+                nodes = group
+                    .proxies
+                    .iter()
+                    .filter(|proxy| proxy.name == "DIRECT")
+                    .collect();
+            }
+            nodes
+        } else {
+            group.proxies.iter().collect()
+        };
         let member_count = visible_members.len();
         let selected = selected_member(group).filter(|selected| {
             !global_selector || visible_members.iter().any(|proxy| proxy.name == *selected)
