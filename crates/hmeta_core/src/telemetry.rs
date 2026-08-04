@@ -223,7 +223,10 @@ fn runtime_ui_cache_snapshot(state: &CoreState) -> Option<(RuntimeUiCache, PathB
 
 /// Serialize and atomically replace the runtime UI cache. Lock-free; callers
 /// must not hold the core state mutex.
-fn persist_runtime_ui_cache_value(cache: &RuntimeUiCache, path: &std::path::Path) -> Result<(), HMetaError> {
+fn persist_runtime_ui_cache_value(
+    cache: &RuntimeUiCache,
+    path: &std::path::Path,
+) -> Result<(), HMetaError> {
     let temp_path = path.with_extension(format!("tmp-{}", std::process::id()));
     let content = serde_json::to_vec(cache)
         .map_err(|error| HMetaError::Core(format!("serialize runtime UI cache failed: {error}")))?;
