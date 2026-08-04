@@ -5,13 +5,13 @@
         "name": "default",
         "type": "HarmonyOS",
         "material": {
-          "certpath": "/Users/ranger/.ohos/config/default_paws_opK_3iD2WYIONkdTK6FD8XAaxjR7cWgeTEu3sfYV6eA=.cer",
-          "keyAlias": "debugKey",
-          "keyPassword": "0000001BD884E16C5E6430C944CB42844EA8534C190F97321481AE0EF41F4E8EBF1752B2DD4AA3279A8B7C",
-          "profile": "/Users/ranger/.ohos/config/default_paws_opK_3iD2WYIONkdTK6FD8XAaxjR7cWgeTEu3sfYV6eA=.p7b",
+          "certpath": "/Users/ranger/.ohos/config/default_Paws_G4F6yQMhlo-Y56Kq6WcAV5ZPgQjz6aR-bBvPKUqxgNY=.cer",
+          "keyAlias": "debugkey",
+          "keyPassword": "0000001BC4D2743A98C010D22B71C3CC3629B4F1B609568A31FFCFB2BD2AB33D665289B18A3EA90E7BA6A0",
+          "profile": "/Users/ranger/.ohos/config/default_Paws_G4F6yQMhlo-Y56Kq6WcAV5ZPgQjz6aR-bBvPKUqxgNY=.p7b",
           "signAlg": "SHA256withECDSA",
-          "storeFile": "/Users/ranger/.ohos/config/default_paws_opK_3iD2WYIONkdTK6FD8XAaxjR7cWgeTEu3sfYV6eA=.p12",
-          "storePassword": "0000001B27148896CDEBF94D944C51BDBAFCCF677AB190D2573A30C5D0C0BC7427A5029760342C9ED78564"
+          "storeFile": "/Users/ranger/.ohos/config/default_Paws_G4F6yQMhlo-Y56Kq6WcAV5ZPgQjz6aR-bBvPKUqxgNY=.p12",
+          "storePassword": "0000001B14A0362712BE3F207677500C1D3DCF6FA8387DB61A6DA9A9620FBE72B9AAD709FB10D33BF9E7CE"
         }
       }
     ],
