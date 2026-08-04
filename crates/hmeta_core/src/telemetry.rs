@@ -207,32 +207,50 @@ pub(super) fn load_runtime_ui_cache(profiles: &ProfileStore) -> Option<RuntimeUi
     Some(cache)
 }
 
-pub(super) fn persist_runtime_ui_cache(state: &CoreState) -> Result<(), HMetaError> {
-    let Some(active_profile) = state.profiles.active_profile() else {
-        return Ok(());
-    };
-    let cache = RuntimeUiCache {
-        version: RUNTIME_UI_CACHE_VERSION,
-        active_profile: active_profile.to_owned(),
-        profile_updated_at: active_profile_revision(&state.profiles, active_profile),
-        proxy_groups: state.proxy_groups.clone(),
-    };
-    let path = runtime_ui_cache_path(&state.profiles);
+/// Cheap in-lock clone of the cache payload; never does file I/O.
+fn runtime_ui_cache_snapshot(state: &CoreState) -> Option<(RuntimeUiCache, PathBuf)> {
+    let active_profile = state.profiles.active_profile()?;
+    Some((
+        RuntimeUiCache {
+            version: RUNTIME_UI_CACHE_VERSION,
+            active_profile: active_profile.to_owned(),
+            profile_updated_at: active_profile_revision(&state.profiles, active_profile),
+            proxy_groups: state.proxy_groups.clone(),
+        },
+        runtime_ui_cache_path(&state.profiles),
+    ))
+}
+
+/// Serialize and atomically replace the runtime UI cache. Lock-free; callers
+/// must not hold the core state mutex.
+fn persist_runtime_ui_cache_value(
+    cache: &RuntimeUiCache,
+    path: &std::path::Path,
+) -> Result<(), HMetaError> {
     let temp_path = path.with_extension(format!("tmp-{}", std::process::id()));
-    let content = serde_json::to_vec(&cache)
+    let content = serde_json::to_vec(cache)
         .map_err(|error| HMetaError::Core(format!("serialize runtime UI cache failed: {error}")))?;
     fs::write(&temp_path, content)
         .map_err(|error| HMetaError::Core(format!("write runtime UI cache failed: {error}")))?;
-    fs::rename(&temp_path, &path).map_err(|error| {
+    fs::rename(&temp_path, path).map_err(|error| {
         let _ = fs::remove_file(&temp_path);
         HMetaError::Core(format!("replace runtime UI cache failed: {error}"))
     })
 }
 
 pub(super) fn persist_runtime_ui_cache_best_effort(state: &mut CoreState) {
-    if let Err(error) = persist_runtime_ui_cache(state) {
-        state.logs.push(warning_log(error.to_string()));
-    }
+    // The callers hold the core state mutex. Device storage I/O can stall for
+    // seconds (observed as a >6s main-thread ANR while a tokio worker blocked
+    // on `fs::write` with the lock held), so only clone the payload in-lock
+    // and hand serialization + file I/O to a background thread.
+    let Some((cache, path)) = runtime_ui_cache_snapshot(state) else {
+        return;
+    };
+    std::thread::spawn(move || {
+        if let Err(error) = persist_runtime_ui_cache_value(&cache, &path) {
+            tracing::warn!(target: "hmeta_core::telemetry", "runtime UI cache persist failed: {error}");
+        }
+    });
 }
 
 pub(super) fn platform_vpn_state(state: &CoreState) -> PlatformVpnState {

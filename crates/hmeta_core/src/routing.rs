@@ -87,7 +87,13 @@ pub(super) fn ensure_global_proxy_selected(
 
     let current = global.current();
     let target = if let Some(required_target) = required_target {
-        if !is_valid_target(required_target) {
+        if required_target == "DIRECT" {
+            if !members.iter().any(|member| member == "DIRECT") {
+                return Err(HMetaError::Core(
+                    "GLOBAL has no built-in DIRECT outbound".to_owned(),
+                ));
+            }
+        } else if !is_valid_target(required_target) {
             return Err(HMetaError::Core(format!(
                 "Global proxy target is unavailable or not a proxy: {required_target}"
             )));
@@ -95,6 +101,11 @@ pub(super) fn ensure_global_proxy_selected(
         required_target.to_owned()
     } else if let Some(current) = current.as_deref().filter(|target| is_valid_target(target)) {
         current.to_owned()
+    } else if members.iter().any(|member| member == "DIRECT") {
+        // Community (meow/mihomo) semantics: an unselected GLOBAL falls
+        // back to its built-in DIRECT outbound when the subscription
+        // exposes no concrete proxy nodes.
+        "DIRECT".to_owned()
     } else {
         members
             .iter()
@@ -111,11 +122,7 @@ pub(super) fn ensure_global_proxy_selected(
             .ok_or_else(|| HMetaError::Core("GLOBAL outbound is not selectable".to_owned()))?
             .force_set(Some(&target));
     }
-    if !global
-        .current()
-        .as_deref()
-        .is_some_and(|current| is_valid_target(current))
-    {
+    if !global.current().as_deref().is_some_and(|current| current == target) {
         return Err(HMetaError::Core(
             "GLOBAL selector did not resolve to a proxy node".to_owned(),
         ));

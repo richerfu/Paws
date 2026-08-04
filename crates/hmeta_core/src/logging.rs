@@ -38,6 +38,14 @@ where
         event: &tracing::Event<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
+        let target = event.metadata().target();
+        // dioxus's internal diff/template traces carry the entire Template
+        // tree as a debug field; formatting it on the UI thread for every
+        // rendered node stalls the main loop (observed as a 6s+ ANR on
+        // device). These internals are worthless for the app log anyway.
+        if target.starts_with("dioxus") {
+            return;
+        }
         let level = match *event.metadata().level() {
             Level::TRACE | Level::DEBUG => "debug",
             Level::INFO => "info",
@@ -46,7 +54,7 @@ where
         };
         let mut visitor = LogMessageVisitor::default();
         event.record(&mut visitor);
-        let message = visitor.finish(event.metadata().target());
+        let message = visitor.finish(target);
         if is_vpn_log_target(event.metadata().target()) {
             push_runtime_log(
                 &self.logs,
