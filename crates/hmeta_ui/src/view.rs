@@ -1,4 +1,5 @@
 use super::*;
+use crate::l10n::UiLocale;
 use crate::manual_rule::{find_manual_rule_conflict, manual_rule_preview};
 use crate::notification::{use_notification_center, NotificationHost};
 use crate::platform_callbacks;
@@ -287,6 +288,30 @@ pub(crate) fn App() -> Element {
     let initial_runtime = runtime.clone();
     let state = use_signal(move || State::new(notifications, initial_runtime));
     let _state = use_context_provider(move || state);
+    // Provide arkit's component i18n context from the app locale so shadcn
+    // components (Select, DatePicker, …) translate instead of falling back
+    // to English. The catalog is only read by app-level `t!` messages; shadcn
+    // components translate against their own catalog using the locale id.
+    static COMPONENT_I18N_CATALOG: arkit::i18n::Catalog = arkit::i18n::Catalog {
+        fallback: "en-US",
+        locales: &[],
+    };
+    let i18n_context = arkit::use_i18n_provider(
+        &COMPONENT_I18N_CATALOG,
+        match state.read().locale {
+            UiLocale::ZhCn => "zh-CN",
+            UiLocale::En => "en-US",
+        },
+    );
+    use_effect(move || {
+        let locale_id = match state.read().locale {
+            UiLocale::ZhCn => "zh-CN",
+            UiLocale::En => "en-US",
+        };
+        if i18n_context.locale_id() != locale_id {
+            i18n_context.set_locale_id(locale_id);
+        }
+    });
     let theme = if state.read().theme_dark() {
         Theme::dark(ThemePreset::Zinc)
     } else {
