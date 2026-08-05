@@ -49,24 +49,49 @@ pub(crate) fn grouped_proxy_rows(
         .iter()
         .map(|group| group.name.as_str())
         .collect::<std::collections::BTreeSet<_>>();
-    let mut visible_groups = groups
-        .iter()
-        .filter(|group| !group.name.eq_ignore_ascii_case("GLOBAL"))
-        .collect::<Vec<_>>();
-    visible_groups.sort_by_cached_key(|group| group.name.to_ascii_lowercase());
+    let mut visible_groups = groups.iter().collect::<Vec<_>>();
+    visible_groups.sort_by_cached_key(|group| {
+        (
+            !group.name.eq_ignore_ascii_case("GLOBAL"),
+            group.name.to_ascii_lowercase(),
+        )
+    });
 
     let mut rows = Vec::new();
     for group in visible_groups {
-        let selected = selected_member(group);
+        let global_selector = group.name.eq_ignore_ascii_case("GLOBAL");
+        let visible_members = if global_selector {
+            let mut nodes = group
+                .proxies
+                .iter()
+                .filter(|proxy| is_global_subscription_node(proxy, &group_names))
+                .collect::<Vec<_>>();
+            if nodes.is_empty() {
+                // Community (meow/mihomo) semantics: without subscription
+                // nodes the GLOBAL selector falls back to its built-in
+                // DIRECT outbound.
+                nodes = group
+                    .proxies
+                    .iter()
+                    .filter(|proxy| proxy.name == "DIRECT")
+                    .collect();
+            }
+            nodes
+        } else {
+            group.proxies.iter().collect()
+        };
+        let member_count = visible_members.len();
+        let selected = selected_member(group).filter(|selected| {
+            !global_selector || visible_members.iter().any(|proxy| proxy.name == *selected)
+        });
         let group_matches = normalized_query.is_empty()
             || text_matches(&group.name, &normalized_query)
             || text_matches(&group.group_type, &normalized_query)
             || selected
                 .as_deref()
                 .is_some_and(|name| text_matches(name, &normalized_query));
-        let matching_members = group
-            .proxies
-            .iter()
+        let matching_members = visible_members
+            .into_iter()
             .filter(|proxy| group_matches || matches_proxy_query(proxy, &normalized_query))
             .collect::<Vec<_>>();
         if !group_matches && matching_members.is_empty() {
@@ -81,7 +106,7 @@ pub(crate) fn grouped_proxy_rows(
             group_type: group.group_type.clone(),
             selected: selected.clone(),
             fixed: group.fixed.clone(),
-            member_count: group.proxies.len(),
+            member_count,
             expanded,
             selectable,
         }));
@@ -99,6 +124,25 @@ pub(crate) fn grouped_proxy_rows(
         }
     }
     rows
+}
+
+fn is_global_subscription_node(
+    proxy: &ProxyItem,
+    group_names: &std::collections::BTreeSet<&str>,
+) -> bool {
+    if group_names.contains(proxy.name.as_str()) {
+        return false;
+    }
+    !matches!(
+        proxy
+            .proxy_type
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+            .as_str(),
+        "direct" | "reject" | "rejectdrop"
+    )
 }
 
 pub(crate) fn proxy_group_summary(groups: &[ProxyGroup]) -> ProxyGroupSummary {

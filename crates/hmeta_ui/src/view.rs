@@ -1,9 +1,12 @@
 use super::*;
+use crate::l10n::UiLocale;
 use crate::manual_rule::{find_manual_rule_conflict, manual_rule_preview};
 use crate::notification::{use_notification_center, NotificationHost};
 use crate::platform_callbacks;
 use arkit::prelude::*;
-use arkit::router::{use_back_handler, use_navigator, use_route, AnimatedOutlet, Router};
+use arkit::router::{
+    use_back_handler, use_navigator, use_route, AnimatedOutlet, RouteProvider, Router,
+};
 use arkit::shadcn::components::{
     Badge, BadgeVariant, BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant,
     Card, CardContent, CardHeader, CardTitle, DialogFooter, DialogHeader, Field, FieldContent,
@@ -161,6 +164,7 @@ fn FlatSegmented(props: FlatSegmentedProps) -> Element {
                         button_type: "normal",
                         width: "100%",
                         height: 32.0,
+                        padding: 0.0,
                         background_color: if active { theme.colors.background } else { 0x00000000 },
                         foreground_color: theme.colors.foreground,
                         border_width: if active { 1.0 } else { 0.0 },
@@ -284,6 +288,30 @@ pub(crate) fn App() -> Element {
     let initial_runtime = runtime.clone();
     let state = use_signal(move || State::new(notifications, initial_runtime));
     let _state = use_context_provider(move || state);
+    // Provide arkit's component i18n context from the app locale so shadcn
+    // components (Select, DatePicker, …) translate instead of falling back
+    // to English. The catalog is only read by app-level `t!` messages; shadcn
+    // components translate against their own catalog using the locale id.
+    static COMPONENT_I18N_CATALOG: arkit::i18n::Catalog = arkit::i18n::Catalog {
+        fallback: "en-US",
+        locales: &[],
+    };
+    let i18n_context = arkit::use_i18n_provider(
+        &COMPONENT_I18N_CATALOG,
+        match state.read().locale {
+            UiLocale::ZhCn => "zh-CN",
+            UiLocale::En => "en-US",
+        },
+    );
+    use_effect(move || {
+        let locale_id = match state.read().locale {
+            UiLocale::ZhCn => "zh-CN",
+            UiLocale::En => "en-US",
+        };
+        if i18n_context.locale_id() != locale_id {
+            i18n_context.set_locale_id(locale_id);
+        }
+    });
     let theme = if state.read().theme_dark() {
         Theme::dark(ThemePreset::Zinc)
     } else {
@@ -299,7 +327,18 @@ pub(crate) fn App() -> Element {
         }
     });
 
+    let mut bootstrapped = use_signal(|| false);
     use_effect(move || {
+        // One-shot startup dispatch. dioxus 0.7 effects re-run reactively
+        // whenever a signal they *read* changes; `run_command` reads `state`
+        // and the dispatched bootstrap completion then writes it back, which
+        // re-triggered the effect: an unbounded self-referential loop that
+        // pegged the UI thread (thousands of reloads per second) and ANR'd
+        // on device. The guard makes the effect a no-op after the first run.
+        if *bootstrapped.peek() {
+            return;
+        }
+        bootstrapped.set(true);
         run_command(
             state,
             Command::batch([
@@ -434,7 +473,11 @@ fn dispatch(mut state: Signal<State>, action: Action) {
 }
 
 fn run_command(state: Signal<State>, command: Command<Action>) {
-    let runtime = state.read().runtime.clone();
+    // Runtime ownership is stable for the lifetime of this root. In
+    // particular, do not subscribe the caller's reactive effect to the entire
+    // application State merely to obtain its executor: doing so makes every
+    // snapshot update rerun the bootstrap effect and multiply polling tasks.
+    let runtime = state.peek().runtime.clone();
     let async_runtime = runtime.tokio();
     for future in command.into_futures() {
         let task = async_runtime.spawn(future);
@@ -475,7 +518,6 @@ fn scaffold_layout(
     let current = state.read().clone();
     let parent = page.parent();
     use_parent_back_handler(parent.clone());
-    let scroll_key = format!("page-scroll-{page:?}");
     let navigator = use_navigator();
     let theme = use_theme();
     rsx! {
@@ -524,13 +566,10 @@ fn scaffold_layout(
                 layout_weight: 1.0,
                 width: "100%",
                 if scrollable {
-                    scroll {
-                        key: "{scroll_key}",
-                        width: "100%",
-                        height: "100%",
-                        alignment: "top-start",
-                        background_color: theme.colors.background,
-                        scroll_bar: "off",
+                    // RouteProvider records ArkUI's per-frame scroll deltas and
+                    // restores the route's saved position when the page is
+                    // mounted again after navigation back.
+                    RouteProvider {
                         column {
                             width: "100%",
                             padding: spacing::LG,

@@ -28,6 +28,8 @@ fn dashboard_stays_flat_and_decision_focused() {
     assert!(!page.contains("preview_proxies.truncate(3)"));
     assert!(!page.contains("row { height: 72.0 }"));
     assert!(page.contains("当前节点"));
+    assert!(page.contains("全局节点与策略分组"));
+    assert!(page.contains("global_node_count"));
     assert!(page.contains("VPN IP"));
     assert!(!page.contains("format_speed"));
 

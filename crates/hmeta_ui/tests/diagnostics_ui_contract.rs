@@ -118,3 +118,12 @@ fn resource_rules_are_compact_and_section_titles_have_no_counts() {
     assert!(!rule.contains("{card("));
     assert!(!label.contains("count.to_string()"));
 }
+
+#[test]
+fn segmented_filter_buttons_preserve_the_full_label_width() {
+    let segmented = section(VIEW_SOURCE, "fn FlatSegmented(", "struct FlatDialogProps");
+
+    // The default ArkUI button padding squeezes the label (e.g. "Debug" in
+    // the log level filter); zero it out so every option stays readable.
+    assert!(segmented.contains("padding: 0.0"));
+}

@@ -190,6 +190,12 @@ rules:
         Some("DIRECT"),
         "the upstream auto-created GLOBAL selector defaults to DIRECT"
     );
+    core.select_proxy("GLOBAL", "HTTP-MOCK").await.unwrap();
+    assert_eq!(
+        tunnel.proxy("GLOBAL").unwrap().current().as_deref(),
+        Some("HTTP-MOCK"),
+        "the selected subscription node must be stored in the GLOBAL selector"
+    );
 
     core.set_mode(RuntimeMode::Global).unwrap();
     let global = tunnel.proxy("GLOBAL").unwrap();
@@ -356,6 +362,7 @@ rules:
     core.select_proxy("Child", "HTTP-B").await.unwrap();
     core.select_proxy("Parent", "Child").await.unwrap();
     core.select_proxy("Streaming", "DIRECT").await.unwrap();
+    core.select_proxy("GLOBAL", "HTTP-A").await.unwrap();
 
     let snapshot = core.snapshot().unwrap();
     let child = snapshot
@@ -403,7 +410,7 @@ rules:
             .find(|group| group.name == "GLOBAL")
             .and_then(|group| group.selected.as_deref()),
         Some("HTTP-A"),
-        "Global mode chooses its own concrete proxy instead of a subscription group selection"
+        "Global mode follows the separately selected subscription node"
     );
 
     core.select_proxy("Streaming", "HTTP-B").await.unwrap();
@@ -415,7 +422,7 @@ rules:
             .find(|group| group.name == "GLOBAL")
             .and_then(|group| group.selected.as_deref()),
         Some("HTTP-A"),
-        "changing a subscription group must not rewrite the Global outbound"
+        "changing a rule group must not rewrite the selected Global node"
     );
     let mut selections_after_group_change = selections_before_mode_change.clone();
     selections_after_group_change.insert("Streaming".to_owned(), Some("HTTP-B".to_owned()));
@@ -460,7 +467,7 @@ rules:
 }
 
 #[tokio::test]
-async fn global_mode_is_rejected_when_no_proxy_node_exists() {
+async fn global_mode_falls_back_to_direct_without_subscription_nodes() {
     let root =
         std::env::temp_dir().join(format!("hmeta-global-no-proxy-test-{}", now_unix_nanos()));
     let core = CoreHandle::new_with_profile_root(&root);
@@ -470,13 +477,19 @@ async fn global_mode_is_rejected_when_no_proxy_node_exists() {
         .unwrap();
     core.reload_config(&profile_id).await.unwrap();
 
-    let error = core.set_mode(RuntimeMode::Global).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("Global mode requires at least one proxy node"));
+    // Community (meow/mihomo) semantics: an unselected GLOBAL falls back
+    // to its built-in DIRECT outbound when the subscription exposes no
+    // proxy nodes, so Global mode must switch without error.
+    core.set_mode(RuntimeMode::Global).unwrap();
     let state = core.lock_state().unwrap();
-    assert_eq!(state.mode, RuntimeMode::Rule);
-    assert_eq!(state.tunnel.as_ref().unwrap().mode(), TunnelMode::Rule);
+    assert_eq!(state.mode, RuntimeMode::Global);
+    assert_eq!(state.tunnel.as_ref().unwrap().mode(), TunnelMode::Global);
+    let global = state.tunnel.as_ref().unwrap().proxy("GLOBAL").unwrap();
+    assert_eq!(
+        global.current().as_deref(),
+        Some("DIRECT"),
+        "the no-subscription GLOBAL selector defaults to DIRECT"
+    );
     drop(state);
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1024,7 +1037,16 @@ async fn runtime_ui_cache_populates_cold_snapshot_before_reload() {
     let loaded = core.snapshot().unwrap();
     assert!(loaded.engine_loaded);
     assert!(!loaded.proxy_groups.is_empty());
-    assert!(root.join(RUNTIME_UI_CACHE_FILE).is_file());
+    // The UI cache persist is best-effort on a background thread (see
+    // persist_runtime_ui_cache_best_effort); wait a bounded window for it.
+    let cache_file = root.join(RUNTIME_UI_CACHE_FILE);
+    for _ in 0..100 {
+        if cache_file.is_file() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(cache_file.is_file());
     drop(core);
 
     let cold_core = CoreHandle::new_with_profile_root(&root);
@@ -1066,7 +1088,16 @@ async fn runtime_ui_cache_is_ignored_after_profile_content_changes() {
         .await
         .unwrap();
     core.reload_config(&profile_id).await.unwrap();
-    assert!(root.join(RUNTIME_UI_CACHE_FILE).is_file());
+    // The UI cache persist is best-effort on a background thread (see
+    // persist_runtime_ui_cache_best_effort); wait a bounded window for it.
+    let cache_file = root.join(RUNTIME_UI_CACHE_FILE);
+    for _ in 0..100 {
+        if cache_file.is_file() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(cache_file.is_file());
     drop(core);
 
     let mut profiles = ProfileStore::open(&root).unwrap();
@@ -2650,7 +2681,7 @@ async fn refresh_all_providers_skips_inline_only_provider_set() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn selected_proxy_is_restored_after_reload() {
+async fn selected_proxy_and_global_node_are_restored_after_reload() {
     let root = std::env::temp_dir().join(format!(
         "hmeta-core-selected-proxy-test-{}",
         std::time::SystemTime::now()
@@ -2677,6 +2708,7 @@ async fn selected_proxy_is_restored_after_reload() {
         .map(|proxy| proxy.name)
         .collect::<Vec<_>>();
     core.select_proxy("Proxy", "DIRECT").await.unwrap();
+    core.select_proxy("GLOBAL", "HTTP-MOCK").await.unwrap();
     core.reload_config(&id).await.unwrap();
 
     let snapshot = core.snapshot().unwrap();
@@ -2703,6 +2735,31 @@ async fn selected_proxy_is_restored_after_reload() {
             .get("Proxy")
             .map(String::as_str),
         Some("DIRECT")
+    );
+    let global = snapshot
+        .proxy_groups
+        .iter()
+        .find(|group| group.name == "GLOBAL")
+        .expect("GLOBAL selector");
+    assert_eq!(global.selected.as_deref(), Some("HTTP-MOCK"));
+    assert_eq!(
+        snapshot.profiles[0]
+            .selected_proxies
+            .get("GLOBAL")
+            .map(String::as_str),
+        Some("HTTP-MOCK")
+    );
+
+    core.set_mode(RuntimeMode::Global).unwrap();
+    assert_eq!(
+        core.snapshot()
+            .unwrap()
+            .proxy_groups
+            .iter()
+            .find(|group| group.name == "GLOBAL")
+            .and_then(|group| group.selected.as_deref()),
+        Some("HTTP-MOCK"),
+        "Global mode must use the saved selected subscription node"
     );
 }
 

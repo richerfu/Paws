@@ -63,6 +63,7 @@ pub(crate) enum Action {
     RefreshSnapshot,
     SnapshotLoaded(RuntimeSnapshot),
     TickSnapshot(RuntimeSnapshot),
+    LogRecordingStatusLoaded(Option<hmeta_core::LogRecordingStatus>),
     SetLanguagePreference(LanguagePreference),
     SetThemePreference(ThemePreference),
     StartStopVpn,
@@ -452,17 +453,30 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
         Action::RefreshSnapshot => Command::perform(load_snapshot(), Action::SnapshotLoaded),
         Action::SnapshotLoaded(snapshot) => {
             state.snapshot = snapshot;
-            refresh_log_recording_status(state);
             reconcile_vpn_command(state);
             state.refresh_system_preferences();
-            Command::none()
+            Command::perform(
+                load_log_recording_status(),
+                Action::LogRecordingStatusLoaded,
+            )
         }
         Action::TickSnapshot(snapshot) => {
             state.snapshot = snapshot;
-            refresh_log_recording_status(state);
             reconcile_vpn_command(state);
             state.refresh_system_preferences();
-            Command::perform(delayed_snapshot(), Action::TickSnapshot)
+            Command::batch([
+                Command::perform(delayed_snapshot(), Action::TickSnapshot),
+                Command::perform(
+                    load_log_recording_status(),
+                    Action::LogRecordingStatusLoaded,
+                ),
+            ])
+        }
+        Action::LogRecordingStatusLoaded(status) => {
+            if let Some(status) = status {
+                state.log_recording = status;
+            }
+            Command::none()
         }
         Action::SetLanguagePreference(preference) => {
             state.preferences.language = preference;

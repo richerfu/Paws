@@ -104,23 +104,94 @@ fn nested_group_members_remain_selectable_edges() {
 }
 
 #[test]
-fn global_aggregator_is_never_user_facing() {
+fn global_selector_exposes_only_selectable_subscription_nodes() {
     let groups = vec![
-        group("GLOBAL", "Proxy", [proxy("Proxy", true)]),
+        group(
+            "GLOBAL",
+            "Hong Kong",
+            [
+                proxy("Hong Kong", true),
+                ProxyItem {
+                    name: "DIRECT".to_owned(),
+                    proxy_type: "Direct".to_owned(),
+                    delay_ms: None,
+                    selected: false,
+                },
+                proxy("Proxy", false),
+            ],
+        ),
         group("Proxy", "Hong Kong", [proxy("Hong Kong", true)]),
     ];
 
-    let rows = grouped_proxy_rows(&groups, "", None);
+    let rows = grouped_proxy_rows(&groups, "", Some("GLOBAL"));
     let section = ProxyGroupRow::Section;
 
     assert!(matches!(section, ProxyGroupRow::Section));
-    assert!(!rows
-        .iter()
-        .any(|row| matches!(row, ProxyGroupRow::Group(group) if group.name == "GLOBAL")));
+    let global = rows.iter().find_map(|row| match row {
+        ProxyGroupRow::Group(group) if group.name == "GLOBAL" => Some(group),
+        _ => None,
+    });
+    assert_eq!(global.map(|group| group.member_count), Some(1));
+    assert_eq!(
+        global.and_then(|group| group.selected.as_deref()),
+        Some("Hong Kong")
+    );
+    assert!(rows.iter().any(|row| {
+        matches!(row, ProxyGroupRow::Member(member)
+            if member.group == "GLOBAL" && member.name == "Hong Kong" && member.selectable)
+    }));
+    assert!(!rows.iter().any(|row| {
+        matches!(row, ProxyGroupRow::Member(member)
+            if member.group == "GLOBAL" && matches!(member.name.as_str(), "DIRECT" | "Proxy"))
+    }));
     assert!(rows
         .iter()
         .any(|row| matches!(row, ProxyGroupRow::Group(group) if group.name == "Proxy")));
     assert_eq!(proxy_group_summary(&groups).groups, 1);
+}
+
+#[test]
+fn global_selector_falls_back_to_direct_without_subscription_nodes() {
+    let groups = vec![
+        group(
+            "GLOBAL",
+            "DIRECT",
+            [
+                ProxyItem {
+                    name: "DIRECT".to_owned(),
+                    proxy_type: "Direct".to_owned(),
+                    delay_ms: None,
+                    selected: true,
+                },
+                ProxyItem {
+                    name: "REJECT".to_owned(),
+                    proxy_type: "Reject".to_owned(),
+                    delay_ms: None,
+                    selected: false,
+                },
+            ],
+        ),
+        group("Proxy", "DIRECT", [proxy("DIRECT", true)]),
+    ];
+
+    let rows = grouped_proxy_rows(&groups, "", Some("GLOBAL"));
+    let global = rows.iter().find_map(|row| match row {
+        ProxyGroupRow::Group(group) if group.name == "GLOBAL" => Some(group),
+        _ => None,
+    });
+    assert_eq!(global.map(|group| group.member_count), Some(1));
+    assert_eq!(
+        global.and_then(|group| group.selected.as_deref()),
+        Some("DIRECT")
+    );
+    assert!(rows.iter().any(|row| {
+        matches!(row, ProxyGroupRow::Member(member)
+            if member.group == "GLOBAL" && member.name == "DIRECT" && member.selectable)
+    }));
+    assert!(!rows.iter().any(|row| {
+        matches!(row, ProxyGroupRow::Member(member)
+            if member.group == "GLOBAL" && member.name == "REJECT")
+    }));
 }
 
 #[test]

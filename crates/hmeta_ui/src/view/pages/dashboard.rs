@@ -50,6 +50,15 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
         quick_expanded_group().as_deref(),
     );
     let quick_summary = proxy_group_summary(&snapshot.proxy_groups);
+    let global_node_count = quick_rows
+        .iter()
+        .find_map(|row| match row {
+            ProxyGroupRow::Group(group) if group.name.eq_ignore_ascii_case("GLOBAL") => {
+                Some(group.member_count)
+            }
+            _ => None,
+        })
+        .unwrap_or(0);
     let current_node = match snapshot.mode {
         RuntimeMode::Direct => s.proxies_direct.to_owned(),
         RuntimeMode::Global => effective_group_leaf(&snapshot.proxy_groups, "GLOBAL")
@@ -61,8 +70,12 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
     let quick_count = quick_summary.members;
     let quick_group_count = quick_summary.groups;
     let proxy_group_context = match current.locale {
-        UiLocale::ZhCn => format!("{quick_count} 个节点 · {quick_group_count} 个分组"),
-        UiLocale::En => format!("{quick_count} nodes · {quick_group_count} groups"),
+        UiLocale::ZhCn => format!(
+            "{global_node_count} 个全局节点 · {quick_count} 个节点 · {quick_group_count} 个分组"
+        ),
+        UiLocale::En => format!(
+            "{global_node_count} global nodes · {quick_count} nodes · {quick_group_count} groups"
+        ),
     };
     let quick_palette = VirtualProxyPalette {
         surface: surface(),
@@ -192,7 +205,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                     layout_weight: 1.0,
                     align_items: "start",
                     text {
-                        content: tr(current.locale, "策略分组", "Policy groups"),
+                        content: tr(current.locale, "全局节点与策略分组", "Global node and policy groups"),
                         font_size: 17.0,
                         line_height: 22.0,
                         font_weight: 700,
