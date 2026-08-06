@@ -47,6 +47,11 @@ fn core_snapshot_is_json() {
     assert_eq!(snapshot.about.meow_rs_version, MEOW_RS_VERSION);
     assert_eq!(snapshot.about.arkit_rev, ARKIT_REV);
     assert!(!snapshot.about.privacy_summary.is_empty());
+    assert!(snapshot.about.privacy_summary.iter().any(|note| {
+        note.contains("IPWho.is")
+            && note.contains("出口 IP")
+            && note.contains("不会发送订阅、节点或规则配置")
+    }));
 }
 
 #[test]

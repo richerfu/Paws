@@ -10,6 +10,7 @@ pub(super) fn about_snapshot() -> AboutSnapshot {
         privacy_summary: vec![
             "订阅内容下载后保存到应用私有目录，解析和运行时改写均在本机完成。".to_owned(),
             "本地 YAML、备份、节点选择和规则缓存不会上传到第三方服务。".to_owned(),
+            "出口 IP 与国家/地区由 IPWho.is 提供：仅在 VPN 已连接时经当前 VPN 出口发起 HTTPS 查询；服务会接收该出口 IP，应用不会发送订阅、节点或规则配置。".to_owned(),
             "连接、日志、DNS 查询计数和流量统计仅用于本机页面展示与排错。".to_owned(),
         ],
     }

@@ -60,6 +60,26 @@ fn about_page_constrains_long_values_and_aligns_repositories() {
 }
 
 #[test]
+fn about_page_discloses_the_exit_ip_provider_and_links_its_documentation() {
+    let page = fs::read_to_string("src/view/pages/tools.rs").unwrap();
+    let privacy = page
+        .split("let privacy =")
+        .nth(1)
+        .expect("privacy summary")
+        .split("let body =")
+        .next()
+        .unwrap();
+
+    assert!(page.contains("出口 IP 能力"));
+    assert!(page.contains("IPWho.is 仅用于识别当前 VPN 出口及对应国家/地区"));
+    assert!(page.contains("https://ipwhois.io/documentation"));
+    assert!(
+        !privacy.contains("max_lines"),
+        "privacy disclosures must never be truncated"
+    );
+}
+
+#[test]
 fn appearance_settings_use_arkit_shadcn_choices_and_persist_actions() {
     let page = fs::read_to_string("src/view/pages/appearance.rs").unwrap();
     let view = fs::read_to_string("src/view.rs").unwrap();
