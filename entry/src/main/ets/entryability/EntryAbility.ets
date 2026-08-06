@@ -722,7 +722,7 @@ export default class EntryAbility extends NativeAbility {
     super.onConfigurationUpdate(newConfig);
   }
 
-  public onDestroy(): void {
+  public async onDestroy() {
     if (this.activeVpnStartAttemptId.length > 0) {
       try {
         hmetaUi.cancelPlatformVpnStart(this.activeVpnStartAttemptId);

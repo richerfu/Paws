@@ -5,9 +5,9 @@ use axum::response::Response as AxumResponse;
 use futures::StreamExt;
 use hmeta_model::{
     from_json, to_json, AboutSnapshot, ConnectionSummary, ControllerDiagnostics, DnsSnapshot,
-    HMetaError, LogEntry, ManualRuleMutation, ManualRuleSpec, ProfileSummary, ProviderProxySummary,
-    ProviderSummary, ProxyGroup, ProxyItem, RequestSummary, RuntimeMode, RuntimeSnapshot,
-    TrafficHistoryPoint, TrafficSnapshot, VpnLifecycle, VpnOptions,
+    ExitLocationSnapshot, HMetaError, LogEntry, ManualRuleMutation, ManualRuleSpec, ProfileSummary,
+    ProviderProxySummary, ProviderSummary, ProxyGroup, ProxyItem, RequestSummary, RuntimeMode,
+    RuntimeSnapshot, TrafficHistoryPoint, TrafficSnapshot, VpnLifecycle, VpnOptions,
 };
 use hmeta_profile::{normalize_profile_content, ProfileStore};
 use hmeta_vpn::{TunSession, TunStats};
@@ -35,6 +35,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::Layer;
 
 mod controller;
+mod exit_location;
 mod log_recording;
 mod logging;
 mod platform_ipc;
@@ -46,6 +47,7 @@ mod telemetry;
 
 pub use controller::shared_core;
 use controller::*;
+use exit_location::*;
 pub use log_recording::{LogArchiveSummary, LogRecordingStatus};
 use log_recording::{RecordedLogBuffer, RuntimeLogBuffer, MAX_IN_MEMORY_LOGS};
 use logging::*;
@@ -67,11 +69,13 @@ const MAX_API_LOG_SENDERS: usize = 8;
 const MAX_REQUEST_HISTORY: usize = 128;
 const MAX_TRAFFIC_HISTORY: usize = 32;
 const PLATFORM_VPN_START_DEADLINE: Duration = Duration::from_secs(120);
+const EXIT_LOCATION_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const EXIT_LOCATION_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = "1.0.0";
 const MEOW_RS_VERSION: &str = "0.19.0";
-const ARKIT_REV: &str = "f5233b5f97c6f7f24b590470fc562d0002e4ba00";
+const ARKIT_REV: &str = "e8e0be16ff22add530d3fd3edebe9f94aa392094";
 const RUST_VERSION: &str = "1.89";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,6 +192,9 @@ struct CoreState {
     logs: RecordedLogBuffer,
     request_history: VecDeque<RequestSummary>,
     vpn_options: VpnOptions,
+    exit_location: ExitLocationSnapshot,
+    last_exit_location_check: Option<Instant>,
+    exit_location_revision: u64,
     api_controller: Option<ApiControllerRuntime>,
     controller_config_sync_count: u64,
     last_controller_config_sync_at: Option<String>,
@@ -198,6 +205,12 @@ struct CoreState {
 struct ProviderRefreshState {
     refreshed_at: String,
     error: Option<String>,
+}
+
+fn invalidate_exit_location(state: &mut CoreState) {
+    state.exit_location = ExitLocationSnapshot::default();
+    state.last_exit_location_check = None;
+    state.exit_location_revision = state.exit_location_revision.wrapping_add(1);
 }
 
 impl Default for CoreState {
@@ -247,6 +260,9 @@ impl Default for CoreState {
             logs,
             request_history: VecDeque::with_capacity(MAX_REQUEST_HISTORY),
             vpn_options: VpnOptions::default(),
+            exit_location: ExitLocationSnapshot::default(),
+            last_exit_location_check: None,
+            exit_location_revision: 0,
             api_controller: None,
             controller_config_sync_count: 0,
             last_controller_config_sync_at: None,
@@ -260,6 +276,7 @@ pub struct CoreHandle {
     platform_ipc: Mutex<Option<Arc<PlatformIpc>>>,
     platform_start_tx: tokio::sync::watch::Sender<PlatformStartEvent>,
     config_reload_lock: tokio::sync::Mutex<()>,
+    exit_location_refresh_lock: tokio::sync::Mutex<()>,
     vpn: TunSession,
     api_controller_enabled: bool,
     api_controller_addr_override: Option<SocketAddr>,
@@ -314,6 +331,7 @@ impl CoreHandle {
             platform_ipc: Mutex::new(None),
             platform_start_tx,
             config_reload_lock: tokio::sync::Mutex::new(()),
+            exit_location_refresh_lock: tokio::sync::Mutex::new(()),
             vpn: TunSession::default(),
             api_controller_enabled: true,
             api_controller_addr_override: None,
@@ -372,6 +390,9 @@ impl CoreHandle {
                 logs: RecordedLogBuffer::new(log_root),
                 request_history: VecDeque::with_capacity(MAX_REQUEST_HISTORY),
                 vpn_options: VpnOptions::default(),
+                exit_location: ExitLocationSnapshot::default(),
+                last_exit_location_check: None,
+                exit_location_revision: 0,
                 api_controller: None,
                 controller_config_sync_count: 0,
                 last_controller_config_sync_at: None,
@@ -380,6 +401,7 @@ impl CoreHandle {
             platform_ipc: Mutex::new(None),
             platform_start_tx,
             config_reload_lock: tokio::sync::Mutex::new(()),
+            exit_location_refresh_lock: tokio::sync::Mutex::new(()),
             vpn: TunSession::default(),
             api_controller_enabled: false,
             api_controller_addr_override: None,
@@ -1000,6 +1022,7 @@ impl CoreHandle {
         state.engine_loaded = true;
         state.platform_vpn_starting = false;
         state.platform_vpn_running = true;
+        invalidate_exit_location(&mut state);
         if state.platform_start_outcome == PlatformStartOutcome::Pending {
             state.platform_start_outcome = PlatformStartOutcome::Connected;
         }
@@ -1187,6 +1210,7 @@ impl CoreHandle {
         state.platform_vpn_running = false;
         state.platform_network_protected = false;
         state.platform_network_protect_error = None;
+        invalidate_exit_location(&mut state);
         state.logs.push(info_log(format!(
             "platform VPN start transaction {attempt_id}"
         )));
@@ -1378,6 +1402,7 @@ impl CoreHandle {
         state.platform_vpn_running = false;
         state.platform_network_protected = false;
         state.platform_network_protect_error = Some(error.clone());
+        invalidate_exit_location(&mut state);
         state.platform_start_outcome = PlatformStartOutcome::Failed;
         state.logs.push(warning_log(format!(
             "platform VPN start transaction {attempt_id} failed: {error}"
@@ -1397,6 +1422,7 @@ impl CoreHandle {
         state.platform_vpn_running = false;
         state.platform_network_protected = false;
         state.platform_network_protect_error = None;
+        invalidate_exit_location(&mut state);
         state.platform_start_outcome = PlatformStartOutcome::Cancelled;
         state.logs.push(info_log(format!(
             "platform VPN start transaction {attempt_id} cancelled"
@@ -1420,6 +1446,7 @@ impl CoreHandle {
         }
         state.platform_network_protected = false;
         state.platform_network_protect_error = None;
+        invalidate_exit_location(&mut state);
         state.traffic.upload_speed = 0;
         state.traffic.download_speed = 0;
         state.last_traffic_sample = None;
@@ -1472,6 +1499,7 @@ impl CoreHandle {
         state.platform_vpn_running = false;
         state.platform_network_protected = false;
         state.platform_network_protect_error = Some(error.clone());
+        invalidate_exit_location(&mut state);
         if state.platform_start_outcome == PlatformStartOutcome::Pending {
             state.platform_start_outcome = PlatformStartOutcome::Failed;
         }
@@ -1486,6 +1514,9 @@ impl CoreHandle {
         let mut state = self.lock_state()?;
         self.sync_platform_vpn_state_locked(&mut state);
         state.platform_vpn_starting = false;
+        if state.platform_vpn_running != running {
+            invalidate_exit_location(&mut state);
+        }
         state.platform_vpn_running = running;
         if running {
             if state.platform_start_outcome == PlatformStartOutcome::Pending {
@@ -1706,6 +1737,7 @@ impl CoreHandle {
         state.vpn_options = vpn_options;
         state.engine_loaded = true;
         state.last_meow_traffic_sample = None;
+        invalidate_exit_location(&mut state);
         persist_runtime_ui_cache_best_effort(&mut state);
         state.logs.push(info_log(format!(
             "config reloaded from profile {profile_id} in {} ms (YAML {} ms, meow {} ms, runtime {} ms; {} bytes)",
@@ -1732,6 +1764,9 @@ impl CoreHandle {
             None
         };
         self.persist_platform_vpn_control_locked(&mut state, mode, global_proxy)?;
+        if state.mode != mode {
+            invalidate_exit_location(&mut state);
+        }
         state.mode = mode;
         if let Some(tunnel) = &state.tunnel {
             tunnel.set_mode(mode_to_tunnel(mode));
@@ -1821,6 +1856,7 @@ impl CoreHandle {
         };
         let mode = state.mode;
         self.persist_platform_vpn_control_locked(&mut state, mode, global_proxy)?;
+        invalidate_exit_location(&mut state);
         let source = if via_controller { " via meow API" } else { "" };
         let message = if proxy_name.is_empty() {
             format!("restored automatic selection in {group_name}{source}")
@@ -2854,6 +2890,74 @@ impl CoreHandle {
         }
     }
 
+    /// Refresh the public exit IP and country through the active system VPN.
+    /// Successful results are cached for five minutes; failures retry sooner
+    /// without replacing a previously valid result.
+    pub async fn refresh_exit_location_if_due(&self) -> Result<bool, HMetaError> {
+        let Ok(_refresh_guard) = self.exit_location_refresh_lock.try_lock() else {
+            return Ok(false);
+        };
+        let revision = {
+            let mut state = self.lock_state()?;
+            self.sync_platform_vpn_state_locked(&mut state);
+            let connected = self.vpn.is_running() || state.platform_vpn_running;
+            if !connected {
+                if state.last_exit_location_check.is_some()
+                    || state.exit_location != ExitLocationSnapshot::default()
+                {
+                    invalidate_exit_location(&mut state);
+                }
+                return Ok(false);
+            }
+
+            let refresh_interval = if state.exit_location.ip.is_empty() {
+                EXIT_LOCATION_RETRY_INTERVAL
+            } else {
+                EXIT_LOCATION_REFRESH_INTERVAL
+            };
+            if state
+                .last_exit_location_check
+                .is_some_and(|checked_at| checked_at.elapsed() < refresh_interval)
+            {
+                return Ok(false);
+            }
+
+            state.tunnel.as_ref().ok_or_else(|| {
+                HMetaError::Core(
+                    "cannot query exit location before the tunnel is loaded".to_owned(),
+                )
+            })?;
+            state.exit_location_revision
+        };
+
+        let result = probe_exit_location().await;
+        let mut state = self.lock_state()?;
+        self.sync_platform_vpn_state_locked(&mut state);
+        if state.exit_location_revision != revision
+            || !(self.vpn.is_running() || state.platform_vpn_running)
+        {
+            return Ok(false);
+        }
+        state.last_exit_location_check = Some(Instant::now());
+        match result {
+            Ok(location) => {
+                state.exit_location = location;
+                let message = format!(
+                    "exit location refreshed: {} {}",
+                    state.exit_location.country_code, state.exit_location.ip
+                );
+                state.logs.push(info_log(message));
+            }
+            Err(error) => {
+                state.exit_location.error = Some(error.to_string());
+                state.logs.push(warning_log(format!(
+                    "exit location refresh failed: {error}"
+                )));
+            }
+        }
+        Ok(true)
+    }
+
     pub fn snapshot(&self) -> Result<RuntimeSnapshot, HMetaError> {
         self.snapshot_internal(true)
     }
@@ -2998,6 +3102,7 @@ impl CoreHandle {
             traffic_history: state.traffic_history.iter().cloned().collect(),
             dns,
             vpn_options: state.vpn_options.clone(),
+            exit_location: state.exit_location.clone(),
             proxy_groups: state.proxy_groups.clone(),
             profiles,
             rules: state.runtime_rules.clone(),
@@ -3228,6 +3333,9 @@ impl CoreHandle {
                 if remote_attempt_matches && remote.extension_attached {
                     state.platform_extension_attached = true;
                 }
+                if state.platform_vpn_running != remote.running {
+                    invalidate_exit_location(state);
+                }
                 state.platform_vpn_starting = !remote.running && remote.starting;
                 state.platform_vpn_running = remote.running;
                 if remote.running && state.platform_start_outcome == PlatformStartOutcome::Pending {
@@ -3279,6 +3387,7 @@ impl CoreHandle {
     }
 
     fn sync_platform_vpn_control_locked(&self, state: &mut CoreState, control: PlatformVpnControl) {
+        invalidate_exit_location(state);
         apply_platform_proxy_selections(state, &control);
         let global_proxy = if control.mode == RuntimeMode::Global {
             match apply_global_proxy_policy(state, control.global_proxy.as_deref(), false) {

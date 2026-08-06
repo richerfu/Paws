@@ -87,18 +87,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
     };
     let subscriptions_navigator = navigator.clone();
     let all_nodes_navigator = navigator.clone();
-    let vpn_ip = if connected {
-        snapshot
-            .vpn_options
-            .addresses
-            .iter()
-            .find(|address| !address.contains(':'))
-            .or_else(|| snapshot.vpn_options.addresses.first())
-            .cloned()
-            .unwrap_or_else(|| tr(current.locale, "未分配", "Not assigned").to_owned())
-    } else {
-        tr(current.locale, "未分配", "Not assigned").to_owned()
-    };
+    let exit_location = exit_location_label(&snapshot.exit_location, connected, current.locale);
     let status_icon = if connected {
         "shield-check"
     } else if matches!(
@@ -159,45 +148,25 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                 row { height: 14.0 }
                 {mode_picker(state, snapshot.mode, current.locale)}
                 row { height: 14.0 }
-                row {
+                column {
                     width: "100%",
-                    height: 40.0,
+                    height: 89.0,
                     padding_left: 4.0,
                     padding_right: 4.0,
-                    align_items: "center",
-                    row {
-                        layout_weight: 1.0,
-                        align_items: "center",
-                        clip: true,
-                        {arkit::icon("git-branch", 15.0, text_color())}
-                        column {
-                            layout_weight: 1.0,
-                            margin_left: 8.0,
-                            align_items: "start",
-                            text { content: tr(current.locale, "当前节点", "Current node"), font_size: 10.0, line_height: 14.0, font_color: subtle() }
-                            text { width: "100%", content: current_node, font_size: 13.0, line_height: 18.0, font_weight: 650, font_color: text_color(), max_lines: 1, text_overflow: "ellipsis" }
-                        }
-                    }
-                    Separator { vertical_height: Some(30.0) }
-                    row {
-                        layout_weight: 1.0,
-                        padding_left: 18.0,
-                        align_items: "center",
-                        clip: true,
-                        {arkit::icon("network", 15.0, text_color())}
-                        column {
-                            layout_weight: 1.0,
-                            margin_left: 8.0,
-                            align_items: "start",
-                            text { content: "VPN IP", font_size: 10.0, line_height: 14.0, font_color: subtle() }
-                            text { width: "100%", content: vpn_ip, font_size: 13.0, line_height: 18.0, font_weight: 650, font_color: text_color(), max_lines: 1, text_overflow: "ellipsis" }
-                        }
-                    }
+                    {dashboard_connection_row(
+                        "git-branch",
+                        tr(current.locale, "当前节点", "Current node"),
+                        current_node,
+                    )}
+                    Separator {}
+                    {dashboard_connection_row(
+                        "network",
+                        tr(current.locale, "出口 IP", "Exit IP"),
+                        exit_location,
+                    )}
                 }
             }
-            row { height: 18.0 }
-            Separator {}
-            row { height: 18.0 }
+            row { height: 14.0 }
             row {
                 width: "100%",
                 align_items: "center",
@@ -277,6 +246,123 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
         }
     };
     fixed_scaffold_flush_bottom(state, Route::Dashboard {}, rsx! {}, body)
+}
+
+fn dashboard_connection_row(
+    icon_name: &'static str,
+    label: &'static str,
+    value: String,
+) -> Element {
+    rsx! {
+        row {
+            width: "100%",
+            height: 44.0,
+            align_items: "center",
+            clip: true,
+            {arkit::icon(icon_name, 15.0, text_color())}
+            text {
+                width: 68.0,
+                content: label,
+                margin_left: 8.0,
+                font_size: 11.0,
+                line_height: 18.0,
+                font_color: subtle(),
+                max_lines: 1,
+            }
+            row {
+                layout_weight: 1.0,
+                margin_left: 12.0,
+                clip: true,
+                text {
+                    width: "100%",
+                    content: value,
+                    font_size: 13.0,
+                    line_height: 18.0,
+                    font_weight: 650,
+                    font_color: text_color(),
+                    max_lines: 1,
+                    text_overflow: "ellipsis",
+                }
+            }
+        }
+    }
+}
+
+fn exit_location_label(
+    location: &hmeta_model::ExitLocationSnapshot,
+    connected: bool,
+    locale: UiLocale,
+) -> String {
+    if !connected {
+        return tr(locale, "未连接", "Disconnected").to_owned();
+    }
+    if location.ip.is_empty() {
+        return if location.error.is_some() {
+            tr(locale, "暂时无法获取", "Temporarily unavailable").to_owned()
+        } else {
+            tr(locale, "正在查询…", "Checking…").to_owned()
+        };
+    }
+
+    let country_code = location.country_code.trim().to_ascii_uppercase();
+    let country = location.country.trim();
+    let country_label = match (country_flag(&country_code), country.is_empty()) {
+        (Some(flag), false) => format!("{flag} {country}"),
+        (Some(flag), true) => format!("{flag} {country_code}"),
+        (None, false) => country.to_owned(),
+        (None, true) => country_code,
+    };
+    if country_label.is_empty() {
+        location.ip.clone()
+    } else {
+        format!("{} · {country_label}", location.ip)
+    }
+}
+
+fn country_flag(country_code: &str) -> Option<String> {
+    let bytes = country_code.as_bytes();
+    if bytes.len() != 2 || !bytes.iter().all(|byte| byte.is_ascii_uppercase()) {
+        return None;
+    }
+    let mut flag = String::with_capacity(8);
+    flag.push(char::from_u32(0x1F1E6 + u32::from(bytes[0] - b'A'))?);
+    flag.push(char::from_u32(0x1F1E6 + u32::from(bytes[1] - b'A'))?);
+    Some(flag)
+}
+
+#[cfg(test)]
+mod exit_location_tests {
+    use super::*;
+
+    #[test]
+    fn exit_location_shows_public_ip_and_country() {
+        let location = hmeta_model::ExitLocationSnapshot {
+            ip: "203.0.113.9".to_owned(),
+            country: "Japan".to_owned(),
+            country_code: "JP".to_owned(),
+            ..hmeta_model::ExitLocationSnapshot::default()
+        };
+
+        assert_eq!(
+            exit_location_label(&location, true, UiLocale::ZhCn),
+            "203.0.113.9 · 🇯🇵 Japan"
+        );
+    }
+
+    #[test]
+    fn exit_location_does_not_show_cached_data_while_disconnected() {
+        let location = hmeta_model::ExitLocationSnapshot {
+            ip: "203.0.113.9".to_owned(),
+            country: "Japan".to_owned(),
+            country_code: "JP".to_owned(),
+            ..hmeta_model::ExitLocationSnapshot::default()
+        };
+
+        assert_eq!(
+            exit_location_label(&location, false, UiLocale::ZhCn),
+            "未连接"
+        );
+    }
 }
 
 fn mode_picker(state: Signal<State>, selected: RuntimeMode, locale: UiLocale) -> Element {

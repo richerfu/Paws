@@ -543,6 +543,21 @@ impl Default for VpnLifecycle {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExitLocationSnapshot {
+    #[serde(default)]
+    pub ip: String,
+    #[serde(default)]
+    pub country: String,
+    #[serde(default)]
+    pub country_code: String,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSnapshot {
@@ -571,6 +586,8 @@ pub struct RuntimeSnapshot {
     pub dns: DnsSnapshot,
     #[serde(default)]
     pub vpn_options: VpnOptions,
+    #[serde(default)]
+    pub exit_location: ExitLocationSnapshot,
     pub proxy_groups: Vec<ProxyGroup>,
     pub profiles: Vec<ProfileSummary>,
     pub rules: Vec<RuleSummary>,
@@ -616,6 +633,7 @@ impl Default for RuntimeSnapshot {
             traffic_history: Vec::new(),
             dns: DnsSnapshot::default(),
             vpn_options: VpnOptions::default(),
+            exit_location: ExitLocationSnapshot::default(),
             proxy_groups: Vec::new(),
             profiles: Vec::new(),
             rules: Vec::new(),

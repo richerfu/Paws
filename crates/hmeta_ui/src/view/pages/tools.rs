@@ -226,7 +226,6 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
                             font_size: 13.0,
                             line_height: 19.0,
                             font_color: text_color(),
-                            max_lines: 3,
                         }
                     }
                 }
@@ -252,6 +251,38 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
             )}
             row { height: 12.0 }
             {card(tr(current.locale, "隐私", "Privacy"), None, rsx! { column { width: "100%", {privacy.into_iter()} } })}
+            row { height: 10.0 }
+            {card(
+                tr(current.locale, "出口 IP 能力", "Exit IP capability"),
+                Some(tr(
+                    current.locale,
+                    "IPWho.is 仅用于识别当前 VPN 出口及对应国家/地区",
+                    "IPWho.is is used only to identify the current VPN exit and country/region",
+                ).to_owned()),
+                rsx! {
+                    FlatButton {
+                        variant: FlatButtonVariant::Link,
+                        size: ButtonSize::Sm,
+                        width: Some("100%".into()),
+                        onclick: move |_| dispatch(state, Action::OpenExternalUrl("https://ipwhois.io/documentation".to_owned())),
+                        row {
+                            width: 18.0,
+                            height: 20.0,
+                            align_items: "center",
+                            justify_content: "center",
+                            {arkit::icon("external-link", 16.0, text_color())}
+                        }
+                        text {
+                            content: tr(current.locale, "查看 IPWho.is 能力说明", "View IPWho.is documentation"),
+                            margin_left: spacing::SM,
+                            font_size: typography::SM,
+                            line_height: 20.0,
+                            font_weight: 600,
+                            font_color: text_color(),
+                        }
+                    }
+                }
+            )}
             row { height: 10.0 }
             row {
                 width: "100%",

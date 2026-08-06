@@ -1,6 +1,21 @@
 use std::fs;
 
 #[test]
+fn application_root_explicitly_preserves_safe_area() {
+    let source = fs::read_to_string("src/view.rs").unwrap();
+    let app = source
+        .split("pub(crate) fn App()")
+        .nth(1)
+        .unwrap()
+        .split("fn AppShell()")
+        .next()
+        .unwrap();
+
+    assert!(app.contains("SafeArea {"));
+    assert!(app.contains("ThemeProvider {"));
+}
+
+#[test]
 fn settings_route_rows_do_not_inherit_native_button_insets() {
     let source = fs::read_to_string("src/view/pages/tools.rs").unwrap();
     let route_row = source
@@ -42,6 +57,26 @@ fn about_page_constrains_long_values_and_aligns_repositories() {
     assert!(page.contains("layout_weight: 1.0"));
     assert!(view.contains("fn middle_truncate_text"));
     assert!(view.contains("max_lines: 1"));
+}
+
+#[test]
+fn about_page_discloses_the_exit_ip_provider_and_links_its_documentation() {
+    let page = fs::read_to_string("src/view/pages/tools.rs").unwrap();
+    let privacy = page
+        .split("let privacy =")
+        .nth(1)
+        .expect("privacy summary")
+        .split("let body =")
+        .next()
+        .unwrap();
+
+    assert!(page.contains("出口 IP 能力"));
+    assert!(page.contains("IPWho.is 仅用于识别当前 VPN 出口及对应国家/地区"));
+    assert!(page.contains("https://ipwhois.io/documentation"));
+    assert!(
+        !privacy.contains("max_lines"),
+        "privacy disclosures must never be truncated"
+    );
 }
 
 #[test]

@@ -6,7 +6,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@ohos-rs/ability": "0.4.0-beta.7",
+    "@ohos-rs/ability": "1.0.0-beta.1",
     "libhmeta_ui.so": "file:./src/main/cpp/types/libhmeta_ui"
   }
 }
