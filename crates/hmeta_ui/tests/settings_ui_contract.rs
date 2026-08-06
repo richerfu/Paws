@@ -1,6 +1,21 @@
 use std::fs;
 
 #[test]
+fn application_root_explicitly_preserves_safe_area() {
+    let source = fs::read_to_string("src/view.rs").unwrap();
+    let app = source
+        .split("pub(crate) fn App()")
+        .nth(1)
+        .unwrap()
+        .split("fn AppShell()")
+        .next()
+        .unwrap();
+
+    assert!(app.contains("SafeArea {"));
+    assert!(app.contains("ThemeProvider {"));
+}
+
+#[test]
 fn settings_route_rows_do_not_inherit_native_button_insets() {
     let source = fs::read_to_string("src/view/pages/tools.rs").unwrap();
     let route_row = source

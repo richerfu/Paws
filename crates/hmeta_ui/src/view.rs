@@ -349,10 +349,14 @@ pub(crate) fn App() -> Element {
     });
 
     rsx! {
-        ThemeProvider {
-            theme,
-            Router::<Route> {}
-            NotificationHost { center: notifications }
+        // Arkit's entrypoint is edge-to-edge by default. Keep Paws' existing
+        // full-app safe-area behavior explicit at the application boundary.
+        SafeArea {
+            ThemeProvider {
+                theme,
+                Router::<Route> {}
+                NotificationHost { center: notifications }
+            }
         }
     }
 }

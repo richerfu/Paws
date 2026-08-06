@@ -35,11 +35,20 @@ fi
 if [ -n "${JAVA_HOME:-}" ]; then
   export PATH="$JAVA_HOME/bin:$PATH"
 fi
-if [ -z "${DEVECO_SDK_HOME:-}" ] && [ -d "$DEVECO_STUDIO_HOME/sdk" ]; then
+# Signing must resolve SDK tools from the selected DevEco installation too.
+if [ -d "$DEVECO_STUDIO_HOME/sdk" ]; then
   export DEVECO_SDK_HOME="$DEVECO_STUDIO_HOME/sdk"
 fi
 if [ -z "${OHOS_NDK_HOME:-}" ] && [ -d "$DEVECO_STUDIO_HOME/sdk/default/openharmony" ]; then
   export OHOS_NDK_HOME="$DEVECO_STUDIO_HOME/sdk/default/openharmony"
+fi
+if [ -n "${DEVECO_NODE_HOME:-}" ]; then
+  export NODE_HOME="$DEVECO_NODE_HOME"
+elif [ -x "$DEVECO_STUDIO_HOME/tools/node/bin/node" ]; then
+  export NODE_HOME="$DEVECO_STUDIO_HOME/tools/node"
+fi
+if [ -n "${NODE_HOME:-}" ]; then
+  export PATH="$NODE_HOME/bin:$PATH"
 fi
 
 if [ ! -x "${JAVA_HOME:-}/bin/java" ]; then

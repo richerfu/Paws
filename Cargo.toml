@@ -14,9 +14,9 @@ hmeta_profile = { path = "crates/hmeta_profile" }
 hmeta_core = { path = "crates/hmeta_core" }
 hmeta_vpn = { path = "crates/hmeta_vpn" }
 
-# Upstream arkit at f5233b5 (53a9a98 plus alpha-type conversion for image
-# bindings 0.2.5).
-arkit = { git = "https://github.com/richerfu/arkit.git", rev = "f5233b5f97c6f7f24b590470fc562d0002e4ba00", features = ["router", "shadcn"] }
+# Upstream arkit main. This revision also pins the pluginized
+# openharmony-ability 0.3.0 mainline at 41ffef1.
+arkit = { git = "https://github.com/richerfu/arkit.git", rev = "b2916edfef8b8377d4dce973bc6e730089d6aab2", features = ["router", "shadcn"] }
 ohos-ashmem-binding = "0.1.0"
 
 meow-api = "0.19.0"
