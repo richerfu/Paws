@@ -699,7 +699,7 @@ fn copy_converter_text(state: Signal<State>, text: String, success: &'static str
         .read()
         .runtime
         .tokio()
-        .spawn(async move { platform_callbacks::copy_text(text).await });
+        .spawn(async move { bridge::copy_text(text).await });
     arkit::dioxus_core::spawn_forever(async move {
         match task.await {
             Ok(Ok(())) => converter_notice(state, success),
@@ -714,7 +714,7 @@ fn open_converter_url(state: Signal<State>, url: String) {
         .read()
         .runtime
         .tokio()
-        .spawn(async move { platform_callbacks::open_external_url(url).await });
+        .spawn(async move { bridge::open_external_url(url).await });
     arkit::dioxus_core::spawn_forever(async move {
         match task.await {
             Ok(Ok(())) => {}

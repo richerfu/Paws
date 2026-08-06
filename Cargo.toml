@@ -19,6 +19,12 @@ hmeta_vpn = { path = "crates/hmeta_vpn" }
 arkit = { git = "https://github.com/richerfu/arkit.git", rev = "e8e0be16ff22add530d3fd3edebe9f94aa392094", features = ["router", "shadcn"] }
 ohos-ashmem-binding = "0.1.0"
 
+# Pluginized platform capabilities from openharmony-ability. The source
+# revision must match the one arkit pins (see the openharmony-ability entry in
+# Cargo.lock), otherwise the BridgePlugin types would not be identical.
+openharmony-ability-plugin-files = { git = "https://github.com/harmony-contrib/openharmony-activity.git", rev = "77548ad83570101d85085ab55ddd9b5d549c8705" }
+openharmony-ability-plugin-url = { git = "https://github.com/harmony-contrib/openharmony-activity.git", rev = "77548ad83570101d85085ab55ddd9b5d549c8705" }
+
 meow-api = "0.19.0"
 meow-common = "0.19.0"
 meow-config = { version = "0.19.0", features = ["anytls"] }

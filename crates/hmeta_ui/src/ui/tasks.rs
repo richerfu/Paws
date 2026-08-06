@@ -110,7 +110,7 @@ pub(super) async fn start_vpn_command_and_snapshot(
             ui_strings.feedback_vpn_start_options_failed_prefix, error
         )
     })?;
-    let request_error = crate::platform_callbacks::request_start_vpn(options_json)
+    let request_error = crate::bridge::request_start_vpn(options_json)
         .await
         .err()
         .map(|error| error.to_string());
@@ -125,7 +125,7 @@ pub(super) async fn start_vpn_command_and_snapshot(
 pub(super) async fn stop_vpn_command_and_snapshot(
     ui_strings: &'static UiStrings,
 ) -> Result<VpnCommandResult, String> {
-    let request_error = match crate::platform_callbacks::request_stop_vpn().await {
+    let request_error = match crate::bridge::request_stop_vpn().await {
         Ok(()) => None,
         Err(error) => {
             hmeta_core::shared_core().stop_vpn().map_err(|fallback| {
@@ -157,7 +157,7 @@ pub(super) async fn request_vpn_restart_if_running(
     }
 
     let mut errors = Vec::new();
-    if let Err(error) = crate::platform_callbacks::request_stop_vpn().await {
+    if let Err(error) = crate::bridge::request_stop_vpn().await {
         match hmeta_core::shared_core().stop_vpn() {
             Ok(()) => {
                 errors.push(format!(
@@ -181,7 +181,7 @@ pub(super) async fn request_vpn_restart_if_running(
 
     match hmeta_core::shared_core().active_vpn_options_json() {
         Ok(options_json) => {
-            if let Err(error) = crate::platform_callbacks::request_start_vpn(options_json).await {
+            if let Err(error) = crate::bridge::request_start_vpn(options_json).await {
                 errors.push(format!(
                     "{}{}",
                     ui_strings.feedback_vpn_start_callback_failed_prefix, error
@@ -297,7 +297,7 @@ pub(super) async fn scan_profile_subscription_and_snapshot(
     was_vpn_running: bool,
     ui_strings: &'static UiStrings,
 ) -> Result<ProfileImportResult, String> {
-    let payload = crate::platform_callbacks::scan_subscription_code()
+    let payload = crate::bridge::scan_subscription_code()
         .await
         .map_err(|error| format!("{}{}", ui_strings.profiles_scan_failed_prefix, error))?;
     let scanned = match parse_scanned_subscription(&payload) {
@@ -340,7 +340,7 @@ pub(super) async fn import_profile_file_and_snapshot(
     was_vpn_running: bool,
     ui_strings: &'static UiStrings,
 ) -> Result<ProfileImportResult, String> {
-    let (name, raw_yaml) = crate::platform_callbacks::pick_profile_text().await?;
+    let (name, raw_yaml) = crate::bridge::pick_profile_text().await?;
     let id = hmeta_core::shared_core()
         .import_profile_from_content(&name, "local-file", &raw_yaml, None)
         .await
@@ -380,7 +380,7 @@ pub(super) async fn import_rules_and_snapshot(
 ) -> Result<RuleImportResult, String> {
     let profile_id =
         active_profile.ok_or_else(|| ui_strings.feedback_active_profile_required.to_owned())?;
-    let (name, rules_text) = crate::platform_callbacks::pick_profile_text().await?;
+    let (name, rules_text) = crate::bridge::pick_profile_text().await?;
     let source = format!("rules:{name}");
     let imported_rule_ids = hmeta_core::shared_core()
         .import_rules_from_content(Some(&profile_id), &source, &rules_text)
@@ -419,7 +419,7 @@ pub(super) async fn delete_profile_and_snapshot(
 ) -> Result<ProfileDeleteResult, String> {
     let mut vpn_errors = Vec::new();
     if was_active && was_vpn_running {
-        if let Err(error) = crate::platform_callbacks::request_stop_vpn().await {
+        if let Err(error) = crate::bridge::request_stop_vpn().await {
             match hmeta_core::shared_core().stop_vpn() {
                 Ok(()) => vpn_errors.push(format!(
                     "{}{}",
@@ -448,7 +448,7 @@ pub(super) async fn delete_profile_and_snapshot(
         let options_json = hmeta_core::shared_core()
             .active_vpn_options_json()
             .map_err(|error| error.to_string())?;
-        if let Err(error) = crate::platform_callbacks::request_start_vpn(options_json).await {
+        if let Err(error) = crate::bridge::request_start_vpn(options_json).await {
             vpn_errors.push(format!(
                 "{}{}",
                 ui_strings.feedback_vpn_start_callback_failed_prefix, error
@@ -597,7 +597,7 @@ pub(super) async fn export_log_archive(file_name: String) -> Result<String, Stri
     let content = hmeta_core::shared_core()
         .read_log_archive(&file_name)
         .map_err(|error| error.to_string())?;
-    crate::platform_callbacks::export_log(file_name.clone(), content).await?;
+    crate::bridge::export_log(file_name.clone(), content).await?;
     Ok(file_name)
 }
 

@@ -83,9 +83,9 @@ fn about_page_discloses_the_exit_ip_provider_and_links_its_documentation() {
 fn appearance_settings_use_arkit_shadcn_choices_and_persist_actions() {
     let page = fs::read_to_string("src/view/pages/appearance.rs").unwrap();
     let view = fs::read_to_string("src/view.rs").unwrap();
-    let platform = fs::read_to_string("src/platform_callbacks.rs").unwrap();
-    let entry =
-        fs::read_to_string("../../entry/src/main/ets/entryability/EntryAbility.ets").unwrap();
+    let platform = fs::read_to_string("src/bridge/mod.rs").unwrap();
+    let color_mode =
+        fs::read_to_string("../../entry/src/main/ets/plugins/ColorModePlugin.ets").unwrap();
 
     assert!(page.contains("RadioGroup"));
     assert!(page.contains("Action::SetLanguagePreference"));
@@ -94,7 +94,7 @@ fn appearance_settings_use_arkit_shadcn_choices_and_persist_actions() {
     assert!(view.contains("ThemeProvider"));
     assert!(view.contains("use_theme().colors"));
     assert!(platform.contains("set_color_mode"));
-    assert!(entry.contains("this.context.setColorMode"));
+    assert!(color_mode.contains("context.abilityContext.setColorMode"));
 }
 
 #[test]

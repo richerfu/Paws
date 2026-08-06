@@ -8,7 +8,7 @@ const VPN_ABILITY: &str =
     include_str!("../../../entry/src/main/ets/vpnability/HMetaVpnExtensionAbility.ets");
 const VPN_CONFIG: &str = include_str!("../../../entry/src/main/ets/vpnability/VpnConfig.ets");
 const NAPI_TYPES: &str = include_str!("../../../entry/src/main/cpp/types/libhmeta_ui/Index.d.ts");
-const PLATFORM_CALLBACKS: &str = include_str!("../src/platform_callbacks.rs");
+const PLATFORM_CALLBACKS: &str = include_str!("../src/bridge/mod.rs");
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let start = source.find(start).expect("section start");
@@ -195,9 +195,10 @@ fn vpn_restart_waits_for_platform_stop_before_starting_with_new_options() {
     assert!(stop < start);
     assert!(PLATFORM_CALLBACKS.contains("pub(crate) async fn request_start_vpn"));
     assert!(PLATFORM_CALLBACKS.contains("pub(crate) async fn request_stop_vpn"));
-    assert!(PLATFORM_CALLBACKS
-        .contains("invoke_string_void_callback(tsfn, options_json, \"VPN start\").await"));
-    assert!(PLATFORM_CALLBACKS.contains("invoke_void_callback(tsfn, \"VPN stop\").await"));
+    assert!(PLATFORM_CALLBACKS.contains("\"start-vpn\""));
+    assert!(PLATFORM_CALLBACKS.contains("VpnStartRequest { options_json }"));
+    assert!(PLATFORM_CALLBACKS.contains("\"stop-vpn\""));
+    assert!(PLATFORM_CALLBACKS.contains("VpnStopRequest"));
     assert!(VPN_ABILITY.contains("new HMetaVpnConfig(options)"));
     assert!(!VPN_ABILITY.contains("trustedApplications"));
     assert!(!VPN_ABILITY.contains("blockedApplications"));

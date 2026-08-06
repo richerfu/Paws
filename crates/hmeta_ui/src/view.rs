@@ -1,8 +1,8 @@
 use super::*;
+use crate::bridge;
 use crate::l10n::UiLocale;
 use crate::manual_rule::{find_manual_rule_conflict, manual_rule_preview};
 use crate::notification::{use_notification_center, NotificationHost};
-use crate::platform_callbacks;
 use arkit::prelude::*;
 use arkit::router::{
     use_back_handler, use_navigator, use_route, AnimatedOutlet, RouteProvider, Router,
@@ -322,7 +322,7 @@ pub(crate) fn App() -> Element {
     use_effect(move || {
         let color_mode = state.read().theme_preference().platform_color_mode();
         if *applied_color_mode.peek() != Some(color_mode) {
-            let _ = platform_callbacks::set_color_mode(color_mode);
+            let _ = bridge::set_color_mode(color_mode);
             applied_color_mode.set(Some(color_mode));
         }
     });

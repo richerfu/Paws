@@ -1055,7 +1055,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             ),
         },
         Action::OpenExternalUrl(url) => Command::perform(
-            async move { crate::platform_callbacks::open_external_url(url).await },
+            async move { crate::bridge::open_external_url(url).await },
             Action::ExternalUrlOpened,
         ),
         Action::ExternalUrlOpened(result) => match result {
@@ -1653,8 +1653,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             match hmeta_core::shared_core().profile_raw_yaml(&profile_id) {
                 Ok(raw_yaml) => Command::perform(
                     async move {
-                        crate::platform_callbacks::export_profile(profile_name.clone(), raw_yaml)
-                            .await?;
+                        crate::bridge::export_profile(profile_name.clone(), raw_yaml).await?;
                         Ok(profile_name)
                     },
                     Action::ProfileExported,
