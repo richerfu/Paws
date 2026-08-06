@@ -122,7 +122,11 @@ pub(super) fn ensure_global_proxy_selected(
             .ok_or_else(|| HMetaError::Core("GLOBAL outbound is not selectable".to_owned()))?
             .force_set(Some(&target));
     }
-    if !global.current().as_deref().is_some_and(|current| current == target) {
+    if !global
+        .current()
+        .as_deref()
+        .is_some_and(|current| current == target)
+    {
         return Err(HMetaError::Core(
             "GLOBAL selector did not resolve to a proxy node".to_owned(),
         ));
