@@ -30,7 +30,16 @@ fn dashboard_stays_flat_and_decision_focused() {
     assert!(page.contains("当前节点"));
     assert!(page.contains("全局节点与策略分组"));
     assert!(page.contains("global_node_count"));
-    assert!(page.contains("VPN IP"));
+    assert!(page.contains("出口 IP"));
+    assert!(page.contains("snapshot.exit_location"));
+    assert!(page.contains("height: 89.0"));
+    assert_eq!(page.matches("dashboard_connection_row(").count(), 3);
+    assert!(page.contains("height: 44.0"));
+    assert!(page.contains("width: 68.0"));
+    assert_eq!(page.matches("row { height: 14.0 }").count(), 3);
+    assert_eq!(page.matches("Separator {}").count(), 1);
+    assert!(!page.contains("VPN IP"));
+    assert!(!page.contains("vpn_options.addresses"));
     assert!(!page.contains("format_speed"));
 
     // The home page uses one flat hierarchy. Cards belong on detail pages,
@@ -59,7 +68,7 @@ fn dashboard_mode_selector_dispatches_every_runtime_mode() {
 fn dashboard_long_values_are_width_constrained() {
     let page = DASHBOARD;
 
-    assert!(page.contains("content: current_node"));
+    assert!(page.contains("current_node,"));
     assert!(page.contains("text_overflow: \"ellipsis\""));
     assert!(page.contains("RuntimeMode::Direct"));
     assert!(page.contains("RuntimeMode::Global"));
