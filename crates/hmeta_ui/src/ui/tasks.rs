@@ -3,7 +3,11 @@ use super::*;
 pub(super) async fn load_snapshot() -> RuntimeSnapshot {
     let core = hmeta_core::shared_core();
     let _ = core.sync_external_controller_config().await;
-    core.snapshot().unwrap_or_default()
+    let snapshot = core.snapshot().unwrap_or_default();
+    tokio::spawn(async move {
+        let _ = core.refresh_exit_location_if_due().await;
+    });
+    snapshot
 }
 
 pub(super) async fn delayed_snapshot() -> RuntimeSnapshot {
