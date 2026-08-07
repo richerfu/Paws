@@ -60,23 +60,56 @@ fn about_page_constrains_long_values_and_aligns_repositories() {
 }
 
 #[test]
-fn about_page_discloses_the_exit_ip_provider_and_links_its_documentation() {
+fn about_page_has_one_privacy_entry_and_detail_page_discloses_exit_ip_providers() {
     let page = fs::read_to_string("src/view/pages/tools.rs").unwrap();
-    let privacy = page
-        .split("let privacy =")
+    let route = fs::read_to_string("src/view/route.rs").unwrap();
+    let about = page
+        .split("pub(crate) fn about_page")
         .nth(1)
-        .expect("privacy summary")
-        .split("let body =")
+        .expect("about page")
+        .split("pub(crate) fn privacy_page")
         .next()
         .unwrap();
+    let privacy = page
+        .split("pub(crate) fn privacy_page")
+        .nth(1)
+        .expect("privacy page");
 
-    assert!(page.contains("出口 IP 能力"));
-    assert!(page.contains("IPWho.is 仅用于识别当前 VPN 出口及对应国家/地区"));
-    assert!(page.contains("https://ipwhois.io/documentation"));
+    assert_eq!(about.matches("Route::Privacy {}").count(), 1);
+    assert!(!about.contains(".privacy_summary"));
+    assert!(!about.contains(".exit_ip_services"));
+    assert!(route.contains("/settings/about/privacy"));
+    assert!(route.contains("Self::Privacy {} => Some(Self::About {})"));
+    assert!(privacy.contains(".privacy_summary"));
+    assert!(privacy.contains(".exit_ip_services"));
+    assert!(privacy.contains("documentation_url"));
+    assert!(privacy.contains("出口 IP 查询服务"));
     assert!(
         !privacy.contains("max_lines"),
         "privacy disclosures must never be truncated"
     );
+}
+
+#[test]
+fn privacy_policy_states_collection_sharing_retention_and_lan_risks() {
+    let policy = fs::read_to_string("../hmeta_core/src/runtime_snapshot.rs").unwrap();
+
+    for disclosure in [
+        "不接入广告、行为分析或远程遥测服务",
+        "订阅与规则提供方",
+        "运行诊断",
+        "出口 IP 查询",
+        "请求不包含订阅、节点、规则、DNS 记录或连接记录",
+        "日志与导出",
+        "局域网控制器",
+        "删除与保留",
+        "外部链接",
+    ] {
+        assert!(
+            policy.contains(disclosure),
+            "missing privacy disclosure: {disclosure}"
+        );
+    }
 }
 
 #[test]
@@ -116,6 +149,34 @@ fn network_stack_is_a_bounded_selector_with_two_real_backends() {
     assert!(page.contains("VpnStack::Lwip"));
     assert!(page.contains("Action::SaveVpnSettings"));
     assert!(view.contains("Select,"));
+}
+
+#[test]
+fn network_ports_are_editable_and_lan_access_requires_a_secret() {
+    let page = fs::read_to_string("src/view/pages/settings.rs").unwrap();
+    let ui = fs::read_to_string("src/ui.rs").unwrap();
+    let model = fs::read_to_string("../hmeta_model/src/lib.rs").unwrap();
+    let core = fs::read_to_string("../hmeta_core/src/lib.rs").unwrap();
+    let callbacks = fs::read_to_string("src/platform_callbacks.rs").unwrap();
+
+    assert!(page.contains("混合代理端口"));
+    assert!(page.contains("控制器端口"));
+    assert!(page.matches("Input {").count() >= 2);
+    assert!(page.contains("placeholder: Some(\"7890\""));
+    assert!(page.contains("placeholder: Some(\"9090\""));
+    assert!(page.contains("允许局域网访问"));
+    assert!(page.contains("0.0.0.0:{controller_port_value}"));
+    assert!(page.contains("Authorization: Bearer <secret>"));
+    assert!(page.contains("copy_controller_secret"));
+    assert!(page.contains("platform_callbacks::copy_text(secret)"));
+    assert!(ui.contains("Action::SaveNetworkSettings"));
+    assert!(ui.contains("set_profile_network_config"));
+    assert!(ui.contains("mixed_port != state.snapshot.network_ports.mixed_port"));
+    assert!(model.contains("pub const DEFAULT_MIXED_PORT: u16 = 7890"));
+    assert!(model.contains("pub const DEFAULT_CONTROLLER_PORT: u16 = 9090"));
+    assert!(core.contains("restart_mixed_listener(tunnel, mixed_port)"));
+    assert!(core.contains("probe_exit_location(mixed_port)"));
+    assert!(callbacks.contains("pub(crate) async fn copy_text"));
 }
 
 #[test]

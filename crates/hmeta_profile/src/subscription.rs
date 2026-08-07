@@ -1327,7 +1327,7 @@ pub(super) fn proxy_subscription_yaml(mut proxies: Vec<Mapping>) -> Result<Strin
         .filter_map(|proxy| get_string(proxy, "name"))
         .collect::<Vec<_>>();
     let mut root = Mapping::new();
-    put_i64(&mut root, "mixed-port", 7890);
+    put_i64(&mut root, "mixed-port", i64::from(APP_MIXED_PROXY_PORT));
     put_string(&mut root, "mode", "rule");
     put_string(&mut root, "log-level", "info");
     root.insert(

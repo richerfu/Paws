@@ -1,5 +1,84 @@
 use super::*;
 
+struct RuntimeUiCacheQueue {
+    pending: Mutex<HashMap<PathBuf, RuntimeUiCache>>,
+    ready: std::sync::Condvar,
+}
+
+struct RuntimeUiCacheWriter {
+    queue: Option<Arc<RuntimeUiCacheQueue>>,
+}
+
+impl RuntimeUiCacheWriter {
+    fn start() -> Self {
+        let queue = Arc::new(RuntimeUiCacheQueue {
+            pending: Mutex::new(HashMap::new()),
+            ready: std::sync::Condvar::new(),
+        });
+        let worker_queue = Arc::clone(&queue);
+        let worker = std::thread::Builder::new()
+            .name("hmeta-ui-cache-writer".to_owned())
+            .spawn(move || loop {
+                let pending = {
+                    let Ok(mut pending) = worker_queue.pending.lock() else {
+                        tracing::warn!(
+                            target: "hmeta_core::telemetry",
+                            "runtime UI cache queue lock poisoned"
+                        );
+                        return;
+                    };
+                    while pending.is_empty() {
+                        let Ok(next) = worker_queue.ready.wait(pending) else {
+                            tracing::warn!(
+                                target: "hmeta_core::telemetry",
+                                "runtime UI cache queue wait failed"
+                            );
+                            return;
+                        };
+                        pending = next;
+                    }
+                    std::mem::take(&mut *pending)
+                };
+                for (path, cache) in pending {
+                    if let Err(error) = persist_runtime_ui_cache_value(&cache, &path) {
+                        tracing::warn!(
+                            target: "hmeta_core::telemetry",
+                            "runtime UI cache persist failed: {error}"
+                        );
+                    }
+                }
+            });
+        match worker {
+            Ok(_) => Self { queue: Some(queue) },
+            Err(error) => {
+                tracing::warn!(
+                    target: "hmeta_core::telemetry",
+                    "runtime UI cache writer could not start: {error}"
+                );
+                Self { queue: None }
+            }
+        }
+    }
+
+    fn schedule(&self, cache: RuntimeUiCache, path: PathBuf) {
+        let Some(queue) = &self.queue else {
+            return;
+        };
+        let Ok(mut pending) = queue.pending.lock() else {
+            tracing::warn!(
+                target: "hmeta_core::telemetry",
+                "runtime UI cache queue lock poisoned"
+            );
+            return;
+        };
+        pending.insert(path, cache);
+        drop(pending);
+        queue.ready.notify_one();
+    }
+}
+
+static RUNTIME_UI_CACHE_WRITER: Lazy<RuntimeUiCacheWriter> = Lazy::new(RuntimeUiCacheWriter::start);
+
 pub(super) fn apply_traffic_sample(
     state: &mut CoreState,
     stats: &TunStats,
@@ -242,15 +321,14 @@ pub(super) fn persist_runtime_ui_cache_best_effort(state: &mut CoreState) {
     // The callers hold the core state mutex. Device storage I/O can stall for
     // seconds (observed as a >6s main-thread ANR while a tokio worker blocked
     // on `fs::write` with the lock held), so only clone the payload in-lock
-    // and hand serialization + file I/O to a background thread.
+    // and hand serialization + file I/O to the single cache-writer owner.
+    if !state.runtime_ui_cache_writes_enabled {
+        return;
+    }
     let Some((cache, path)) = runtime_ui_cache_snapshot(state) else {
         return;
     };
-    std::thread::spawn(move || {
-        if let Err(error) = persist_runtime_ui_cache_value(&cache, &path) {
-            tracing::warn!(target: "hmeta_core::telemetry", "runtime UI cache persist failed: {error}");
-        }
-    });
+    RUNTIME_UI_CACHE_WRITER.schedule(cache, path);
 }
 
 pub(super) fn platform_vpn_state(state: &CoreState) -> PlatformVpnState {

@@ -201,6 +201,12 @@ pub(crate) enum Action {
         stack: String,
     },
     VpnSettingsSaved(Result<SettingsSaveResult, String>),
+    SaveNetworkSettings {
+        mixed_port: String,
+        controller_port: String,
+        allow_lan: bool,
+    },
+    NetworkSettingsSaved(Result<SettingsSaveResult, String>),
 }
 
 #[derive(Clone)]
@@ -2123,6 +2129,123 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 ),
             ),
         },
+        Action::SaveNetworkSettings {
+            mixed_port,
+            controller_port,
+            allow_lan,
+        } => {
+            let Some(profile_id) = state.snapshot.active_profile.clone() else {
+                return show_toast(
+                    state,
+                    strings(state.locale)
+                        .feedback_active_profile_required
+                        .to_owned(),
+                );
+            };
+            let invalid_port_suffix = ui_tr(
+                state.locale,
+                "必须是 1024–65535 之间的整数",
+                " must be an integer between 1024 and 65535",
+            );
+            let parse_port = |value: &str, label: &str| {
+                value
+                    .trim()
+                    .parse::<u16>()
+                    .map_err(|_| format!("{label}{invalid_port_suffix}"))
+            };
+            let mixed_port = match parse_port(
+                &mixed_port,
+                ui_tr(state.locale, "混合代理端口", "Mixed proxy port"),
+            ) {
+                Ok(port) => port,
+                Err(error) => return show_toast(state, error),
+            };
+            let controller_port = match parse_port(
+                &controller_port,
+                ui_tr(state.locale, "控制器端口", "Controller port"),
+            ) {
+                Ok(port) => port,
+                Err(error) => return show_toast(state, error),
+            };
+            let network_ports = hmeta_model::NetworkPortConfig {
+                mixed_port,
+                controller_port,
+            };
+            if let Err(error) = network_ports.validate() {
+                let message = if mixed_port < hmeta_model::NetworkPortConfig::MIN_PORT
+                    || controller_port < hmeta_model::NetworkPortConfig::MIN_PORT
+                {
+                    ui_tr(
+                        state.locale,
+                        "端口必须在 1024–65535 之间",
+                        "Ports must be between 1024 and 65535",
+                    )
+                    .to_owned()
+                } else if mixed_port == controller_port {
+                    ui_tr(
+                        state.locale,
+                        "混合代理端口和控制器端口不能相同",
+                        "Mixed proxy and controller ports must be different",
+                    )
+                    .to_owned()
+                } else {
+                    error.to_string()
+                };
+                return show_toast(state, message);
+            }
+            let restart_requested =
+                state.snapshot.vpn_running && mixed_port != state.snapshot.network_ports.mixed_port;
+            let ui_strings = strings(state.locale);
+            Command::perform(
+                async move {
+                    hmeta_core::shared_core()
+                        .set_profile_network_config(&profile_id, network_ports, allow_lan)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let restart_error =
+                        request_vpn_restart_if_running(restart_requested, ui_strings).await;
+                    Ok(SettingsSaveResult {
+                        snapshot: load_snapshot().await,
+                        restart_requested,
+                        restart_error,
+                    })
+                },
+                Action::NetworkSettingsSaved,
+            )
+        }
+        Action::NetworkSettingsSaved(result) => match result {
+            Ok(result) => {
+                state.snapshot = result.snapshot;
+                show_toast(
+                    state,
+                    settings_saved_message(
+                        ui_tr(state.locale, "网络设置", "Network settings"),
+                        result.restart_requested,
+                        result.restart_error.as_deref(),
+                        strings(state.locale),
+                    ),
+                )
+            }
+            Err(error) => show_toast(
+                state,
+                format!(
+                    "{}{}",
+                    ui_tr(
+                        state.locale,
+                        "保存网络设置失败：",
+                        "Failed to save network settings: "
+                    ),
+                    error
+                ),
+            ),
+        },
+    }
+}
+
+fn ui_tr(locale: UiLocale, zh: &'static str, en: &'static str) -> &'static str {
+    match locale {
+        UiLocale::ZhCn => zh,
+        UiLocale::En => en,
     }
 }
 

@@ -20,6 +20,6 @@ pub(super) use proxies::{proxies_page, VirtualProxyGroupList, VirtualProxyPalett
 pub(super) use resources::resources_page;
 pub(super) use settings::settings_page;
 pub(super) use subscription_converter::subscription_converter_page;
-pub(super) use tools::{about_page, tools_page};
+pub(super) use tools::{about_page, privacy_page, tools_page};
 pub(super) use traffic::traffic_page;
 pub(super) use yaml_editor::yaml_editor_dialog;

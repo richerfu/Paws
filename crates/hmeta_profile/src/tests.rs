@@ -2627,6 +2627,104 @@ fn updates_vpn_config_in_profile_yaml() {
 }
 
 #[test]
+fn network_ports_and_controller_access_are_profile_scoped_and_validated() {
+    let root = std::env::temp_dir().join(format!("hmeta-profile-test-{}", next_id("controller")));
+    let mut store = ProfileStore::open(root).unwrap();
+    let profile_id = store
+        .import_profile_content(
+            "Controller",
+            "local",
+            "external-controller: 0.0.0.0:9090\nsecret: imported-secret\nproxies: []\nproxy-groups: []\nrules: []\n",
+            None,
+        )
+        .unwrap();
+    let options = store.vpn_options_for_profile(&profile_id).unwrap();
+
+    let default_yaml = store
+        .render_runtime_yaml(&profile_id, RuntimeMode::Rule, &options)
+        .unwrap();
+    let default_value: Value = serde_yaml::from_str(&default_yaml).unwrap();
+    let default_root = default_value.as_mapping().expect("root");
+    assert_eq!(
+        get_string(default_root, "external-controller"),
+        Some("127.0.0.1:9090".to_owned())
+    );
+    assert_eq!(get_i64(default_root, "mixed-port"), Some(7890));
+    assert!(!default_root.contains_key(value_key("secret")));
+
+    let custom_ports = NetworkPortConfig {
+        mixed_port: 17890,
+        controller_port: 19090,
+    };
+    let (saved_ports, enabled) = store
+        .set_profile_network_config(&profile_id, custom_ports, true)
+        .unwrap();
+    assert_eq!(saved_ports, custom_ports);
+    let secret = enabled.secret.expect("generated secret");
+    assert!(enabled.allow_lan);
+    assert_eq!(secret.len(), 64);
+    assert!(secret.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+    let enabled_yaml = store
+        .render_runtime_yaml(&profile_id, RuntimeMode::Rule, &options)
+        .unwrap();
+    let enabled_value: Value = serde_yaml::from_str(&enabled_yaml).unwrap();
+    let enabled_root = enabled_value.as_mapping().expect("root");
+    assert_eq!(
+        get_string(enabled_root, "external-controller"),
+        Some("0.0.0.0:19090".to_owned())
+    );
+    assert_eq!(get_i64(enabled_root, "mixed-port"), Some(17890));
+    assert_eq!(get_string(enabled_root, "secret"), Some(secret.clone()));
+    assert_eq!(
+        store.network_ports_for_profile(&profile_id).unwrap(),
+        custom_ports
+    );
+
+    let (_, enabled_again) = store
+        .set_profile_network_config(&profile_id, custom_ports, true)
+        .unwrap();
+    assert_eq!(enabled_again.secret.as_deref(), Some(secret.as_str()));
+
+    let (_, disabled) = store
+        .set_profile_network_config(&profile_id, custom_ports, false)
+        .unwrap();
+    assert!(!disabled.allow_lan);
+    assert_eq!(disabled.secret.as_deref(), Some(secret.as_str()));
+    let disabled_yaml = store
+        .render_runtime_yaml(&profile_id, RuntimeMode::Rule, &options)
+        .unwrap();
+    let disabled_value: Value = serde_yaml::from_str(&disabled_yaml).unwrap();
+    let disabled_root = disabled_value.as_mapping().expect("root");
+    assert_eq!(
+        get_string(disabled_root, "external-controller"),
+        Some("127.0.0.1:19090".to_owned())
+    );
+    assert!(!disabled_root.contains_key(value_key("secret")));
+
+    assert!(store
+        .set_profile_network_config(
+            &profile_id,
+            NetworkPortConfig {
+                mixed_port: 1023,
+                controller_port: 19090,
+            },
+            false,
+        )
+        .is_err());
+    assert!(store
+        .set_profile_network_config(
+            &profile_id,
+            NetworkPortConfig {
+                mixed_port: 19090,
+                controller_port: 19090,
+            },
+            false,
+        )
+        .is_err());
+}
+
+#[test]
 fn rejects_unsupported_stack_updates_and_safely_imports_legacy_values() {
     let options = vpn_options_from_yaml("tun:\n  stack: gvisor\n").unwrap();
     assert_eq!(options.stack, VpnStack::Smoltcp.as_str());

@@ -76,6 +76,12 @@ fn dashboard_long_values_are_width_constrained() {
     assert!(page.contains("effective_group_leaf"));
     assert!(page.contains("latest_active_rule_node"));
     assert!(page.contains("primary_selected_group_leaf"));
+    assert!(
+        page.find("primary_selected_group_leaf").unwrap()
+            < page
+                .find("latest_active_rule_node(&snapshot.connections)")
+                .unwrap()
+    );
     assert!(!page.contains("由命中规则的策略分组决定"));
     assert!(!page.contains("暂无命中"));
     assert!(page.contains("s.proxies_direct.to_owned()"));

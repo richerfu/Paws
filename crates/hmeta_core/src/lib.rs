@@ -4,10 +4,11 @@ use axum::middleware::Next;
 use axum::response::Response as AxumResponse;
 use futures::StreamExt;
 use hmeta_model::{
-    from_json, to_json, AboutSnapshot, ConnectionSummary, ControllerDiagnostics, DnsSnapshot,
-    ExitLocationSnapshot, HMetaError, LogEntry, ManualRuleMutation, ManualRuleSpec, ProfileSummary,
-    ProviderProxySummary, ProviderSummary, ProxyGroup, ProxyItem, RequestSummary, RuntimeMode,
-    RuntimeSnapshot, TrafficHistoryPoint, TrafficSnapshot, VpnLifecycle, VpnOptions,
+    from_json, to_json, AboutSnapshot, ConnectionSummary, ControllerAccessConfig,
+    ControllerDiagnostics, DnsSnapshot, ExitLocationSnapshot, HMetaError, LogEntry,
+    ManualRuleMutation, ManualRuleSpec, NetworkPortConfig, ProfileSummary, ProviderProxySummary,
+    ProviderSummary, ProxyGroup, ProxyItem, RequestSummary, RuntimeMode, RuntimeSnapshot,
+    TrafficHistoryPoint, TrafficSnapshot, VpnLifecycle, VpnOptions,
 };
 use hmeta_profile::{normalize_profile_content, ProfileStore};
 use hmeta_vpn::{TunSession, TunStats};
@@ -17,6 +18,7 @@ use meow_config::{
     proxy_provider::ProxyProvider, raw::RawConfig, rule_provider::RuleProvider, Config,
     NamedListener,
 };
+use meow_listener::MixedListener;
 use meow_tunnel::rule_ir::LazyMatchOutcome;
 use meow_tunnel::Tunnel;
 use once_cell::sync::Lazy;
@@ -71,6 +73,8 @@ const MAX_TRAFFIC_HISTORY: usize = 32;
 const PLATFORM_VPN_START_DEADLINE: Duration = Duration::from_secs(120);
 const EXIT_LOCATION_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const EXIT_LOCATION_RETRY_INTERVAL: Duration = Duration::from_secs(60);
+const MIXED_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(2);
+const MIXED_LISTENER_READY_RETRY: Duration = Duration::from_millis(25);
 const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = "1.0.0";
@@ -140,7 +144,8 @@ struct RuntimeUiCache {
 }
 
 struct ApiControllerRuntime {
-    addr: SocketAddr,
+    bind_addr: SocketAddr,
+    client_addr: SocketAddr,
     task: tokio::task::JoinHandle<()>,
     memory_task: tokio::task::JoinHandle<()>,
     raw_config: Arc<parking_lot::RwLock<RawConfig>>,
@@ -150,6 +155,16 @@ struct ApiControllerRuntime {
     synced_revision: u64,
     memory_in_use_bytes: Arc<AtomicU64>,
     memory_limit_bytes: Arc<AtomicU64>,
+}
+
+struct MixedListenerRuntime {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for MixedListenerRuntime {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,6 +180,15 @@ impl Drop for ApiControllerRuntime {
     }
 }
 
+impl ApiControllerRuntime {
+    async fn shutdown(&mut self) {
+        self.task.abort();
+        self.memory_task.abort();
+        let _ = (&mut self.task).await;
+        let _ = (&mut self.memory_task).await;
+    }
+}
+
 struct CoreState {
     engine_loaded: bool,
     platform_vpn_starting: bool,
@@ -177,6 +201,7 @@ struct CoreState {
     platform_network_protect_error: Option<String>,
     platform_vpn_state_updated_at: u128,
     platform_vpn_control_updated_at: u128,
+    runtime_ui_cache_writes_enabled: bool,
     mode: RuntimeMode,
     profiles: ProfileStore,
     tunnel: Option<Tunnel>,
@@ -192,6 +217,8 @@ struct CoreState {
     logs: RecordedLogBuffer,
     request_history: VecDeque<RequestSummary>,
     vpn_options: VpnOptions,
+    controller_access: ControllerAccessConfig,
+    network_ports: NetworkPortConfig,
     exit_location: ExitLocationSnapshot,
     last_exit_location_check: Option<Instant>,
     exit_location_revision: u64,
@@ -232,6 +259,7 @@ impl Default for CoreState {
             platform_network_protect_error: None,
             platform_vpn_state_updated_at: 0,
             platform_vpn_control_updated_at: 0,
+            runtime_ui_cache_writes_enabled: true,
             mode: RuntimeMode::Rule,
             profiles,
             tunnel: None,
@@ -260,6 +288,8 @@ impl Default for CoreState {
             logs,
             request_history: VecDeque::with_capacity(MAX_REQUEST_HISTORY),
             vpn_options: VpnOptions::default(),
+            controller_access: ControllerAccessConfig::default(),
+            network_ports: NetworkPortConfig::default(),
             exit_location: ExitLocationSnapshot::default(),
             last_exit_location_check: None,
             exit_location_revision: 0,
@@ -277,6 +307,7 @@ pub struct CoreHandle {
     platform_start_tx: tokio::sync::watch::Sender<PlatformStartEvent>,
     config_reload_lock: tokio::sync::Mutex<()>,
     exit_location_refresh_lock: tokio::sync::Mutex<()>,
+    mixed_listener: Mutex<Option<MixedListenerRuntime>>,
     vpn: TunSession,
     api_controller_enabled: bool,
     api_controller_addr_override: Option<SocketAddr>,
@@ -332,6 +363,7 @@ impl CoreHandle {
             platform_start_tx,
             config_reload_lock: tokio::sync::Mutex::new(()),
             exit_location_refresh_lock: tokio::sync::Mutex::new(()),
+            mixed_listener: Mutex::new(None),
             vpn: TunSession::default(),
             api_controller_enabled: true,
             api_controller_addr_override: None,
@@ -362,6 +394,7 @@ impl CoreHandle {
                 platform_network_protect_error: None,
                 platform_vpn_state_updated_at: 0,
                 platform_vpn_control_updated_at: 0,
+                runtime_ui_cache_writes_enabled: true,
                 mode: RuntimeMode::Rule,
                 profiles,
                 tunnel: None,
@@ -390,6 +423,8 @@ impl CoreHandle {
                 logs: RecordedLogBuffer::new(log_root),
                 request_history: VecDeque::with_capacity(MAX_REQUEST_HISTORY),
                 vpn_options: VpnOptions::default(),
+                controller_access: ControllerAccessConfig::default(),
+                network_ports: NetworkPortConfig::default(),
                 exit_location: ExitLocationSnapshot::default(),
                 last_exit_location_check: None,
                 exit_location_revision: 0,
@@ -402,6 +437,7 @@ impl CoreHandle {
             platform_start_tx,
             config_reload_lock: tokio::sync::Mutex::new(()),
             exit_location_refresh_lock: tokio::sync::Mutex::new(()),
+            mixed_listener: Mutex::new(None),
             vpn: TunSession::default(),
             api_controller_enabled: false,
             api_controller_addr_override: None,
@@ -455,6 +491,7 @@ impl CoreHandle {
             *slot = Some(platform);
         }
         let mut state = self.lock_state()?;
+        state.runtime_ui_cache_writes_enabled = true;
         self.persist_platform_vpn_state_locked(&mut state)?;
         let mode = state.mode;
         let global_proxy = current_global_proxy(&state);
@@ -483,6 +520,7 @@ impl CoreHandle {
         // process. Always replace the old ashmem session with the descriptors
         // from the latest Want so state is published back to the current UI.
         drop(previous);
+        self.lock_state()?.runtime_ui_cache_writes_enabled = false;
         self.sync_platform_changes()
     }
 
@@ -764,7 +802,7 @@ impl CoreHandle {
 
     pub async fn delete_profile(&self, profile_id: &str) -> Result<(), HMetaError> {
         let tun_stats = self.vpn.stats();
-        let next_active = {
+        let (next_active, previous_controller) = {
             let mut state = self.lock_state()?;
             let was_active = state.profiles.active_profile() == Some(profile_id);
             if was_active {
@@ -777,15 +815,21 @@ impl CoreHandle {
                 state.providers.clear();
                 state.runtime_rules.clear();
                 state.engine_loaded = false;
-                state.api_controller = None;
             }
+            let previous_controller = was_active.then(|| state.api_controller.take()).flatten();
             state
                 .logs
                 .push(info_log(format!("profile deleted: {profile_id}")));
-            was_active
-                .then(|| state.profiles.active_profile().map(ToOwned::to_owned))
-                .flatten()
+            (
+                was_active
+                    .then(|| state.profiles.active_profile().map(ToOwned::to_owned))
+                    .flatten(),
+                previous_controller,
+            )
         };
+        if let Some(mut controller) = previous_controller {
+            controller.shutdown().await;
+        }
         if let Some(next_active) = next_active {
             self.reload_config(&next_active).await?;
         }
@@ -1008,14 +1052,19 @@ impl CoreHandle {
     pub async fn start_vpn(&self, fd: i32, options_json: &str) -> Result<(), HMetaError> {
         let options: VpnOptions = from_json(options_json)?;
         self.prepare_active_vpn().await?;
-        let (tunnel, sniffer_config) = {
+        let (tunnel, sniffer_config, mixed_port) = {
             let state = self.lock_state()?;
-            (state.tunnel.clone(), state.sniffer_config.clone())
+            (
+                state.tunnel.clone(),
+                state.sniffer_config.clone(),
+                state.network_ports.mixed_port,
+            )
         };
         let tunnel = tunnel
             .ok_or_else(|| HMetaError::Core("activate a profile before starting VPN".to_owned()))?;
         self.vpn
-            .start(fd, options.clone(), tunnel, sniffer_config)?;
+            .start(fd, options.clone(), tunnel.clone(), sniffer_config)?;
+        let mixed_listener = self.restart_mixed_listener(tunnel, mixed_port).await;
         let mut state = self.lock_state()?;
         self.sync_platform_vpn_state_locked(&mut state);
         state.vpn_options = options;
@@ -1029,7 +1078,81 @@ impl CoreHandle {
         state
             .logs
             .push(info_log(format!("vpn started with tun fd {fd}")));
+        match mixed_listener {
+            Ok(true) => state.logs.push(info_log(format!(
+                "meow mixed listener ready on 127.0.0.1:{mixed_port}"
+            ))),
+            Ok(false) => {}
+            Err(error) => state.logs.push(warning_log(format!(
+                "meow mixed listener failed to start: {error}"
+            ))),
+        }
         self.persist_platform_vpn_state_locked(&mut state)?;
+        Ok(())
+    }
+
+    async fn restart_mixed_listener(
+        &self,
+        tunnel: Tunnel,
+        mixed_port: u16,
+    ) -> Result<bool, HMetaError> {
+        self.stop_mixed_listener()?;
+        let Some(platform) = self.platform_ipc()? else {
+            return Ok(false);
+        };
+        if platform.is_ui() {
+            return Ok(false);
+        }
+        let network_protected = self.lock_state()?.platform_network_protected;
+        if !network_protected {
+            return Err(HMetaError::Core(
+                "VPN extension process network is not protected".to_owned(),
+            ));
+        }
+
+        let addr = SocketAddr::from(([127, 0, 0, 1], mixed_port));
+        let listener =
+            MixedListener::new(tunnel, addr, "paws-mixed".to_owned()).with_max_connections(64);
+        let task = tokio::spawn(async move {
+            if let Err(error) = listener.run().await {
+                tracing::warn!(
+                    target: "hmeta_core::listener",
+                    "meow mixed listener stopped: {error}"
+                );
+            }
+        });
+        *self
+            .mixed_listener
+            .lock()
+            .map_err(|_| HMetaError::Core("mixed listener lock poisoned".to_owned()))? =
+            Some(MixedListenerRuntime { task });
+
+        let deadline = tokio::time::Instant::now() + MIXED_LISTENER_READY_TIMEOUT;
+        loop {
+            if tokio::net::TcpStream::connect(addr).await.is_ok() {
+                return Ok(true);
+            }
+            let stopped = self
+                .mixed_listener
+                .lock()
+                .map_err(|_| HMetaError::Core("mixed listener lock poisoned".to_owned()))?
+                .as_ref()
+                .is_none_or(|runtime| runtime.task.is_finished());
+            if stopped || tokio::time::Instant::now() >= deadline {
+                self.stop_mixed_listener()?;
+                return Err(HMetaError::Core(format!(
+                    "127.0.0.1:{mixed_port} did not become ready"
+                )));
+            }
+            tokio::time::sleep(MIXED_LISTENER_READY_RETRY).await;
+        }
+    }
+
+    fn stop_mixed_listener(&self) -> Result<(), HMetaError> {
+        self.mixed_listener
+            .lock()
+            .map_err(|_| HMetaError::Core("mixed listener lock poisoned".to_owned()))?
+            .take();
         Ok(())
     }
 
@@ -1434,6 +1557,7 @@ impl CoreHandle {
     pub fn stop_vpn(&self) -> Result<(), HMetaError> {
         let stats = self.vpn.stats();
         self.vpn.stop()?;
+        self.stop_mixed_listener()?;
         let mut state = self.lock_state()?;
         if let Some(stats) = stats {
             apply_traffic_sample(&mut state, &stats)?;
@@ -1510,6 +1634,9 @@ impl CoreHandle {
     }
 
     pub fn set_platform_vpn_running(&self, running: bool) -> Result<(), HMetaError> {
+        if !running {
+            self.stop_mixed_listener()?;
+        }
         let stats = if running { None } else { self.vpn.stats() };
         let mut state = self.lock_state()?;
         self.sync_platform_vpn_state_locked(&mut state);
@@ -1661,7 +1788,16 @@ impl CoreHandle {
     async fn reload_config_inner(&self, profile_id: &str) -> Result<(), HMetaError> {
         let reload_started = Instant::now();
         let tun_stats = self.vpn.stats();
-        let (runtime_yaml, mode, vpn_options, selected_proxies, preserve_existing_order) = {
+        let (
+            runtime_yaml,
+            runtime_path,
+            mode,
+            vpn_options,
+            controller_access,
+            network_ports,
+            selected_proxies,
+            preserve_existing_order,
+        ) = {
             let mut state = self.lock_state()?;
             let same_profile = state.profiles.active_profile() == Some(profile_id);
             let preserve_existing_order = same_profile && !state.proxy_groups.is_empty();
@@ -1670,15 +1806,21 @@ impl CoreHandle {
             }
             state.profiles.set_active(profile_id)?;
             let vpn_options = state.profiles.vpn_options_for_profile(profile_id)?;
+            let controller_access = state.profiles.controller_access_for_profile(profile_id)?;
+            let network_ports = state.profiles.network_ports_for_profile(profile_id)?;
             let runtime_yaml =
                 state
                     .profiles
                     .build_runtime_yaml(profile_id, state.mode, &vpn_options)?;
+            let runtime_path = state.profiles.runtime_yaml_path(profile_id);
             let selected_proxies = state.profiles.selected_proxies(profile_id)?;
             (
                 runtime_yaml,
+                runtime_path,
                 state.mode,
                 vpn_options,
+                controller_access,
+                network_ports,
                 selected_proxies,
                 preserve_existing_order,
             )
@@ -1710,6 +1852,24 @@ impl CoreHandle {
         };
         let mut proxy_groups = proxy_groups_from_tunnel(&tunnel);
         let runtime_ready = Instant::now();
+        let previous_controller = {
+            let mut state = self.lock_state()?;
+            state.api_controller.take()
+        };
+        if let Some(mut controller) = previous_controller {
+            controller.shutdown().await;
+        }
+        let next_controller = self.start_api_controller(
+            runtime_path,
+            raw_config,
+            proxy_provider_registry,
+            rule_provider_registry,
+            listeners,
+            &tunnel,
+        )?;
+        let controller_bind_addr = next_controller
+            .as_ref()
+            .map(|controller| controller.bind_addr);
         let mut state = self.lock_state()?;
         if preserve_existing_order && state.profiles.active_profile() == Some(profile_id) {
             preserve_proxy_group_member_order(&state.proxy_groups, &mut proxy_groups);
@@ -1720,21 +1880,15 @@ impl CoreHandle {
                 .profiles
                 .set_selected_proxy(profile_id, "GLOBAL".to_owned(), global_proxy)?;
         }
-        self.restart_api_controller(
-            &mut state,
-            profile_id,
-            raw_config,
-            proxy_provider_registry,
-            rule_provider_registry,
-            listeners,
-            &tunnel,
-        )?;
+        state.api_controller = next_controller;
         state.tunnel = Some(tunnel);
         state.sniffer_config = sniffer_config;
         state.proxy_groups = proxy_groups;
         state.providers = providers;
         state.runtime_rules = runtime_rules;
         state.vpn_options = vpn_options;
+        state.controller_access = controller_access;
+        state.network_ports = network_ports;
         state.engine_loaded = true;
         state.last_meow_traffic_sample = None;
         invalidate_exit_location(&mut state);
@@ -1747,6 +1901,11 @@ impl CoreHandle {
             runtime_ready.duration_since(meow_ready).as_millis(),
             runtime_yaml.len(),
         )));
+        if let Some(addr) = controller_bind_addr {
+            state.logs.push(info_log(format!(
+                "meow external-controller listening on {addr}"
+            )));
+        }
         Ok(())
     }
 
@@ -2080,14 +2239,11 @@ impl CoreHandle {
         url: Option<&str>,
         timeout_ms: Option<u64>,
     ) -> Result<u16, HMetaError> {
-        let controller_addr = {
+        let controller = {
             let state = self.lock_state()?;
-            state
-                .api_controller
-                .as_ref()
-                .map(|controller| controller.addr)
+            controller_credentials(&state)
         };
-        let Some(addr) = controller_addr else {
+        let Some((addr, secret)) = controller else {
             return self.test_proxy_delay(proxy_name, url, timeout_ms).await;
         };
         let delay_url = url.unwrap_or("https://www.gstatic.com/generate_204");
@@ -2097,7 +2253,12 @@ impl CoreHandle {
             .query_pairs_mut()
             .append_pair("url", delay_url)
             .append_pair("timeout", &timeout);
-        let response = reqwest::get(controller_url).await;
+        let client = reqwest::Client::new();
+        let mut request = client.get(controller_url);
+        if let Some(secret) = secret {
+            request = request.bearer_auth(secret);
+        }
+        let response = request.send().await;
         match response {
             Ok(response) if response.status().is_success() => {
                 let value: serde_json::Value = response.json().await.map_err(|err| {
@@ -2430,13 +2591,10 @@ impl CoreHandle {
         requested_provider_type: Option<&str>,
         provider_name: &str,
     ) -> Result<(), HMetaError> {
-        let (controller_addr, provider, active_profile) = {
+        let (controller, provider, active_profile) = {
             let state = self.lock_state()?;
             (
-                state
-                    .api_controller
-                    .as_ref()
-                    .map(|controller| controller.addr),
+                controller_credentials(&state),
                 state
                     .providers
                     .iter()
@@ -2474,7 +2632,7 @@ impl CoreHandle {
             state.logs.push(warning_log(message.clone()));
             return Err(HMetaError::Core(message));
         }
-        let Some(addr) = controller_addr else {
+        let Some((addr, secret)) = controller else {
             let active =
                 active_profile.ok_or_else(|| HMetaError::ProfileNotFound("<active>".to_owned()))?;
             return self.reload_config(&active).await;
@@ -2498,7 +2656,12 @@ impl CoreHandle {
             }
         };
         let url = controller_url(addr, &["providers", provider_collection, provider_name])?;
-        let response = reqwest::Client::new().put(url).send().await;
+        let client = reqwest::Client::new();
+        let mut request = client.put(url);
+        if let Some(secret) = secret {
+            request = request.bearer_auth(secret);
+        }
+        let response = request.send().await;
         match response {
             Ok(response) if response.status().is_success() => {
                 {
@@ -2777,6 +2940,31 @@ impl CoreHandle {
         Ok(())
     }
 
+    pub async fn set_profile_network_config(
+        &self,
+        profile_id: &str,
+        network_ports: NetworkPortConfig,
+        allow_lan: bool,
+    ) -> Result<(), HMetaError> {
+        let active = {
+            let mut state = self.lock_state()?;
+            state
+                .profiles
+                .set_profile_network_config(profile_id, network_ports, allow_lan)?;
+            state.logs.push(info_log(format!(
+                "network ports updated for {profile_id}: mixed {}, controller {}, LAN access {}",
+                network_ports.mixed_port,
+                network_ports.controller_port,
+                if allow_lan { "enabled" } else { "disabled" },
+            )));
+            state.profiles.active_profile().map(ToOwned::to_owned)
+        };
+        if active.as_deref() == Some(profile_id) {
+            self.reload_config(profile_id).await?;
+        }
+        Ok(())
+    }
+
     pub fn close_connection(&self, id: &str) -> Result<(), HMetaError> {
         let mut state = self.lock_state()?;
         let Some(tunnel) = &state.tunnel else {
@@ -2793,18 +2981,20 @@ impl CoreHandle {
     }
 
     pub async fn close_connection_via_controller(&self, id: &str) -> Result<(), HMetaError> {
-        let controller_addr = {
+        let controller = {
             let state = self.lock_state()?;
-            state
-                .api_controller
-                .as_ref()
-                .map(|controller| controller.addr)
+            controller_credentials(&state)
         };
-        let Some(addr) = controller_addr else {
+        let Some((addr, secret)) = controller else {
             return self.close_connection(id);
         };
         let url = controller_url(addr, &["connections", id])?;
-        let response = reqwest::Client::new().delete(url).send().await;
+        let client = reqwest::Client::new();
+        let mut request = client.delete(url);
+        if let Some(secret) = secret {
+            request = request.bearer_auth(secret);
+        }
+        let response = request.send().await;
         match response {
             Ok(response) if response.status().is_success() => {
                 let mut state = self.lock_state()?;
@@ -2846,13 +3036,10 @@ impl CoreHandle {
     }
 
     pub async fn close_all_connections_via_controller(&self) -> Result<(), HMetaError> {
-        let (controller_addr, count) = {
+        let (controller, count) = {
             let state = self.lock_state()?;
             (
-                state
-                    .api_controller
-                    .as_ref()
-                    .map(|controller| controller.addr),
+                controller_credentials(&state),
                 state
                     .tunnel
                     .as_ref()
@@ -2860,11 +3047,16 @@ impl CoreHandle {
                     .unwrap_or(0),
             )
         };
-        let Some(addr) = controller_addr else {
+        let Some((addr, secret)) = controller else {
             return self.close_all_connections();
         };
         let url = controller_url(addr, &["connections"])?;
-        let response = reqwest::Client::new().delete(url).send().await;
+        let client = reqwest::Client::new();
+        let mut request = client.delete(url);
+        if let Some(secret) = secret {
+            request = request.bearer_auth(secret);
+        }
+        let response = request.send().await;
         match response {
             Ok(response) if response.status().is_success() => {
                 let mut state = self.lock_state()?;
@@ -2897,7 +3089,7 @@ impl CoreHandle {
         let Ok(_refresh_guard) = self.exit_location_refresh_lock.try_lock() else {
             return Ok(false);
         };
-        let revision = {
+        let (revision, mixed_port) = {
             let mut state = self.lock_state()?;
             self.sync_platform_vpn_state_locked(&mut state);
             let connected = self.vpn.is_running() || state.platform_vpn_running;
@@ -2927,10 +3119,10 @@ impl CoreHandle {
                     "cannot query exit location before the tunnel is loaded".to_owned(),
                 )
             })?;
-            state.exit_location_revision
+            (state.exit_location_revision, state.network_ports.mixed_port)
         };
 
-        let result = probe_exit_location().await;
+        let result = probe_exit_location(mixed_port).await;
         let mut state = self.lock_state()?;
         self.sync_platform_vpn_state_locked(&mut state);
         if state.exit_location_revision != revision
@@ -2943,8 +3135,14 @@ impl CoreHandle {
             Ok(location) => {
                 state.exit_location = location;
                 let message = format!(
-                    "exit location refreshed: {} {}",
-                    state.exit_location.country_code, state.exit_location.ip
+                    "exit location refreshed through {}: {} {}",
+                    state
+                        .exit_location
+                        .provider
+                        .as_deref()
+                        .unwrap_or("unknown provider"),
+                    state.exit_location.country_code,
+                    state.exit_location.ip
                 );
                 state.logs.push(info_log(message));
             }
@@ -3094,8 +3292,10 @@ impl CoreHandle {
             controller_addr: state
                 .api_controller
                 .as_ref()
-                .map(|controller| controller.addr.to_string()),
+                .map(|controller| controller.bind_addr.to_string()),
             controller_diagnostics,
+            controller_access: state.controller_access.clone(),
+            network_ports: state.network_ports,
             active_profile,
             mode: state.mode,
             traffic: state.traffic.clone(),
@@ -3151,20 +3351,25 @@ impl CoreHandle {
         to_json(&self.snapshot()?)
     }
 
-    fn restart_api_controller(
+    fn start_api_controller(
         &self,
-        state: &mut CoreState,
-        profile_id: &str,
+        runtime_path: PathBuf,
         raw_config: RawConfig,
         proxy_providers: HashMap<String, Arc<ProxyProvider>>,
         rule_providers: HashMap<String, Arc<RuleProvider>>,
         listeners: Vec<NamedListener>,
         tunnel: &Tunnel,
-    ) -> Result<(), HMetaError> {
+    ) -> Result<Option<ApiControllerRuntime>, HMetaError> {
         if !self.api_controller_enabled {
-            return Ok(());
+            return Ok(None);
         }
-        let addr = self
+        if self
+            .platform_ipc()?
+            .is_some_and(|platform| !platform.is_ui())
+        {
+            return Ok(None);
+        }
+        let bind_addr = self
             .api_controller_addr_override
             .or_else(|| {
                 raw_config
@@ -3173,7 +3378,26 @@ impl CoreHandle {
                     .and_then(|addr| addr.parse::<SocketAddr>().ok())
             })
             .ok_or_else(|| HMetaError::Core("external-controller is not configured".to_owned()))?;
-        let runtime_path = state.profiles.runtime_yaml_path(profile_id);
+        let client_addr = if bind_addr.ip().is_unspecified() {
+            SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), bind_addr.port())
+        } else {
+            bind_addr
+        };
+        let listener = std::net::TcpListener::bind(bind_addr).map_err(|err| {
+            HMetaError::Core(format!(
+                "failed to bind external-controller on {bind_addr}: {err}"
+            ))
+        })?;
+        listener.set_nonblocking(true).map_err(|err| {
+            HMetaError::Core(format!(
+                "failed to configure external-controller listener on {bind_addr}: {err}"
+            ))
+        })?;
+        let listener = tokio::net::TcpListener::from_std(listener).map_err(|err| {
+            HMetaError::Core(format!(
+                "failed to attach external-controller listener on {bind_addr}: {err}"
+            ))
+        })?;
         let (log_tx, _) = tokio::sync::broadcast::channel(256);
         if let Ok(mut senders) = API_LOG_TXS.lock() {
             senders.push_back(log_tx.clone());
@@ -3181,7 +3405,6 @@ impl CoreHandle {
                 senders.pop_front();
             }
         }
-        state.api_controller = None;
         let proxy_provider_map = dashmap::DashMap::new();
         for (name, provider) in proxy_providers {
             proxy_provider_map.insert(name, provider);
@@ -3205,18 +3428,20 @@ impl CoreHandle {
         });
         let task_revision = Arc::clone(&config_revision);
         let task = tokio::spawn(async move {
-            if let Err(err) = run_api_controller(addr, app_state, task_revision).await {
+            if let Err(err) = serve_api_controller(listener, app_state, task_revision).await {
                 tracing::warn!("meow external-controller stopped: {err}");
             }
         });
         let memory_task = tokio::spawn(monitor_controller_memory(
-            addr,
+            client_addr,
             raw_config.secret.clone(),
             Arc::clone(&memory_in_use_bytes),
             Arc::clone(&memory_limit_bytes),
         ));
-        state.api_controller = Some(ApiControllerRuntime {
-            addr,
+        tracing::info!("REST API listening on {bind_addr}");
+        Ok(Some(ApiControllerRuntime {
+            bind_addr,
+            client_addr,
             task,
             memory_task,
             raw_config: shared_raw_config,
@@ -3226,11 +3451,7 @@ impl CoreHandle {
             synced_revision: 0,
             memory_in_use_bytes,
             memory_limit_bytes,
-        });
-        state.logs.push(info_log(format!(
-            "meow external-controller listening on {addr}"
-        )));
-        Ok(())
+        }))
     }
 
     fn persist_platform_vpn_state_locked(&self, state: &mut CoreState) -> Result<(), HMetaError> {

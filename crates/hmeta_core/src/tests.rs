@@ -31,6 +31,7 @@ fn core_snapshot_is_json() {
     assert!(json.contains("proxyGroups"));
     assert!(json.contains("vpnLifecycle"));
     assert!(json.contains("networkProtected"));
+    assert!(json.contains("networkPorts"));
     assert!(json.contains("trafficHistory"));
     assert!(json.contains("handledPackets"));
     assert!(json.contains("meowRsVersion"));
@@ -48,10 +49,21 @@ fn core_snapshot_is_json() {
     assert_eq!(snapshot.about.arkit_rev, ARKIT_REV);
     assert!(!snapshot.about.privacy_summary.is_empty());
     assert!(snapshot.about.privacy_summary.iter().any(|note| {
-        note.contains("IPWho.is")
+        note.contains("HTTPS 服务")
             && note.contains("出口 IP")
-            && note.contains("不会发送订阅、节点或规则配置")
+            && note.contains("不包含订阅、节点、规则")
     }));
+    assert!(snapshot
+        .about
+        .privacy_summary
+        .iter()
+        .any(|note| note.contains("不接入广告、行为分析或远程遥测服务")));
+    assert_eq!(snapshot.about.exit_ip_services.len(), 6);
+    assert!(snapshot
+        .about
+        .exit_ip_services
+        .iter()
+        .any(|service| service.name == "IPWho.is"));
 }
 
 #[test]
@@ -1077,6 +1089,87 @@ async fn runtime_ui_cache_populates_cold_snapshot_before_reload() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_ui_cache_writer_keeps_the_latest_selection() {
+    let root = std::env::temp_dir().join(format!(
+        "hmeta-core-ui-cache-writer-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let profile_id = core
+        .import_profile_from_content(
+            "Cache writer",
+            "test",
+            &hmeta_profile::default_runtime_yaml(),
+            None,
+        )
+        .await
+        .unwrap();
+    core.reload_config(&profile_id).await.unwrap();
+    {
+        let mut state = core.lock_state().unwrap();
+        state
+            .proxy_groups
+            .iter_mut()
+            .find(|group| group.name == "Proxy")
+            .unwrap()
+            .selected = Some("older".to_owned());
+        persist_runtime_ui_cache_best_effort(&mut state);
+        state
+            .proxy_groups
+            .iter_mut()
+            .find(|group| group.name == "Proxy")
+            .unwrap()
+            .selected = Some("latest".to_owned());
+        persist_runtime_ui_cache_best_effort(&mut state);
+    }
+
+    let cache_file = root.join(RUNTIME_UI_CACHE_FILE);
+    let mut selected = None;
+    for _ in 0..100 {
+        selected = std::fs::read(&cache_file)
+            .ok()
+            .and_then(|content| serde_json::from_slice::<RuntimeUiCache>(&content).ok())
+            .and_then(|cache| {
+                cache
+                    .proxy_groups
+                    .into_iter()
+                    .find(|group| group.name == "Proxy")
+                    .and_then(|group| group.selected)
+            });
+        if selected.as_deref() == Some("latest") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(selected.as_deref(), Some("latest"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vpn_process_role_does_not_write_the_ui_cache() {
+    let root = std::env::temp_dir().join(format!(
+        "hmeta-core-vpn-cache-writer-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let profile_id = core
+        .import_profile_from_content(
+            "VPN cache isolation",
+            "test",
+            &hmeta_profile::default_runtime_yaml(),
+            None,
+        )
+        .await
+        .unwrap();
+    core.lock_state().unwrap().runtime_ui_cache_writes_enabled = false;
+    core.reload_config(&profile_id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(!root.join(RUNTIME_UI_CACHE_FILE).exists());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_ui_cache_is_ignored_after_profile_content_changes() {
     let root = std::env::temp_dir().join(format!(
         "hmeta-core-ui-cache-revision-test-{}",
@@ -1285,22 +1378,16 @@ async fn dns_config_updates_reload_active_snapshot() {
 
     core.set_profile_dns_config(
         &profile_id,
-        vec!["https://dns.alidns.com/dns-query".to_owned()],
-        vec!["https://dns.google/dns-query".to_owned()],
-        BTreeMap::from([(
-            "geosite:cn".to_owned(),
-            vec!["https://dns.alidns.com/dns-query".to_owned()],
-        )]),
+        vec!["223.5.5.5".to_owned()],
+        vec!["1.1.1.1".to_owned()],
+        BTreeMap::from([("geosite:cn".to_owned(), vec!["223.5.5.5".to_owned()])]),
     )
     .await
     .unwrap();
 
     let snapshot = core.snapshot().unwrap();
-    assert_eq!(
-        snapshot.vpn_options.dns_servers,
-        vec!["https://dns.alidns.com/dns-query"]
-    );
-    assert_eq!(snapshot.dns.fallbacks, vec!["https://dns.google/dns-query"]);
+    assert_eq!(snapshot.vpn_options.dns_servers, vec!["223.5.5.5"]);
+    assert_eq!(snapshot.dns.fallbacks, vec!["1.1.1.1"]);
     assert_eq!(
         snapshot
             .dns
@@ -1308,7 +1395,7 @@ async fn dns_config_updates_reload_active_snapshot() {
             .get("geosite:cn")
             .cloned()
             .unwrap_or_default(),
-        vec!["https://dns.alidns.com/dns-query"]
+        vec!["223.5.5.5"]
     );
 }
 
@@ -1941,6 +2028,7 @@ rules:
         .get("proxies")
         .and_then(|value| value.get("DIRECT"))
         .is_some());
+
     core.select_proxy_via_controller("Proxy", "HTTP-MOCK")
         .await
         .unwrap();
@@ -2010,19 +2098,9 @@ rules:
     core.flush_dns_cache_via_controller().await.unwrap();
     core.flush_fake_ip_cache_via_controller().await.unwrap();
 
-    let mut memory_in_use = 0;
-    for _ in 0..30 {
-        memory_in_use = core
-            .snapshot()
-            .unwrap()
-            .controller_diagnostics
-            .memory_in_use_bytes;
-        if memory_in_use > 0 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    assert!(memory_in_use > 0, "controller memory stream stayed empty");
+    let memory = wait_for_first_json_frame(&format!("ws://{addr}/memory")).await;
+    assert!(memory.get("inuse").is_some_and(serde_json::Value::is_u64));
+    assert!(memory.get("oslimit").is_some_and(serde_json::Value::is_u64));
 
     let tunnel = {
         let state = core.lock_state().unwrap();
@@ -2118,6 +2196,48 @@ rules:
         }
     }
     assert!(matched, "logs websocket did not receive warning payload");
+
+    core.set_profile_network_config(
+        &profile_id,
+        NetworkPortConfig {
+            mixed_port: 17890,
+            controller_port: 19090,
+        },
+        true,
+    )
+    .await
+    .unwrap();
+    let snapshot = core.snapshot().unwrap();
+    let secret = snapshot
+        .controller_access
+        .secret
+        .clone()
+        .expect("LAN controller secret");
+    assert!(snapshot.controller_running);
+    assert!(snapshot.controller_access.allow_lan);
+    assert_eq!(
+        snapshot.network_ports,
+        NetworkPortConfig {
+            mixed_port: 17890,
+            controller_port: 19090,
+        }
+    );
+    assert_eq!(
+        snapshot.controller_access.secret.as_deref(),
+        Some(secret.as_str())
+    );
+    let unauthenticated = reqwest::get(format!("http://{addr}/version"))
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let authenticated = wait_for_json_with_bearer(&format!("http://{addr}/version"), &secret).await;
+    assert_eq!(
+        authenticated
+            .get("meta")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    core.flush_dns_cache_via_controller().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4032,6 +4152,26 @@ async fn wait_for_json(url: &str) -> serde_json::Value {
     panic!("{url} did not become ready: {last_error}");
 }
 
+async fn wait_for_json_with_bearer(url: &str, secret: &str) -> serde_json::Value {
+    let client = reqwest::Client::new();
+    let mut last_error = String::new();
+    for _ in 0..40 {
+        match client.get(url).bearer_auth(secret).send().await {
+            Ok(response) if response.status().is_success() => {
+                return response.json().await.expect("JSON response");
+            }
+            Ok(response) => {
+                last_error = format!("HTTP {}", response.status());
+            }
+            Err(err) => {
+                last_error = err.to_string();
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("{url} did not become ready with bearer auth: {last_error}");
+}
+
 async fn wait_for_traffic_frame(
     url: &str,
     expected_upload: i64,
@@ -4067,6 +4207,20 @@ async fn wait_for_traffic_frame(
     panic!(
             "{url} did not publish expected traffic frame: up={expected_upload}, down={expected_download}"
         );
+}
+
+async fn wait_for_first_json_frame(url: &str) -> serde_json::Value {
+    let (mut socket, _) = tokio_tungstenite::connect_async(url)
+        .await
+        .expect("websocket connects");
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(3), socket.next())
+        .await
+        .expect("websocket frame before timeout")
+        .expect("websocket frame")
+        .expect("valid websocket frame")
+        .into_text()
+        .expect("text websocket frame");
+    serde_json::from_str(&frame).expect("JSON websocket frame")
 }
 
 async fn spawn_healthcheck_http_server() -> String {

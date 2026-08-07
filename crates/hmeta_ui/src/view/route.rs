@@ -32,6 +32,8 @@ pub(super) enum Route {
     Logs {},
     #[route("/settings/about")]
     About {},
+    #[route("/settings/about/privacy")]
+    Privacy {},
 }
 
 impl Route {
@@ -51,6 +53,7 @@ impl Route {
             Self::Settings {} => strings.nav_settings,
             Self::SubscriptionConverter {} => tr(locale, "订阅转化规则", "Subscription conversion"),
             Self::About {} => strings.nav_about,
+            Self::Privacy {} => tr(locale, "隐私与出口 IP", "Privacy and exit IP"),
         }
     }
 
@@ -69,6 +72,7 @@ impl Route {
             Self::Settings {} => "settings",
             Self::SubscriptionConverter {} => "refresh-cw",
             Self::About {} => "badge-info",
+            Self::Privacy {} => "shield-check",
         }
     }
 
@@ -85,7 +89,8 @@ impl Route {
             | Self::Connections { .. }
             | Self::Resources {}
             | Self::Logs {}
-            | Self::About {} => 3,
+            | Self::About {}
+            | Self::Privacy {} => 3,
         }
     }
 
@@ -100,6 +105,7 @@ impl Route {
             | Self::Resources {}
             | Self::Logs {}
             | Self::About {} => Some(Self::Tools {}),
+            Self::Privacy {} => Some(Self::About {}),
             _ => None,
         }
     }
@@ -181,4 +187,9 @@ fn Appearance() -> Element {
 #[component]
 fn About() -> Element {
     about_page(state())
+}
+
+#[component]
+fn Privacy() -> Element {
+    privacy_page(state())
 }

@@ -200,38 +200,6 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
     let current = state.read().clone();
     let about = current.snapshot.about;
     let arkit_revision = middle_truncate_text(&about.arkit_rev, 18);
-    let privacy = about
-        .privacy_summary
-        .into_iter()
-        .map(|item| {
-            rsx! {
-                row {
-                    width: "100%",
-                    margin_top: 8.0,
-                    align_items: "start",
-                    row {
-                        width: 20.0,
-                        height: 20.0,
-                        margin_top: 1.0,
-                        align_items: "center",
-                        justify_content: "center",
-                        {arkit::icon("shield-check", 16.0, success())}
-                    }
-                    row {
-                        layout_weight: 1.0,
-                        margin_left: 8.0,
-                        text {
-                            width: "100%",
-                            content: item,
-                            font_size: 13.0,
-                            line_height: 19.0,
-                            font_color: text_color(),
-                        }
-                    }
-                }
-            }
-        })
-        .collect::<Vec<_>>();
     let body = rsx! {
         column {
             width: "100%",
@@ -250,38 +218,17 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
                 }
             )}
             row { height: 12.0 }
-            {card(tr(current.locale, "隐私", "Privacy"), None, rsx! { column { width: "100%", {privacy.into_iter()} } })}
-            row { height: 10.0 }
-            {card(
-                tr(current.locale, "出口 IP 能力", "Exit IP capability"),
-                Some(tr(
+            {settings_section(
+                tr(current.locale, "隐私与数据", "Privacy and data"),
+                vec![settings_route_row(
+                    Route::Privacy {},
                     current.locale,
-                    "IPWho.is 仅用于识别当前 VPN 出口及对应国家/地区",
-                    "IPWho.is is used only to identify the current VPN exit and country/region",
-                ).to_owned()),
-                rsx! {
-                    FlatButton {
-                        variant: FlatButtonVariant::Link,
-                        size: ButtonSize::Sm,
-                        width: Some("100%".into()),
-                        onclick: move |_| dispatch(state, Action::OpenExternalUrl("https://ipwhois.io/documentation".to_owned())),
-                        row {
-                            width: 18.0,
-                            height: 20.0,
-                            align_items: "center",
-                            justify_content: "center",
-                            {arkit::icon("external-link", 16.0, text_color())}
-                        }
-                        text {
-                            content: tr(current.locale, "查看 IPWho.is 能力说明", "View IPWho.is documentation"),
-                            margin_left: spacing::SM,
-                            font_size: typography::SM,
-                            line_height: 20.0,
-                            font_weight: 600,
-                            font_color: text_color(),
-                        }
-                    }
-                }
+                    tr(
+                        current.locale,
+                        "隐私策略、出口 IP 查询和第三方服务说明",
+                        "Privacy policy, exit IP lookup and third-party services",
+                    ),
+                )],
             )}
             row { height: 10.0 }
             row {
@@ -320,4 +267,96 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
         }
     };
     scaffold(state, Route::About {}, rsx! {}, body)
+}
+
+pub(crate) fn privacy_page(state: Signal<State>) -> Element {
+    let current = state.read().clone();
+    let about = current.snapshot.about;
+    let disclosures = about
+        .privacy_summary
+        .into_iter()
+        .map(|item| {
+            rsx! {
+                row {
+                    width: "100%",
+                    margin_bottom: spacing::MD,
+                    align_items: "start",
+                    row {
+                        width: 22.0,
+                        height: 22.0,
+                        margin_top: 1.0,
+                        align_items: "center",
+                        justify_content: "center",
+                        {arkit::icon("shield-check", 16.0, success())}
+                    }
+                    row {
+                        layout_weight: 1.0,
+                        margin_left: spacing::SM,
+                        text {
+                            width: "100%",
+                            content: item,
+                            font_size: typography::SM,
+                            line_height: 21.0,
+                            font_color: text_color(),
+                        }
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+    let exit_ip_services = about
+        .exit_ip_services
+        .into_iter()
+        .map(|service| {
+            let documentation_url = service.documentation_url;
+            rsx! {
+                FlatButton {
+                    variant: FlatButtonVariant::Link,
+                    size: ButtonSize::Sm,
+                    width: Some("100%".into()),
+                    onclick: move |_| dispatch(state, Action::OpenExternalUrl(documentation_url.clone())),
+                    row {
+                        width: 18.0,
+                        height: 20.0,
+                        align_items: "center",
+                        justify_content: "center",
+                        {arkit::icon("external-link", 16.0, text_color())}
+                    }
+                    text {
+                        content: service.name,
+                        margin_left: spacing::SM,
+                        font_size: typography::SM,
+                        line_height: 20.0,
+                        font_weight: 600,
+                        font_color: text_color(),
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+    let body = rsx! {
+        column {
+            width: "100%",
+            {card(
+                tr(current.locale, "隐私策略", "Privacy policy"),
+                Some(tr(
+                    current.locale,
+                    "以下说明覆盖 Paws 自身处理的数据；用户配置的订阅、规则提供方和外部网站由各自运营方负责",
+                    "This covers data handled by Paws; configured subscriptions, rule providers and external sites are governed by their operators",
+                ).to_owned()),
+                rsx! { column { width: "100%", {disclosures.into_iter()} } },
+            )}
+            row { height: 12.0 }
+            {card(
+                tr(current.locale, "出口 IP 查询服务", "Exit IP lookup services"),
+                Some(tr(
+                    current.locale,
+                    "仅在 VPN 已连接时查询，取首个有效结果。点击服务名称可查看其文档和隐私规则",
+                    "Queried only while the VPN is connected; the first valid result is used. Open a service to review its documentation and privacy terms",
+                ).to_owned()),
+                rsx! { column { width: "100%", {exit_ip_services.into_iter()} } },
+            )}
+        }
+    };
+    scaffold(state, Route::Privacy {}, rsx! {}, body)
 }
