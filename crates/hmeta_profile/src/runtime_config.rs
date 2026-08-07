@@ -1,5 +1,117 @@
 use super::*;
 
+pub const CONTROLLER_LOOPBACK_HOST: &str = "127.0.0.1";
+pub const CONTROLLER_LAN_HOST: &str = "0.0.0.0";
+const CONTROLLER_SECRET_BYTES: usize = 32;
+const CONTROLLER_SECRET_HEX_LENGTH: usize = CONTROLLER_SECRET_BYTES * 2;
+
+pub(super) struct ControllerSecretGenerator;
+
+impl ControllerSecretGenerator {
+    pub(super) fn generate() -> Result<String, HMetaError> {
+        let mut bytes = [0_u8; CONTROLLER_SECRET_BYTES];
+        getrandom::getrandom(&mut bytes).map_err(|err| {
+            HMetaError::Core(format!("failed to generate controller secret: {err}"))
+        })?;
+        let mut secret = String::with_capacity(CONTROLLER_SECRET_HEX_LENGTH);
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for byte in bytes {
+            secret.push(char::from(HEX[usize::from(byte >> 4)]));
+            secret.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+        Ok(secret)
+    }
+}
+
+pub(super) fn controller_secret_is_valid(secret: &str) -> bool {
+    secret.len() == CONTROLLER_SECRET_HEX_LENGTH
+        && secret.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub fn controller_access_from_yaml(raw_yaml: &str) -> Result<ControllerAccessConfig, HMetaError> {
+    let value: Value =
+        serde_yaml::from_str(raw_yaml).map_err(|err| HMetaError::Core(err.to_string()))?;
+    let Some(root) = value.as_mapping() else {
+        return Err(HMetaError::Core(
+            "profile root must be a YAML map".to_owned(),
+        ));
+    };
+    Ok(controller_access_from_mapping(root))
+}
+
+pub fn network_ports_from_yaml(raw_yaml: &str) -> Result<NetworkPortConfig, HMetaError> {
+    let value: Value =
+        serde_yaml::from_str(raw_yaml).map_err(|err| HMetaError::Core(err.to_string()))?;
+    let Some(root) = value.as_mapping() else {
+        return Err(HMetaError::Core(
+            "profile root must be a YAML map".to_owned(),
+        ));
+    };
+    Ok(network_ports_from_mapping(root))
+}
+
+pub(super) fn network_ports_from_mapping(root: &Mapping) -> NetworkPortConfig {
+    let defaults = NetworkPortConfig::default();
+    let Some(Value::Mapping(hmeta)) = root.get(value_key("hmeta")) else {
+        return defaults;
+    };
+    let ports = NetworkPortConfig {
+        mixed_port: get_u16(hmeta, "mixed-port")
+            .or_else(|| get_u16(hmeta, "mixedPort"))
+            .unwrap_or(defaults.mixed_port),
+        controller_port: get_u16(hmeta, "controller-port")
+            .or_else(|| get_u16(hmeta, "controllerPort"))
+            .unwrap_or(defaults.controller_port),
+    };
+    ports.validate().unwrap_or(defaults)
+}
+
+pub(super) fn controller_access_from_mapping(root: &Mapping) -> ControllerAccessConfig {
+    let Some(Value::Mapping(hmeta)) = root.get(value_key("hmeta")) else {
+        return ControllerAccessConfig::default();
+    };
+    let allow_lan = get_bool(hmeta, "controller-allow-lan")
+        .or_else(|| get_bool(hmeta, "controllerAllowLan"))
+        .unwrap_or(false);
+    let secret = get_string(hmeta, "controller-secret")
+        .or_else(|| get_string(hmeta, "controllerSecret"))
+        .filter(|secret| controller_secret_is_valid(secret));
+    ControllerAccessConfig { allow_lan, secret }
+}
+
+pub(super) fn patch_controller_access(
+    root: &mut Mapping,
+    access: &ControllerAccessConfig,
+    controller_port: u16,
+) -> Result<(), HMetaError> {
+    let controller_addr = |host: &str| format!("{host}:{controller_port}");
+    if access.allow_lan {
+        let secret = access
+            .secret
+            .as_deref()
+            .filter(|secret| controller_secret_is_valid(secret))
+            .ok_or_else(|| {
+                HMetaError::Core(
+                    "LAN controller access requires a generated 64-character secret".to_owned(),
+                )
+            })?;
+        put_string(
+            root,
+            "external-controller",
+            &controller_addr(CONTROLLER_LAN_HOST),
+        );
+        put_string(root, "secret", secret);
+    } else {
+        put_string(
+            root,
+            "external-controller",
+            &controller_addr(CONTROLLER_LOOPBACK_HOST),
+        );
+        root.remove(value_key("secret"));
+    }
+    Ok(())
+}
+
 pub fn vpn_options_from_yaml(raw_yaml: &str) -> Result<VpnOptions, HMetaError> {
     let value: Value =
         serde_yaml::from_str(raw_yaml).map_err(|err| HMetaError::Core(err.to_string()))?;
@@ -95,10 +207,12 @@ pub fn vpn_options_from_yaml(raw_yaml: &str) -> Result<VpnOptions, HMetaError> {
 }
 
 pub fn default_runtime_yaml() -> String {
-    r#"mixed-port: 7890
+    let ports = NetworkPortConfig::default();
+    format!(
+        r#"mixed-port: {}
 mode: rule
 log-level: info
-external-controller: 127.0.0.1:9090
+external-controller: {}:{}
 dns:
   enable: true
   listen: 127.0.0.1:1053
@@ -126,8 +240,9 @@ proxy-groups:
       - DIRECT
 rules:
   - MATCH,DIRECT
-"#
-    .to_owned()
+"#,
+        ports.mixed_port, CONTROLLER_LOOPBACK_HOST, ports.controller_port
+    )
 }
 
 pub(super) fn patch_dns(root: &mut Mapping, options: &VpnOptions) {

@@ -19,3 +19,32 @@ fn default_vpn_options_omit_per_app_system_fields() {
     assert!(!json.contains("trustedApplications"));
     assert!(!json.contains("blockedApplications"));
 }
+
+#[test]
+fn network_ports_have_safe_defaults_and_reject_conflicts() {
+    assert_eq!(
+        NetworkPortConfig::default(),
+        NetworkPortConfig {
+            mixed_port: 7890,
+            controller_port: 9090,
+        }
+    );
+    assert!(NetworkPortConfig {
+        mixed_port: 17890,
+        controller_port: 19090,
+    }
+    .validate()
+    .is_ok());
+    assert!(NetworkPortConfig {
+        mixed_port: 9090,
+        controller_port: 9090,
+    }
+    .validate()
+    .is_err());
+    assert!(NetworkPortConfig {
+        mixed_port: 80,
+        controller_port: 9090,
+    }
+    .validate()
+    .is_err());
+}

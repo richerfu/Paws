@@ -107,6 +107,7 @@ export declare function setProfileDnsServers(profileId: string, dnsServersJson: 
 export declare function setProfileDnsConfig(profileId: string, dnsServersJson: string, dnsFallbacksJson: string, dnsNameserverPolicyJson: string): Promise<void>
 
 export declare function setProfileVpnConfig(profileId: string, systemProxy: boolean, dnsHijacking: boolean, allowBypass: boolean, stack: string): Promise<void>
+export declare function setProfileNetworkConfig(profileId: string, mixedPort: number, controllerPort: number, allowLan: boolean): Promise<void>
 
 export declare function setRuleEnabled(profileId: string, ruleId: string, enabled: boolean): void
 
