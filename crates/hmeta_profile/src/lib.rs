@@ -1,9 +1,10 @@
 use base64::Engine;
 use hmeta_model::{
-    GeodataFileSummary, HMetaError, ManualRuleMatchKind, ManualRuleMutation,
-    ManualRuleMutationKind, ManualRuleSpec, ProfileSummary, ProviderSummary, RuleSummary,
-    RuntimeMode, SubscriptionMetadata, SubscriptionUserInfo, VpnOptions, VpnStack,
-    DEFAULT_CHINA_DNS_SERVERS, DEFAULT_GLOBAL_DNS_FALLBACKS,
+    ControllerAccessConfig, GeodataFileSummary, HMetaError, ManualRuleMatchKind,
+    ManualRuleMutation, ManualRuleMutationKind, ManualRuleSpec, NetworkPortConfig, ProfileSummary,
+    ProviderSummary, RuleSummary, RuntimeMode, SubscriptionMetadata, SubscriptionUserInfo,
+    VpnOptions, VpnStack, DEFAULT_CHINA_DNS_SERVERS, DEFAULT_GLOBAL_DNS_FALLBACKS,
+    DEFAULT_MIXED_PORT,
 };
 use ipnet::IpNet;
 use percent_encoding::percent_decode_str;
@@ -29,6 +30,7 @@ const STORE_VERSION: u32 = 1;
 const MEOW_V4_CLIENT: &str = "172.19.0.1/30";
 const MEOW_V4_ROUTER: &str = "172.19.0.2";
 const MEOW_V6_CLIENT: &str = "fdfe:dcba:9876::1/126";
+pub const APP_MIXED_PROXY_PORT: u16 = DEFAULT_MIXED_PORT;
 const DEFAULT_PROXY_SUBSCRIPTION_RULES: [&str; 3] =
     ["GEOSITE,cn,DIRECT", "GEOIP,CN,DIRECT", "MATCH,Proxy"];
 pub const MANUAL_ACTIVITY_RULE_SOURCE: &str = "manual:activity";
@@ -633,6 +635,55 @@ impl ProfileStore {
         self.update_profile_content(profile_id, raw_yaml)
     }
 
+    pub fn set_profile_network_config(
+        &mut self,
+        profile_id: &str,
+        network_ports: NetworkPortConfig,
+        allow_lan: bool,
+    ) -> Result<(NetworkPortConfig, ControllerAccessConfig), HMetaError> {
+        let network_ports = network_ports.validate()?;
+        let raw_yaml = self.raw_yaml(profile_id)?;
+        let mut value: Value =
+            serde_yaml::from_str(&raw_yaml).map_err(|err| HMetaError::Core(err.to_string()))?;
+        let Some(root) = value.as_mapping_mut() else {
+            return Err(HMetaError::Core(
+                "profile root must be a YAML map".to_owned(),
+            ));
+        };
+
+        let hmeta_key = value_key("hmeta");
+        let mut hmeta = root
+            .remove(&hmeta_key)
+            .and_then(|value| value.as_mapping().cloned())
+            .unwrap_or_default();
+        let mut secret = get_string(&hmeta, "controller-secret")
+            .or_else(|| get_string(&hmeta, "controllerSecret"))
+            .filter(|secret| controller_secret_is_valid(secret));
+        if allow_lan && secret.is_none() {
+            secret = Some(ControllerSecretGenerator::generate()?);
+        }
+        put_i64(
+            &mut hmeta,
+            "mixed-port",
+            i64::from(network_ports.mixed_port),
+        );
+        put_i64(
+            &mut hmeta,
+            "controller-port",
+            i64::from(network_ports.controller_port),
+        );
+        put_bool(&mut hmeta, "controller-allow-lan", allow_lan);
+        if let Some(secret) = secret.as_deref() {
+            put_string(&mut hmeta, "controller-secret", secret);
+        }
+        root.insert(hmeta_key, Value::Mapping(hmeta));
+
+        let raw_yaml =
+            serde_yaml::to_string(&value).map_err(|err| HMetaError::Core(err.to_string()))?;
+        self.update_profile_content(profile_id, raw_yaml)?;
+        Ok((network_ports, ControllerAccessConfig { allow_lan, secret }))
+    }
+
     pub fn set_active(&mut self, id: &str) -> Result<(), HMetaError> {
         if !self.profiles.contains_key(id) {
             return Err(HMetaError::ProfileNotFound(id.to_owned()));
@@ -697,6 +748,22 @@ impl ProfileStore {
     pub fn vpn_options_for_profile(&self, profile_id: &str) -> Result<VpnOptions, HMetaError> {
         let raw_yaml = self.raw_yaml(profile_id)?;
         vpn_options_from_yaml(&raw_yaml)
+    }
+
+    pub fn controller_access_for_profile(
+        &self,
+        profile_id: &str,
+    ) -> Result<ControllerAccessConfig, HMetaError> {
+        let raw_yaml = self.raw_yaml(profile_id)?;
+        controller_access_from_yaml(&raw_yaml)
+    }
+
+    pub fn network_ports_for_profile(
+        &self,
+        profile_id: &str,
+    ) -> Result<NetworkPortConfig, HMetaError> {
+        let raw_yaml = self.raw_yaml(profile_id)?;
+        network_ports_from_yaml(&raw_yaml)
     }
 
     pub fn active_vpn_options(&self) -> Result<VpnOptions, HMetaError> {
@@ -946,12 +1013,14 @@ impl ProfileStore {
             ));
         };
 
+        let controller_access = controller_access_from_mapping(root);
+        let network_ports = network_ports_from_mapping(root);
         sanitize_app_managed_config(root);
         put_string(root, "mode", mode.as_str());
         put_bool(root, "ipv6", vpn_options.ipv6);
         put_string(root, "log-level", "info");
-        put_i64(root, "mixed-port", 7890);
-        put_string(root, "external-controller", "127.0.0.1:9090");
+        put_i64(root, "mixed-port", i64::from(network_ports.mixed_port));
+        patch_controller_access(root, &controller_access, network_ports.controller_port)?;
         patch_geox_url(root);
         patch_geodata_paths(root, &self.root)?;
         upgrade_legacy_generated_subscription_rules(root);

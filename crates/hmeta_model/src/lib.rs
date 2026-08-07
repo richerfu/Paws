@@ -6,6 +6,8 @@ pub const DEFAULT_CHINA_DNS_SERVERS: &[&str] = &["223.5.5.5", "119.29.29.29"];
 pub const DEFAULT_GLOBAL_DNS_FALLBACKS: &[&str] = &["1.1.1.1", "8.8.8.8"];
 pub const DEFAULT_CHINA_DNS_POLICY_MATCHER: &str = "geosite:cn";
 pub const DEFAULT_GLOBAL_DNS_POLICY_MATCHER: &str = "geosite:geolocation-!cn";
+pub const DEFAULT_MIXED_PORT: u16 = 7890;
+pub const DEFAULT_CONTROLLER_PORT: u16 = 9090;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -160,6 +162,50 @@ impl Default for VpnOptions {
             dns_servers: default_china_dns_servers(),
             dns_fallbacks: default_global_dns_fallbacks(),
             dns_nameserver_policy: default_dns_policy(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControllerAccessConfig {
+    #[serde(default)]
+    pub allow_lan: bool,
+    #[serde(default)]
+    pub secret: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkPortConfig {
+    pub mixed_port: u16,
+    pub controller_port: u16,
+}
+
+impl NetworkPortConfig {
+    pub const MIN_PORT: u16 = 1024;
+
+    pub fn validate(self) -> Result<Self, HMetaError> {
+        if self.mixed_port < Self::MIN_PORT || self.controller_port < Self::MIN_PORT {
+            return Err(HMetaError::Core(format!(
+                "network ports must be between {} and 65535",
+                Self::MIN_PORT
+            )));
+        }
+        if self.mixed_port == self.controller_port {
+            return Err(HMetaError::Core(
+                "mixed proxy port and controller port must be different".to_owned(),
+            ));
+        }
+        Ok(self)
+    }
+}
+
+impl Default for NetworkPortConfig {
+    fn default() -> Self {
+        Self {
+            mixed_port: DEFAULT_MIXED_PORT,
+            controller_port: DEFAULT_CONTROLLER_PORT,
         }
     }
 }
@@ -504,6 +550,13 @@ pub struct RequestSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ExitIpServiceSummary {
+    pub name: String,
+    pub documentation_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AboutSnapshot {
     pub app_version: String,
     pub core_version: String,
@@ -511,6 +564,8 @@ pub struct AboutSnapshot {
     pub arkit_rev: String,
     pub rust_version: String,
     pub privacy_summary: Vec<String>,
+    #[serde(default)]
+    pub exit_ip_services: Vec<ExitIpServiceSummary>,
 }
 
 impl Default for AboutSnapshot {
@@ -522,6 +577,7 @@ impl Default for AboutSnapshot {
             arkit_rev: "unknown".to_owned(),
             rust_version: "unknown".to_owned(),
             privacy_summary: Vec::new(),
+            exit_ip_services: Vec::new(),
         }
     }
 }
@@ -556,6 +612,8 @@ pub struct ExitLocationSnapshot {
     pub updated_at: Option<String>,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -577,6 +635,10 @@ pub struct RuntimeSnapshot {
     pub controller_addr: Option<String>,
     #[serde(default)]
     pub controller_diagnostics: ControllerDiagnostics,
+    #[serde(default)]
+    pub controller_access: ControllerAccessConfig,
+    #[serde(default)]
+    pub network_ports: NetworkPortConfig,
     pub active_profile: Option<String>,
     pub mode: RuntimeMode,
     pub traffic: TrafficSnapshot,
@@ -614,6 +676,8 @@ impl Default for RuntimeSnapshot {
             controller_running: false,
             controller_addr: None,
             controller_diagnostics: ControllerDiagnostics::default(),
+            controller_access: ControllerAccessConfig::default(),
+            network_ports: NetworkPortConfig::default(),
             active_profile: None,
             mode: RuntimeMode::Rule,
             traffic: TrafficSnapshot {

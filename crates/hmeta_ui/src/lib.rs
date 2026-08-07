@@ -554,6 +554,26 @@ pub async fn set_profile_vpn_config(
 }
 
 #[napi]
+pub async fn set_profile_network_config(
+    profile_id: String,
+    mixed_port: u16,
+    controller_port: u16,
+    allow_lan: bool,
+) -> Result<()> {
+    hmeta_core::shared_core()
+        .set_profile_network_config(
+            &profile_id,
+            hmeta_model::NetworkPortConfig {
+                mixed_port,
+                controller_port,
+            },
+            allow_lan,
+        )
+        .await
+        .map_err(to_napi_error)
+}
+
+#[napi]
 pub async fn activate_profile(profile_id: String) -> Result<()> {
     hmeta_core::shared_core()
         .activate_profile(&profile_id)

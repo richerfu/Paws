@@ -1988,6 +1988,7 @@ name = "hmeta_profile"
 version = "1.0.0"
 dependencies = [
  "base64",
+ "getrandom 0.2.17",
  "hmeta_model",
  "ipnet",
  "percent-encoding",

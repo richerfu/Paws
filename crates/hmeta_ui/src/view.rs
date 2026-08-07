@@ -27,7 +27,7 @@ mod route;
 
 use pages::{
     about_page, appearance_page, connections_page, dashboard_page, logs_page, manual_rule_dialog,
-    profiles_page, proxies_page, requests_page, resources_page, settings_page,
+    privacy_page, profiles_page, proxies_page, requests_page, resources_page, settings_page,
     subscription_converter_page, tools_page, traffic_page, yaml_editor_dialog,
 };
 use route::Route;

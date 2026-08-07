@@ -63,8 +63,8 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
         RuntimeMode::Direct => s.proxies_direct.to_owned(),
         RuntimeMode::Global => effective_group_leaf(&snapshot.proxy_groups, "GLOBAL")
             .unwrap_or_else(|| tr(current.locale, "未选择", "Unselected").to_owned()),
-        RuntimeMode::Rule => latest_active_rule_node(&snapshot.connections)
-            .or_else(|| primary_selected_group_leaf(&snapshot.proxy_groups))
+        RuntimeMode::Rule => primary_selected_group_leaf(&snapshot.proxy_groups)
+            .or_else(|| latest_active_rule_node(&snapshot.connections))
             .unwrap_or_else(|| tr(current.locale, "未选择", "Unselected").to_owned()),
     };
     let quick_count = quick_summary.members;

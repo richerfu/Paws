@@ -16,8 +16,8 @@ pub(super) async fn track_controller_mutation(
     response
 }
 
-pub(super) async fn run_api_controller(
-    addr: SocketAddr,
+pub(super) async fn serve_api_controller(
+    listener: tokio::net::TcpListener,
     state: Arc<meow_api::routes::AppState>,
     revision: Arc<AtomicU64>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -25,8 +25,6 @@ pub(super) async fn run_api_controller(
         revision,
         track_controller_mutation,
     ));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("REST API listening on {addr}");
     axum::serve(listener, app).await?;
     Ok(())
 }
