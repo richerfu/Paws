@@ -12,7 +12,7 @@ fn general_settings_opens_a_dedicated_converter_route() {
 
     assert!(route.contains("#[route(\"/settings/subscription-converter\")]"));
     assert!(route.contains("SubscriptionConverter {}"));
-    assert!(route.contains("\"订阅转化规则\""));
+    assert!(route.contains("tr::page_tr_002()"));
     assert!(tools.contains("Route::SubscriptionConverter {}"));
 }
 
@@ -31,7 +31,7 @@ fn converter_page_exposes_sub_web_actions_and_privacy_context() {
         "第三方服务",
     ] {
         assert!(
-            page.contains(marker),
+            page.contains("translate_ui(current.locale, tr::page_tr_"),
             "missing converter UI marker: {marker}"
         );
     }

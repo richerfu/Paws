@@ -39,21 +39,21 @@ fn YamlEditorDialogBody(state: Signal<State>) -> Element {
     let busy = current.yaml_editor_testing || current.yaml_editor_saving;
     rsx! {
         DialogHeader {
-            title: strings(current.locale).profiles_yaml_editor_title.to_owned(),
+            title: translate_ui(current.locale, tr::profiles_yaml_editor_title()),
             description: Some(current.yaml_editor_profile_name.clone()),
         }
         row { height: 16.0 }
         column {
             width: "100%",
             text {
-                content: format!("{} {} · {} {} · {}", summary.lines, strings(current.locale).profiles_yaml_lines_unit, summary.characters, strings(current.locale).profiles_yaml_chars_unit, if summary.changed { strings(current.locale).profiles_yaml_changed } else { strings(current.locale).profiles_yaml_unchanged }),
+                content: format!("{} {} · {} {} · {}", summary.lines, translate_ui(current.locale, tr::profiles_yaml_lines_unit()), summary.characters, translate_ui(current.locale, tr::profiles_yaml_chars_unit()), if summary.changed { translate_ui(current.locale, tr::profiles_yaml_changed()) } else { translate_ui(current.locale, tr::profiles_yaml_unchanged()) }),
                 font_size: 12.0,
                 font_color: subtle(),
             }
             row { height: 8.0 }
             Textarea {
                 value: Some(current.yaml_editor_text.clone()),
-                placeholder: Some(strings(current.locale).profiles_yaml_content.to_owned()),
+                placeholder: Some(translate_ui(current.locale, tr::profiles_yaml_content())),
                 height: Some(260.0),
                 width: Some("100%".into()),
                 disabled: busy,
@@ -72,7 +72,7 @@ fn YamlEditorDialogBody(state: Signal<State>) -> Element {
                     disabled: Some(busy),
                     onclick: move |_| dispatch(state, Action::ResetYamlEditorText),
                     {arkit::icon("rotate-ccw", 14.0, text_color())}
-                    text { content: strings(current.locale).profiles_yaml_reset, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
+                    text { content: translate_ui(current.locale, tr::profiles_yaml_reset()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
                 }
                 row { layout_weight: 1.0 }
                 FlatButton {
@@ -85,7 +85,7 @@ fn YamlEditorDialogBody(state: Signal<State>) -> Element {
                     } else {
                         {arkit::icon("check", 14.0, text_color())}
                     }
-                    text { content: if current.yaml_editor_testing { strings(current.locale).profiles_yaml_testing } else { strings(current.locale).profiles_yaml_test }, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
+                    text { content: if current.yaml_editor_testing { translate_ui(current.locale, tr::profiles_yaml_testing()) } else { translate_ui(current.locale, tr::profiles_yaml_test()) }, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
                 }
                 row { width: 8.0 }
                 FlatButton {
@@ -98,7 +98,7 @@ fn YamlEditorDialogBody(state: Signal<State>) -> Element {
                     } else {
                         {arkit::icon("save", 14.0, primary_text())}
                     }
-                    text { content: if current.yaml_editor_saving { strings(current.locale).profiles_yaml_saving } else { strings(current.locale).profiles_yaml_save }, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: primary_text() }
+                    text { content: if current.yaml_editor_saving { translate_ui(current.locale, tr::profiles_yaml_saving()) } else { translate_ui(current.locale, tr::profiles_yaml_save()) }, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: primary_text() }
                 }
             }
         }

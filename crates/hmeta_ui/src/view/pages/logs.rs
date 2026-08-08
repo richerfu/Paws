@@ -12,8 +12,8 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
     let recording_pending = current.log_recording_pending;
     let export_pending = current.log_archive_export_pending.clone();
     let delete_pending = current.log_archive_delete_pending.clone();
-    let current_tab = tr(locale, "当前日志", "Current").to_owned();
-    let history_tab = tr(locale, "历史记录", "History").to_owned();
+    let current_tab = translate_ui(locale, tr::page_tr_260());
+    let history_tab = translate_ui(locale, tr::page_tr_261());
     let tab_options = vec![current_tab.clone(), history_tab.clone()];
     let selected_tab = if history_open() {
         history_tab.clone()
@@ -23,7 +23,7 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
     let query_value = log_query();
     let normalized_query = normalize_log_query(&query_value);
     let filter_value = log_filter();
-    let all_label = strings(current.locale).logs_level_all.to_owned();
+    let all_label = translate_ui(current.locale, tr::logs_level_all());
     let info_label = "Info".to_owned();
     let warn_label = "Warn".to_owned();
     let error_label = "Error".to_owned();
@@ -126,9 +126,9 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                 align_items: "center",
                 text {
                     content: if recording_enabled {
-                        tr(locale, "正在记录并按天保存", "Recording and saving daily")
+                        translate_ui(locale, tr::page_tr_262())
                     } else {
-                        tr(locale, "日志记录已关闭", "Log recording is off")
+                        translate_ui(locale, tr::page_tr_263())
                     },
                     font_size: 12.0,
                     font_weight: 600,
@@ -139,7 +139,7 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                     content: format!(
                         "{} {}",
                         current.log_recording.archives.len(),
-                        tr(locale, "个日志文件", "log files")
+                        translate_ui(locale, tr::page_tr_264())
                     ),
                     font_size: 11.0,
                     font_color: subtle(),
@@ -165,8 +165,8 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                     if archives_empty {
                         {empty_state(
                             "history",
-                            tr(locale, "暂无历史日志", "No log history"),
-                            tr(locale, "开启日志记录后会按天生成文件", "Daily files appear after recording is enabled"),
+                            translate_ui(locale, tr::page_tr_265()),
+                            translate_ui(locale, tr::page_tr_266()),
                         )}
                     } else {
                         VirtualLogArchiveList {
@@ -184,7 +184,7 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
             } else {
                 Input {
                     value: Some(query_value),
-                    placeholder: Some(strings(locale).logs_search_placeholder.to_owned()),
+                    placeholder: Some(translate_ui(locale, tr::logs_search_placeholder())),
                     width: Some("100%".into()),
                     on_change: move |value| log_query.set(value),
                 }
@@ -216,13 +216,13 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                     height: 32.0,
                     align_items: "center",
                     text {
-                        content: format!("{} / {} {}", shown_log_count, total_log_count, tr(locale, "条日志", "logs")),
+                        content: format!("{} / {} {}", shown_log_count, total_log_count, translate_ui(locale, tr::page_tr_267())),
                         font_size: 11.0,
                         font_color: subtle(),
                     }
                     row { layout_weight: 1.0 }
                     if !empty {
-                        text { content: tr(locale, "点击日志查看全文", "Tap a log for details"), font_size: 11.0, font_color: subtle() }
+                        text { content: translate_ui(locale, tr::page_tr_268()), font_size: 11.0, font_color: subtle() }
                     }
                 }
                 row {
@@ -231,11 +231,11 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                     if empty {
                         {empty_state(
                             "scroll-text",
-                            strings(locale).logs_empty_title,
+                            translate_ui(locale, tr::logs_empty_title()),
                             if recording_enabled {
-                                strings(locale).logs_empty_subtitle
+                                translate_ui(locale, tr::logs_empty_subtitle())
                             } else {
-                                tr(locale, "点击右上角开始记录日志", "Tap the top-right button to start recording")
+                                translate_ui(locale, tr::page_tr_269())
                             },
                         )}
                     } else {
@@ -288,11 +288,11 @@ fn log_archive_delete_dialog(
             open: true,
             on_close: move |_| selected.set(None),
             DialogHeader {
-                title: tr(locale, "删除历史日志？", "Delete log history?").to_owned(),
+                title: translate_ui(locale, tr::page_tr_270()),
                 description: Some(format!(
                     "{} · {}",
                     file_name,
-                    tr(locale, "此操作无法撤销", "This cannot be undone")
+                    translate_ui(locale, tr::page_tr_113())
                 )),
             }
             row { height: 20.0 }
@@ -302,7 +302,7 @@ fn log_archive_delete_dialog(
                     FlatButton {
                         variant: FlatButtonVariant::Outline,
                         onclick: move |_| selected.set(None),
-                        text { content: tr(locale, "取消", "Cancel"), font_size: 13.0, font_weight: 600, font_color: text_color() }
+                        text { content: translate_ui(locale, tr::page_tr_114()), font_size: 13.0, font_weight: 600, font_color: text_color() }
                     }
                     row { layout_weight: 1.0 }
                     FlatButton {
@@ -311,7 +311,7 @@ fn log_archive_delete_dialog(
                             selected.set(None);
                             dispatch(state, Action::DeleteLogArchive(delete_file_name.clone()));
                         },
-                        text { content: tr(locale, "删除", "Delete"), font_size: 13.0, font_weight: 600, font_color: destructive_text() }
+                        text { content: translate_ui(locale, tr::page_tr_115()), font_size: 13.0, font_weight: 600, font_color: destructive_text() }
                     }
                 }
             }
@@ -600,7 +600,7 @@ fn log_detail_dialog(
             open: true,
             on_close: move |_| selected.set(None),
             DialogHeader {
-                title: tr(locale, "日志详情", "Log details").to_owned(),
+                title: translate_ui(locale, tr::page_tr_271()),
                 description: Some(log.meta),
             }
             row { height: 14.0 }

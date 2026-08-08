@@ -78,7 +78,7 @@ fn proxy_groups_use_an_arkit_rsx_heterogeneous_virtual_list() {
     // Expansion changes only the heterogeneous adapter's row model; ArkUI
     // continues to instantiate visible group/member rows on demand.
     assert!(page.contains("expanded_group"));
-    assert!(page.contains("全局节点与策略分组"));
+    assert!(page.contains("translate_ui(current.locale, tr::"));
     assert!(page.contains("Global node and policy groups"));
     assert!(!page.contains("ProxyGroupScope"));
     assert!(!page.contains("GLOBAL ·"));
@@ -128,7 +128,7 @@ fn subscription_overflow_preserves_the_meow_action_set() {
 
     let edit = section(VIEW, "fn profile_edit_dialog", "fn profile_delete_dialog");
     assert!(edit.contains("Action::UpdateProfileSubscription"));
-    assert!(edit.contains("Subscription URL"));
+    assert!(edit.contains("translate_ui("));
 
     let delete = section(VIEW, "fn profile_delete_dialog", "fn traffic_page");
     assert!(delete.contains("Action::DeleteProfile"));
@@ -156,7 +156,7 @@ fn log_recording_is_opt_in_with_daily_history_and_export() {
     assert!(page.contains("Action::ExportLogArchive"));
     assert!(page.contains("Action::DeleteLogArchive"));
     assert!(page.contains("log_archive_delete_dialog"));
-    assert!(page.contains("此操作无法撤销"));
+    assert!(page.contains("translate_ui(current.locale, tr::"));
     assert!(!page.contains("archive_rows"));
     let archive_list = section(VIEW, "fn VirtualLogArchiveList(", "fn VirtualLogList(");
     assert!(archive_list.contains("VirtualKind::List"));

@@ -71,7 +71,7 @@ pub(crate) fn traffic_page(state: Signal<State>) -> Element {
         .last_config_sync_at
         .as_deref()
         .and_then(time_format::format_unix_seconds)
-        .unwrap_or_else(|| tr(current.locale, "尚未同步", "Not synced yet").to_owned());
+        .unwrap_or_else(|| translate_ui(current.locale, tr::page_tr_124()));
     let body = rsx! {
         column {
             width: "100%",
@@ -79,19 +79,19 @@ pub(crate) fn traffic_page(state: Signal<State>) -> Element {
             row {
                 width: "100%",
                 align_items: "center",
-                text { content: if connected { tr(current.locale, "已连接", "Connected") } else { tr(current.locale, "未连接", "Disconnected") }, font_size: 14.0, font_weight: 650, font_color: if connected { success() } else { subtle() } }
+                text { content: if connected { translate_ui(current.locale, tr::page_tr_125()) } else { translate_ui(current.locale, tr::page_tr_126()) }, font_size: 14.0, font_weight: 650, font_color: if connected { success() } else { subtle() } }
                 row { layout_weight: 1.0 }
-                {pill(if connected { tr(current.locale, "VPN 运行中", "VPN running") } else { tr(current.locale, "VPN 已停止", "VPN stopped") }.to_owned(), if connected { success() } else { subtle() })}
+                {pill(if connected { translate_ui(current.locale, tr::page_tr_127()) } else { translate_ui(current.locale, tr::page_tr_128()) }.to_owned(), if connected { success() } else { subtle() })}
             }
             row { height: 18.0 }
-            text { content: tr(current.locale, "流量用量", "Data usage"), font_size: 17.0, font_weight: 700, font_color: text_color() }
+            text { content: translate_ui(current.locale, tr::page_tr_129()), font_size: 17.0, font_weight: 700, font_color: text_color() }
             row { height: 8.0 }
             row {
                 width: "100%",
                 row {
                     layout_weight: 1.0,
                     {usage_summary_card(
-                        tr(current.locale, "当前配置", "Active profile"),
+                        translate_ui(current.locale, tr::page_tr_130()),
                         profile_upload,
                         profile_download,
                     )}
@@ -100,43 +100,43 @@ pub(crate) fn traffic_page(state: Signal<State>) -> Element {
                 row {
                     layout_weight: 1.0,
                     {usage_summary_card(
-                        tr(current.locale, "本次会话", "This session"),
+                        translate_ui(current.locale, tr::page_tr_131()),
                         snapshot.traffic.upload_bytes,
                         snapshot.traffic.download_bytes,
                     )}
                 }
             }
             row { height: 18.0 }
-            text { content: tr(current.locale, "当前会话", "Current session"), font_size: 17.0, font_weight: 700, font_color: text_color() }
+            text { content: translate_ui(current.locale, tr::page_tr_132()), font_size: 17.0, font_weight: 700, font_color: text_color() }
             row { height: 8.0 }
             {traffic_metrics(
-                strings(current.locale).traffic_download,
+                translate_ui(current.locale, tr::traffic_download()),
                 format_speed(snapshot.traffic.download_speed),
-                strings(current.locale).traffic_upload,
+                translate_ui(current.locale, tr::traffic_upload()),
                 format_speed(snapshot.traffic.upload_speed),
             )}
             row { height: 18.0 }
             {card(
-                tr(current.locale, "速率图表", "Speed chart"),
-                Some(format!("{} {}", samples, strings(current.locale).traffic_sample_unit)),
+                translate_ui(current.locale, tr::page_tr_133()),
+                Some(format!("{} {}", samples, translate_ui(current.locale, tr::traffic_sample_unit()))),
                 rsx! {
                     column {
                         width: "100%",
-                        {info_row(strings(current.locale).traffic_peak_download, format_speed(peak_download))}
-                        {info_row(strings(current.locale).traffic_peak_upload, format_speed(peak_upload))}
+                        {info_row(translate_ui(current.locale, tr::traffic_peak_download()), format_speed(peak_download))}
+                        {info_row(translate_ui(current.locale, tr::traffic_peak_upload()), format_speed(peak_upload))}
                         {speed_bars(&snapshot.traffic_history)}
                     }
                 }
             )}
             row { height: 12.0 }
             {card(
-                tr(current.locale, "当前连接", "Active connections"),
-                Some(format!("{} {}", active_connection_count, tr(current.locale, "条", "active"))),
+                translate_ui(current.locale, tr::page_tr_134()),
+                Some(format!("{} {}", active_connection_count, translate_ui(current.locale, tr::page_tr_135()))),
                 rsx! {
                     column {
                         width: "100%",
-                        {info_row(tr(current.locale, "连接下载", "Connection download"), format_total(connection_download))}
-                        {info_row(tr(current.locale, "连接上传", "Connection upload"), format_total(connection_upload))}
+                        {info_row(translate_ui(current.locale, tr::page_tr_136()), format_total(connection_download))}
+                        {info_row(translate_ui(current.locale, tr::page_tr_137()), format_total(connection_upload))}
                         if !connection_rows.is_empty() {
                             Separator {}
                             {connection_rows.into_iter()}
@@ -149,7 +149,7 @@ pub(crate) fn traffic_page(state: Signal<State>) -> Element {
                             onclick: move |_| {
                                 connections_navigator.push(Route::Connections { query: String::new() });
                             },
-                            text { content: tr(current.locale, "查看全部连接", "View all connections"), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                            text { content: translate_ui(current.locale, tr::page_tr_138()), font_size: 12.0, font_weight: 600, font_color: text_color() }
                             {arkit::icon("chevron-right", 14.0, subtle())}
                         }
                     }
@@ -157,20 +157,20 @@ pub(crate) fn traffic_page(state: Signal<State>) -> Element {
             )}
             row { height: 12.0 }
             {card(
-                strings(current.locale).traffic_dns_title.to_owned(),
+                translate_ui(current.locale, tr::traffic_dns_title()),
                 Some(snapshot.dns.model.clone()),
                 rsx! {
                     column {
                         width: "100%",
-                        {info_row(tr(current.locale, "DNS 劫持", "DNS hijack"), if snapshot.dns.hijacking { tr(current.locale, "已启用", "Enabled") } else { tr(current.locale, "已关闭", "Disabled") })}
-                        {info_row(tr(current.locale, "监听地址", "Listen"), snapshot.dns.listen.clone())}
-                        {info_row(tr(current.locale, "TUN DNS", "TUN DNS"), dns_tun_addresses)}
-                        {info_row(tr(current.locale, "上游 DNS", "Upstreams"), dns_upstreams)}
-                        {info_row(tr(current.locale, "备用 DNS", "Fallbacks"), dns_fallbacks)}
-                        {info_row(tr(current.locale, "域名策略", "Domain policies"), snapshot.dns.nameserver_policy.len().to_string())}
-                        {info_row(strings(current.locale).traffic_dns_handled, snapshot.dns.handled_packets.to_string())}
-                        {info_row(strings(current.locale).dns_cache_hits, snapshot.dns.cache_hits.to_string())}
-                        {info_row(strings(current.locale).dns_cache_misses, snapshot.dns.cache_misses.to_string())}
+                        {info_row(translate_ui(current.locale, tr::page_tr_139()), if snapshot.dns.hijacking { translate_ui(current.locale, tr::page_tr_140()) } else { translate_ui(current.locale, tr::page_tr_141()) })}
+                        {info_row(translate_ui(current.locale, tr::page_tr_142()), snapshot.dns.listen.clone())}
+                        {info_row(translate_ui(current.locale, tr::page_tr_143()), dns_tun_addresses)}
+                        {info_row(translate_ui(current.locale, tr::page_tr_144()), dns_upstreams)}
+                        {info_row(translate_ui(current.locale, tr::page_tr_145()), dns_fallbacks)}
+                        {info_row(translate_ui(current.locale, tr::page_tr_146()), snapshot.dns.nameserver_policy.len().to_string())}
+                        {info_row(translate_ui(current.locale, tr::traffic_dns_handled()), snapshot.dns.handled_packets.to_string())}
+                        {info_row(translate_ui(current.locale, tr::dns_cache_hits()), snapshot.dns.cache_hits.to_string())}
+                        {info_row(translate_ui(current.locale, tr::dns_cache_misses()), snapshot.dns.cache_misses.to_string())}
                         if !recent_dns.is_empty() {
                             row { height: 8.0 }
                             {recent_dns.into_iter()}
@@ -183,7 +183,7 @@ pub(crate) fn traffic_page(state: Signal<State>) -> Element {
                                 size: ButtonSize::Sm,
                                 disabled: Some(diagnostic_pending),
                                 onclick: move |_| dispatch(state, Action::FlushDnsCache),
-                                text { content: tr(current.locale, "清理 DNS 缓存", "Flush DNS cache"), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                                text { content: translate_ui(current.locale, tr::page_tr_147()), font_size: 12.0, font_weight: 600, font_color: text_color() }
                             }
                             row { width: 8.0 }
                             FlatButton {
@@ -191,7 +191,7 @@ pub(crate) fn traffic_page(state: Signal<State>) -> Element {
                                 size: ButtonSize::Sm,
                                 disabled: Some(diagnostic_pending),
                                 onclick: move |_| dispatch(state, Action::FlushFakeIpCache),
-                                text { content: tr(current.locale, "清理 Fake-IP", "Flush Fake-IP"), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                                text { content: translate_ui(current.locale, tr::page_tr_148()), font_size: 12.0, font_weight: 600, font_color: text_color() }
                             }
                         }
                     }
@@ -199,15 +199,15 @@ pub(crate) fn traffic_page(state: Signal<State>) -> Element {
             )}
             row { height: 12.0 }
             {card(
-                tr(current.locale, "Controller 诊断", "Controller diagnostics"),
+                translate_ui(current.locale, tr::page_tr_149()),
                 snapshot.controller_addr.clone(),
                 rsx! {
                     column {
                         width: "100%",
-                        {info_row(tr(current.locale, "内存占用", "Memory in use"), memory_in_use)}
-                        {info_row(tr(current.locale, "系统内存上限", "OS memory limit"), memory_limit)}
-                        {info_row(tr(current.locale, "配置同步次数", "Config sync count"), snapshot.controller_diagnostics.config_sync_count.to_string())}
-                        {info_row(tr(current.locale, "最近配置同步", "Last config sync"), last_config_sync)}
+                        {info_row(translate_ui(current.locale, tr::page_tr_150()), memory_in_use)}
+                        {info_row(translate_ui(current.locale, tr::page_tr_151()), memory_limit)}
+                        {info_row(translate_ui(current.locale, tr::page_tr_152()), snapshot.controller_diagnostics.config_sync_count.to_string())}
+                        {info_row(translate_ui(current.locale, tr::page_tr_153()), last_config_sync)}
                         if let Some(error) = snapshot.controller_diagnostics.last_config_sync_error.clone() {
                             text { content: compact(&error), margin_top: 6.0, font_size: 12.0, font_color: danger(), max_lines: 3 }
                         }

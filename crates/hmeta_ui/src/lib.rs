@@ -18,7 +18,8 @@ use std::{fs, io};
 
 mod activity_filter;
 mod bridge;
-mod l10n;
+mod i18n;
+mod locale;
 mod log_filter;
 mod manual_rule;
 mod mode_feedback;

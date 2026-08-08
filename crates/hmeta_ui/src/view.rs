@@ -1,6 +1,6 @@
 use super::*;
 use crate::bridge;
-use crate::l10n::UiLocale;
+use crate::locale::UiLocale;
 use crate::manual_rule::{find_manual_rule_conflict, manual_rule_preview};
 use crate::notification::{use_notification_center, NotificationHost};
 use arkit::prelude::*;

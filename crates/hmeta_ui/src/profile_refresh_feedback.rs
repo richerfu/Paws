@@ -1,31 +1,35 @@
-use crate::l10n::UiStrings;
+use crate::i18n::{tr, translate_ui};
+use crate::locale::UiLocale;
 
 pub(crate) fn profile_batch_refresh_message(
     label: &str,
     attempted: usize,
     failed: usize,
-    strings: &UiStrings,
+    locale: UiLocale,
 ) -> String {
     if attempted == 0 {
-        return format!("{label}{}", strings.feedback_profile_batch_empty_suffix);
+        return format!(
+            "{label}{}",
+            translate_ui(locale, tr::feedback_profile_batch_empty_suffix())
+        );
     }
     let failed = failed.min(attempted);
     let succeeded = attempted.saturating_sub(failed);
     if failed == 0 {
         format!(
             "{label}{}{}{}",
-            strings.feedback_profile_batch_success_suffix,
+            translate_ui(locale, tr::feedback_profile_batch_success_suffix()),
             succeeded,
-            strings.feedback_provider_batch_success_suffix
+            translate_ui(locale, tr::feedback_provider_batch_success_suffix())
         )
     } else {
         format!(
             "{label}{}{}{}{}{}",
-            strings.feedback_profile_batch_complete_suffix,
+            translate_ui(locale, tr::feedback_profile_batch_complete_suffix()),
             succeeded,
-            strings.feedback_provider_batch_success_mid,
+            translate_ui(locale, tr::feedback_provider_batch_success_mid()),
             failed,
-            strings.feedback_provider_batch_failed_suffix
+            translate_ui(locale, tr::feedback_provider_batch_failed_suffix())
         )
     }
 }
@@ -43,29 +47,32 @@ pub(crate) fn profile_activation_message(
     profile_name: &str,
     restart_requested: bool,
     restart_error: Option<&str>,
-    strings: &UiStrings,
+    locale: UiLocale,
 ) -> String {
     if let Some(error) = restart_error.filter(|error| !error.trim().is_empty()) {
         format!(
             "{}{}{}{}",
-            strings.feedback_profile_prefix,
+            translate_ui(locale, tr::feedback_profile_prefix()),
             profile_name,
-            strings.feedback_profile_activated_restart_failed_suffix,
+            translate_ui(
+                locale,
+                tr::feedback_profile_activated_restart_failed_suffix()
+            ),
             error
         )
     } else if restart_requested {
         format!(
             "{}{}{}",
-            strings.feedback_profile_prefix,
+            translate_ui(locale, tr::feedback_profile_prefix()),
             profile_name,
-            strings.feedback_profile_activated_restart_suffix
+            translate_ui(locale, tr::feedback_profile_activated_restart_suffix())
         )
     } else {
         format!(
             "{}{}{}",
-            strings.feedback_profile_prefix,
+            translate_ui(locale, tr::feedback_profile_prefix()),
             profile_name,
-            strings.feedback_profile_activated_suffix
+            translate_ui(locale, tr::feedback_profile_activated_suffix())
         )
     }
 }
@@ -74,28 +81,30 @@ pub(crate) fn profile_delete_message(
     profile_name: &str,
     vpn_action: Option<&str>,
     vpn_error: Option<&str>,
-    strings: &UiStrings,
+    locale: UiLocale,
 ) -> String {
     let base = format!(
         "{}{}{}",
-        strings.feedback_profile_prefix, profile_name, strings.feedback_profile_deleted_suffix
+        translate_ui(locale, tr::feedback_profile_prefix()),
+        profile_name,
+        translate_ui(locale, tr::feedback_profile_deleted_suffix())
     );
     if let Some(error) = vpn_error.filter(|error| !error.trim().is_empty()) {
         format!(
             "{}{}{}{}",
-            strings.feedback_profile_prefix,
+            translate_ui(locale, tr::feedback_profile_prefix()),
             profile_name,
-            strings.feedback_profile_deleted_vpn_failed_suffix,
+            translate_ui(locale, tr::feedback_profile_deleted_vpn_failed_suffix()),
             error
         )
     } else if let Some(action) = vpn_action.filter(|action| !action.trim().is_empty()) {
         format!(
             "{}{}{}{}{}",
-            strings.feedback_profile_prefix,
+            translate_ui(locale, tr::feedback_profile_prefix()),
             profile_name,
-            strings.feedback_profile_deleted_vpn_request_mid,
+            translate_ui(locale, tr::feedback_profile_deleted_vpn_request_mid()),
             action,
-            strings.feedback_profile_deleted_vpn_request_suffix
+            translate_ui(locale, tr::feedback_profile_deleted_vpn_request_suffix())
         )
     } else {
         base

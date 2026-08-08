@@ -83,7 +83,7 @@ fn about_page_has_one_privacy_entry_and_detail_page_discloses_exit_ip_providers(
     assert!(privacy.contains(".privacy_summary"));
     assert!(privacy.contains(".exit_ip_services"));
     assert!(privacy.contains("documentation_url"));
-    assert!(privacy.contains("出口 IP 查询服务"));
+    assert!(privacy.contains("translate_ui(current.locale, tr::"));
     assert!(
         !privacy.contains("max_lines"),
         "privacy disclosures must never be truncated"
@@ -135,7 +135,7 @@ fn network_stack_is_a_bounded_selector_with_two_real_backends() {
     let page = fs::read_to_string("src/view/pages/settings.rs").unwrap();
     let view = fs::read_to_string("src/view.rs").unwrap();
     let stack_field = page
-        .split("label: tr(current.locale, \"网络栈\", \"Network stack\")")
+        .split("tr::page_tr_231()")
         .nth(1)
         .expect("network stack field")
         .split("row { height: 12.0 }")
@@ -159,12 +159,12 @@ fn network_ports_are_editable_and_lan_access_requires_a_secret() {
     let core = fs::read_to_string("../hmeta_core/src/lib.rs").unwrap();
     let callbacks = fs::read_to_string("src/bridge/mod.rs").unwrap();
 
-    assert!(page.contains("混合代理端口"));
-    assert!(page.contains("控制器端口"));
+    assert!(page.contains("translate_ui(current.locale, tr::page_tr_"));
+    assert!(page.contains("translate_ui(current.locale, tr::page_tr_"));
     assert!(page.matches("Input {").count() >= 2);
     assert!(page.contains("placeholder: Some(\"7890\""));
     assert!(page.contains("placeholder: Some(\"9090\""));
-    assert!(page.contains("允许局域网访问"));
+    assert!(page.contains("translate_ui(current.locale, tr::"));
     assert!(page.contains("0.0.0.0:{controller_port_value}"));
     assert!(page.contains("Authorization: Bearer <secret>"));
     assert!(page.contains("copy_controller_secret"));

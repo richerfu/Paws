@@ -37,23 +37,22 @@ pub(super) enum Route {
 }
 
 impl Route {
-    pub(super) fn title(&self, locale: UiLocale) -> &'static str {
-        let strings = strings(locale);
+    pub(super) fn title(&self, locale: UiLocale) -> String {
         match self {
-            Self::Dashboard {} => strings.nav_dashboard,
-            Self::Proxies {} => strings.nav_proxies,
-            Self::Profiles {} => strings.nav_profiles,
-            Self::Requests {} => strings.nav_requests,
-            Self::Connections { .. } => strings.nav_connections,
-            Self::Traffic {} => strings.nav_traffic,
-            Self::Resources {} => strings.nav_resources,
-            Self::Logs {} => strings.nav_logs,
-            Self::Tools {} => strings.nav_tools,
-            Self::Appearance {} => tr(locale, "界面设置", "Appearance"),
-            Self::Settings {} => strings.nav_settings,
-            Self::SubscriptionConverter {} => tr(locale, "订阅转化规则", "Subscription conversion"),
-            Self::About {} => strings.nav_about,
-            Self::Privacy {} => tr(locale, "隐私与出口 IP", "Privacy and exit IP"),
+            Self::Dashboard {} => translate_ui(locale, tr::nav_dashboard()),
+            Self::Proxies {} => translate_ui(locale, tr::nav_proxies()),
+            Self::Profiles {} => translate_ui(locale, tr::nav_profiles()),
+            Self::Requests {} => translate_ui(locale, tr::nav_requests()),
+            Self::Connections { .. } => translate_ui(locale, tr::nav_connections()),
+            Self::Traffic {} => translate_ui(locale, tr::nav_traffic()),
+            Self::Resources {} => translate_ui(locale, tr::nav_resources()),
+            Self::Logs {} => translate_ui(locale, tr::nav_logs()),
+            Self::Tools {} => translate_ui(locale, tr::nav_tools()),
+            Self::Appearance {} => translate_ui(locale, tr::page_tr_001()),
+            Self::Settings {} => translate_ui(locale, tr::nav_settings()),
+            Self::SubscriptionConverter {} => translate_ui(locale, tr::page_tr_002()),
+            Self::About {} => translate_ui(locale, tr::nav_about()),
+            Self::Privacy {} => translate_ui(locale, tr::page_tr_003()),
         }
     }
 

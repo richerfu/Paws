@@ -52,7 +52,7 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                 .as_deref()
                 .or(profile.updated_at.as_deref())
                 .and_then(time_format::format_unix_nanos)
-                .unwrap_or_else(|| tr(current.locale, "尚未更新", "Never updated").to_owned());
+                .unwrap_or_else(|| translate_ui(current.locale, tr::page_tr_096()));
             let usage = profile.subscription_user_info.as_ref().and_then(|info| {
                 info.total_bytes.map(|total| {
                     format!(
@@ -191,8 +191,8 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                     align_items: "center",
                     justify_content: "center",
                     {arkit::icon("rss", 30.0, subtle())}
-                    text { content: strings(current.locale).profiles_empty_title, margin_top: 16.0, font_size: 17.0, font_weight: 700, font_color: text_color() }
-                    text { content: tr(current.locale, "添加订阅以获取代理节点与规则", "Add a subscription to get proxy nodes and rules"), margin_top: 6.0, font_size: 13.0, line_height: 19.0, font_color: subtle(), text_align: "center" }
+                    text { content: translate_ui(current.locale, tr::profiles_empty_title()), margin_top: 16.0, font_size: 17.0, font_weight: 700, font_color: text_color() }
+                    text { content: translate_ui(current.locale, tr::page_tr_097()), margin_top: 6.0, font_size: 13.0, line_height: 19.0, font_color: subtle(), text_align: "center" }
                     row { height: 18.0 }
                     FlatButton {
                         variant: FlatButtonVariant::Primary,
@@ -201,19 +201,19 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                             import_open.set(true);
                         },
                         {arkit::icon("plus", 16.0, primary_text())}
-                        text { content: tr(current.locale, "添加订阅", "Add subscription"), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
+                        text { content: translate_ui(current.locale, tr::page_tr_098()), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
                     }
                 }
             } else {
                 Input {
                     value: Some(query_value),
-                    placeholder: Some(strings(current.locale).profiles_search_placeholder.to_owned()),
+                    placeholder: Some(translate_ui(current.locale, tr::profiles_search_placeholder())),
                     width: Some("100%".into()),
                     on_change: move |value| query.set(value),
                 }
                 row { height: 12.0 }
                 if empty {
-                    {empty_state("search", strings(current.locale).profiles_no_match_title, strings(current.locale).profiles_no_match_subtitle)}
+                    {empty_state("search", translate_ui(current.locale, tr::profiles_no_match_title()), translate_ui(current.locale, tr::profiles_no_match_subtitle()))}
                 } else {
                     {spaced(profiles)}
                 }
@@ -301,7 +301,7 @@ fn profile_action_dialog(
             on_close: move |_| action_profile_id.set(None),
             DialogHeader {
                 title: truncate_text(&profile.name, 42),
-                description: Some(tr(locale, "配置操作", "Profile actions").to_owned()),
+                description: Some(translate_ui(locale, tr::page_tr_099())),
             }
             row { height: 14.0 }
             column {
@@ -327,7 +327,7 @@ fn profile_action_dialog(
                             width: "100%",
                             align_items: "center",
                             {arkit::icon("circle-check", 16.0, text_color())}
-                            text { content: tr(locale, "设为当前配置", "Use this profile"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
+                            text { content: translate_ui(locale, tr::page_tr_100()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
                             row { layout_weight: 1.0 }
                         }
                     }
@@ -352,7 +352,7 @@ fn profile_action_dialog(
                             width: "100%",
                             align_items: "center",
                             {arkit::icon("file-pen-line", 16.0, text_color())}
-                            text { content: tr(locale, "编辑订阅", "Edit subscription"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
+                            text { content: translate_ui(locale, tr::page_tr_101()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
                             row { layout_weight: 1.0 }
                         }
                     }
@@ -374,7 +374,7 @@ fn profile_action_dialog(
                         width: "100%",
                         align_items: "center",
                         {arkit::icon("file-pen-line", 16.0, text_color())}
-                        text { content: tr(locale, "编辑 YAML", "Edit YAML"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
+                        text { content: translate_ui(locale, tr::page_tr_102()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
                         row { layout_weight: 1.0 }
                     }
                 }
@@ -395,7 +395,7 @@ fn profile_action_dialog(
                         width: "100%",
                         align_items: "center",
                         {arkit::icon("download", 16.0, text_color())}
-                        text { content: tr(locale, "导出配置", "Export profile"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
+                        text { content: translate_ui(locale, tr::page_tr_103()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
                         row { layout_weight: 1.0 }
                     }
                 }
@@ -417,7 +417,7 @@ fn profile_action_dialog(
                             width: "100%",
                             align_items: "center",
                             {arkit::icon("refresh-cw", 16.0, text_color())}
-                            text { content: tr(locale, "刷新订阅", "Refresh subscription"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
+                            text { content: translate_ui(locale, tr::page_tr_104()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
                             row { layout_weight: 1.0 }
                         }
                     }
@@ -440,7 +440,7 @@ fn profile_action_dialog(
                             width: "100%",
                             align_items: "center",
                             {arkit::icon("history", 16.0, text_color())}
-                            text { content: tr(locale, "恢复上次备份", "Restore backup"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
+                            text { content: translate_ui(locale, tr::page_tr_105()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
                             row { layout_weight: 1.0 }
                         }
                     }
@@ -462,7 +462,7 @@ fn profile_action_dialog(
                         width: "100%",
                         align_items: "center",
                         {arkit::icon("trash-2", 16.0, danger())}
-                        text { content: tr(locale, "删除配置", "Delete profile"), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: danger() }
+                        text { content: translate_ui(locale, tr::page_tr_106()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: danger() }
                         row { layout_weight: 1.0 }
                     }
                 }
@@ -484,25 +484,25 @@ fn profile_edit_dialog(
             open: open,
             on_close: move |_| profile_id.set(None),
             DialogHeader {
-                title: tr(locale, "编辑订阅", "Edit subscription").to_owned(),
-                description: Some(tr(locale, "修改名称或订阅地址，保存后可手动刷新。", "Change the name or URL, then refresh when needed.").to_owned()),
+                title: translate_ui(locale, tr::page_tr_101()),
+                description: Some(translate_ui(locale, tr::page_tr_107())),
             }
             row { height: 18.0 }
             row {
                 width: "100%",
-                text { content: tr(locale, "名称", "Name"), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                text { content: translate_ui(locale, tr::page_tr_108()), font_size: 12.0, font_weight: 600, font_color: text_color() }
             }
             row { height: 6.0 }
             Input {
                 value: Some(name()),
-                placeholder: Some(tr(locale, "配置名称", "Profile name").to_owned()),
+                placeholder: Some(translate_ui(locale, tr::page_tr_109())),
                 width: Some("100%".into()),
                 on_change: move |value| name.set(value),
             }
             row { height: 14.0 }
             row {
                 width: "100%",
-                text { content: tr(locale, "订阅地址", "Subscription URL"), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                text { content: translate_ui(locale, tr::page_tr_110()), font_size: 12.0, font_weight: 600, font_color: text_color() }
             }
             row { height: 6.0 }
             Input {
@@ -525,7 +525,7 @@ fn profile_edit_dialog(
                             profile_id.set(None);
                         }
                     },
-                    text { content: tr(locale, "保存修改", "Save changes"), font_size: 13.0, font_weight: 600, font_color: primary_text() }
+                    text { content: translate_ui(locale, tr::page_tr_111()), font_size: 13.0, font_weight: 600, font_color: primary_text() }
                 }
             }
         }
@@ -547,8 +547,8 @@ fn profile_delete_dialog(
             open: true,
             on_close: move |_| profile_id.set(None),
             DialogHeader {
-                title: tr(locale, "删除配置？", "Delete profile?").to_owned(),
-                description: Some(format!("{} · {}", truncate_text(&profile.name, 38), tr(locale, "此操作无法撤销", "This cannot be undone"))),
+                title: translate_ui(locale, tr::page_tr_112()),
+                description: Some(format!("{} · {}", truncate_text(&profile.name, 38), translate_ui(locale, tr::page_tr_113()))),
             }
             row { height: 20.0 }
             DialogFooter {
@@ -557,7 +557,7 @@ fn profile_delete_dialog(
                     FlatButton {
                         variant: FlatButtonVariant::Outline,
                         onclick: move |_| profile_id.set(None),
-                        text { content: tr(locale, "取消", "Cancel"), font_size: 13.0, font_weight: 600, font_color: text_color() }
+                        text { content: translate_ui(locale, tr::page_tr_114()), font_size: 13.0, font_weight: 600, font_color: text_color() }
                     }
                     row { layout_weight: 1.0 }
                     FlatButton {
@@ -566,7 +566,7 @@ fn profile_delete_dialog(
                             profile_id.set(None);
                             dispatch(state, Action::DeleteProfile(delete_id.clone()));
                         },
-                        text { content: tr(locale, "删除", "Delete"), font_size: 13.0, font_weight: 600, font_color: destructive_text() }
+                        text { content: translate_ui(locale, tr::page_tr_115()), font_size: 13.0, font_weight: 600, font_color: destructive_text() }
                     }
                 }
             }
@@ -623,20 +623,20 @@ fn ProfileImportDialogBody(
     let current = state.read().clone();
     let locale = current.locale;
     let import_loading = current.profile_import_loading;
-    let loading_label = strings(locale).profiles_import_loading;
+    let loading_label = translate_ui(locale, tr::profiles_import_loading());
     let url_value = url();
     let name_value = name();
     rsx! {
         DialogHeader {
-            title: strings(locale).profiles_import_network.to_owned(),
-            description: Some(strings(locale).profiles_import_network_subtitle.to_owned()),
+            title: translate_ui(locale, tr::profiles_import_network()),
+            description: Some(translate_ui(locale, tr::profiles_import_network_subtitle())),
         }
         row { height: 20.0 }
         column {
             width: "100%",
             Input {
                 value: Some(url_value),
-                placeholder: Some(strings(locale).profiles_import_url_label.to_owned()),
+                placeholder: Some(translate_ui(locale, tr::profiles_import_url_label())),
                 width: Some("100%".into()),
                 disabled: import_loading,
                 on_change: move |value| {
@@ -647,7 +647,7 @@ fn ProfileImportDialogBody(
             row { height: 12.0 }
             Input {
                 value: Some(name_value),
-                placeholder: Some(strings(locale).profiles_import_name_placeholder.to_owned()),
+                placeholder: Some(translate_ui(locale, tr::profiles_import_name_placeholder())),
                 width: Some("100%".into()),
                 disabled: import_loading,
                 on_change: move |value| {
@@ -676,9 +676,9 @@ fn ProfileImportDialogBody(
                     }
                     text {
                         content: if import_loading {
-                            loading_label
+                            loading_label.clone()
                         } else {
-                            tr(locale, "从本地文件导入", "Import from local file")
+                            translate_ui(locale, tr::page_tr_116())
                         },
                         margin_left: 6.0,
                         font_size: 12.0,
@@ -706,9 +706,9 @@ fn ProfileImportDialogBody(
                     }
                     text {
                         content: if import_loading {
-                            strings(locale).profiles_scan_loading
+                            translate_ui(locale, tr::profiles_scan_loading())
                         } else {
-                            strings(locale).profiles_scan_action
+                            translate_ui(locale, tr::profiles_scan_action())
                         },
                         margin_left: 6.0,
                         font_size: 12.0,
@@ -744,7 +744,7 @@ fn ProfileImportDialogBody(
                     content: if import_loading {
                         loading_label
                     } else {
-                        strings(locale).profiles_import_submit
+                        translate_ui(locale, tr::profiles_import_submit())
                     },
                     margin_left: 8.0,
                     font_size: 14.0,

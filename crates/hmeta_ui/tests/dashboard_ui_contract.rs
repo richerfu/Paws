@@ -27,10 +27,9 @@ fn dashboard_stays_flat_and_decision_focused() {
     assert!(page.contains("key: \"dashboard-quick-proxy-list\""));
     assert!(!page.contains("preview_proxies.truncate(3)"));
     assert!(!page.contains("row { height: 72.0 }"));
-    assert!(page.contains("当前节点"));
-    assert!(page.contains("全局节点与策略分组"));
+    assert!(page.contains("translate_ui(current.locale, tr::page_tr_"));
     assert!(page.contains("global_node_count"));
-    assert!(page.contains("出口 IP"));
+    assert!(page.contains("snapshot.exit_location"));
     assert!(page.contains("snapshot.exit_location"));
     assert!(page.contains("height: 89.0"));
     assert_eq!(page.matches("dashboard_connection_row(").count(), 3);
@@ -84,7 +83,7 @@ fn dashboard_long_values_are_width_constrained() {
     );
     assert!(!page.contains("由命中规则的策略分组决定"));
     assert!(!page.contains("暂无命中"));
-    assert!(page.contains("s.proxies_direct.to_owned()"));
+    assert!(page.contains("translate_ui(s, tr::proxies_direct())"));
 }
 
 #[test]

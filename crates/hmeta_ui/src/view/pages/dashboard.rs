@@ -4,7 +4,7 @@ use super::{VirtualProxyGroupList, VirtualProxyPalette};
 pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
     let current = state.read().clone();
     let snapshot = current.snapshot;
-    let s = strings(current.locale);
+    let s = current.locale;
     let navigator = use_navigator();
     let mut quick_expanded_group = use_signal(|| None::<String>);
     let vpn_starting = current.vpn_command_pending == Some(VpnCommandAction::Start)
@@ -13,17 +13,17 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
     let transitioning = vpn_starting || vpn_stopping;
     let connected = snapshot.vpn_running && !transitioning;
     let status_label = if vpn_starting {
-        tr(current.locale, "正在连接", "Connecting")
+        translate_ui(current.locale, tr::page_tr_248())
     } else if vpn_stopping {
-        tr(current.locale, "正在断开", "Disconnecting")
+        translate_ui(current.locale, tr::page_tr_249())
     } else {
         match snapshot.vpn_lifecycle {
-            VpnLifecycle::Stopped => s.dashboard_disconnected,
-            VpnLifecycle::EngineLoaded => tr(current.locale, "配置已就绪", "Ready to connect"),
-            VpnLifecycle::Starting => s.lifecycle_starting,
-            VpnLifecycle::Connected => s.dashboard_connected,
-            VpnLifecycle::ProtectFailed => s.lifecycle_protect_failed,
-            VpnLifecycle::Failed => tr(current.locale, "VPN 启动失败", "VPN failed"),
+            VpnLifecycle::Stopped => translate_ui(s, tr::dashboard_disconnected()),
+            VpnLifecycle::EngineLoaded => translate_ui(current.locale, tr::page_tr_250()),
+            VpnLifecycle::Starting => translate_ui(s, tr::lifecycle_starting()),
+            VpnLifecycle::Connected => translate_ui(s, tr::dashboard_connected()),
+            VpnLifecycle::ProtectFailed => translate_ui(s, tr::lifecycle_protect_failed()),
+            VpnLifecycle::Failed => translate_ui(current.locale, tr::page_tr_251()),
         }
     };
     let profile = snapshot
@@ -31,7 +31,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
         .iter()
         .find(|profile| snapshot.active_profile.as_deref() == Some(profile.id.as_str()))
         .map(|profile| profile.name.clone())
-        .unwrap_or_else(|| s.dashboard_profile_empty.to_owned());
+        .unwrap_or_else(|| translate_ui(s, tr::dashboard_profile_empty()));
     let status_color = if transitioning {
         subtle()
     } else if matches!(
@@ -60,12 +60,12 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
         })
         .unwrap_or(0);
     let current_node = match snapshot.mode {
-        RuntimeMode::Direct => s.proxies_direct.to_owned(),
+        RuntimeMode::Direct => translate_ui(s, tr::proxies_direct()),
         RuntimeMode::Global => effective_group_leaf(&snapshot.proxy_groups, "GLOBAL")
-            .unwrap_or_else(|| tr(current.locale, "未选择", "Unselected").to_owned()),
+            .unwrap_or_else(|| translate_ui(current.locale, tr::page_tr_154())),
         RuntimeMode::Rule => primary_selected_group_leaf(&snapshot.proxy_groups)
             .or_else(|| latest_active_rule_node(&snapshot.connections))
-            .unwrap_or_else(|| tr(current.locale, "未选择", "Unselected").to_owned()),
+            .unwrap_or_else(|| translate_ui(current.locale, tr::page_tr_154())),
     };
     let quick_count = quick_summary.members;
     let quick_group_count = quick_summary.groups;
@@ -155,13 +155,13 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                     padding_right: 4.0,
                     {dashboard_connection_row(
                         "git-branch",
-                        tr(current.locale, "当前节点", "Current node"),
+                        translate_ui(current.locale, tr::page_tr_252()),
                         current_node,
                     )}
                     Separator {}
                     {dashboard_connection_row(
                         "network",
-                        tr(current.locale, "出口 IP", "Exit IP"),
+                        translate_ui(current.locale, tr::page_tr_253()),
                         exit_location,
                     )}
                 }
@@ -174,7 +174,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                     layout_weight: 1.0,
                     align_items: "start",
                     text {
-                        content: tr(current.locale, "全局节点与策略分组", "Global node and policy groups"),
+                        content: translate_ui(current.locale, tr::page_tr_254()),
                         font_size: 17.0,
                         line_height: 22.0,
                         font_weight: 700,
@@ -190,7 +190,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                         onclick: move |_| {
                             all_nodes_navigator.push(Route::Proxies {});
                         },
-                        text { content: tr(current.locale, "搜索", "Search"), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                        text { content: translate_ui(current.locale, tr::page_tr_255()), font_size: 12.0, font_weight: 600, font_color: text_color() }
                         {arkit::icon("chevron-right", 14.0, subtle())}
                     }
                 }
@@ -203,8 +203,8 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                     align_items: "center",
                     justify_content: "center",
                     {arkit::icon("rss", 21.0, subtle())}
-                    text { content: tr(current.locale, "尚未选择订阅", "No subscription selected"), margin_top: 9.0, font_size: 14.0, font_weight: 700, font_color: text_color() }
-                    text { content: tr(current.locale, "添加并启用订阅后即可选择节点", "Add and activate a subscription to choose nodes"), margin_top: 3.0, font_size: 11.0, line_height: 16.0, font_color: subtle(), text_align: "center" }
+                    text { content: translate_ui(current.locale, tr::page_tr_256()), margin_top: 9.0, font_size: 14.0, font_weight: 700, font_color: text_color() }
+                    text { content: translate_ui(current.locale, tr::page_tr_257()), margin_top: 3.0, font_size: 11.0, line_height: 16.0, font_color: subtle(), text_align: "center" }
                     row { height: 10.0 }
                     Button {
                         variant: ButtonVariant::Default,
@@ -214,7 +214,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                             subscriptions_navigator.push(Route::Profiles {});
                         },
                         {arkit::icon("plus", 14.0, primary_text())}
-                        text { content: tr(current.locale, "添加订阅", "Add subscription"), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: primary_text() }
+                        text { content: translate_ui(current.locale, tr::page_tr_098()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: primary_text() }
                     }
                 }
             } else {
@@ -248,11 +248,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
     fixed_scaffold_flush_bottom(state, Route::Dashboard {}, rsx! {}, body)
 }
 
-fn dashboard_connection_row(
-    icon_name: &'static str,
-    label: &'static str,
-    value: String,
-) -> Element {
+fn dashboard_connection_row(icon_name: &'static str, label: String, value: String) -> Element {
     rsx! {
         row {
             width: "100%",
@@ -294,13 +290,13 @@ fn exit_location_label(
     locale: UiLocale,
 ) -> String {
     if !connected {
-        return tr(locale, "未连接", "Disconnected").to_owned();
+        return translate_ui(locale, tr::page_tr_126());
     }
     if location.ip.is_empty() {
         return if location.error.is_some() {
-            tr(locale, "暂时无法获取", "Temporarily unavailable").to_owned()
+            translate_ui(locale, tr::page_tr_258())
         } else {
-            tr(locale, "正在查询…", "Checking…").to_owned()
+            translate_ui(locale, tr::page_tr_259())
         };
     }
 
@@ -366,9 +362,9 @@ mod exit_location_tests {
 }
 
 fn mode_picker(state: Signal<State>, selected: RuntimeMode, locale: UiLocale) -> Element {
-    let rule = tr(locale, "规则", "Rule").to_owned();
-    let global = tr(locale, "全局", "Global").to_owned();
-    let direct = tr(locale, "直连", "Direct").to_owned();
+    let rule = translate_ui(locale, tr::page_tr_164());
+    let global = translate_ui(locale, tr::page_tr_165());
+    let direct = translate_ui(locale, tr::page_tr_166());
     let selected_label = match selected {
         RuntimeMode::Rule => rule.clone(),
         RuntimeMode::Global => global.clone(),

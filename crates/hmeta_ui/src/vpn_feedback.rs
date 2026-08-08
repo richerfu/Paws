@@ -1,4 +1,5 @@
-use crate::l10n::UiStrings;
+use crate::i18n::{tr, translate_ui};
+use crate::locale::UiLocale;
 use hmeta_model::VpnLifecycle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,18 +32,18 @@ pub(crate) fn vpn_command_message(
     action: VpnCommandAction,
     profile_name: Option<&str>,
     request_error: Option<&str>,
-    strings: &UiStrings,
+    locale: UiLocale,
 ) -> String {
     match action {
-        VpnCommandAction::Start => start_message(profile_name, request_error, strings),
-        VpnCommandAction::Stop => stop_message(request_error, strings),
+        VpnCommandAction::Start => start_message(profile_name, request_error, locale),
+        VpnCommandAction::Stop => stop_message(request_error, locale),
     }
 }
 
 fn start_message(
     profile_name: Option<&str>,
     request_error: Option<&str>,
-    strings: &UiStrings,
+    locale: UiLocale,
 ) -> String {
     let profile_name = profile_name.filter(|name| !name.trim().is_empty());
     let request_error = request_error.filter(|error| !error.trim().is_empty());
@@ -50,27 +51,36 @@ fn start_message(
         (Some(profile_name), Some(error)) => {
             format!(
                 "{}{}{}{}",
-                strings.feedback_vpn_start_loaded_prefix,
+                translate_ui(locale, tr::feedback_vpn_start_loaded_prefix()),
                 profile_name,
-                strings.feedback_vpn_start_loaded_failed_suffix,
+                translate_ui(locale, tr::feedback_vpn_start_loaded_failed_suffix()),
                 error
             )
         }
         (Some(profile_name), None) => {
             format!(
                 "{}{}",
-                strings.feedback_vpn_start_requested_prefix, profile_name
+                translate_ui(locale, tr::feedback_vpn_start_requested_prefix()),
+                profile_name
             )
         }
-        (None, Some(error)) => format!("{}{}", strings.feedback_vpn_start_failed_prefix, error),
-        (None, None) => strings.feedback_vpn_start_requested.to_owned(),
+        (None, Some(error)) => format!(
+            "{}{}",
+            translate_ui(locale, tr::feedback_vpn_start_failed_prefix()),
+            error
+        ),
+        (None, None) => translate_ui(locale, tr::feedback_vpn_start_requested()),
     }
 }
 
-fn stop_message(request_error: Option<&str>, strings: &UiStrings) -> String {
+fn stop_message(request_error: Option<&str>, locale: UiLocale) -> String {
     if let Some(error) = request_error.filter(|error| !error.trim().is_empty()) {
-        format!("{}{}", strings.feedback_vpn_stop_fallback_prefix, error)
+        format!(
+            "{}{}",
+            translate_ui(locale, tr::feedback_vpn_stop_fallback_prefix()),
+            error
+        )
     } else {
-        strings.feedback_vpn_stop_requested.to_owned()
+        translate_ui(locale, tr::feedback_vpn_stop_requested())
     }
 }

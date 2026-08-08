@@ -15,9 +15,9 @@ pub(crate) fn requests_page(state: Signal<State>) -> Element {
     let navigator = use_navigator();
     let query_value = request_query();
     let filter_value = request_filter();
-    let all_label = strings(current.locale).requests_status_all.to_owned();
-    let active_label = strings(current.locale).requests_status_active.to_owned();
-    let ended_label = strings(current.locale).requests_status_ended.to_owned();
+    let all_label = translate_ui(current.locale, tr::requests_status_all());
+    let active_label = translate_ui(current.locale, tr::requests_status_active());
+    let ended_label = translate_ui(current.locale, tr::requests_status_ended());
     let filter_options = vec![all_label.clone(), active_label.clone(), ended_label.clone()];
     let selected_filter = match filter_value {
         RequestStatusFilter::All => all_label.clone(),
@@ -53,7 +53,7 @@ pub(crate) fn requests_page(state: Signal<State>) -> Element {
             },
             active: request.active,
             connection_query: request_connection_query(request),
-            rule_accessibility: tr(current.locale, "添加命中规则", "Add matching rule").to_owned(),
+            rule_accessibility: translate_ui(current.locale, tr::page_tr_004()),
         })
         .collect::<Vec<_>>();
     let empty = rows.is_empty();
@@ -79,7 +79,7 @@ pub(crate) fn requests_page(state: Signal<State>) -> Element {
             height: "100%",
             Input {
                 value: Some(query_value),
-                placeholder: Some(strings(current.locale).requests_search_placeholder.to_owned()),
+                placeholder: Some(translate_ui(current.locale, tr::requests_search_placeholder())),
                 width: Some("100%".into()),
                 on_change: move |value| request_query.set(value),
             }
@@ -103,7 +103,7 @@ pub(crate) fn requests_page(state: Signal<State>) -> Element {
                 layout_weight: 1.0,
                 width: "100%",
                 if empty {
-                    {empty_state("activity", strings(current.locale).requests_empty_title, strings(current.locale).requests_empty_subtitle)}
+                    {empty_state("activity", translate_ui(current.locale, tr::requests_empty_title()), translate_ui(current.locale, tr::requests_empty_subtitle()))}
                 } else {
                     VirtualRequestList {
                         items: rows,
@@ -171,9 +171,8 @@ pub(crate) fn connections_page(state: Signal<State>, initial_query: String) -> E
                     format_total(connection.upload_bytes),
                 ),
                 started_at: format_activity_timestamp(&connection.started_at),
-                close_accessibility: strings(current.locale).connections_close.to_owned(),
-                rule_accessibility: tr(current.locale, "添加命中规则", "Add matching rule")
-                    .to_owned(),
+                close_accessibility: translate_ui(current.locale, tr::connections_close()),
+                rule_accessibility: translate_ui(current.locale, tr::page_tr_004()).to_owned(),
             }
         })
         .collect::<Vec<_>>();
@@ -200,7 +199,7 @@ pub(crate) fn connections_page(state: Signal<State>, initial_query: String) -> E
             height: "100%",
             Input {
                 value: Some(query_value),
-                placeholder: Some(strings(current.locale).connections_search_placeholder.to_owned()),
+                placeholder: Some(translate_ui(current.locale, tr::connections_search_placeholder())),
                 width: Some("100%".into()),
                 on_change: move |value| query.set(value),
             }
@@ -209,7 +208,7 @@ pub(crate) fn connections_page(state: Signal<State>, initial_query: String) -> E
                 layout_weight: 1.0,
                 width: "100%",
                 if empty {
-                    {empty_state("unplug", strings(current.locale).connections_empty_title, strings(current.locale).connections_empty_subtitle)}
+                    {empty_state("unplug", translate_ui(current.locale, tr::connections_empty_title()), translate_ui(current.locale, tr::connections_empty_subtitle()))}
                 } else {
                     VirtualConnectionList {
                         items: rows,
@@ -738,8 +737,8 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
         return rsx! {};
     };
     let locale = current.locale;
-    let exact_label = tr(locale, "精确域名", "Exact domain").to_owned();
-    let suffix_label = tr(locale, "域名后缀", "Domain suffix").to_owned();
+    let exact_label = translate_ui(locale, tr::page_tr_005());
+    let suffix_label = translate_ui(locale, tr::page_tr_006());
     let ip_label = "IP/CIDR".to_owned();
     let selected_match = match editor.match_kind {
         ManualRuleMatchKind::Domain => exact_label.clone(),
@@ -802,11 +801,11 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
 
     rsx! {
         DialogHeader {
-            title: tr(locale, "添加命中规则", "Add matching rule").to_owned(),
-            description: Some(tr(locale, "保存到当前配置并热更新 meow 路由", "Save to the active profile and update meow routing live").to_owned()),
+            title: translate_ui(locale, tr::page_tr_004()),
+            description: Some(translate_ui(locale, tr::page_tr_007())),
         }
             row { height: 14.0 }
-            text { content: tr(locale, "匹配方式", "Match type"), font_size: 11.0, font_weight: 650, font_color: subtle() }
+            text { content: translate_ui(locale, tr::page_tr_008()), font_size: 11.0, font_weight: 650, font_color: subtle() }
             row { height: 6.0 }
             FlatSegmented {
                 options: vec![exact_label, suffix_label, ip_label],
@@ -826,16 +825,16 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
             Input {
                 value: Some(editor.value.clone()),
                 placeholder: Some(match editor.match_kind {
-                    ManualRuleMatchKind::Domain => tr(locale, "例如 api.example.com", "For example api.example.com"),
-                    ManualRuleMatchKind::DomainSuffix => tr(locale, "例如 example.com", "For example example.com"),
-                    ManualRuleMatchKind::IpCidr => tr(locale, "例如 192.0.2.1 或 192.0.2.0/24", "For example 192.0.2.1 or 192.0.2.0/24"),
+                    ManualRuleMatchKind::Domain => translate_ui(locale, tr::page_tr_009()),
+                    ManualRuleMatchKind::DomainSuffix => translate_ui(locale, tr::page_tr_010()),
+                    ManualRuleMatchKind::IpCidr => translate_ui(locale, tr::page_tr_011()),
                 }.to_owned()),
                 width: Some("100%".into()),
                 disabled: editor.submitting,
                 on_change: move |value| dispatch(state, Action::SetManualRuleValue(value)),
             }
             row { height: 10.0 }
-            text { content: tr(locale, "路由策略", "Routing policy"), font_size: 11.0, font_weight: 650, font_color: subtle() }
+            text { content: translate_ui(locale, tr::page_tr_012()), font_size: 11.0, font_weight: 650, font_color: subtle() }
             row { height: 6.0 }
             // arkit shadcn Select (overlay panel). Ignore changes while submitting.
             column {
@@ -861,14 +860,14 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                 border_color: line(),
                 border_radius: 7.0,
                 background_color: muted(),
-                text { content: tr(locale, "规则预览", "Rule preview"), font_size: 10.0, font_weight: 650, font_color: subtle() }
+                text { content: translate_ui(locale, tr::page_tr_013()), font_size: 10.0, font_weight: 650, font_color: subtle() }
                 text { content: preview, margin_top: 3.0, font_size: 11.0, font_color: text_color(), max_lines: 2, text_overflow: "ellipsis" }
             }
             if let Some(message) = conflict_message {
                 text { content: message, margin_top: 8.0, font_size: 11.0, line_height: 16.0, font_color: warning() }
             }
             if current.snapshot.mode != RuntimeMode::Rule {
-                text { content: tr(locale, "当前不是规则模式：规则会保存，但切换到规则模式后才会命中。", "Rule mode is not active: the rule will be saved, but matching starts after switching to Rule mode."), margin_top: 8.0, font_size: 11.0, line_height: 16.0, font_color: warning() }
+                text { content: translate_ui(locale, tr::page_tr_014()), margin_top: 8.0, font_size: 11.0, line_height: 16.0, font_color: warning() }
             }
             if editor.connection_id.is_some() {
                 row {
@@ -879,10 +878,10 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                         checked: Some(editor.disconnect_after_save),
                         on_change: move |value| dispatch(state, Action::SetManualRuleDisconnect(value)),
                     }
-                    text { content: tr(locale, "保存后断开当前连接，使重连立即使用新规则", "Close the current connection after saving so its reconnect uses the new rule"), margin_left: 8.0, font_size: 11.0, line_height: 16.0, font_color: subtle() }
+                    text { content: translate_ui(locale, tr::page_tr_015()), margin_left: 8.0, font_size: 11.0, line_height: 16.0, font_color: subtle() }
                 }
             } else {
-                text { content: tr(locale, "规则只影响之后建立的新连接。", "The rule applies to newly established connections."), margin_top: 8.0, font_size: 11.0, font_color: subtle() }
+                text { content: translate_ui(locale, tr::page_tr_016()), margin_top: 8.0, font_size: 11.0, font_color: subtle() }
             }
             if let Some(error) = editor.error {
                 text { content: error, margin_top: 8.0, font_size: 11.0, line_height: 16.0, font_color: danger() }
@@ -898,7 +897,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                 } else {
                     {arkit::icon("route", 16.0, primary_text())}
                 }
-                text { content: if editor.submitting { tr(locale, "正在保存", "Saving") } else { tr(locale, "保存并应用", "Save and apply") }, margin_left: 8.0, font_size: 13.0, font_weight: 650, font_color: primary_text() }
+                text { content: if editor.submitting { translate_ui(locale, tr::page_tr_017()) } else { translate_ui(locale, tr::page_tr_018()) }, margin_left: 8.0, font_size: 13.0, font_weight: 650, font_color: primary_text() }
             }
         }
     }

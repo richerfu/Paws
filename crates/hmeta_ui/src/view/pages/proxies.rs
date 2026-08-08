@@ -67,7 +67,7 @@ pub(crate) fn proxies_page(state: Signal<State>) -> Element {
             layout_weight: 1.0,
             Input {
                 value: Some(query_value),
-                placeholder: Some(strings(current.locale).proxies_search_placeholder.to_owned()),
+                placeholder: Some(translate_ui(current.locale, tr::proxies_search_placeholder())),
                 width: Some("100%".into()),
                 on_change: move |value| query.set(value),
             }
@@ -86,7 +86,7 @@ pub(crate) fn proxies_page(state: Signal<State>) -> Element {
                     layout_weight: 1.0,
                     width: "100%",
                     justify_content: "center",
-                    {empty_state("git-branch", strings(current.locale).proxies_empty_title, strings(current.locale).proxies_empty_subtitle)}
+                    {empty_state("git-branch", translate_ui(current.locale, tr::proxies_empty_title()), translate_ui(current.locale, tr::proxies_empty_subtitle()))}
                 }
             } else {
                 column {
@@ -311,23 +311,23 @@ fn VirtualProxyGroupRow(
     let selected = group
         .selected
         .clone()
-        .unwrap_or_else(|| tr(locale, "未选择", "Unselected").to_owned());
+        .unwrap_or_else(|| translate_ui(locale, tr::page_tr_154()));
     let selection_mode = match group.fixed.as_deref() {
-        Some("") => tr(locale, "自动", "Auto"),
-        Some(_) => tr(locale, "已固定", "Pinned"),
-        None if !group.selectable => tr(locale, "自动策略", "Automatic policy"),
-        None => tr(locale, "手动选择", "Manual selection"),
+        Some("") => translate_ui(locale, tr::page_tr_155()),
+        Some(_) => translate_ui(locale, tr::page_tr_156()),
+        None if !group.selectable => translate_ui(locale, tr::page_tr_157()),
+        None => translate_ui(locale, tr::page_tr_158()),
     };
     let global_selector = group.name.eq_ignore_ascii_case("GLOBAL");
     let title = if global_selector {
-        tr(locale, "全局节点", "Global node").to_owned()
+        translate_ui(locale, tr::page_tr_159())
     } else {
         group.name.clone()
     };
     let group_kind = if global_selector {
-        tr(locale, "全局模式", "Global mode")
+        translate_ui(locale, tr::page_tr_160())
     } else {
-        group.group_type.as_str()
+        group.group_type.clone()
     };
     let group_name = group.name.clone();
     rsx! {
@@ -387,7 +387,7 @@ fn VirtualProxyGroupRow(
                 }
                 text {
                     width: "100%",
-                    content: format!("{} · {}", tr(locale, "当前", "Current"), selected),
+                    content: format!("{} · {}", translate_ui(locale, tr::page_tr_161()), selected),
                     font_size: 10.0,
                     line_height: 15.0,
                     font_weight: 600,
@@ -425,17 +425,17 @@ fn VirtualProxyMemberRow(
     let delay = member
         .delay_ms
         .map(|value| format!("{value} ms"))
-        .unwrap_or_else(|| strings(locale).proxies_untested.to_owned());
+        .unwrap_or_else(|| translate_ui(locale, tr::proxies_untested()));
     let detail = if member.subgroup {
         format!(
             "{} · {}",
-            tr(locale, "子分组", "Subgroup"),
+            translate_ui(locale, tr::page_tr_162()),
             member.proxy_type
         )
     } else if member.pinned {
         format!(
             "{} · {}",
-            tr(locale, "已固定", "Pinned"),
+            translate_ui(locale, tr::page_tr_156()),
             member.proxy_type.to_ascii_uppercase()
         )
     } else {
@@ -515,9 +515,9 @@ fn VirtualProxyMemberRow(
             }
             text {
                 content: if !member.selectable {
-                    tr(locale, "自动", "Auto").to_owned()
+                    translate_ui(locale, tr::page_tr_155())
                 } else if member.pinned {
-                    tr(locale, "恢复自动", "Use auto").to_owned()
+                    translate_ui(locale, tr::page_tr_163())
                 } else {
                     delay
                 },
