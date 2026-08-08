@@ -7,6 +7,8 @@
   "license": "MIT",
   "dependencies": {
     "@ohos-rs/ability": "1.0.0-beta.1",
+    "@ohos-rs/ability-plugin-files": "1.0.0-beta.0",
+    "@ohos-rs/ability-plugin-url": "1.0.0-beta.0",
     "libhmeta_ui.so": "file:./src/main/cpp/types/libhmeta_ui"
   }
 }

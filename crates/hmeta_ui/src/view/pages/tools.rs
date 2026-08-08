@@ -7,56 +7,52 @@ pub(crate) fn tools_page(state: Signal<State>) -> Element {
         column {
             width: "100%",
             {settings_section(
-                tr(current.locale, "常规", "General"),
+                translate_ui(current.locale, tr::page_tr_019()),
                 vec![
-                    settings_value_row("package", tr(current.locale, "版本", "Version"), about.app_version),
-                    settings_value_row("cpu", tr(current.locale, "引擎", "Engine"), format!("meow-rs {}", about.meow_rs_version)),
+                    settings_value_row("package", translate_ui(current.locale, tr::page_tr_020()), about.app_version),
+                    settings_value_row("cpu", translate_ui(current.locale, tr::page_tr_021()), format!("meow-rs {}", about.meow_rs_version)),
                     settings_route_row(
                         Route::SubscriptionConverter {},
                         current.locale,
-                        tr(
-                            current.locale,
-                            "在订阅链接、客户端格式与远程规则之间转换",
-                            "Convert subscription links, client formats, and remote rules",
-                        ),
+                        translate_ui(current.locale, tr::hard_zh_023()),
                     ),
                 ],
             )}
             row { height: spacing::LG }
             {settings_section(
-                tr(current.locale, "界面", "Appearance"),
+                translate_ui(current.locale, tr::page_tr_022()),
                 vec![settings_route_row(
                     Route::Appearance {},
                     current.locale,
-                    tr(current.locale, "语言、浅色与深色主题", "Language, light and dark themes"),
+                    translate_ui(current.locale, tr::page_tr_023()),
                 )],
             )}
             row { height: spacing::LG }
             {settings_section(
-                tr(current.locale, "网络", "Network"),
+                translate_ui(current.locale, tr::page_tr_024()),
                 vec![settings_route_row(
                     Route::Settings {},
                     current.locale,
-                    tr(current.locale, "VPN、DNS 与网络栈", "VPN, DNS and network stack"),
+                    translate_ui(current.locale, tr::page_tr_025()),
                 )],
             )}
             row { height: spacing::LG }
             {settings_section(
-                tr(current.locale, "诊断与管理", "Diagnostics & management"),
+                translate_ui(current.locale, tr::page_tr_026()),
                 vec![
-                    settings_route_row(Route::Requests {}, current.locale, tr(current.locale, "检查最近的请求与规则命中", "Inspect recent requests and rule matches")),
-                    settings_route_row(Route::Connections { query: String::new() }, current.locale, tr(current.locale, "查看或断开活动连接", "Inspect or close active connections")),
-                    settings_route_row(Route::Resources {}, current.locale, tr(current.locale, "规则、Provider 与 GeoData", "Rules, providers and GeoData")),
-                    settings_route_row(Route::Logs {}, current.locale, tr(current.locale, "查看 meow-rs 运行日志", "Inspect meow-rs runtime logs")),
+                    settings_route_row(Route::Requests {}, current.locale, translate_ui(current.locale, tr::page_tr_027())),
+                    settings_route_row(Route::Connections { query: String::new() }, current.locale, translate_ui(current.locale, tr::page_tr_028())),
+                    settings_route_row(Route::Resources {}, current.locale, translate_ui(current.locale, tr::page_tr_029())),
+                    settings_route_row(Route::Logs {}, current.locale, translate_ui(current.locale, tr::page_tr_030())),
                 ],
             )}
             row { height: spacing::LG }
             {settings_section(
-                tr(current.locale, "关于", "About"),
+                translate_ui(current.locale, tr::page_tr_031()),
                 vec![settings_route_row(
                     Route::About {},
                     current.locale,
-                    tr(current.locale, "开源信息、组件版本与隐私说明", "Open source, component versions and privacy"),
+                    translate_ui(current.locale, tr::page_tr_032()),
                 )],
             )}
         }
@@ -205,12 +201,12 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
             width: "100%",
             {card(
                 "Paws",
-                Some(tr(current.locale, "HarmonyOS 原生 meow-rs 客户端", "Native HarmonyOS client powered by meow-rs").to_owned()),
+                Some(translate_ui(current.locale, tr::page_tr_033())),
                 rsx! {
                     column {
                         width: "100%",
-                        {info_row(tr(current.locale, "应用版本", "App"), about.app_version)}
-                        {info_row(tr(current.locale, "核心版本", "Core"), about.core_version)}
+                        {info_row(translate_ui(current.locale, tr::page_tr_034()), about.app_version)}
+                        {info_row(translate_ui(current.locale, tr::page_tr_035()), about.core_version)}
                         {info_row("meow-rs", about.meow_rs_version)}
                         {info_row("arkit", arkit_revision)}
                         {info_row("Rust", about.rust_version)}
@@ -219,15 +215,11 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
             )}
             row { height: 12.0 }
             {settings_section(
-                tr(current.locale, "隐私与数据", "Privacy and data"),
+                translate_ui(current.locale, tr::page_tr_036()),
                 vec![settings_route_row(
                     Route::Privacy {},
                     current.locale,
-                    tr(
-                        current.locale,
-                        "隐私策略、出口 IP 查询和第三方服务说明",
-                        "Privacy policy, exit IP lookup and third-party services",
-                    ),
+                    translate_ui(current.locale, tr::hard_zh_024()),
                 )],
             )}
             row { height: 10.0 }
@@ -338,22 +330,14 @@ pub(crate) fn privacy_page(state: Signal<State>) -> Element {
         column {
             width: "100%",
             {card(
-                tr(current.locale, "隐私策略", "Privacy policy"),
-                Some(tr(
-                    current.locale,
-                    "以下说明覆盖 Paws 自身处理的数据；用户配置的订阅、规则提供方和外部网站由各自运营方负责",
-                    "This covers data handled by Paws; configured subscriptions, rule providers and external sites are governed by their operators",
-                ).to_owned()),
+                translate_ui(current.locale, tr::page_tr_037()),
+                Some(translate_ui(current.locale, tr::hard_zh_025())),
                 rsx! { column { width: "100%", {disclosures.into_iter()} } },
             )}
             row { height: 12.0 }
             {card(
-                tr(current.locale, "出口 IP 查询服务", "Exit IP lookup services"),
-                Some(tr(
-                    current.locale,
-                    "仅在 VPN 已连接时查询，取首个有效结果。点击服务名称可查看其文档和隐私规则",
-                    "Queried only while the VPN is connected; the first valid result is used. Open a service to review its documentation and privacy terms",
-                ).to_owned()),
+                translate_ui(current.locale, tr::page_tr_038()),
+                Some(translate_ui(current.locale, tr::hard_zh_026())),
                 rsx! { column { width: "100%", {exit_ip_services.into_iter()} } },
             )}
         }

@@ -1,25 +1,19 @@
-use arkit::entry;
-use arkit::prelude::Element;
 use hmeta_model::{RuntimeMode, VpnOptions};
 use napi_derive_ohos::napi;
-#[cfg(target_env = "ohos")]
-use napi_ohos::Env;
-use napi_ohos::{bindgen_prelude::Object, Error, Result, Status};
-#[cfg(target_env = "ohos")]
+use napi_ohos::{bindgen_prelude::Object, Env, Error, Result, Status};
 use ohos_resource_manager_binding::ResourceManager;
 use std::collections::BTreeMap;
-#[cfg(target_env = "ohos")]
 use std::path::{Path, PathBuf};
-#[cfg(target_env = "ohos")]
 use std::{fs, io};
 
 mod activity_filter;
-mod l10n;
+mod bridge;
+mod i18n;
+mod locale;
 mod log_filter;
 mod manual_rule;
 mod mode_feedback;
 mod notification;
-mod platform_callbacks;
 mod profile_filter;
 mod profile_refresh_feedback;
 mod provider_refresh_feedback;
@@ -38,8 +32,22 @@ mod ui_preferences;
 mod vpn_feedback;
 mod yaml_summary;
 
-#[entry]
-fn app() -> Element {
+use arkit::entry;
+use arkit::prelude::Element;
+
+/// Application entry: arkit's `#[entry]` generates the NAPI init/render/
+/// destroy lifecycle and bridge event ports, registers the `paws.*` bridge
+/// plugins declaratively, and passes the shared `OpenHarmonyApp` handle into
+/// the entry function so the platform call surface can resolve it.
+#[entry(plugins = [
+    bridge::PawsScanBridgePlugin,
+    bridge::PawsClipboardBridgePlugin,
+    bridge::PawsColorModeBridgePlugin,
+    bridge::PawsVpnBridgePlugin,
+    bridge::PawsExportBridgePlugin,
+])]
+fn app(handle: arkit::openharmony_ability::OpenHarmonyApp) -> Element {
+    bridge::set_app(handle);
     ui::App()
 }
 
@@ -156,16 +164,13 @@ pub fn configure_system_color_mode(color_mode: i32) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_env = "ohos")]
 const GEODATA_RAW_DIR: &str = "geodata";
-#[cfg(target_env = "ohos")]
 const GEODATA_SEED_FILES: &[(&str, &str)] = &[
     ("geodata/Country.mmdb", "Country.mmdb"),
     ("geodata/GeoLite2-ASN.mmdb", "GeoLite2-ASN.mmdb"),
     ("geodata/geosite.dat", "geosite.dat"),
 ];
 
-#[cfg(target_env = "ohos")]
 #[napi]
 pub fn seed_geodata_from_rawfiles<'a>(
     env: Env,
@@ -207,7 +212,6 @@ pub fn seed_geodata_from_rawfiles<'a>(
     Ok(seeded)
 }
 
-#[cfg(target_env = "ohos")]
 fn write_seed_file(dest: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = dest.with_extension("seed.tmp");
     fs::write(&tmp, bytes).map_err(io_to_napi)?;
@@ -217,7 +221,6 @@ fn write_seed_file(dest: &Path, bytes: &[u8]) -> Result<()> {
     })
 }
 
-#[cfg(target_env = "ohos")]
 fn io_to_napi(err: io::Error) -> Error {
     Error::new(Status::GenericFailure, err.to_string())
 }
@@ -318,7 +321,7 @@ pub async fn import_profile_from_content(
 
 #[napi]
 pub async fn import_profile_from_picker() -> Result<String> {
-    let (name, raw_yaml) = platform_callbacks::pick_profile_text()
+    let (name, raw_yaml) = bridge::pick_profile_text()
         .await
         .map_err(|err| Error::new(Status::GenericFailure, err))?;
     hmeta_core::shared_core()
@@ -640,11 +643,6 @@ pub fn query_snapshot() -> Result<String> {
 #[napi]
 pub fn default_vpn_options() -> Result<String> {
     hmeta_model::to_json(&VpnOptions::default()).map_err(to_napi_error)
-}
-
-#[napi]
-pub fn register_platform_callbacks(callbacks: Object<'static>) -> Result<()> {
-    platform_callbacks::register_platform_callbacks(callbacks)
 }
 
 fn to_napi_error(error: hmeta_model::HMetaError) -> Error {

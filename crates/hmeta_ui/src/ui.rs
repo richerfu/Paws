@@ -1,7 +1,8 @@
 use crate::activity_filter::{
     matches_connection_query, matches_request_filter, request_connection_query, RequestStatusFilter,
 };
-use crate::l10n::{strings, UiLocale, UiStrings};
+use crate::i18n::{tr, translate_ui};
+use crate::locale::UiLocale;
 use crate::log_filter::{matches_log_filter_normalized, normalize_log_query, LogLevelFilter};
 use crate::mode_feedback::mode_changed_message;
 use crate::notification::NotificationCenter;
@@ -28,6 +29,7 @@ use hmeta_model::{
     ManualRuleMatchKind, ManualRuleMutationKind, ManualRuleSpec, RuntimeMode, RuntimeSnapshot,
     TrafficHistoryPoint, VpnLifecycle,
 };
+
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -488,10 +490,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             state.preferences.language = preference;
             state.refresh_system_preferences();
             let message = match state.preferences.save() {
-                Ok(()) if state.locale == UiLocale::ZhCn => "语言设置已更新".to_owned(),
+                Ok(()) if state.locale == UiLocale::ZhCn => {
+                    translate_ui(state.locale, tr::hard_zh_051()).to_owned()
+                }
                 Ok(()) => "Language preference updated".to_owned(),
                 Err(error) if state.locale == UiLocale::ZhCn => {
-                    format!("语言设置保存失败：{error}")
+                    translate_ui(state.locale, tr::hard_zh_047(error))
                 }
                 Err(error) => format!("Failed to save language preference: {error}"),
             };
@@ -501,10 +505,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             state.preferences.theme = preference;
             state.refresh_system_preferences();
             let message = match state.preferences.save() {
-                Ok(()) if state.locale == UiLocale::ZhCn => "主题设置已更新".to_owned(),
+                Ok(()) if state.locale == UiLocale::ZhCn => {
+                    translate_ui(state.locale, tr::hard_zh_052()).to_owned()
+                }
                 Ok(()) => "Theme preference updated".to_owned(),
                 Err(error) if state.locale == UiLocale::ZhCn => {
-                    format!("主题设置保存失败：{error}")
+                    translate_ui(state.locale, tr::hard_zh_048(error))
                 }
                 Err(error) => format!("Failed to save theme preference: {error}"),
             };
@@ -516,19 +522,14 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             {
                 show_toast(
                     state,
-                    if state.locale == UiLocale::ZhCn {
-                        "正在等待系统 VPN 服务"
-                    } else {
-                        "Waiting for the system VPN service"
-                    }
-                    .to_owned(),
+                    translate_ui(state.locale, tr::hard_zh_053()).to_owned(),
                 )
             } else if state.snapshot.vpn_running {
-                let ui_strings = strings(state.locale);
+                let ui_locale = state.locale;
                 state.vpn_command_pending = Some(VpnCommandAction::Stop);
                 Command::batch([
                     Command::perform(
-                        stop_vpn_command_and_snapshot(ui_strings),
+                        stop_vpn_command_and_snapshot(ui_locale),
                         Action::VpnCommandFinished,
                     ),
                     Command::perform(delayed_vpn_snapshot(), Action::VpnCommandSnapshot),
@@ -547,11 +548,11 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     .find(|profile| profile.id == profile_id)
                     .map(|profile| profile.name.clone())
                     .unwrap_or_else(|| profile_id.clone());
-                let ui_strings = strings(state.locale);
+                let ui_locale = state.locale;
                 state.vpn_command_pending = Some(VpnCommandAction::Start);
                 Command::batch([
                     Command::perform(
-                        start_vpn_command_and_snapshot(profile_id, profile_name, ui_strings),
+                        start_vpn_command_and_snapshot(profile_id, profile_name, ui_locale),
                         Action::VpnCommandFinished,
                     ),
                     Command::perform(delayed_vpn_snapshot(), Action::VpnCommandSnapshot),
@@ -559,7 +560,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             } else {
                 show_toast(
                     state,
-                    strings(state.locale).feedback_profile_required.to_owned(),
+                    translate_ui(state.locale, tr::feedback_profile_required()),
                 )
             }
         }
@@ -577,7 +578,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         result.action,
                         result.profile_name.as_deref(),
                         result.request_error.as_deref(),
-                        strings(state.locale),
+                        state.locale,
                     ),
                 )
             }
@@ -614,16 +615,13 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
         Action::ModeChanged(result) => match result {
             Ok(result) => {
                 state.snapshot = result.snapshot;
-                show_toast(
-                    state,
-                    mode_changed_message(result.mode, strings(state.locale)),
-                )
+                show_toast(state, mode_changed_message(result.mode, state.locale))
             }
             Err(error) => show_toast(
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_mode_change_failed_prefix,
+                    translate_ui(state.locale, tr::feedback_mode_change_failed_prefix()),
                     error
                 ),
             ),
@@ -656,7 +654,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     state,
                     format!(
                         "{}{}",
-                        strings(state.locale).feedback_proxy_switch_failed_prefix,
+                        translate_ui(state.locale, tr::feedback_proxy_switch_failed_prefix()),
                         error
                     ),
                 ),
@@ -670,7 +668,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             if groups.is_empty() {
                 show_toast(
                     state,
-                    strings(state.locale).feedback_proxy_delay_empty.to_owned(),
+                    translate_ui(state.locale, tr::feedback_proxy_delay_empty()),
                 )
             } else {
                 state.proxy_delay_loading = true;
@@ -689,11 +687,11 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         state,
                         format!(
                             "{}{}{}{}{}",
-                            strings(state.locale).feedback_proxy_delay_batch_prefix,
+                            translate_ui(state.locale, tr::feedback_proxy_delay_batch_prefix()),
                             result.succeeded,
-                            strings(state.locale).feedback_provider_batch_success_mid,
+                            translate_ui(state.locale, tr::feedback_provider_batch_success_mid()),
                             result.failed,
-                            strings(state.locale).feedback_provider_batch_failed_suffix
+                            translate_ui(state.locale, tr::feedback_provider_batch_failed_suffix())
                         ),
                     )
                 }
@@ -701,7 +699,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     state,
                     format!(
                         "{}{}",
-                        strings(state.locale).feedback_proxy_delay_batch_failed_prefix,
+                        translate_ui(state.locale, tr::feedback_proxy_delay_batch_failed_prefix()),
                         error
                     ),
                 ),
@@ -712,15 +710,17 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 return Command::none();
             }
             state.controller_diagnostic_pending = Some("dns".to_owned());
+            let locale = state.locale;
             Command::perform(
-                async {
+                async move {
+                    let locale = locale;
                     hmeta_core::shared_core()
                         .flush_dns_cache_via_controller()
                         .await
                         .map_err(|error| error.to_string())?;
                     Ok((
                         load_snapshot().await,
-                        "DNS 缓存已清理 / DNS cache flushed".to_owned(),
+                        translate_ui(locale, tr::hard_zh_054()).to_owned(),
                     ))
                 },
                 Action::ControllerDiagnosticFinished,
@@ -731,15 +731,16 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 return Command::none();
             }
             state.controller_diagnostic_pending = Some("fakeip".to_owned());
+            let locale = state.locale;
             Command::perform(
-                async {
+                async move {
                     hmeta_core::shared_core()
                         .flush_fake_ip_cache_via_controller()
                         .await
                         .map_err(|error| error.to_string())?;
                     Ok((
                         load_snapshot().await,
-                        "Fake-IP 缓存已清理 / Fake-IP cache flushed".to_owned(),
+                        translate_ui(locale, tr::hard_zh_055()).to_owned(),
                     ))
                 },
                 Action::ControllerDiagnosticFinished,
@@ -750,6 +751,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 return Command::none();
             }
             state.controller_diagnostic_pending = Some(format!("provider:{provider_name}"));
+            let locale = state.locale;
             Command::perform(
                 async move {
                     hmeta_core::shared_core()
@@ -758,7 +760,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         .map_err(|error| error.to_string())?;
                     Ok((
                         load_snapshot().await,
-                        format!("Provider {provider_name} 健康检查完成"),
+                        translate_ui(locale, tr::hard_zh_049(provider_name)),
                     ))
                 },
                 Action::ControllerDiagnosticFinished,
@@ -799,9 +801,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     state.snapshot = snapshot;
                     show_toast(state, message)
                 }
-                Err(error) => {
-                    show_toast(state, format!("诊断操作失败 / Diagnostic failed: {error}"))
-                }
+                Err(error) => show_toast(state, translate_ui(state.locale, tr::hard_zh_050(error))),
             }
         }
         Action::CloseConnection(connection_id) => Command::perform(
@@ -813,14 +813,14 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state.snapshot = snapshot;
                 show_toast(
                     state,
-                    strings(state.locale).feedback_connection_closed.to_owned(),
+                    translate_ui(state.locale, tr::feedback_connection_closed()),
                 )
             }
             Err(error) => show_toast(
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_connection_close_failed_prefix,
+                    translate_ui(state.locale, tr::feedback_connection_close_failed_prefix()),
                     error
                 ),
             ),
@@ -860,7 +860,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             }
             if state.snapshot.active_profile.is_none() {
                 lookup.error = Some(if state.locale == UiLocale::ZhCn {
-                    "请先启用一个订阅配置".to_owned()
+                    translate_ui(state.locale, tr::hard_zh_056()).to_owned()
                 } else {
                     "Activate a profile before querying rules".to_owned()
                 });
@@ -868,7 +868,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             }
             if lookup.query.trim().is_empty() {
                 lookup.error = Some(if state.locale == UiLocale::ZhCn {
-                    "请输入域名或 IP 地址".to_owned()
+                    translate_ui(state.locale, tr::hard_zh_057()).to_owned()
                 } else {
                     "Enter a domain name or IP address".to_owned()
                 });
@@ -1002,7 +1002,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             }
             let Some(profile_id) = state.snapshot.active_profile.clone() else {
                 editor.error = Some(if state.locale == UiLocale::ZhCn {
-                    "请先启用一个订阅配置".to_owned()
+                    translate_ui(state.locale, tr::hard_zh_056()).to_owned()
                 } else {
                     "Activate a profile before adding a rule".to_owned()
                 });
@@ -1048,20 +1048,20 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state.snapshot = snapshot;
                 show_toast(
                     state,
-                    strings(state.locale).feedback_connections_closed.to_owned(),
+                    translate_ui(state.locale, tr::feedback_connections_closed()),
                 )
             }
             Err(error) => show_toast(
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_connections_close_failed_prefix,
+                    translate_ui(state.locale, tr::feedback_connections_close_failed_prefix()),
                     error
                 ),
             ),
         },
         Action::OpenExternalUrl(url) => Command::perform(
-            async move { crate::platform_callbacks::open_external_url(url).await },
+            async move { crate::bridge::open_external_url(url).await },
             Action::ExternalUrlOpened,
         ),
         Action::ExternalUrlOpened(result) => match result {
@@ -1070,7 +1070,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_open_link_failed_prefix,
+                    translate_ui(state.locale, tr::feedback_open_link_failed_prefix()),
                     error
                 ),
             ),
@@ -1084,16 +1084,17 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state.snapshot = snapshot;
                 show_toast(
                     state,
-                    strings(state.locale)
-                        .feedback_request_history_cleared
-                        .to_owned(),
+                    translate_ui(state.locale, tr::feedback_request_history_cleared()).to_owned(),
                 )
             }
             Err(error) => show_toast(
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_request_history_clear_failed_prefix,
+                    translate_ui(
+                        state.locale,
+                        tr::feedback_request_history_clear_failed_prefix()
+                    ),
                     error
                 ),
             ),
@@ -1118,23 +1119,16 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     show_toast(
                         state,
                         if state.log_recording.enabled {
-                            locale_text(state.locale, "已开始记录日志", "Log recording started")
+                            translate_ui(state.locale, tr::hard_zh_058())
                         } else {
-                            locale_text(state.locale, "已停止记录日志", "Log recording stopped")
+                            translate_ui(state.locale, tr::hard_zh_059())
                         }
                         .to_owned(),
                     )
                 }
                 Err(error) => show_toast(
                     state,
-                    format!(
-                        "{}{error}",
-                        locale_text(
-                            state.locale,
-                            "切换日志记录失败：",
-                            "Failed to change log recording: "
-                        )
-                    ),
+                    format!("{}{error}", translate_ui(state.locale, tr::hard_zh_060())),
                 ),
             }
         }
@@ -1154,15 +1148,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     state,
                     format!(
                         "{}{file_name}",
-                        locale_text(state.locale, "日志已导出：", "Log exported: ")
+                        translate_ui(state.locale, tr::hard_zh_061())
                     ),
                 ),
                 Err(error) => show_toast(
                     state,
-                    format!(
-                        "{}{error}",
-                        locale_text(state.locale, "日志导出失败：", "Failed to export log: ")
-                    ),
+                    format!("{}{error}", translate_ui(state.locale, tr::hard_zh_062())),
                 ),
             }
         }
@@ -1184,17 +1175,14 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         state,
                         format!(
                             "{}{}",
-                            locale_text(state.locale, "日志已删除：", "Log deleted: "),
+                            translate_ui(state.locale, tr::hard_zh_063()),
                             result.file_name
                         ),
                     )
                 }
                 Err(error) => show_toast(
                     state,
-                    format!(
-                        "{}{error}",
-                        locale_text(state.locale, "日志删除失败：", "Failed to delete log: ")
-                    ),
+                    format!("{}{error}", translate_ui(state.locale, tr::hard_zh_064())),
                 ),
             }
         }
@@ -1211,9 +1199,9 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             state.profile_import_error = None;
             state.profile_import_succeeded = false;
             let was_vpn_running = state.snapshot.vpn_running;
-            let ui_strings = strings(state.locale);
+            let ui_locale = state.locale;
             Command::perform(
-                import_profile_file_and_snapshot(was_vpn_running, ui_strings),
+                import_profile_file_and_snapshot(was_vpn_running, ui_locale),
                 Action::LocalProfileImportFinished,
             )
         }
@@ -1225,9 +1213,9 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             state.profile_import_error = None;
             state.profile_import_succeeded = false;
             let was_vpn_running = state.snapshot.vpn_running;
-            let ui_strings = strings(state.locale);
+            let ui_locale = state.locale;
             Command::perform(
-                scan_profile_subscription_and_snapshot(name, was_vpn_running, ui_strings),
+                scan_profile_subscription_and_snapshot(name, was_vpn_running, ui_locale),
                 Action::LocalProfileImportFinished,
             )
         }
@@ -1244,7 +1232,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                             &result.profile_name,
                             result.restart_requested,
                             result.restart_error.as_deref(),
-                            strings(state.locale),
+                            state.locale,
                         ),
                     )
                 }
@@ -1261,7 +1249,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                             state,
                             format!(
                                 "{}{}",
-                                strings(state.locale).profiles_import_failed_prefix,
+                                translate_ui(state.locale, tr::profiles_import_failed_prefix()),
                                 error
                             ),
                         )
@@ -1276,11 +1264,8 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             state.profile_import_succeeded = false;
             let url = url.trim().to_owned();
             if url.is_empty() {
-                state.profile_import_error = Some(
-                    strings(state.locale)
-                        .profiles_import_url_required
-                        .to_owned(),
-                );
+                state.profile_import_error =
+                    Some(translate_ui(state.locale, tr::profiles_import_url_required()).to_owned());
                 return Command::none();
             }
             let name = match name.trim() {
@@ -1290,9 +1275,9 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             state.profile_import_loading = true;
             state.profile_import_error = None;
             let was_vpn_running = state.snapshot.vpn_running;
-            let ui_strings = strings(state.locale);
+            let ui_locale = state.locale;
             Command::perform(
-                import_profile_url_and_snapshot(url, name, was_vpn_running, ui_strings),
+                import_profile_url_and_snapshot(url, name, was_vpn_running, ui_locale),
                 Action::ProfileImportFinished,
             )
         }
@@ -1309,7 +1294,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                             &result.profile_name,
                             result.restart_requested,
                             result.restart_error.as_deref(),
-                            strings(state.locale),
+                            state.locale,
                         ),
                     )
                 }
@@ -1327,9 +1312,9 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             state.rule_import_loading = true;
             let active_profile = state.snapshot.active_profile.clone();
             let was_vpn_running = state.snapshot.vpn_running;
-            let ui_strings = strings(state.locale);
+            let ui_locale = state.locale;
             Command::perform(
-                import_rules_and_snapshot(active_profile, was_vpn_running, ui_strings),
+                import_rules_and_snapshot(active_profile, was_vpn_running, ui_locale),
                 Action::RulesImported,
             )
         }
@@ -1345,7 +1330,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                             result.reload_error.as_deref(),
                             result.restart_requested,
                             result.restart_error.as_deref(),
-                            strings(state.locale),
+                            state.locale,
                         ),
                     )
                 }
@@ -1354,7 +1339,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     state,
                     format!(
                         "{}{}",
-                        strings(state.locale).feedback_rule_import_failed_prefix,
+                        translate_ui(state.locale, tr::feedback_rule_import_failed_prefix()),
                         error
                     ),
                 ),
@@ -1369,7 +1354,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 .find(|profile| profile.id == profile_id)
                 .map(|profile| profile.name.clone())
                 .unwrap_or_else(|| profile_id.clone());
-            let ui_strings = strings(state.locale);
+            let ui_locale = state.locale;
             Command::perform(
                 async move {
                     hmeta_core::shared_core()
@@ -1377,7 +1362,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         .await
                         .map_err(|error| error.to_string())?;
                     let restart_error =
-                        request_vpn_restart_if_running(was_vpn_running, ui_strings).await;
+                        request_vpn_restart_if_running(was_vpn_running, ui_locale).await;
                     Ok(ProfileActivationResult {
                         snapshot: load_snapshot().await,
                         profile_name,
@@ -1397,7 +1382,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         &result.profile_name,
                         result.restart_requested,
                         result.restart_error.as_deref(),
-                        strings(state.locale),
+                        state.locale,
                     ),
                 )
             }
@@ -1405,7 +1390,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_profile_activate_failed_prefix,
+                    translate_ui(state.locale, tr::feedback_profile_activate_failed_prefix()),
                     error
                 ),
             ),
@@ -1420,14 +1405,14 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 .find(|profile| profile.id == profile_id)
                 .map(|profile| profile.name.clone())
                 .unwrap_or_else(|| profile_id.clone());
-            let ui_strings = strings(state.locale);
+            let ui_locale = state.locale;
             Command::perform(
                 delete_profile_and_snapshot(
                     profile_id,
                     profile_name,
                     was_active,
                     was_vpn_running,
-                    ui_strings,
+                    ui_locale,
                 ),
                 Action::ProfileDeleted,
             )
@@ -1439,11 +1424,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     state,
                     profile_delete_message(
                         &result.profile_name,
-                        result.vpn_action.map(|action| {
-                            profile_delete_vpn_action_label(action, strings(state.locale))
-                        }),
+                        result
+                            .vpn_action
+                            .map(|action| profile_delete_vpn_action_label(action, state.locale))
+                            .as_deref(),
                         result.vpn_error.as_deref(),
-                        strings(state.locale),
+                        state.locale,
                     ),
                 )
             }
@@ -1451,7 +1437,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_profile_delete_failed_prefix,
+                    translate_ui(state.locale, tr::feedback_profile_delete_failed_prefix()),
                     error
                 ),
             ),
@@ -1488,9 +1474,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         state,
                         format!(
                             "{}{}{}{}",
-                            strings(state.locale).feedback_subscription_prefix,
+                            translate_ui(state.locale, tr::feedback_subscription_prefix()),
                             result.profile_name,
-                            strings(state.locale).feedback_subscription_refresh_failed_suffix,
+                            translate_ui(
+                                state.locale,
+                                tr::feedback_subscription_refresh_failed_suffix()
+                            ),
                             error
                         ),
                     )
@@ -1499,9 +1488,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         state,
                         format!(
                             "{}{}{}",
-                            strings(state.locale).feedback_subscription_prefix,
+                            translate_ui(state.locale, tr::feedback_subscription_prefix()),
                             result.profile_name,
-                            strings(state.locale).feedback_subscription_refreshed_suffix
+                            translate_ui(
+                                state.locale,
+                                tr::feedback_subscription_refreshed_suffix()
+                            )
                         ),
                     )
                 }
@@ -1510,7 +1502,10 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_subscription_refresh_failed_prefix,
+                    translate_ui(
+                        state.locale,
+                        tr::feedback_subscription_refresh_failed_prefix()
+                    ),
                     error
                 ),
             ),
@@ -1545,10 +1540,10 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 show_toast(
                     state,
                     profile_batch_refresh_message(
-                        strings(state.locale).feedback_profile_refresh_all_label,
+                        &translate_ui(state.locale, tr::feedback_profile_refresh_all_label()),
                         result.attempted_profile_ids.len(),
                         failed,
-                        strings(state.locale),
+                        state.locale,
                     ),
                 )
             }
@@ -1556,7 +1551,10 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_subscription_refresh_failed_prefix,
+                    translate_ui(
+                        state.locale,
+                        tr::feedback_subscription_refresh_failed_prefix()
+                    ),
                     error
                 ),
             ),
@@ -1593,7 +1591,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     localized_profile_backup_restore_message(
                         &result.profile_name,
                         result.error.as_deref(),
-                        strings(state.locale),
+                        state.locale,
                     ),
                 )
             }
@@ -1601,7 +1599,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).profiles_backup_restore_failed_prefix,
+                    translate_ui(state.locale, tr::profiles_backup_restore_failed_prefix()),
                     error
                 ),
             ),
@@ -1627,25 +1625,13 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     format!(
                         "{}{}",
                         profile_name,
-                        if state.locale == UiLocale::ZhCn {
-                            " 的订阅信息已更新"
-                        } else {
-                            " subscription updated"
-                        }
+                        translate_ui(state.locale, tr::hard_zh_065())
                     ),
                 )
             }
             Err(error) => show_toast(
                 state,
-                format!(
-                    "{}{}",
-                    if state.locale == UiLocale::ZhCn {
-                        "更新订阅失败："
-                    } else {
-                        "Update subscription failed: "
-                    },
-                    error
-                ),
+                format!("{}{}", translate_ui(state.locale, tr::hard_zh_066()), error),
             ),
         },
         Action::ExportProfile(profile_id) => {
@@ -1659,8 +1645,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             match hmeta_core::shared_core().profile_raw_yaml(&profile_id) {
                 Ok(raw_yaml) => Command::perform(
                     async move {
-                        crate::platform_callbacks::export_profile(profile_name.clone(), raw_yaml)
-                            .await?;
+                        crate::bridge::export_profile(profile_name.clone(), raw_yaml).await?;
                         Ok(profile_name)
                     },
                     Action::ProfileExported,
@@ -1669,7 +1654,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     state,
                     format!(
                         "{}{}",
-                        strings(state.locale).profiles_yaml_read_failed_prefix,
+                        translate_ui(state.locale, tr::profiles_yaml_read_failed_prefix()),
                         error
                     ),
                 ),
@@ -1681,24 +1666,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 format!(
                     "{}{}",
                     profile_name,
-                    if state.locale == UiLocale::ZhCn {
-                        " 已导出"
-                    } else {
-                        " exported"
-                    }
+                    translate_ui(state.locale, tr::hard_zh_067())
                 ),
             ),
             Err(error) => show_toast(
                 state,
-                format!(
-                    "{}{}",
-                    if state.locale == UiLocale::ZhCn {
-                        "导出配置失败："
-                    } else {
-                        "Export profile failed: "
-                    },
-                    error
-                ),
+                format!("{}{}", translate_ui(state.locale, tr::hard_zh_068()), error),
             ),
         },
         Action::OpenYamlEditor(profile_id) => {
@@ -1724,7 +1697,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     state,
                     format!(
                         "{}{}",
-                        strings(state.locale).profiles_yaml_read_failed_prefix,
+                        translate_ui(state.locale, tr::profiles_yaml_read_failed_prefix()),
                         error
                     ),
                 ),
@@ -1754,7 +1727,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 return Command::none();
             }
             if state.yaml_editor_text.trim().is_empty() {
-                return show_toast(state, strings(state.locale).profiles_yaml_empty.to_owned());
+                return show_toast(state, translate_ui(state.locale, tr::profiles_yaml_empty()));
             }
             let raw_yaml = state.yaml_editor_text.clone();
             state.yaml_editor_testing = true;
@@ -1772,7 +1745,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
         Action::YamlEditorTested(result) => {
             state.yaml_editor_testing = false;
             match result {
-                Ok(()) => show_toast(state, strings(state.locale).profiles_yaml_valid.to_owned()),
+                Ok(()) => show_toast(state, translate_ui(state.locale, tr::profiles_yaml_valid())),
                 Err(error) => {
                     state.yaml_editor_error = Some(error);
                     Command::none()
@@ -1783,9 +1756,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             let Some(profile_id) = state.yaml_editor_profile_id.clone() else {
                 return show_toast(
                     state,
-                    strings(state.locale)
-                        .profiles_yaml_profile_required
-                        .to_owned(),
+                    translate_ui(state.locale, tr::profiles_yaml_profile_required()).to_owned(),
                 );
             };
             if state.yaml_editor_saving || state.yaml_editor_testing {
@@ -1815,9 +1786,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     state.yaml_editor_original = state.yaml_editor_text.clone();
                     show_toast(
                         state,
-                        strings(state.locale)
-                            .profiles_yaml_saved_reloaded
-                            .to_owned(),
+                        translate_ui(state.locale, tr::profiles_yaml_saved_reloaded()).to_owned(),
                     )
                 }
                 Err(error) => {
@@ -1852,9 +1821,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         state,
                         format!(
                             "{}{}{}{}",
-                            strings(state.locale).feedback_resource_prefix,
+                            translate_ui(state.locale, tr::feedback_resource_prefix()),
                             result.provider_name,
-                            strings(state.locale).feedback_resource_refresh_failed_suffix,
+                            translate_ui(
+                                state.locale,
+                                tr::feedback_resource_refresh_failed_suffix()
+                            ),
                             error
                         ),
                     )
@@ -1863,9 +1835,9 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         state,
                         format!(
                             "{}{}{}",
-                            strings(state.locale).feedback_resource_prefix,
+                            translate_ui(state.locale, tr::feedback_resource_prefix()),
                             result.provider_name,
-                            strings(state.locale).feedback_resource_refreshed_suffix
+                            translate_ui(state.locale, tr::feedback_resource_refreshed_suffix())
                         ),
                     )
                 }
@@ -1874,7 +1846,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_resource_refresh_failed_prefix,
+                    translate_ui(state.locale, tr::feedback_resource_refresh_failed_prefix()),
                     error
                 ),
             ),
@@ -1913,7 +1885,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         result.attempted_providers.len(),
                         failed,
                         result.error.as_deref(),
-                        strings(state.locale),
+                        state.locale,
                     ),
                 )
             }
@@ -1921,7 +1893,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_resource_refresh_failed_prefix,
+                    translate_ui(state.locale, tr::feedback_resource_refresh_failed_prefix()),
                     error
                 ),
             ),
@@ -1932,14 +1904,14 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             enabled,
         } => {
             let was_vpn_running = state.snapshot.vpn_running;
-            let ui_strings = strings(state.locale);
+            let ui_locale = state.locale;
             Command::perform(
                 set_rule_enabled_and_snapshot(
                     profile_id,
                     rule_id,
                     enabled,
                     was_vpn_running,
-                    ui_strings,
+                    ui_locale,
                 ),
                 Action::RulesChanged,
             )
@@ -1949,13 +1921,13 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             ordered_rule_ids,
         } => {
             let was_vpn_running = state.snapshot.vpn_running;
-            let ui_strings = strings(state.locale);
+            let ui_locale = state.locale;
             Command::perform(
                 reorder_rules_and_snapshot(
                     profile_id,
                     ordered_rule_ids,
                     was_vpn_running,
-                    ui_strings,
+                    ui_locale,
                 ),
                 Action::RulesChanged,
             )
@@ -1965,9 +1937,9 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             rule_id,
         } => {
             let was_vpn_running = state.snapshot.vpn_running;
-            let ui_strings = strings(state.locale);
+            let ui_locale = state.locale;
             Command::perform(
-                delete_rule_and_snapshot(profile_id, rule_id, was_vpn_running, ui_strings),
+                delete_rule_and_snapshot(profile_id, rule_id, was_vpn_running, ui_locale),
                 Action::RulesChanged,
             )
         }
@@ -1977,10 +1949,10 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 show_toast(
                     state,
                     settings_saved_message(
-                        strings(state.locale).feedback_label_rules,
+                        &translate_ui(state.locale, tr::feedback_label_rules()),
                         result.restart_requested,
                         result.restart_error.as_deref(),
-                        strings(state.locale),
+                        state.locale,
                     ),
                 )
             }
@@ -1988,7 +1960,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_rule_update_failed_prefix,
+                    translate_ui(state.locale, tr::feedback_rule_update_failed_prefix()),
                     error
                 ),
             ),
@@ -2001,23 +1973,19 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             let Some(profile_id) = state.snapshot.active_profile.clone() else {
                 return show_toast(
                     state,
-                    strings(state.locale)
-                        .feedback_active_profile_required
-                        .to_owned(),
+                    translate_ui(state.locale, tr::feedback_active_profile_required()).to_owned(),
                 );
             };
             let dns_servers = parse_dns_servers_text(&servers_text);
             if dns_servers.is_empty() {
                 return show_toast(
                     state,
-                    strings(state.locale)
-                        .feedback_dns_upstream_required
-                        .to_owned(),
+                    translate_ui(state.locale, tr::feedback_dns_upstream_required()).to_owned(),
                 );
             }
             let dns_fallbacks = parse_dns_servers_text(&fallbacks_text);
-            let ui_strings = strings(state.locale);
-            let dns_policy = match parse_dns_policy_text(&policy_text, ui_strings) {
+            let ui_locale = state.locale;
+            let dns_policy = match parse_dns_policy_text(&policy_text, ui_locale) {
                 Ok(policy) => policy,
                 Err(error) => return show_toast(state, error),
             };
@@ -2029,7 +1997,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         .await
                         .map_err(|error| error.to_string())?;
                     let restart_error =
-                        request_vpn_restart_if_running(was_vpn_running, ui_strings).await;
+                        request_vpn_restart_if_running(was_vpn_running, ui_locale).await;
                     Ok(SettingsSaveResult {
                         snapshot: load_snapshot().await,
                         restart_requested: was_vpn_running,
@@ -2045,10 +2013,10 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 show_toast(
                     state,
                     settings_saved_message(
-                        strings(state.locale).feedback_label_dns_settings,
+                        &translate_ui(state.locale, tr::feedback_label_dns_settings()),
                         result.restart_requested,
                         result.restart_error.as_deref(),
-                        strings(state.locale),
+                        state.locale,
                     ),
                 )
             }
@@ -2056,7 +2024,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_dns_save_failed_prefix,
+                    translate_ui(state.locale, tr::feedback_dns_save_failed_prefix()),
                     error
                 ),
             ),
@@ -2070,20 +2038,18 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             let Some(profile_id) = state.snapshot.active_profile.clone() else {
                 return show_toast(
                     state,
-                    strings(state.locale)
-                        .feedback_active_profile_required
-                        .to_owned(),
+                    translate_ui(state.locale, tr::feedback_active_profile_required()).to_owned(),
                 );
             };
             let stack = stack.trim().to_owned();
             if stack.is_empty() {
                 return show_toast(
                     state,
-                    strings(state.locale).feedback_vpn_stack_required.to_owned(),
+                    translate_ui(state.locale, tr::feedback_vpn_stack_required()),
                 );
             }
             let was_vpn_running = state.snapshot.vpn_running;
-            let ui_strings = strings(state.locale);
+            let ui_locale = state.locale;
             Command::perform(
                 async move {
                     hmeta_core::shared_core()
@@ -2097,7 +2063,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         .await
                         .map_err(|error| error.to_string())?;
                     let restart_error =
-                        request_vpn_restart_if_running(was_vpn_running, ui_strings).await;
+                        request_vpn_restart_if_running(was_vpn_running, ui_locale).await;
                     Ok(SettingsSaveResult {
                         snapshot: load_snapshot().await,
                         restart_requested: was_vpn_running,
@@ -2113,10 +2079,10 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 show_toast(
                     state,
                     settings_saved_message(
-                        strings(state.locale).feedback_label_vpn_settings,
+                        &translate_ui(state.locale, tr::feedback_label_vpn_settings()),
                         result.restart_requested,
                         result.restart_error.as_deref(),
-                        strings(state.locale),
+                        state.locale,
                     ),
                 )
             }
@@ -2124,7 +2090,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 state,
                 format!(
                     "{}{}",
-                    strings(state.locale).feedback_vpn_save_failed_prefix,
+                    translate_ui(state.locale, tr::feedback_vpn_save_failed_prefix()),
                     error
                 ),
             ),
@@ -2137,17 +2103,11 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             let Some(profile_id) = state.snapshot.active_profile.clone() else {
                 return show_toast(
                     state,
-                    strings(state.locale)
-                        .feedback_active_profile_required
-                        .to_owned(),
+                    translate_ui(state.locale, tr::feedback_active_profile_required()).to_owned(),
                 );
             };
-            let invalid_port_suffix = ui_tr(
-                state.locale,
-                "必须是 1024–65535 之间的整数",
-                " must be an integer between 1024 and 65535",
-            );
-            let parse_port = |value: &str, label: &str| {
+            let invalid_port_suffix = translate_ui(state.locale, tr::network_port_invalid_suffix());
+            let parse_port = |value: &str, label: String| {
                 value
                     .trim()
                     .parse::<u16>()
@@ -2155,14 +2115,14 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             };
             let mixed_port = match parse_port(
                 &mixed_port,
-                ui_tr(state.locale, "混合代理端口", "Mixed proxy port"),
+                translate_ui(state.locale, tr::mixed_proxy_port()),
             ) {
                 Ok(port) => port,
                 Err(error) => return show_toast(state, error),
             };
             let controller_port = match parse_port(
                 &controller_port,
-                ui_tr(state.locale, "控制器端口", "Controller port"),
+                translate_ui(state.locale, tr::controller_port()),
             ) {
                 Ok(port) => port,
                 Err(error) => return show_toast(state, error),
@@ -2175,19 +2135,9 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 let message = if mixed_port < hmeta_model::NetworkPortConfig::MIN_PORT
                     || controller_port < hmeta_model::NetworkPortConfig::MIN_PORT
                 {
-                    ui_tr(
-                        state.locale,
-                        "端口必须在 1024–65535 之间",
-                        "Ports must be between 1024 and 65535",
-                    )
-                    .to_owned()
+                    translate_ui(state.locale, tr::network_ports_range())
                 } else if mixed_port == controller_port {
-                    ui_tr(
-                        state.locale,
-                        "混合代理端口和控制器端口不能相同",
-                        "Mixed proxy and controller ports must be different",
-                    )
-                    .to_owned()
+                    translate_ui(state.locale, tr::network_ports_different())
                 } else {
                     error.to_string()
                 };
@@ -2195,7 +2145,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             }
             let restart_requested =
                 state.snapshot.vpn_running && mixed_port != state.snapshot.network_ports.mixed_port;
-            let ui_strings = strings(state.locale);
+            let ui_locale = state.locale;
             Command::perform(
                 async move {
                     hmeta_core::shared_core()
@@ -2203,7 +2153,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         .await
                         .map_err(|error| error.to_string())?;
                     let restart_error =
-                        request_vpn_restart_if_running(restart_requested, ui_strings).await;
+                        request_vpn_restart_if_running(restart_requested, ui_locale).await;
                     Ok(SettingsSaveResult {
                         snapshot: load_snapshot().await,
                         restart_requested,
@@ -2219,33 +2169,18 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 show_toast(
                     state,
                     settings_saved_message(
-                        ui_tr(state.locale, "网络设置", "Network settings"),
+                        &translate_ui(state.locale, tr::network_settings()),
                         result.restart_requested,
                         result.restart_error.as_deref(),
-                        strings(state.locale),
+                        state.locale,
                     ),
                 )
             }
             Err(error) => show_toast(
                 state,
-                format!(
-                    "{}{}",
-                    ui_tr(
-                        state.locale,
-                        "保存网络设置失败：",
-                        "Failed to save network settings: "
-                    ),
-                    error
-                ),
+                translate_ui(state.locale, tr::network_settings_save_failed(error)),
             ),
         },
-    }
-}
-
-fn ui_tr(locale: UiLocale, zh: &'static str, en: &'static str) -> &'static str {
-    match locale {
-        UiLocale::ZhCn => zh,
-        UiLocale::En => en,
     }
 }
 

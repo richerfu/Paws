@@ -76,31 +76,24 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
     let controller_loopback_addr = format!("127.0.0.1:{controller_port_value}");
     let controller_lan_description = format!(
         "{}:{controller_port_value}",
-        tr(current.locale, "使用设备局域网 IP", "Use the device LAN IP")
+        translate_ui(current.locale, tr::page_tr_221())
     );
     let controller_listen_description = format!(
         "{} 0.0.0.0:{controller_port_value}",
-        tr(current.locale, "开启后监听", "Listens on")
+        translate_ui(current.locale, tr::page_tr_222())
     );
     let controller_secret = current.snapshot.controller_access.secret.clone();
     let controller_secret_label = controller_secret
         .as_deref()
         .map(mask_controller_secret)
-        .unwrap_or_else(|| {
-            tr(
-                current.locale,
-                "保存后自动生成",
-                "Generated automatically when saved",
-            )
-            .to_owned()
-        });
+        .unwrap_or_else(|| translate_ui(current.locale, tr::hard_zh_027()));
 
     let body = rsx! {
         column {
             width: "100%",
             {card(
-                tr(current.locale, "VPN 基础", "VPN basics"),
-                Some(tr(current.locale, "运行中的 VPN 会在保存后请求重连", "A running VPN reconnects after saving").to_owned()),
+                translate_ui(current.locale, tr::page_tr_223()),
+                Some(translate_ui(current.locale, tr::page_tr_224())),
                 rsx! {
                     Form {
                         surface: false,
@@ -108,30 +101,30 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                         Field {
                             orientation: FieldOrientation::Horizontal,
                             FieldContent {
-                                FieldTitle { content: tr(current.locale, "系统代理", "System proxy").to_owned() }
-                                FieldDescription { content: tr(current.locale, "同步设置系统 HTTP 代理", "Configure the system HTTP proxy").to_owned(), inset: true }
+                                FieldTitle { content: translate_ui(current.locale, tr::page_tr_225()) }
+                                FieldDescription { content: translate_ui(current.locale, tr::page_tr_226()), inset: true }
                             }
                             Switch { checked: Some(system_proxy_value), on_change: move |value| system_proxy.set(value) }
                         }
                         Field {
                             orientation: FieldOrientation::Horizontal,
                             FieldContent {
-                                FieldTitle { content: tr(current.locale, "DNS 劫持", "DNS hijacking").to_owned() }
-                                FieldDescription { content: tr(current.locale, "将 DNS 查询交给 meow-rs", "Route DNS queries through meow-rs").to_owned(), inset: true }
+                                FieldTitle { content: translate_ui(current.locale, tr::page_tr_227()) }
+                                FieldDescription { content: translate_ui(current.locale, tr::page_tr_228()), inset: true }
                             }
                             Switch { checked: Some(dns_hijacking_value), on_change: move |value| dns_hijacking.set(value) }
                         }
                         Field {
                             orientation: FieldOrientation::Horizontal,
                             FieldContent {
-                                FieldTitle { content: tr(current.locale, "允许绕过", "Allow bypass").to_owned() }
-                                FieldDescription { content: tr(current.locale, "允许应用绕过 VPN", "Allow applications to bypass VPN").to_owned(), inset: true }
+                                FieldTitle { content: translate_ui(current.locale, tr::page_tr_229()) }
+                                FieldDescription { content: translate_ui(current.locale, tr::page_tr_230()), inset: true }
                             }
                             Switch { checked: Some(allow_bypass_value), on_change: move |value| allow_bypass.set(value) }
                         }
                         row { height: 12.0 }
                         FormItem {
-                            label: tr(current.locale, "网络栈", "Network stack").to_owned(),
+                            label: translate_ui(current.locale, tr::page_tr_231()),
                             Select {
                                 options: stack_options,
                                 selected: Some(vpn_stack_label_value.clone()),
@@ -161,21 +154,21 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 stack: vpn_stack_value.clone(),
                             }),
                             {arkit::icon("save", 16.0, primary_text())}
-                            text { content: tr(current.locale, "保存 VPN 设置", "Save VPN settings"), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
+                            text { content: translate_ui(current.locale, tr::page_tr_232()), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
                         }
                     }
                 }
             )}
             row { height: 12.0 }
             {card(
-                tr(current.locale, "网络端口与控制器", "Network ports and controller"),
-                Some(tr(current.locale, "默认端口为 7890 和 9090；端口范围 1024–65535，且不能相同", "Defaults are 7890 and 9090; ports must be 1024–65535 and different").to_owned()),
+                translate_ui(current.locale, tr::page_tr_233()),
+                Some(translate_ui(current.locale, tr::page_tr_234())),
                 rsx! {
                     Form {
                         surface: false,
                         submit_label: String::new(),
                         FormItem {
-                            label: tr(current.locale, "混合代理端口", "Mixed proxy port").to_owned(),
+                            label: translate_ui(current.locale, tr::page_tr_235()),
                             Input {
                                 value: Some(mixed_port_value.clone()),
                                 placeholder: Some("7890".to_owned()),
@@ -184,11 +177,11 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                             }
                         }
                         FieldDescription {
-                            content: tr(current.locale, "VPN 扩展的本地 HTTP/SOCKS 监听；出口 IP 查询也会使用此端口", "Local HTTP/SOCKS listener for the VPN extension; exit IP queries use it too").to_owned(),
+                            content: translate_ui(current.locale, tr::page_tr_236()),
                             inset: true,
                         }
                         FormItem {
-                            label: tr(current.locale, "控制器端口", "Controller port").to_owned(),
+                            label: translate_ui(current.locale, tr::page_tr_237()),
                             Input {
                                 value: Some(controller_port_value.clone()),
                                 placeholder: Some("9090".to_owned()),
@@ -199,7 +192,7 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                         Field {
                             orientation: FieldOrientation::Horizontal,
                             FieldContent {
-                                FieldTitle { content: tr(current.locale, "允许局域网访问", "Allow LAN access").to_owned() }
+                                FieldTitle { content: translate_ui(current.locale, tr::page_tr_238()) }
                                 FieldDescription { content: controller_listen_description.clone(), inset: true }
                             }
                             Switch { checked: Some(controller_allow_lan_value), on_change: move |value| controller_allow_lan.set(value) }
@@ -207,14 +200,14 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                         row { height: 12.0 }
                         column {
                             width: "100%",
-                            text { content: tr(current.locale, "应用内部地址", "In-app address"), font_size: typography::XS, font_color: subtle() }
+                            text { content: translate_ui(current.locale, tr::page_tr_239()), font_size: typography::XS, font_color: subtle() }
                             text { content: controller_loopback_addr.clone(), margin_top: 4.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
                         }
                         if controller_allow_lan_value {
                             column {
                                 width: "100%",
                                 margin_top: 12.0,
-                                text { content: tr(current.locale, "局域网访问", "LAN endpoint"), font_size: typography::XS, font_color: subtle() }
+                                text { content: translate_ui(current.locale, tr::page_tr_240()), font_size: typography::XS, font_color: subtle() }
                                 text { content: controller_lan_description.clone(), margin_top: 4.0, font_size: typography::SM, font_color: text_color() }
                                 text { content: "Authorization: Bearer <secret>", margin_top: 4.0, font_size: typography::XS, font_color: subtle() }
                             }
@@ -224,14 +217,14 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 align_items: "center",
                                 column {
                                     width: "72%",
-                                    text { content: tr(current.locale, "访问密钥", "Access secret"), font_size: typography::XS, font_color: subtle() }
+                                    text { content: translate_ui(current.locale, tr::page_tr_241()), font_size: typography::XS, font_color: subtle() }
                                     text { content: controller_secret_label.clone(), margin_top: 4.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
                                 }
                                 if let Some(secret) = controller_secret.clone() {
                                     FlatButton {
                                         onclick: move |_| copy_controller_secret(state, secret.clone()),
                                         {arkit::icon("copy", 16.0, text_color())}
-                                        text { content: tr(current.locale, "复制", "Copy"), margin_left: 6.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
+                                        text { content: translate_ui(current.locale, tr::page_tr_242()), margin_left: 6.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
                                     }
                                 }
                             }
@@ -247,7 +240,7 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 allow_lan: controller_allow_lan_value,
                             }),
                             {arkit::icon("save", 16.0, primary_text())}
-                            text { content: tr(current.locale, "保存网络设置", "Save network settings"), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
+                            text { content: translate_ui(current.locale, tr::page_tr_243()), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
                         }
                     }
                 }
@@ -255,13 +248,13 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
             row { height: 12.0 }
             {card(
                 "DNS",
-                Some(tr(current.locale, "每行一个地址，策略格式为 matcher = upstream", "One address per line; policy uses matcher = upstream").to_owned()),
+                Some(translate_ui(current.locale, tr::page_tr_244())),
                 rsx! {
                     Form {
                         surface: false,
                         submit_label: String::new(),
                         FormItem {
-                            label: tr(current.locale, "上游 DNS", "Upstream DNS").to_owned(),
+                            label: translate_ui(current.locale, tr::page_tr_245()),
                             Textarea {
                                 value: Some(dns_servers_value.clone()),
                                 height: Some(92.0),
@@ -279,7 +272,7 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                             }
                         }
                         FormItem {
-                            label: tr(current.locale, "分流策略", "Nameserver policy").to_owned(),
+                            label: translate_ui(current.locale, tr::page_tr_246()),
                             Textarea {
                                 value: Some(dns_policy_value.clone()),
                                 height: Some(104.0),
@@ -298,7 +291,7 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 policy_text: dns_policy_value.clone(),
                             }),
                             {arkit::icon("save", 16.0, primary_text())}
-                            text { content: tr(current.locale, "保存 DNS 设置", "Save DNS settings"), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
+                            text { content: translate_ui(current.locale, tr::page_tr_247()), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
                         }
                     }
                 }
@@ -320,23 +313,18 @@ fn copy_controller_secret(state: Signal<State>, secret: String) {
         .read()
         .runtime
         .tokio()
-        .spawn(async move { platform_callbacks::copy_text(secret).await });
+        .spawn(async move { crate::bridge::copy_text(secret).await });
     arkit::dioxus_core::spawn_forever(async move {
         let message = match task.await {
-            Ok(Ok(())) => tr(
-                state.read().locale,
-                "访问密钥已复制",
-                "Access secret copied",
-            )
-            .to_owned(),
+            Ok(Ok(())) => translate_ui(state.read().locale, tr::hard_zh_028()),
             Ok(Err(error)) => format!(
                 "{}{}",
-                tr(state.read().locale, "复制失败：", "Copy failed: "),
+                translate_ui(state.read().locale, tr::hard_zh_029()),
                 error
             ),
             Err(error) => format!(
                 "{}{}",
-                tr(state.read().locale, "复制任务失败：", "Copy task failed: "),
+                translate_ui(state.read().locale, tr::hard_zh_030()),
                 error
             ),
         };

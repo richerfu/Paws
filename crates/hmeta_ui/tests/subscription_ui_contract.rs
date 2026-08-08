@@ -10,9 +10,11 @@ const UI: &str = concat!(
     include_str!("../src/ui.rs"),
     include_str!("../src/ui/tasks.rs")
 );
-const PLATFORM_CALLBACKS: &str = include_str!("../src/platform_callbacks.rs");
+const PLATFORM_CALLBACKS: &str = include_str!("../src/bridge/mod.rs");
 const ENTRY_ABILITY: &str =
     include_str!("../../../entry/src/main/ets/entryability/EntryAbility.ets");
+const EXPORT_PLUGIN: &str = include_str!("../../../entry/src/main/ets/plugins/ExportPlugin.ets");
+const SCAN_PLUGIN: &str = include_str!("../../../entry/src/main/ets/plugins/ScanPlugin.ets");
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let start = source.find(start).expect("section start");
@@ -76,8 +78,8 @@ fn proxy_groups_use_an_arkit_rsx_heterogeneous_virtual_list() {
     // Expansion changes only the heterogeneous adapter's row model; ArkUI
     // continues to instantiate visible group/member rows on demand.
     assert!(page.contains("expanded_group"));
-    assert!(page.contains("全局节点与策略分组"));
-    assert!(page.contains("Global node and policy groups"));
+    assert!(page.contains("translate_ui(current.locale, tr::"));
+    assert!(page.contains("tr::hard_zh_019()"));
     assert!(!page.contains("ProxyGroupScope"));
     assert!(!page.contains("GLOBAL ·"));
     assert!(!page.contains("ProxyLayoutMode"));
@@ -126,7 +128,7 @@ fn subscription_overflow_preserves_the_meow_action_set() {
 
     let edit = section(VIEW, "fn profile_edit_dialog", "fn profile_delete_dialog");
     assert!(edit.contains("Action::UpdateProfileSubscription"));
-    assert!(edit.contains("Subscription URL"));
+    assert!(edit.contains("translate_ui("));
 
     let delete = section(VIEW, "fn profile_delete_dialog", "fn traffic_page");
     assert!(delete.contains("Action::DeleteProfile"));
@@ -134,11 +136,11 @@ fn subscription_overflow_preserves_the_meow_action_set() {
 
 #[test]
 fn profile_export_reaches_the_harmony_document_picker() {
-    assert!(UI.contains("platform_callbacks::export_profile"));
-    assert!(PLATFORM_CALLBACKS.contains("exportProfile"));
-    assert!(ENTRY_ABILITY.contains("DocumentSaveOptions"));
-    assert!(ENTRY_ABILITY.contains("fileIo.writeSync"));
-    assert!(ENTRY_ABILITY.contains("exportProfile: async"));
+    assert!(UI.contains("bridge::export_profile"));
+    assert!(PLATFORM_CALLBACKS.contains("export_kind"));
+    assert!(EXPORT_PLUGIN.contains("DocumentSaveOptions"));
+    assert!(EXPORT_PLUGIN.contains("fileIo.writeSync"));
+    assert!(EXPORT_PLUGIN.contains("export-text"));
 }
 
 #[test]
@@ -154,7 +156,7 @@ fn log_recording_is_opt_in_with_daily_history_and_export() {
     assert!(page.contains("Action::ExportLogArchive"));
     assert!(page.contains("Action::DeleteLogArchive"));
     assert!(page.contains("log_archive_delete_dialog"));
-    assert!(page.contains("此操作无法撤销"));
+    assert!(page.contains("translate_ui(current.locale, tr::"));
     assert!(!page.contains("archive_rows"));
     let archive_list = section(VIEW, "fn VirtualLogArchiveList(", "fn VirtualLogList(");
     assert!(archive_list.contains("VirtualKind::List"));
@@ -167,11 +169,11 @@ fn log_recording_is_opt_in_with_daily_history_and_export() {
     assert!(UI.contains("set_log_recording_enabled"));
     assert!(UI.contains("read_log_archive"));
     assert!(UI.contains("delete_log_archive"));
-    assert!(UI.contains("platform_callbacks::export_log"));
-    assert!(PLATFORM_CALLBACKS.contains("exportLog"));
-    assert!(ENTRY_ABILITY.contains("exportLog: async"));
-    assert!(ENTRY_ABILITY.contains("DocumentSaveOptions"));
-    assert!(ENTRY_ABILITY.contains("'.log'"));
+    assert!(UI.contains("bridge::export_log"));
+    assert!(PLATFORM_CALLBACKS.contains("export_log"));
+    assert!(EXPORT_PLUGIN.contains("export-text"));
+    assert!(EXPORT_PLUGIN.contains("DocumentSaveOptions"));
+    assert!(EXPORT_PLUGIN.contains("'.log'"));
 }
 
 #[test]
@@ -184,12 +186,14 @@ fn subscription_scan_reaches_scankit_and_the_import_pipeline() {
     assert!(UI.contains("scan_profile_subscription_and_snapshot"));
     assert!(UI.contains("parse_scanned_subscription"));
     assert!(UI.contains("profile.subscription_url.as_deref()"));
-    assert!(PLATFORM_CALLBACKS.contains("scanSubscription"));
-    assert!(PLATFORM_CALLBACKS.contains("PromiseRaw<'static, String>"));
-    assert!(ENTRY_ABILITY.contains("scanBarcode.startScanForResult"));
-    assert!(ENTRY_ABILITY.contains("scanCore.ScanType.QR_CODE"));
-    assert!(ENTRY_ABILITY.contains("enableAlbum: true"));
-    assert!(ENTRY_ABILITY.contains("SCAN_CANCELLED_CODE"));
+    assert!(PLATFORM_CALLBACKS.contains("scan-qr"));
+    assert!(PLATFORM_CALLBACKS.contains("PawsScanBridgePlugin"));
+    assert!(PLATFORM_CALLBACKS.contains("ScanRequest"));
+    assert!(SCAN_PLUGIN.contains("scanBarcode.startScanForResult"));
+    assert!(SCAN_PLUGIN.contains("scanCore.ScanType.QR_CODE"));
+    assert!(SCAN_PLUGIN.contains("enableAlbum: true"));
+    assert!(SCAN_PLUGIN.contains("SCAN_CANCELLED_CODE"));
+    assert!(ENTRY_ABILITY.contains("new LazyPlugin(() => new ScanPlugin())"));
 }
 
 #[test]

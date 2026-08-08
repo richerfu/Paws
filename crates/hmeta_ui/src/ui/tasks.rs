@@ -1,4 +1,6 @@
 use super::*;
+use crate::i18n::{tr, translate_ui};
+use crate::locale::UiLocale;
 
 pub(super) async fn load_snapshot() -> RuntimeSnapshot {
     let core = hmeta_core::shared_core();
@@ -86,7 +88,7 @@ pub(super) fn count_failed_refreshed_providers(
 pub(super) async fn start_vpn_command_and_snapshot(
     profile_id: String,
     profile_name: String,
-    ui_strings: &'static UiStrings,
+    locale: UiLocale,
 ) -> Result<VpnCommandResult, String> {
     let core = hmeta_core::shared_core();
     let active_profile = core
@@ -97,9 +99,9 @@ pub(super) async fn start_vpn_command_and_snapshot(
         core.activate_profile(&profile_id).await.map_err(|error| {
             format!(
                 "{}{}{}{}",
-                ui_strings.feedback_vpn_start_profile_load_failed_prefix,
+                translate_ui(locale, tr::feedback_vpn_start_profile_load_failed_prefix()),
                 profile_name,
-                ui_strings.feedback_vpn_start_profile_load_failed_mid,
+                translate_ui(locale, tr::feedback_vpn_start_profile_load_failed_mid()),
                 error
             )
         })?;
@@ -107,10 +109,11 @@ pub(super) async fn start_vpn_command_and_snapshot(
     let options_json = core.active_vpn_options_json().map_err(|error| {
         format!(
             "{}{}",
-            ui_strings.feedback_vpn_start_options_failed_prefix, error
+            translate_ui(locale, tr::feedback_vpn_start_options_failed_prefix()),
+            error
         )
     })?;
-    let request_error = crate::platform_callbacks::request_start_vpn(options_json)
+    let request_error = crate::bridge::request_start_vpn(options_json)
         .await
         .err()
         .map(|error| error.to_string());
@@ -123,17 +126,17 @@ pub(super) async fn start_vpn_command_and_snapshot(
 }
 
 pub(super) async fn stop_vpn_command_and_snapshot(
-    ui_strings: &'static UiStrings,
+    locale: UiLocale,
 ) -> Result<VpnCommandResult, String> {
-    let request_error = match crate::platform_callbacks::request_stop_vpn().await {
+    let request_error = match crate::bridge::request_stop_vpn().await {
         Ok(()) => None,
         Err(error) => {
             hmeta_core::shared_core().stop_vpn().map_err(|fallback| {
                 format!(
                     "{}{}{}{}",
-                    ui_strings.feedback_vpn_stop_callback_failed_prefix,
+                    translate_ui(locale, tr::feedback_vpn_stop_callback_failed_prefix()),
                     error,
-                    ui_strings.feedback_vpn_stop_fallback_failed_mid,
+                    translate_ui(locale, tr::feedback_vpn_stop_fallback_failed_mid()),
                     fallback
                 )
             })?;
@@ -150,28 +153,29 @@ pub(super) async fn stop_vpn_command_and_snapshot(
 
 pub(super) async fn request_vpn_restart_if_running(
     was_vpn_running: bool,
-    ui_strings: &UiStrings,
+    locale: UiLocale,
 ) -> Option<String> {
     if !was_vpn_running {
         return None;
     }
 
     let mut errors = Vec::new();
-    if let Err(error) = crate::platform_callbacks::request_stop_vpn().await {
+    if let Err(error) = crate::bridge::request_stop_vpn().await {
         match hmeta_core::shared_core().stop_vpn() {
             Ok(()) => {
                 errors.push(format!(
                     "{}{}",
-                    ui_strings.feedback_vpn_stop_fallback_applied_prefix, error
+                    translate_ui(locale, tr::feedback_vpn_stop_fallback_applied_prefix()),
+                    error
                 ));
                 return Some(errors.join("；"));
             }
             Err(fallback) => {
                 errors.push(format!(
                     "{}{}{}{}",
-                    ui_strings.feedback_vpn_stop_failed_prefix,
+                    translate_ui(locale, tr::feedback_vpn_stop_failed_prefix()),
                     error,
-                    ui_strings.feedback_vpn_stop_fallback_failed_suffix,
+                    translate_ui(locale, tr::feedback_vpn_stop_fallback_failed_suffix()),
                     fallback
                 ));
                 return Some(errors.join("；"));
@@ -181,16 +185,18 @@ pub(super) async fn request_vpn_restart_if_running(
 
     match hmeta_core::shared_core().active_vpn_options_json() {
         Ok(options_json) => {
-            if let Err(error) = crate::platform_callbacks::request_start_vpn(options_json).await {
+            if let Err(error) = crate::bridge::request_start_vpn(options_json).await {
                 errors.push(format!(
                     "{}{}",
-                    ui_strings.feedback_vpn_start_callback_failed_prefix, error
+                    translate_ui(locale, tr::feedback_vpn_start_callback_failed_prefix()),
+                    error
                 ));
             }
         }
         Err(error) => errors.push(format!(
             "{}{}",
-            ui_strings.feedback_vpn_options_failed_prefix, error
+            translate_ui(locale, tr::feedback_vpn_options_failed_prefix()),
+            error
         )),
     }
 
@@ -246,7 +252,7 @@ pub(super) fn parse_dns_servers_text(value: &str) -> Vec<String> {
 
 pub(super) fn parse_dns_policy_text(
     value: &str,
-    ui_strings: &UiStrings,
+    locale: UiLocale,
 ) -> Result<BTreeMap<String, Vec<String>>, String> {
     let mut policy = BTreeMap::new();
     for line in value.lines() {
@@ -255,19 +261,22 @@ pub(super) fn parse_dns_policy_text(
             continue;
         }
         let Some((matcher, servers)) = line.split_once('=') else {
-            return Err(ui_strings.feedback_dns_policy_format_error.to_owned());
+            return Err(translate_ui(locale, tr::feedback_dns_policy_format_error()));
         };
         let matcher = matcher.trim();
         if matcher.is_empty() {
-            return Err(ui_strings.feedback_dns_policy_matcher_required.to_owned());
+            return Err(translate_ui(
+                locale,
+                tr::feedback_dns_policy_matcher_required(),
+            ));
         }
         let servers = parse_dns_servers_text(servers);
         if servers.is_empty() {
             return Err(format!(
                 "{}{}{}",
-                ui_strings.feedback_dns_policy_upstream_missing_prefix,
+                translate_ui(locale, tr::feedback_dns_policy_upstream_missing_prefix()),
                 matcher,
-                ui_strings.feedback_dns_policy_upstream_missing_suffix
+                translate_ui(locale, tr::feedback_dns_policy_upstream_missing_suffix())
             ));
         }
         policy.insert(matcher.to_owned(), servers);
@@ -279,7 +288,7 @@ pub(super) async fn import_profile_url_and_snapshot(
     url: String,
     name: Option<String>,
     was_vpn_running: bool,
-    ui_strings: &'static UiStrings,
+    locale: UiLocale,
 ) -> Result<ProfileImportResult, String> {
     let id = hmeta_core::shared_core()
         .import_profile_from_url(&url, name)
@@ -289,24 +298,30 @@ pub(super) async fn import_profile_url_and_snapshot(
         .activate_profile(&id)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(profile_import_result(id, was_vpn_running, ui_strings).await)
+    Ok(profile_import_result(id, was_vpn_running, locale).await)
 }
 
 pub(super) async fn scan_profile_subscription_and_snapshot(
     name: String,
     was_vpn_running: bool,
-    ui_strings: &'static UiStrings,
+    locale: UiLocale,
 ) -> Result<ProfileImportResult, String> {
-    let payload = crate::platform_callbacks::scan_subscription_code()
+    let payload = crate::bridge::scan_subscription_code()
         .await
-        .map_err(|error| format!("{}{}", ui_strings.profiles_scan_failed_prefix, error))?;
+        .map_err(|error| {
+            format!(
+                "{}{}",
+                translate_ui(locale, tr::profiles_scan_failed_prefix()),
+                error
+            )
+        })?;
     let scanned = match parse_scanned_subscription(&payload) {
         Ok(scanned) => scanned,
         Err(ScannedSubscriptionError::Empty) => {
             return Err("profile scan cancelled".to_owned());
         }
         Err(ScannedSubscriptionError::Unsupported) => {
-            return Err(ui_strings.profiles_scan_invalid.to_owned());
+            return Err(translate_ui(locale, tr::profiles_scan_invalid()));
         }
     };
     let name = match name.trim() {
@@ -331,16 +346,16 @@ pub(super) async fn scan_profile_subscription_and_snapshot(
         core.activate_profile(&profile.id)
             .await
             .map_err(|error| error.to_string())?;
-        return Ok(profile_import_result(profile.id, was_vpn_running, ui_strings).await);
+        return Ok(profile_import_result(profile.id, was_vpn_running, locale).await);
     }
-    import_profile_url_and_snapshot(scanned.url, name, was_vpn_running, ui_strings).await
+    import_profile_url_and_snapshot(scanned.url, name, was_vpn_running, locale).await
 }
 
 pub(super) async fn import_profile_file_and_snapshot(
     was_vpn_running: bool,
-    ui_strings: &'static UiStrings,
+    locale: UiLocale,
 ) -> Result<ProfileImportResult, String> {
-    let (name, raw_yaml) = crate::platform_callbacks::pick_profile_text().await?;
+    let (name, raw_yaml) = crate::bridge::pick_profile_text().await?;
     let id = hmeta_core::shared_core()
         .import_profile_from_content(&name, "local-file", &raw_yaml, None)
         .await
@@ -349,15 +364,15 @@ pub(super) async fn import_profile_file_and_snapshot(
         .activate_profile(&id)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(profile_import_result(id, was_vpn_running, ui_strings).await)
+    Ok(profile_import_result(id, was_vpn_running, locale).await)
 }
 
 pub(super) async fn profile_import_result(
     profile_id: String,
     was_vpn_running: bool,
-    ui_strings: &'static UiStrings,
+    locale: UiLocale,
 ) -> ProfileImportResult {
-    let restart_error = request_vpn_restart_if_running(was_vpn_running, ui_strings).await;
+    let restart_error = request_vpn_restart_if_running(was_vpn_running, locale).await;
     let snapshot = load_snapshot().await;
     let profile_name = snapshot
         .profiles
@@ -376,11 +391,11 @@ pub(super) async fn profile_import_result(
 pub(super) async fn import_rules_and_snapshot(
     active_profile: Option<String>,
     was_vpn_running: bool,
-    ui_strings: &'static UiStrings,
+    locale: UiLocale,
 ) -> Result<RuleImportResult, String> {
-    let profile_id =
-        active_profile.ok_or_else(|| ui_strings.feedback_active_profile_required.to_owned())?;
-    let (name, rules_text) = crate::platform_callbacks::pick_profile_text().await?;
+    let profile_id = active_profile
+        .ok_or_else(|| translate_ui(locale, tr::feedback_active_profile_required()))?;
+    let (name, rules_text) = crate::bridge::pick_profile_text().await?;
     let source = format!("rules:{name}");
     let imported_rule_ids = hmeta_core::shared_core()
         .import_rules_from_content(Some(&profile_id), &source, &rules_text)
@@ -391,7 +406,7 @@ pub(super) async fn import_rules_and_snapshot(
         .err()
         .map(|error| error.to_string());
     let restart_error = if reload_error.is_none() {
-        request_vpn_restart_if_running(was_vpn_running, ui_strings).await
+        request_vpn_restart_if_running(was_vpn_running, locale).await
     } else {
         None
     };
@@ -415,22 +430,23 @@ pub(super) async fn delete_profile_and_snapshot(
     profile_name: String,
     was_active: bool,
     was_vpn_running: bool,
-    ui_strings: &'static UiStrings,
+    locale: UiLocale,
 ) -> Result<ProfileDeleteResult, String> {
     let mut vpn_errors = Vec::new();
     if was_active && was_vpn_running {
-        if let Err(error) = crate::platform_callbacks::request_stop_vpn().await {
+        if let Err(error) = crate::bridge::request_stop_vpn().await {
             match hmeta_core::shared_core().stop_vpn() {
                 Ok(()) => vpn_errors.push(format!(
                     "{}{}",
-                    ui_strings.feedback_vpn_stop_fallback_applied_prefix, error
+                    translate_ui(locale, tr::feedback_vpn_stop_fallback_applied_prefix()),
+                    error
                 )),
                 Err(fallback) => {
                     return Err(format!(
                         "{}{}{}{}",
-                        ui_strings.feedback_vpn_stop_failed_prefix,
+                        translate_ui(locale, tr::feedback_vpn_stop_failed_prefix()),
                         error,
-                        ui_strings.feedback_vpn_stop_fallback_failed_suffix,
+                        translate_ui(locale, tr::feedback_vpn_stop_fallback_failed_suffix()),
                         fallback
                     ));
                 }
@@ -448,10 +464,11 @@ pub(super) async fn delete_profile_and_snapshot(
         let options_json = hmeta_core::shared_core()
             .active_vpn_options_json()
             .map_err(|error| error.to_string())?;
-        if let Err(error) = crate::platform_callbacks::request_start_vpn(options_json).await {
+        if let Err(error) = crate::bridge::request_start_vpn(options_json).await {
             vpn_errors.push(format!(
                 "{}{}",
-                ui_strings.feedback_vpn_start_callback_failed_prefix, error
+                translate_ui(locale, tr::feedback_vpn_start_callback_failed_prefix()),
+                error
             ));
         }
     } else if was_active && was_vpn_running {
@@ -597,7 +614,7 @@ pub(super) async fn export_log_archive(file_name: String) -> Result<String, Stri
     let content = hmeta_core::shared_core()
         .read_log_archive(&file_name)
         .map_err(|error| error.to_string())?;
-    crate::platform_callbacks::export_log(file_name.clone(), content).await?;
+    crate::bridge::export_log(file_name.clone(), content).await?;
     Ok(file_name)
 }
 
@@ -615,48 +632,48 @@ pub(super) async fn set_rule_enabled_and_snapshot(
     rule_id: String,
     enabled: bool,
     was_vpn_running: bool,
-    ui_strings: &'static UiStrings,
+    locale: UiLocale,
 ) -> Result<RuleChangeResult, String> {
     hmeta_core::shared_core()
         .set_rule_enabled(&profile_id, &rule_id, enabled)
         .map_err(|error| error.to_string())?;
-    reload_profile_after_rule_change(&profile_id, was_vpn_running, ui_strings).await
+    reload_profile_after_rule_change(&profile_id, was_vpn_running, locale).await
 }
 
 pub(super) async fn delete_rule_and_snapshot(
     profile_id: String,
     rule_id: String,
     was_vpn_running: bool,
-    ui_strings: &'static UiStrings,
+    locale: UiLocale,
 ) -> Result<RuleChangeResult, String> {
     hmeta_core::shared_core()
         .delete_rule(&rule_id)
         .map_err(|error| error.to_string())?;
-    reload_profile_after_rule_change(&profile_id, was_vpn_running, ui_strings).await
+    reload_profile_after_rule_change(&profile_id, was_vpn_running, locale).await
 }
 
 pub(super) async fn reorder_rules_and_snapshot(
     profile_id: String,
     ordered_rule_ids: Vec<String>,
     was_vpn_running: bool,
-    ui_strings: &'static UiStrings,
+    locale: UiLocale,
 ) -> Result<RuleChangeResult, String> {
     hmeta_core::shared_core()
         .reorder_rules(&profile_id, &ordered_rule_ids)
         .map_err(|error| error.to_string())?;
-    reload_profile_after_rule_change(&profile_id, was_vpn_running, ui_strings).await
+    reload_profile_after_rule_change(&profile_id, was_vpn_running, locale).await
 }
 
 pub(super) async fn reload_profile_after_rule_change(
     profile_id: &str,
     was_vpn_running: bool,
-    ui_strings: &'static UiStrings,
+    locale: UiLocale,
 ) -> Result<RuleChangeResult, String> {
     hmeta_core::shared_core()
         .activate_profile(profile_id)
         .await
         .map_err(|error| error.to_string())?;
-    let restart_error = request_vpn_restart_if_running(was_vpn_running, ui_strings).await;
+    let restart_error = request_vpn_restart_if_running(was_vpn_running, locale).await;
     Ok(RuleChangeResult {
         snapshot: load_snapshot().await,
         restart_requested: was_vpn_running,
@@ -668,21 +685,25 @@ pub(super) fn localized_profile_import_message(
     profile_name: &str,
     restart_requested: bool,
     restart_error: Option<&str>,
-    strings: &UiStrings,
+    locale: UiLocale,
 ) -> String {
     let base = format!(
         "{}{}{}",
-        strings.profiles_import_toast_prefix,
+        translate_ui(locale, tr::profiles_import_toast_prefix()),
         profile_name,
-        strings.profiles_import_toast_success_suffix
+        translate_ui(locale, tr::profiles_import_toast_success_suffix())
     );
     if let Some(error) = restart_error.filter(|error| !error.trim().is_empty()) {
         format!(
             "{base}{}{}",
-            strings.profiles_import_toast_restart_failed_suffix, error
+            translate_ui(locale, tr::profiles_import_toast_restart_failed_suffix()),
+            error
         )
     } else if restart_requested {
-        format!("{base}{}", strings.profiles_import_toast_restart_suffix)
+        format!(
+            "{base}{}",
+            translate_ui(locale, tr::profiles_import_toast_restart_suffix())
+        )
     } else {
         base
     }
@@ -691,82 +712,61 @@ pub(super) fn localized_profile_import_message(
 pub(super) fn localized_profile_backup_restore_message(
     profile_name: &str,
     error: Option<&str>,
-    strings: &UiStrings,
+    locale: UiLocale,
 ) -> String {
     if let Some(error) = error.filter(|error| !error.trim().is_empty()) {
         format!(
             "{}{}{}{}",
-            strings.feedback_profile_prefix,
+            translate_ui(locale, tr::feedback_profile_prefix()),
             profile_name,
-            strings.profiles_backup_restore_failed_suffix,
+            translate_ui(locale, tr::profiles_backup_restore_failed_suffix()),
             error
         )
     } else {
         format!(
             "{}{}{}",
-            strings.feedback_profile_prefix,
+            translate_ui(locale, tr::feedback_profile_prefix()),
             profile_name,
-            strings.profiles_backup_restore_success_suffix
+            translate_ui(locale, tr::profiles_backup_restore_success_suffix())
         )
     }
 }
 
 pub(super) fn profile_delete_vpn_action_label(
     action: ProfileDeleteVpnAction,
-    strings: &UiStrings,
-) -> &'static str {
+    locale: UiLocale,
+) -> String {
     match action {
-        ProfileDeleteVpnAction::Stop => strings.feedback_vpn_action_stop,
-        ProfileDeleteVpnAction::Restart => strings.feedback_vpn_action_restart,
+        ProfileDeleteVpnAction::Stop => translate_ui(locale, tr::feedback_vpn_action_stop()),
+        ProfileDeleteVpnAction::Restart => translate_ui(locale, tr::feedback_vpn_action_restart()),
     }
 }
 
 pub(super) fn manual_rule_saved_message(result: &ManualRuleSaveResult, locale: UiLocale) -> String {
     let mut parts = vec![
-        match (locale, result.applied.mutation.kind) {
-            (UiLocale::ZhCn, ManualRuleMutationKind::Added) => "手动规则已添加".to_owned(),
-            (UiLocale::ZhCn, ManualRuleMutationKind::Updated) => "冲突规则已更新".to_owned(),
-            (UiLocale::ZhCn, ManualRuleMutationKind::Reenabled) => "手动规则已重新启用".to_owned(),
-            (UiLocale::ZhCn, ManualRuleMutationKind::Unchanged) => "相同规则已存在".to_owned(),
-            (_, ManualRuleMutationKind::Added) => "Manual rule added".to_owned(),
-            (_, ManualRuleMutationKind::Updated) => "Conflicting rule updated".to_owned(),
-            (_, ManualRuleMutationKind::Reenabled) => "Manual rule re-enabled".to_owned(),
-            (_, ManualRuleMutationKind::Unchanged) => "The same rule already exists".to_owned(),
+        match result.applied.mutation.kind {
+            ManualRuleMutationKind::Added => translate_ui(locale, tr::manual_rule_added()),
+            ManualRuleMutationKind::Updated => translate_ui(locale, tr::manual_rule_updated()),
+            ManualRuleMutationKind::Reenabled => translate_ui(locale, tr::manual_rule_reenabled()),
+            ManualRuleMutationKind::Unchanged => translate_ui(locale, tr::manual_rule_unchanged()),
         },
         result.applied.mutation.line.clone(),
     ];
     if result.applied.live_updated {
-        parts.push(if locale == UiLocale::ZhCn {
-            "运行时规则已热更新".to_owned()
-        } else {
-            "Runtime rules updated live".to_owned()
-        });
+        parts.push(translate_ui(locale, tr::manual_rule_live_updated()));
     } else {
-        parts.push(if locale == UiLocale::ZhCn {
-            "将在 VPN 下次启动时生效".to_owned()
-        } else {
-            "Takes effect on the next VPN start".to_owned()
-        });
+        parts.push(translate_ui(locale, tr::manual_rule_next_start()));
     }
     if !result.applied.rule_mode_active {
-        parts.push(if locale == UiLocale::ZhCn {
-            "当前不是规则模式，切换到规则模式后才会命中".to_owned()
-        } else {
-            "Rule mode is not active; switch to Rule mode for matching".to_owned()
-        });
+        parts.push(translate_ui(locale, tr::manual_rule_mode_inactive()));
     }
     if let Some(error) = &result.connection_close_error {
-        parts.push(if locale == UiLocale::ZhCn {
-            format!("规则已保存，但断开当前连接失败：{error}")
-        } else {
-            format!("Rule saved, but the current connection could not be closed: {error}")
-        });
+        parts.push(translate_ui(
+            locale,
+            tr::manual_rule_close_failed(error.clone()),
+        ));
     } else if result.connection_close_requested {
-        parts.push(if locale == UiLocale::ZhCn {
-            "当前连接已断开，新连接将使用新规则".to_owned()
-        } else {
-            "Current connection closed; the new rule applies when it reconnects".to_owned()
-        });
+        parts.push(translate_ui(locale, tr::manual_rule_connection_closed()));
     }
     parts.join(" · ")
 }

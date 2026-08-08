@@ -2,13 +2,14 @@ const UI: &str = concat!(
     include_str!("../src/ui.rs"),
     include_str!("../src/ui/tasks.rs")
 );
+const VPN_PLUGIN: &str = include_str!("../../../entry/src/main/ets/plugins/VpnPlugin.ets");
 const ENTRY_ABILITY: &str =
     include_str!("../../../entry/src/main/ets/entryability/EntryAbility.ets");
 const VPN_ABILITY: &str =
     include_str!("../../../entry/src/main/ets/vpnability/HMetaVpnExtensionAbility.ets");
 const VPN_CONFIG: &str = include_str!("../../../entry/src/main/ets/vpnability/VpnConfig.ets");
 const NAPI_TYPES: &str = include_str!("../../../entry/src/main/cpp/types/libhmeta_ui/Index.d.ts");
-const PLATFORM_CALLBACKS: &str = include_str!("../src/platform_callbacks.rs");
+const PLATFORM_CALLBACKS: &str = include_str!("../src/bridge/mod.rs");
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let start = source.find(start).expect("section start");
@@ -34,15 +35,15 @@ fn vpn_start_does_not_reload_the_already_active_profile_or_wait_a_fixed_delay() 
 #[test]
 fn notification_permission_is_deferred_until_after_the_vpn_ability_launches() {
     let request = section(
-        ENTRY_ABILITY,
-        "private async requestStartVpn",
-        "private async ensureSpeedNotificationPermission",
+        VPN_PLUGIN,
+        "async requestStartVpn",
+        "private async requestStopVpnWithContext",
     );
     let launch = request
         .find("vpnExtension.startVpnExtensionAbility")
         .expect("VPN ability launch");
     let permission = request
-        .find("this.ensureSpeedNotificationPermission()")
+        .find("this.ensureSpeedNotificationPermission(context)")
         .expect("deferred notification permission");
 
     assert!(launch < permission);
@@ -58,9 +59,9 @@ fn first_authorization_start_is_coordinated_by_the_extension_terminal_state() {
     assert!(NAPI_TYPES.contains("failUnattachedPlatformVpnStart("));
 
     let request = section(
-        ENTRY_ABILITY,
-        "private async requestStartVpn",
-        "private async ensureSpeedNotificationPermission",
+        VPN_PLUGIN,
+        "async requestStartVpn",
+        "private async requestStopVpnWithContext",
     );
     assert!(request.contains("beginPlatformVpnStart()"));
     assert!(request.contains("awaitPlatformVpnStart(attemptId)"));
@@ -195,9 +196,10 @@ fn vpn_restart_waits_for_platform_stop_before_starting_with_new_options() {
     assert!(stop < start);
     assert!(PLATFORM_CALLBACKS.contains("pub(crate) async fn request_start_vpn"));
     assert!(PLATFORM_CALLBACKS.contains("pub(crate) async fn request_stop_vpn"));
-    assert!(PLATFORM_CALLBACKS
-        .contains("invoke_string_void_callback(tsfn, options_json, \"VPN start\").await"));
-    assert!(PLATFORM_CALLBACKS.contains("invoke_void_callback(tsfn, \"VPN stop\").await"));
+    assert!(PLATFORM_CALLBACKS.contains("\"start-vpn\""));
+    assert!(PLATFORM_CALLBACKS.contains("VpnStartRequest { options_json }"));
+    assert!(PLATFORM_CALLBACKS.contains("\"stop-vpn\""));
+    assert!(PLATFORM_CALLBACKS.contains("VpnStopRequest"));
     assert!(VPN_ABILITY.contains("new HMetaVpnConfig(options)"));
     assert!(!VPN_ABILITY.contains("trustedApplications"));
     assert!(!VPN_ABILITY.contains("blockedApplications"));

@@ -1,11 +1,11 @@
 #![allow(dead_code)]
 
-#[path = "../src/l10n.rs"]
-mod l10n;
+#[path = "../src/locale.rs"]
+mod locale;
 #[path = "../src/ui_preferences.rs"]
 mod ui_preferences;
 
-use l10n::UiLocale;
+use locale::UiLocale;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 use ui_preferences::{LanguagePreference, ThemePreference, UiPreferences};

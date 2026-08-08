@@ -1,18 +1,19 @@
-use crate::l10n::UiStrings;
+use crate::i18n::{tr, translate_ui};
+use crate::locale::UiLocale;
 use hmeta_model::RuntimeMode;
 
-pub(crate) fn mode_changed_message(mode: RuntimeMode, strings: &UiStrings) -> String {
+pub(crate) fn mode_changed_message(mode: RuntimeMode, locale: UiLocale) -> String {
     format!(
         "{}{}",
-        strings.feedback_mode_changed_prefix,
-        mode_label(mode, strings)
+        translate_ui(locale, tr::feedback_mode_changed_prefix()),
+        mode_label(mode, locale)
     )
 }
 
-pub(crate) fn mode_label(mode: RuntimeMode, strings: &UiStrings) -> &'static str {
+pub(crate) fn mode_label(mode: RuntimeMode, locale: UiLocale) -> String {
     match mode {
-        RuntimeMode::Rule => strings.dashboard_mode_rule,
-        RuntimeMode::Global => strings.dashboard_mode_global,
-        RuntimeMode::Direct => strings.dashboard_mode_direct,
+        RuntimeMode::Rule => translate_ui(locale, tr::dashboard_mode_rule()),
+        RuntimeMode::Global => translate_ui(locale, tr::dashboard_mode_global()),
+        RuntimeMode::Direct => translate_ui(locale, tr::dashboard_mode_direct()),
     }
 }

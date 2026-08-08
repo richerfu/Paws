@@ -23,7 +23,7 @@ fn resources_header_opens_a_domain_and_ip_rule_lookup() {
     assert!(page.contains("Action::SetRuleLookupQuery"));
     assert!(page.contains("Action::LookupRule"));
     assert!(page.contains("Action::AddRuleFromLookup"));
-    assert!(page.contains("新增当前输入规则"));
+    assert!(page.contains("tr::page_tr_207()"));
     assert!(page.contains("result.rule_line"));
     assert!(page.contains("result.resolved_ip"));
     assert!(page.contains("current.snapshot.mode != RuntimeMode::Rule"));

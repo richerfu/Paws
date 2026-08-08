@@ -1,8 +1,16 @@
+use crate::i18n::{translate_ui, tr};
+use crate::locale::UiLocale;
 use hmeta_model::GeodataFileSummary;
 
-pub(crate) fn geodata_readiness(files: &[GeodataFileSummary]) -> (&'static str, String) {
+pub(crate) fn geodata_readiness(
+    locale: UiLocale,
+    files: &[GeodataFileSummary],
+) -> (String, String) {
     if files.is_empty() {
-        return ("未配置", "未发现 GeoData 资源定义".to_owned());
+        return (
+            translate_ui(locale, tr::hard_zh_003()),
+            translate_ui(locale, tr::hard_zh_004()),
+        );
     }
 
     let missing = files
@@ -13,10 +21,13 @@ pub(crate) fn geodata_readiness(files: &[GeodataFileSummary]) -> (&'static str, 
 
     if missing.is_empty() {
         (
-            "离线资源就绪",
-            format!("{} 个 GeoData 文件均可用", files.len()),
+            translate_ui(locale, tr::hard_zh_005()),
+            translate_ui(locale, tr::hard_zh_001(files.len())),
         )
     } else {
-        ("资源缺失", format!("缺失：{}", missing.join(", ")))
+        (
+            translate_ui(locale, tr::hard_zh_006()),
+            translate_ui(locale, tr::hard_zh_002(missing.join(", "))),
+        )
     }
 }

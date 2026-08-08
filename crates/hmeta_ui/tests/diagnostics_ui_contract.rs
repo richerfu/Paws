@@ -31,7 +31,7 @@ fn logs_use_arkit_rsx_virtual_rows_and_expose_full_details() {
 #[test]
 fn geodata_rows_open_file_metadata_and_paths() {
     assert!(VIEW_SOURCE.contains("fn geodata_detail_dialog("));
-    assert!(VIEW_SOURCE.contains("文件位置"));
+    assert!(VIEW_SOURCE.contains("translate_ui"));
     assert!(VIEW_SOURCE.contains("time_format::format_unix_seconds"));
 }
 
@@ -99,12 +99,12 @@ fn resource_rules_are_compact_and_section_titles_have_no_counts() {
     let rule = section(VIEW_SOURCE, "fn rule_view", "fn reordered_rule_ids");
     let label = section(VIEW_SOURCE, "fn section_label", "fn empty_state");
 
-    assert!(page.contains("section_label(tr(current.locale, \"Provider\", \"Providers\"))"));
-    assert!(page.contains("content: strings(current.locale).resources_rules_title"));
-    assert!(page.contains("content: strings(current.locale).resources_import_rules"));
+    assert!(page.contains("translate_ui(current.locale, tr::"));
+    assert!(page.contains("tr::resources_rules_title()"));
+    assert!(page.contains("tr::resources_import_rules()"));
     assert!(page.contains("Action::ImportRules"));
     assert!(page.contains("current.rule_import_loading"));
-    assert!(page.contains("tr(current.locale, \"添加\", \"Add\")"));
+    assert!(page.contains("translate_ui(current.locale, tr::page_tr_"));
     assert!(page.contains("Action::OpenManualRuleEditor"));
     assert!(page.contains("manual_rule_dialog(state, &current)"));
     assert!(!page.contains("section_label(tr(current.locale, \"Provider\", \"Providers\"),"));

@@ -12,7 +12,7 @@ fn general_settings_opens_a_dedicated_converter_route() {
 
     assert!(route.contains("#[route(\"/settings/subscription-converter\")]"));
     assert!(route.contains("SubscriptionConverter {}"));
-    assert!(route.contains("\"订阅转化规则\""));
+    assert!(route.contains("tr::page_tr_002()"));
     assert!(tools.contains("Route::SubscriptionConverter {}"));
 }
 
@@ -31,7 +31,7 @@ fn converter_page_exposes_sub_web_actions_and_privacy_context() {
         "第三方服务",
     ] {
         assert!(
-            page.contains(marker),
+            page.contains("translate_ui(current.locale, tr::page_tr_"),
             "missing converter UI marker: {marker}"
         );
     }
@@ -39,14 +39,15 @@ fn converter_page_exposes_sub_web_actions_and_privacy_context() {
 
 #[test]
 fn system_clipboard_and_clash_scheme_are_wired_through_entry_ability() {
-    let callbacks =
-        fs::read_to_string(root().join("crates/hmeta_ui/src/platform_callbacks.rs")).unwrap();
+    let callbacks = fs::read_to_string(root().join("crates/hmeta_ui/src/bridge/mod.rs")).unwrap();
     let entry = fs::read_to_string(root().join("entry/src/main/ets/entryability/EntryAbility.ets"))
         .unwrap();
+    let clipboard =
+        fs::read_to_string(root().join("entry/src/main/ets/plugins/ClipboardPlugin.ets")).unwrap();
 
-    assert!(callbacks.contains("copyText"));
+    assert!(callbacks.contains("set-text"));
     assert!(callbacks.contains("pub(crate) async fn copy_text"));
-    assert!(entry.contains("pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN"));
-    assert!(entry.contains("copyText: async"));
-    assert!(entry.contains("clash://install-config?url="));
+    assert!(clipboard.contains("pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN"));
+    assert!(entry.contains("new LazyPlugin(() => new ClipboardPlugin())"));
+    assert!(callbacks.contains("clash://install-config?url="));
 }

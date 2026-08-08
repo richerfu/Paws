@@ -82,7 +82,7 @@ dependencies = [
 [[package]]
 name = "arkit"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "arkit_animation",
  "arkit_arkui",
@@ -103,7 +103,7 @@ dependencies = [
 [[package]]
 name = "arkit_animation"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "arkit_animation_core",
  "arkit_arkui",
@@ -119,7 +119,7 @@ dependencies = [
 [[package]]
 name = "arkit_animation_core"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "oxc_index",
  "rustc-hash 2.1.3",
@@ -129,7 +129,7 @@ dependencies = [
 [[package]]
 name = "arkit_arkui"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "arkit_dom",
  "arkit_elements",
@@ -143,7 +143,7 @@ dependencies = [
 [[package]]
 name = "arkit_derive"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -154,7 +154,7 @@ dependencies = [
 [[package]]
 name = "arkit_dom"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "oxc_index",
 ]
@@ -162,7 +162,7 @@ dependencies = [
 [[package]]
 name = "arkit_elements"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "dioxus-core",
 ]
@@ -170,7 +170,7 @@ dependencies = [
 [[package]]
 name = "arkit_hooks"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "arkit_arkui",
  "arkit_prelude",
@@ -182,7 +182,7 @@ dependencies = [
 [[package]]
 name = "arkit_i18n"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "arkit_i18n_macros",
  "dioxus-core",
@@ -197,7 +197,7 @@ dependencies = [
 [[package]]
 name = "arkit_i18n_macros"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "fluent-syntax",
  "proc-macro-crate",
@@ -210,7 +210,7 @@ dependencies = [
 [[package]]
 name = "arkit_icon"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "arkit_arkui",
  "arkit_prelude",
@@ -222,7 +222,7 @@ dependencies = [
 [[package]]
 name = "arkit_prelude"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "arkit_elements",
  "dioxus-core",
@@ -234,7 +234,7 @@ dependencies = [
 [[package]]
 name = "arkit_router"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "arkit_animation",
  "arkit_prelude",
@@ -246,7 +246,7 @@ dependencies = [
 [[package]]
 name = "arkit_runtime"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "arkit_arkui",
  "arkit_elements",
@@ -261,7 +261,7 @@ dependencies = [
 [[package]]
 name = "arkit_shadcn"
 version = "0.0.1-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=e8e0be16ff22add530d3fd3edebe9f94aa392094#e8e0be16ff22add530d3fd3edebe9f94aa392094"
+source = "git+https://github.com/richerfu/arkit.git?rev=56a34eea3876b56761b3646d7e3ab9b9ae4e0320#56a34eea3876b56761b3646d7e3ab9b9ae4e0320"
 dependencies = [
  "arkit_animation",
  "arkit_arkui",
@@ -1471,7 +1471,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2014,6 +2014,8 @@ dependencies = [
  "ohos-fileshare-binding",
  "ohos-fileuri-binding",
  "ohos-resource-manager-binding",
+ "openharmony-ability-plugin-files",
+ "openharmony-ability-plugin-url",
  "reqwest",
  "serde",
  "serde_json",
@@ -3359,7 +3361,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3752,6 +3754,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "openharmony-ability-plugin-files"
+version = "0.3.0"
+source = "git+https://github.com/harmony-contrib/openharmony-activity.git?rev=77548ad83570101d85085ab55ddd9b5d549c8705#77548ad83570101d85085ab55ddd9b5d549c8705"
+dependencies = [
+ "napi-derive-ohos",
+ "napi-ohos",
+ "openharmony-ability",
+]
+
+[[package]]
+name = "openharmony-ability-plugin-url"
+version = "0.3.0"
+source = "git+https://github.com/harmony-contrib/openharmony-activity.git?rev=77548ad83570101d85085ab55ddd9b5d549c8705#77548ad83570101d85085ab55ddd9b5d549c8705"
+dependencies = [
+ "napi-derive-ohos",
+ "napi-ohos",
+ "openharmony-ability",
+]
+
+[[package]]
 name = "oxc_index"
 version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4052,7 +4074,7 @@ dependencies = [
  "once_cell",
  "socket2 0.5.10",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4397,7 +4419,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4410,7 +4432,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4820,7 +4842,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5808,7 +5830,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6020,15 +6042,6 @@ dependencies = [
 
 [[package]]
 name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
-dependencies = [
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
 version = "0.60.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2f500e4d28234f72040990ec9d39e3a6b950f9f22d3dba18416c35882612bcb"
@@ -6199,7 +6212,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

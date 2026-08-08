@@ -1,14 +1,14 @@
-const ENTRY_ABILITY: &str =
-    include_str!("../../../entry/src/main/ets/entryability/EntryAbility.ets");
+const VPN_PLUGIN: &str = include_str!("../../../entry/src/main/ets/plugins/VpnPlugin.ets");
 const VPN_ABILITY: &str =
     include_str!("../../../entry/src/main/ets/vpnability/HMetaVpnExtensionAbility.ets");
 
 #[test]
 fn vpn_start_requests_notification_access_without_blocking_vpn() {
-    assert!(ENTRY_ABILITY.contains("ensureSpeedNotificationPermission"));
-    assert!(ENTRY_ABILITY.contains("notificationManager.isNotificationEnabled"));
-    assert!(ENTRY_ABILITY.contains("notificationManager.requestEnableNotification(this.context)"));
-    assert!(ENTRY_ABILITY.contains("Notification permission must never prevent"));
+    assert!(VPN_PLUGIN.contains("ensureSpeedNotificationPermission"));
+    assert!(VPN_PLUGIN.contains("notificationManager.isNotificationEnabled"));
+    assert!(VPN_PLUGIN
+        .contains("notificationManager.requestEnableNotification(context.abilityContext)"));
+    assert!(VPN_PLUGIN.contains("Notification permission must never prevent"));
 }
 
 #[test]

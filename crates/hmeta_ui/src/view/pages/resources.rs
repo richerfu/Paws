@@ -12,7 +12,7 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
         .iter()
         .find(|profile| profile.active)
         .map(|profile| profile.name.clone())
-        .unwrap_or_else(|| tr(current.locale, "未选择", "Unselected").to_owned());
+        .unwrap_or_else(|| translate_ui(current.locale, tr::page_tr_154()));
     let enabled_rule_count = current
         .snapshot
         .rules
@@ -29,9 +29,9 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
         .count();
     let total_geodata_count = current.snapshot.geodata.len();
     let mode_label = match current.snapshot.mode {
-        RuntimeMode::Rule => tr(current.locale, "规则", "Rule"),
-        RuntimeMode::Global => tr(current.locale, "全局", "Global"),
-        RuntimeMode::Direct => tr(current.locale, "直连", "Direct"),
+        RuntimeMode::Rule => translate_ui(current.locale, tr::page_tr_164()),
+        RuntimeMode::Global => translate_ui(current.locale, tr::page_tr_165()),
+        RuntimeMode::Direct => translate_ui(current.locale, tr::page_tr_166()),
     };
     let providers = current.snapshot.providers.iter()
         .filter(|provider| matches_provider_query(provider, &query_value))
@@ -46,13 +46,13 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
             let can_healthcheck = provider.provider_type == "proxy"
                 && provider.health_check_enabled;
             let provider_status = if provider.last_refresh_error.is_some() {
-                tr(current.locale, "刷新失败", "Refresh failed")
+                translate_ui(current.locale, tr::page_tr_167())
             } else if provider.vehicle_type.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("inline")) {
-                tr(current.locale, "内置已加载", "Inline loaded")
+                translate_ui(current.locale, tr::page_tr_168())
             } else if provider.cache_exists {
-                tr(current.locale, "缓存已加载", "Cache loaded")
+                translate_ui(current.locale, tr::page_tr_169())
             } else {
-                tr(current.locale, "等待缓存", "Cache pending")
+                translate_ui(current.locale, tr::page_tr_170())
             };
             rsx! {
                 {card(
@@ -61,11 +61,11 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                     rsx! {
                         column {
                             width: "100%",
-                            {info_row(tr(current.locale, "状态", "Status"), provider_status)}
-                            {info_row(tr(current.locale, "缓存", "Cache"), if provider.cache_exists { format_total(provider.cache_bytes.unwrap_or(0)) } else { tr(current.locale, "无", "None").to_owned() })}
-                            {info_row(tr(current.locale, "刷新间隔", "Interval"), provider.interval_seconds.map(|value| format!("{value}s")).unwrap_or_else(|| "-".to_owned()))}
+                            {info_row(translate_ui(current.locale, tr::page_tr_171()), provider_status)}
+                            {info_row(translate_ui(current.locale, tr::page_tr_172()), if provider.cache_exists { format_total(provider.cache_bytes.unwrap_or(0)) } else { translate_ui(current.locale, tr::page_tr_173()) })}
+                            {info_row(translate_ui(current.locale, tr::page_tr_174()), provider.interval_seconds.map(|value| format!("{value}s")).unwrap_or_else(|| "-".to_owned()))}
                             if provider.provider_type == "proxy" {
-                                {info_row(tr(current.locale, "成员健康", "Member health"), format!("{alive_count}/{member_count}"))}
+                                {info_row(translate_ui(current.locale, tr::page_tr_175()), format!("{alive_count}/{member_count}"))}
                             }
                             if let Some(error) = provider.last_refresh_error.clone() {
                                 text { content: compact(&error), margin_top: 6.0, font_size: 12.0, font_color: danger(), max_lines: 2 }
@@ -79,7 +79,7 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                                     size: ButtonSize::Sm,
                                     onclick: move |_| provider_detail.set(Some(detail_provider_name.clone())),
                                     {arkit::icon("list", 14.0, text_color())}
-                                    text { content: tr(current.locale, "详情", "Details"), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
+                                    text { content: translate_ui(current.locale, tr::page_tr_176()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
                                 }
                                 if can_healthcheck {
                                     FlatButton {
@@ -90,7 +90,7 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                                             provider_name: health_provider_name.clone(),
                                         }),
                                         {arkit::icon("heart-pulse", 14.0, text_color())}
-                                        text { content: tr(current.locale, "检查", "Check"), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
+                                        text { content: translate_ui(current.locale, tr::page_tr_177()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
                                     }
                                 }
                                 FlatButton {
@@ -101,7 +101,7 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                                         provider_name: refresh_provider_name.clone(),
                                     }),
                                     {arkit::icon("refresh-cw", 14.0, text_color())}
-                                    text { content: tr(current.locale, "刷新", "Refresh"), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
+                                    text { content: translate_ui(current.locale, tr::page_tr_178()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
                                 }
                             }
                         }
@@ -124,9 +124,9 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
         .map(|(index, file)| {
             let detail = file.clone();
             let status = if file.exists {
-                tr(current.locale, "可用", "Available")
+                translate_ui(current.locale, tr::page_tr_179())
             } else {
-                tr(current.locale, "缺失", "Missing")
+                translate_ui(current.locale, tr::page_tr_180())
             };
             let metadata = if file.exists {
                 format!("{status} · {}", format_total(file.bytes.unwrap_or(0)))
@@ -185,20 +185,20 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
             width: "100%",
             Input {
                 value: Some(query_value),
-                placeholder: Some(strings(current.locale).resources_search_placeholder.to_owned()),
+                placeholder: Some(translate_ui(current.locale, tr::resources_search_placeholder())),
                 width: Some("100%".into()),
                 on_change: move |value| query.set(value),
             }
             row { height: 12.0 }
             {card(
-                tr(current.locale, "规则运行状态", "Rules runtime"),
+                translate_ui(current.locale, tr::page_tr_181()),
                 Some(active_profile_name),
                 rsx! {
                     column {
                         width: "100%",
-                        {info_row(tr(current.locale, "引擎配置", "Engine config"), if current.snapshot.engine_loaded { tr(current.locale, "已加载", "Loaded") } else { tr(current.locale, "未加载", "Not loaded") })}
-                        {info_row(tr(current.locale, "当前模式", "Current mode"), mode_label)}
-                        {info_row(tr(current.locale, "生效规则", "Effective rules"), format!("{enabled_rule_count}/{total_rule_count}"))}
+                        {info_row(translate_ui(current.locale, tr::page_tr_182()), if current.snapshot.engine_loaded { translate_ui(current.locale, tr::page_tr_183()) } else { translate_ui(current.locale, tr::page_tr_184()) })}
+                        {info_row(translate_ui(current.locale, tr::page_tr_185()), mode_label)}
+                        {info_row(translate_ui(current.locale, tr::page_tr_186()), format!("{enabled_rule_count}/{total_rule_count}"))}
                         {info_row("Provider", total_provider_count.to_string())}
                         {info_row("GeoData", format!("{ready_geodata_count}/{total_geodata_count}"))}
                     }
@@ -221,7 +221,7 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                     text { content: "GeoData", font_size: 14.0, font_weight: 700, font_color: text_color() }
                     row { layout_weight: 1.0 }
                     text {
-                        content: format!("{ready_geodata_count}/{total_geodata_count} {}", tr(current.locale, "可用", "ready")),
+                        content: format!("{ready_geodata_count}/{total_geodata_count} {}", translate_ui(current.locale, tr::page_tr_187())),
                         font_size: 11.0,
                         font_weight: 600,
                         font_color: if ready_geodata_count == total_geodata_count && total_geodata_count > 0 { success() } else { warning() },
@@ -235,16 +235,16 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                         padding_left: 14.0,
                         padding_right: 14.0,
                         align_items: "center",
-                        text { content: tr(current.locale, "没有匹配的 GeoData 文件", "No matching GeoData files"), font_size: 12.0, font_color: subtle() }
+                        text { content: translate_ui(current.locale, tr::page_tr_188()), font_size: 12.0, font_color: subtle() }
                     }
                 } else {
                     {geodata.into_iter()}
                 }
             }
             row { height: 12.0 }
-            {section_label(tr(current.locale, "Provider", "Providers"))}
+            {section_label(translate_ui(current.locale, tr::page_tr_189()))}
             if providers.is_empty() {
-                {empty_state("database", tr(current.locale, "当前订阅没有 Provider", "No providers in this profile"), tr(current.locale, "分享链接订阅通常只包含节点；Provider 需由 Clash YAML 显式声明", "Share-link subscriptions usually contain nodes only; providers must be declared by Clash YAML"))}
+                {empty_state("database", translate_ui(current.locale, tr::page_tr_190()), translate_ui(current.locale, tr::page_tr_191()))}
             } else {
                 {spaced(providers)}
             }
@@ -254,7 +254,7 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                 height: 34.0,
                 margin_bottom: 8.0,
                 align_items: "center",
-                text { content: strings(current.locale).resources_rules_title, font_size: 15.0, font_weight: 750, font_color: text_color() }
+                text { content: translate_ui(current.locale, tr::resources_rules_title()), font_size: 15.0, font_weight: 750, font_color: text_color() }
                 row { layout_weight: 1.0 }
                 FlatButton {
                     variant: FlatButtonVariant::Ghost,
@@ -271,7 +271,7 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                         {arkit::icon("file-up", 14.0, text_color())}
                     }
                     text {
-                        content: strings(current.locale).resources_import_rules,
+                        content: translate_ui(current.locale, tr::resources_import_rules()),
                         margin_left: 5.0,
                         font_size: 12.0,
                         font_weight: 650,
@@ -288,11 +288,11 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                         destination_ip: String::new(),
                     }),
                     {arkit::icon("plus", 14.0, text_color())}
-                    text { content: tr(current.locale, "添加", "Add"), margin_left: 5.0, font_size: 12.0, font_weight: 650, font_color: text_color() }
+                    text { content: translate_ui(current.locale, tr::page_tr_192()), margin_left: 5.0, font_size: 12.0, font_weight: 650, font_color: text_color() }
                 }
             }
             if rules.is_empty() {
-                {empty_state("list-checks", tr(current.locale, "当前配置没有可编辑规则", "No editable rules"), tr(current.locale, "请确认已选择订阅并完成配置加载", "Select a profile and wait for configuration loading"))}
+                {empty_state("list-checks", translate_ui(current.locale, tr::page_tr_193()), translate_ui(current.locale, tr::page_tr_194()))}
             } else {
                 {compact_rule_list(rules)}
             }
@@ -366,8 +366,8 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
 
     rsx! {
         DialogHeader {
-            title: tr(locale, "规则查询", "Rule lookup").to_owned(),
-            description: Some(tr(locale, "输入域名或 IP，查看当前配置的首条命中规则", "Enter a domain or IP to inspect the first matching rule in the active profile").to_owned()),
+            title: translate_ui(locale, tr::page_tr_195()),
+            description: Some(translate_ui(locale, tr::page_tr_196())),
         }
         row { height: 14.0 }
         Input {
@@ -379,7 +379,7 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
         }
         if current.snapshot.active_profile.is_none() {
             text {
-                content: tr(locale, "请先启用一个订阅配置，再查询规则。", "Activate a profile before querying rules."),
+                content: translate_ui(locale, tr::page_tr_197()),
                 margin_top: 9.0,
                 font_size: 11.0,
                 line_height: 16.0,
@@ -388,7 +388,7 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
         }
         if current.snapshot.mode != RuntimeMode::Rule {
             text {
-                content: tr(locale, "这里展示规则模式下的匹配结果；当前 Global / Direct 模式不会采用该规则。", "This shows the Rule-mode result; the current Global / Direct mode does not use this rule."),
+                content: translate_ui(locale, tr::page_tr_198()),
                 margin_top: 9.0,
                 font_size: 11.0,
                 line_height: 16.0,
@@ -418,7 +418,7 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
                     align_items: "center",
                     {arkit::icon(if result.matched { "route" } else { "x" }, 16.0, if result.matched { success() } else { subtle() })}
                     text {
-                        content: if result.matched { tr(locale, "命中规则", "Rule matched") } else { tr(locale, "未命中规则", "No rule matched") },
+                        content: if result.matched { translate_ui(locale, tr::page_tr_199()) } else { translate_ui(locale, tr::page_tr_200()) },
                         margin_left: 7.0,
                         font_size: 13.0,
                         font_weight: 700,
@@ -439,7 +439,7 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
                     }
                 } else {
                     text {
-                        content: tr(locale, "没有规则命中，默认使用 DIRECT。", "No rule matched; DIRECT is used by default."),
+                        content: translate_ui(locale, tr::page_tr_201()),
                         width: "100%",
                         margin_top: 8.0,
                         font_size: 12.0,
@@ -449,19 +449,19 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
                 }
                 row { height: 7.0 }
                 {info_row(
-                    tr(locale, "输入类型", "Input type"),
+                    translate_ui(locale, tr::page_tr_202()),
                     match result.input_kind {
-                        hmeta_core::RuleLookupInputKind::Domain => tr(locale, "域名", "Domain"),
-                        hmeta_core::RuleLookupInputKind::Ip => "IP",
+                        hmeta_core::RuleLookupInputKind::Domain => translate_ui(locale, tr::page_tr_203()),
+                        hmeta_core::RuleLookupInputKind::Ip => "IP".to_owned(),
                     },
                 )}
                 if result.resolution_attempted {
                     {info_row(
-                        tr(locale, "解析 IP", "Resolved IP"),
-                        result.resolved_ip.unwrap_or_else(|| tr(locale, "未解析", "Unresolved").to_owned()),
+                        translate_ui(locale, tr::page_tr_204()),
+                        result.resolved_ip.unwrap_or_else(|| translate_ui(locale, tr::page_tr_205())),
                     )}
                 }
-                {info_row(tr(locale, "目标策略", "Target policy"), result.target)}
+                {info_row(translate_ui(locale, tr::page_tr_206()), result.target)}
                 row { height: 8.0 }
                 FlatButton {
                     variant: FlatButtonVariant::Outline,
@@ -469,7 +469,7 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
                     onclick: move |_| dispatch(state, Action::AddRuleFromLookup),
                     {arkit::icon("plus", 15.0, text_color())}
                     text {
-                        content: tr(locale, "新增当前输入规则", "Add rule for this input"),
+                        content: translate_ui(locale, tr::page_tr_207()),
                         margin_left: 7.0,
                         font_size: 12.0,
                         font_weight: 650,
@@ -490,7 +490,7 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
                     {arkit::icon("search", 16.0, primary_text())}
                 }
                 text {
-                    content: if lookup.submitting { tr(locale, "正在查询", "Looking up") } else { tr(locale, "查询规则", "Look up rule") },
+                    content: if lookup.submitting { translate_ui(locale, tr::page_tr_208()) } else { translate_ui(locale, tr::page_tr_209()) },
                     margin_left: 8.0,
                     font_size: 13.0,
                     font_weight: 650,
@@ -520,14 +520,14 @@ fn provider_detail_dialog(
         let check_url = health_url.clone();
         let check_expected = expected_status.clone();
         let status = if member.alive {
-            tr(locale, "可用", "Alive")
+            translate_ui(locale, tr::page_tr_210())
         } else {
-            tr(locale, "不可用", "Unavailable")
+            translate_ui(locale, tr::page_tr_211())
         };
         let delay = member
             .delay_ms
             .map(|delay| format!("{delay} ms"))
-            .unwrap_or_else(|| tr(locale, "未测试", "Untested").to_owned());
+            .unwrap_or_else(|| translate_ui(locale, tr::page_tr_212()));
         rsx! {
             row {
                 width: "100%",
@@ -563,11 +563,11 @@ fn provider_detail_dialog(
             on_close: move |_| selected.set(None),
             DialogHeader {
                 title: truncate_text(&provider_name, 42),
-                description: Some(format!("{} {}", members.len(), tr(locale, "个成员", "members"))),
+                description: Some(format!("{} {}", members.len(), translate_ui(locale, tr::page_tr_213()))),
             }
             row { height: 12.0 }
             if members.is_empty() {
-                text { content: tr(locale, "当前 Provider 没有可展示的成员", "No provider members available"), font_size: 12.0, font_color: subtle() }
+                text { content: translate_ui(locale, tr::page_tr_214()), font_size: 12.0, font_color: subtle() }
             } else {
                 column {
                     width: "100%",
@@ -588,9 +588,9 @@ fn geodata_detail_dialog(
     mut selected: Signal<Option<hmeta_model::GeodataFileSummary>>,
 ) -> Element {
     let availability = if file.exists {
-        tr(locale, "文件可用", "File available")
+        translate_ui(locale, tr::page_tr_215())
     } else {
-        tr(locale, "文件缺失", "File missing")
+        translate_ui(locale, tr::page_tr_216())
     };
     let size = file
         .bytes
@@ -618,14 +618,14 @@ fn geodata_detail_dialog(
                 border_radius: 9.0,
                 padding_left: 12.0,
                 padding_right: 12.0,
-                {info_row(tr(locale, "状态", "Status"), availability)}
+                {info_row(translate_ui(locale, tr::page_tr_171()), availability)}
                 Separator {}
-                {info_row(tr(locale, "文件大小", "File size"), size)}
+                {info_row(translate_ui(locale, tr::page_tr_217()), size)}
                 Separator {}
-                {info_row(tr(locale, "更新时间", "Updated"), updated_at)}
+                {info_row(translate_ui(locale, tr::page_tr_218()), updated_at)}
             }
             row { height: 14.0 }
-            text { content: tr(locale, "文件位置", "File location"), font_size: 11.0, font_weight: 650, font_color: subtle() }
+            text { content: translate_ui(locale, tr::page_tr_219()), font_size: 11.0, font_weight: 650, font_color: subtle() }
             row { height: 6.0 }
             row {
                 width: "100%",
@@ -650,12 +650,7 @@ fn rule_view(state: Signal<State>, current: &State, rule: hmeta_model::RuleSumma
     let rule_source = if editable {
         rule.source.clone()
     } else {
-        tr(
-            current.locale,
-            "订阅配置 · 已载入运行时",
-            "Profile YAML · loaded at runtime",
-        )
-        .to_owned()
+        translate_ui(current.locale, tr::hard_zh_022())
     };
     let toggle_profile = rule.profile_id.clone();
     let toggle_id = rule.id.clone();
@@ -719,7 +714,7 @@ fn rule_view(state: Signal<State>, current: &State, rule: hmeta_model::RuleSumma
                     }
                     {compact_rule_action("trash-2", danger(), delete_action, state)}
                 } else {
-                    {pill(tr(current.locale, "运行中", "Effective").to_owned(), success())}
+                    {pill(translate_ui(current.locale, tr::page_tr_220()), success())}
                 }
             }
             text {
