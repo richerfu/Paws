@@ -2,17 +2,12 @@ use hmeta_model::{RuntimeMode, VpnOptions};
 use napi_derive_ohos::napi;
 #[cfg(target_env = "ohos")]
 use napi_ohos::Env;
-use napi_ohos::{
-    bindgen_prelude::{Object, ObjectRef},
-    Error, Result, Status,
-};
+use napi_ohos::{bindgen_prelude::Object, Error, Result, Status};
 #[cfg(target_env = "ohos")]
 use ohos_resource_manager_binding::ResourceManager;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 #[cfg(target_env = "ohos")]
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 #[cfg(target_env = "ohos")]
 use std::{fs, io};
 
@@ -42,111 +37,23 @@ mod ui_preferences;
 mod vpn_feedback;
 mod yaml_summary;
 
-/// Application-owned handle of the current Ability session. Replaces arkit's
-/// `#[entry]` macro expansion (which hid the app behind a private static) so
-/// the `paws.*` bridge plugins can be registered before any ArkTS plugin
-/// event is delivered.
-static APP: LazyLock<arkit::openharmony_ability::OpenHarmonyApp> =
-    LazyLock::new(arkit::openharmony_ability::OpenHarmonyApp::new);
+use arkit::entry;
+use arkit::prelude::Element;
 
-thread_local! {
-    static RUNTIME: RefCell<Option<arkit::ArkRuntime>> = RefCell::new(None);
-    // Renderer-owned root created by `openharmony_ability::render` (native
-    // XComponent + bridge bindings). Kept alive for the module lifetime;
-    // dropping it would unmount the XComponent.
-    static ROOT_NODE: RefCell<Option<arkit::openharmony_ability::arkui::RootNode>> =
-        RefCell::new(None);
-}
-
-#[napi]
-pub fn on_back_press_intercept() -> bool {
-    APP.get_back_press_interceptor()
-}
-
-#[napi]
-pub fn init<'a>(
-    env: &'a napi_ohos::Env,
-    #[napi(ts_arg_type = "AbilityInitContext")] context: Option<Object<'a>>,
-) -> Result<arkit::openharmony_ability::ApplicationLifecycle<'a>> {
-    let init_context =
-        arkit::openharmony_ability::AbilityInitContext::from_object(context.as_ref())?;
-    APP.set_init_context(init_context);
-    bridge::set_app(APP.clone());
-    // Application-owned `paws.*` bridge plugins.
-    bridge::register_all(&APP)?;
-    // Framework-owned plugin injection (e.g. the `ohos.webview` bridge facade
-    // under arkit's `webview` feature).
-    arkit::arkit_runtime::inject_plugins(&APP);
-    arkit::openharmony_ability::create_lifecycle_handle(env, APP.clone())
-}
-
-#[napi]
-pub fn render<'a>(
-    env: &'a napi_ohos::Env,
-    bindings: ObjectRef,
-    #[napi(ts_arg_type = "NodeContent")]
-    slot: arkit::ohos_arkui_binding::common::handle::ArkUIHandle,
-) -> Result<()> {
-    RUNTIME.with(|state| -> Result<()> {
-        if state.borrow().is_some() {
-            // Already mounted — the OHOS entrypoint only mounts once.
-            return Ok(());
-        }
-        // Pluginized bridge initialization: installs the bridge bindings and
-        // mounts the native XComponent before the dioxus tree is built, so
-        // plugin clients resolve from the first render onward.
-        let root = arkit::openharmony_ability::render(env, bindings, slot, APP.clone())?;
-        ROOT_NODE.with(|root_node| root_node.replace(Some(root)));
-
-        // The user's root component. The runtime creates a VirtualDom from it
-        // and rebuilds into an ArkUIRenderer mounted on `slot`.
-        let runtime = arkit::mount_entry_with_policy(
-            slot,
-            APP.clone(),
-            ui::App,
-            arkit::SafeAreaPolicy::EdgeToEdge,
-        )?;
-        state.replace(Some(runtime));
-        Ok(())
-    })
-}
-
-#[napi]
-pub fn destroy() -> Result<()> {
-    RUNTIME.with(|state| {
-        if let Some(runtime) = state.borrow_mut().take() {
-            runtime.unmount()?;
-        }
-        Ok(())
-    })
-}
-
-/// Synchronous ArkTS platform callback -> Rust plugin decision port.
-#[napi]
-pub fn on_bridge_sync_event<'a>(
-    env: &'a napi_ohos::Env,
-    plugin_id: String,
-    event: String,
-    request_type_name: String,
-    response_type_name: String,
-    value: napi_ohos::bindgen_prelude::Unknown<'a>,
-) -> Result<napi_ohos::bindgen_prelude::Unknown<'a>> {
-    let event = arkit::openharmony_ability::BridgeMainThreadEvent::new(
-        env,
-        plugin_id,
-        event,
-        request_type_name,
-        response_type_name,
-        value,
-    )?;
-    APP.dispatch_bridge_main_thread_event(event)
-}
-
-/// ArkTS-only lifecycle transitions, currently UI-context readiness.
-#[napi]
-pub fn on_bridge_lifecycle(kind: String) -> Result<()> {
-    let event = arkit::openharmony_ability::PluginLifecycleEvent::from_arkts(&kind)?;
-    APP.dispatch_plugin_lifecycle(event)
+/// Application entry: arkit's `#[entry]` generates the NAPI init/render/
+/// destroy lifecycle and bridge event ports, registers the `paws.*` bridge
+/// plugins declaratively, and passes the shared `OpenHarmonyApp` handle into
+/// the entry function so the platform call surface can resolve it.
+#[entry(plugins = [
+    bridge::PawsScanBridgePlugin,
+    bridge::PawsClipboardBridgePlugin,
+    bridge::PawsColorModeBridgePlugin,
+    bridge::PawsVpnBridgePlugin,
+    bridge::PawsExportBridgePlugin,
+])]
+fn app(handle: arkit::openharmony_ability::OpenHarmonyApp) -> Element {
+    bridge::set_app(handle);
+    ui::App()
 }
 
 #[napi]

@@ -23,11 +23,13 @@ use openharmony_ability_plugin_files::{
 };
 use openharmony_ability_plugin_url::UrlExt;
 
-use self::clipboard::{ClipboardSetRequest, ClipboardSetResponse, PawsClipboardBridgePlugin};
-use self::color_mode::{ColorModeRequest, ColorModeResponse, PawsColorModeBridgePlugin};
-use self::export::{ExportTextRequest, ExportTextResponse, PawsExportBridgePlugin};
-use self::scan::{PawsScanBridgePlugin, ScanRequest, ScanResponse};
-use self::vpn::{
+pub(crate) use self::clipboard::{
+    ClipboardSetRequest, ClipboardSetResponse, PawsClipboardBridgePlugin,
+};
+pub(crate) use self::color_mode::{ColorModeRequest, ColorModeResponse, PawsColorModeBridgePlugin};
+pub(crate) use self::export::{ExportTextRequest, ExportTextResponse, PawsExportBridgePlugin};
+pub(crate) use self::scan::{PawsScanBridgePlugin, ScanRequest, ScanResponse};
+pub(crate) use self::vpn::{
     PawsVpnBridgePlugin, VpnStartRequest, VpnStartResponse, VpnStopRequest, VpnStopResponse,
 };
 
