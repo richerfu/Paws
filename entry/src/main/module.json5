@@ -48,8 +48,8 @@
         ],
       },
       {
-        "name": "HMetaVpnExtensionAbility",
-        "srcEntry": "./ets/vpnability/HMetaVpnExtensionAbility.ets",
+        "name": "PawsVpnExtensionAbility",
+        "srcEntry": "./ets/vpnability/PawsVpnExtensionAbility.ets",
         "type": "vpn",
         "exported": false
       },
@@ -61,7 +61,7 @@
         "usedScene": {
           "abilities": [
             "EntryAbility",
-            "HMetaVpnExtensionAbility"
+            "PawsVpnExtensionAbility"
           ],
           "when": "inuse"
         }

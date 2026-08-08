@@ -9,10 +9,10 @@ license = "MIT"
 rust-version = "1.89"
 
 [workspace.dependencies]
-hmeta_model = { path = "crates/hmeta_model" }
-hmeta_profile = { path = "crates/hmeta_profile" }
-hmeta_core = { path = "crates/hmeta_core" }
-hmeta_vpn = { path = "crates/hmeta_vpn" }
+paws_model = { path = "crates/paws_model" }
+paws_profile = { path = "crates/paws_profile" }
+paws_core = { path = "crates/paws_core" }
+paws_vpn = { path = "crates/paws_vpn" }
 
 # arkit mainline; declarative `#[entry(plugins = [...])]` bridge-plugin
 # registration (no hand-written init/render needed).

@@ -9,10 +9,10 @@ NATIVE_PROFILE="${NATIVE_PROFILE:-release}"
 HAP_BUILD_MODE="${HAP_BUILD_MODE:-release}"
 case "$NATIVE_PROFILE" in
   release)
-    SO_SRC="$ROOT_DIR/target/aarch64-unknown-linux-ohos/release/libhmeta_ui.so"
+    SO_SRC="$ROOT_DIR/target/aarch64-unknown-linux-ohos/release/libpaws_ui.so"
     ;;
   debug)
-    SO_SRC="$ROOT_DIR/target/aarch64-unknown-linux-ohos/debug/libhmeta_ui.so"
+    SO_SRC="$ROOT_DIR/target/aarch64-unknown-linux-ohos/debug/libpaws_ui.so"
     ;;
   *)
     echo "Unsupported NATIVE_PROFILE: $NATIVE_PROFILE (expected release or debug)" >&2
@@ -27,7 +27,7 @@ case "$HAP_BUILD_MODE" in
     exit 1
     ;;
 esac
-SO_DST="$ROOT_DIR/entry/libs/arm64-v8a/libhmeta_ui.so"
+SO_DST="$ROOT_DIR/entry/libs/arm64-v8a/libpaws_ui.so"
 HAP_PATH="${HAP_PATH:-$ROOT_DIR/entry/build/default/outputs/default/entry-default-unsigned.hap}"
 HVIGOR_ARGS="${HVIGOR_ARGS:---no-daemon}"
 
