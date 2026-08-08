@@ -6,7 +6,7 @@ pub(crate) fn appearance_page(state: Signal<State>) -> Element {
     let locale = current.locale;
 
     let system_language = translate_ui(locale, tr::page_tr_117());
-    let simplified_chinese = "简体中文".to_owned();
+    let simplified_chinese = translate_ui(locale, tr::hard_zh_031()).to_owned();
     let english = "English".to_owned();
     let selected_language = match current.language_preference() {
         LanguagePreference::System => system_language.clone(),

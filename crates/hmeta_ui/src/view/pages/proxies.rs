@@ -39,11 +39,14 @@ pub(crate) fn proxies_page(state: Signal<State>) -> Element {
         })
         .unwrap_or(0);
     let result_summary = match current.locale {
-        UiLocale::ZhCn => {
-            format!(
-                "{global_node_count} 个全局节点 · {matching_group_count} 个策略分组 · {matching_member_count} 个成员"
-            )
-        }
+        UiLocale::ZhCn => translate_ui(
+            current.locale,
+            tr::hard_zh_018(
+                global_node_count,
+                matching_group_count,
+                matching_member_count,
+            ),
+        ),
         UiLocale::En => {
             format!(
                 "{global_node_count} global nodes · {matching_group_count} policy groups · {matching_member_count} members"
@@ -264,16 +267,8 @@ fn VirtualProxyRow(
 
 #[component]
 fn VirtualProxySectionRow(locale: UiLocale, palette: VirtualProxyPalette) -> Element {
-    let title = tr(
-        locale,
-        "全局节点与策略分组",
-        "Global node and policy groups",
-    );
-    let description = tr(
-        locale,
-        "全局模式使用所选节点；规则按分组名称命中并保留独立选择",
-        "Global mode uses the selected node; rules keep independent group selections",
-    );
+    let title = translate_ui(locale, tr::hard_zh_019());
+    let description = translate_ui(locale, tr::hard_zh_020());
     rsx! {
         column {
             width: "100%",
@@ -375,7 +370,7 @@ fn VirtualProxyGroupRow(
                         group_kind,
                         selection_mode,
                         match locale {
-                            UiLocale::ZhCn => format!("{} 个成员", group.member_count),
+                            UiLocale::ZhCn => translate_ui(locale, tr::hard_zh_021(group.member_count)),
                             UiLocale::En => format!("{} members", group.member_count),
                         }
                     ),

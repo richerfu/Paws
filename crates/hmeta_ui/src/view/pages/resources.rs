@@ -650,12 +650,7 @@ fn rule_view(state: Signal<State>, current: &State, rule: hmeta_model::RuleSumma
     let rule_source = if editable {
         rule.source.clone()
     } else {
-        tr(
-            current.locale,
-            "订阅配置 · 已载入运行时",
-            "Profile YAML · loaded at runtime",
-        )
-        .to_owned()
+        translate_ui(current.locale, tr::hard_zh_022())
     };
     let toggle_profile = rule.profile_id.clone();
     let toggle_id = rule.id.clone();

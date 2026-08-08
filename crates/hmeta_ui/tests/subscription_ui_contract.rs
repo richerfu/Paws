@@ -79,7 +79,7 @@ fn proxy_groups_use_an_arkit_rsx_heterogeneous_virtual_list() {
     // continues to instantiate visible group/member rows on demand.
     assert!(page.contains("expanded_group"));
     assert!(page.contains("translate_ui(current.locale, tr::"));
-    assert!(page.contains("Global node and policy groups"));
+    assert!(page.contains("tr::hard_zh_019()"));
     assert!(!page.contains("ProxyGroupScope"));
     assert!(!page.contains("GLOBAL ·"));
     assert!(!page.contains("ProxyLayoutMode"));

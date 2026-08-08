@@ -764,31 +764,18 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
     );
     let conflict_message = conflict.map(|conflict| {
         if conflict.same_target {
-            tr(
-                locale,
-                "已有相同规则，保存时不会重复添加",
-                "The same rule already exists and will not be duplicated",
-            )
-            .to_owned()
+            translate_ui(locale, tr::hard_zh_014())
         } else if conflict.source == "profile-yaml" {
             format!(
                 "{} {} → {}",
-                tr(
-                    locale,
-                    "订阅中已有同条件规则，将创建高优先级覆盖：",
-                    "The profile has the same selector; a higher-priority override will be created:",
-                ),
+                translate_ui(locale, tr::hard_zh_015()),
                 conflict.target,
                 editor.target
             )
         } else {
             format!(
                 "{} {} → {}",
-                tr(
-                    locale,
-                    "已有手动规则，将直接更新策略：",
-                    "The existing manual rule will be updated:",
-                ),
+                translate_ui(locale, tr::hard_zh_016()),
                 conflict.target,
                 editor.target
             )

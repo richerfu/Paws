@@ -14,11 +14,7 @@ pub(crate) fn tools_page(state: Signal<State>) -> Element {
                     settings_route_row(
                         Route::SubscriptionConverter {},
                         current.locale,
-                        tr(
-                            current.locale,
-                            "在订阅链接、客户端格式与远程规则之间转换",
-                            "Convert subscription links, client formats, and remote rules",
-                        ),
+                        translate_ui(current.locale, tr::hard_zh_023()),
                     ),
                 ],
             )}
@@ -223,11 +219,7 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
                 vec![settings_route_row(
                     Route::Privacy {},
                     current.locale,
-                    tr(
-                        current.locale,
-                        "隐私策略、出口 IP 查询和第三方服务说明",
-                        "Privacy policy, exit IP lookup and third-party services",
-                    ),
+                    translate_ui(current.locale, tr::hard_zh_024()),
                 )],
             )}
             row { height: 10.0 }
@@ -339,21 +331,13 @@ pub(crate) fn privacy_page(state: Signal<State>) -> Element {
             width: "100%",
             {card(
                 translate_ui(current.locale, tr::page_tr_037()),
-                Some(tr(
-                    current.locale,
-                    "以下说明覆盖 Paws 自身处理的数据；用户配置的订阅、规则提供方和外部网站由各自运营方负责",
-                    "This covers data handled by Paws; configured subscriptions, rule providers and external sites are governed by their operators",
-                ).to_owned()),
+                Some(translate_ui(current.locale, tr::hard_zh_025())),
                 rsx! { column { width: "100%", {disclosures.into_iter()} } },
             )}
             row { height: 12.0 }
             {card(
                 translate_ui(current.locale, tr::page_tr_038()),
-                Some(tr(
-                    current.locale,
-                    "仅在 VPN 已连接时查询，取首个有效结果。点击服务名称可查看其文档和隐私规则",
-                    "Queried only while the VPN is connected; the first valid result is used. Open a service to review its documentation and privacy terms",
-                ).to_owned()),
+                Some(translate_ui(current.locale, tr::hard_zh_026())),
                 rsx! { column { width: "100%", {exit_ip_services.into_iter()} } },
             )}
         }

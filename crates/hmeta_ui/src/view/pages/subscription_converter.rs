@@ -22,7 +22,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
     use_drop(move || {
         let mut value = draft.peek().clone();
         value.custom_params = parse_custom_params(&custom_params_text.peek());
-        let _ = save_draft(&value);
+        let _ = save_draft(current.locale, &value);
     });
 
     let value = draft();
@@ -45,23 +45,19 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
         .iter()
         .map(|item| item.label.to_owned())
         .collect::<Vec<_>>();
-    let selected_client = client_label(&value.client_type).to_owned();
+    let selected_client = client_label(current.locale, &value.client_type).to_owned();
     let remote_options = REMOTE_CONFIGS
         .iter()
         .map(|item| item.label.to_owned())
         .collect::<Vec<_>>();
-    let selected_remote = remote_config_label(&value.remote_config).to_owned();
+    let selected_remote = remote_config_label(current.locale, &value.remote_config).to_owned();
 
     let body = rsx! {
         column {
             width: "100%",
             {card(
                 translate_ui(current.locale, tr::page_tr_041()),
-                Some(tr(
-                    current.locale,
-                    "兼容 sub-web / subconverter 参数；多个订阅或节点链接可每行填写一个",
-                    "Compatible with sub-web / subconverter parameters; enter one subscription or node link per line",
-                ).to_owned()),
+                Some(translate_ui(current.locale, tr::hard_zh_040())),
                 rsx! {
                     Form {
                         surface: false,
@@ -85,11 +81,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                             }
                             Textarea {
                                 value: Some(value.source_sub_url.clone()),
-                                placeholder: Some(tr(
-                                    current.locale,
-                                    "支持订阅及 ss/ssr/vmess 等链接；多个链接每行一个或使用 | 分隔",
-                                    "Supports subscriptions and ss/ssr/vmess links; use one per line or separate with |",
-                                ).to_owned()),
+                                placeholder: Some(translate_ui(current.locale, tr::hard_zh_041())),
                                 height: Some(108.0),
                                 width: Some("100%".into()),
                                 disabled: is_busy,
@@ -125,11 +117,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                 row { height: spacing::LG }
                 {card(
                     translate_ui(current.locale, tr::page_tr_045()),
-                    Some(tr(
-                        current.locale,
-                        "默认服务与 sub-web 一致；建议替换为自行部署的 subconverter 及辅助服务",
-                        "Defaults match sub-web; using your own subconverter and helper services is recommended",
-                    ).to_owned()),
+                    Some(translate_ui(current.locale, tr::hard_zh_042())),
                     rsx! {
                         Form {
                             surface: false,
@@ -174,7 +162,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                                             busy.set(Some(translate_ui(current.locale, tr::page_tr_048())));
                                             let backend = draft().backend;
                                             let task = state.read().runtime.tokio().spawn(async move {
-                                                fetch_backend_version(&backend).await
+                                                fetch_backend_version(current.locale, &backend).await
                                             });
                                             arkit::dioxus_core::spawn_forever(async move {
                                                 match task.await {
@@ -183,7 +171,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                                                         converter_notice(state, translate_ui(current.locale, tr::page_tr_049()));
                                                     }
                                                     Ok(Err(error)) => converter_notice(state, error),
-                                                    Err(error) => converter_notice(state, format!("后端检测任务失败：{error}")),
+                                                    Err(error) => converter_notice(state, translate_ui(current.locale, tr::hard_zh_032(error.to_string()))),
                                                 }
                                                 busy.set(None);
                                             });
@@ -278,11 +266,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                                 FieldLabel { content: translate_ui(current.locale, tr::page_tr_057()) }
                                 Textarea {
                                     value: Some(custom_params_value.clone()),
-                                    placeholder: Some(tr(
-                                        current.locale,
-                                        "每行一个 name=value；未知参数在反向解析时会保留",
-                                        "One name=value pair per line; unknown parameters survive reverse parsing",
-                                    ).to_owned()),
+                                    placeholder: Some(translate_ui(current.locale, tr::hard_zh_043())),
                                     height: Some(88.0),
                                     width: Some("100%".into()),
                                     disabled: is_busy,
@@ -336,11 +320,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
             row { height: spacing::LG }
             {card(
                 translate_ui(current.locale, tr::page_tr_070()),
-                Some(tr(
-                    current.locale,
-                    "生成操作会保存当前转换规则并复制长链接",
-                    "Generating saves the current conversion rule and copies the long URL",
-                ).to_owned()),
+                Some(translate_ui(current.locale, tr::hard_zh_044())),
                 rsx! {
                     column {
                         width: "100%",
@@ -351,9 +331,9 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                             onclick: move |_| {
                                 let mut next = draft();
                                 next.custom_params = parse_custom_params(&custom_params_text());
-                                match build_conversion_url(&next) {
+                                match build_conversion_url(current.locale, &next) {
                                     Ok(url) => {
-                                        let _ = save_draft(&next);
+                                        let _ = save_draft(current.locale, &next);
                                         draft.set(next);
                                         generated_url.set(url.clone());
                                         short_url.set(String::new());
@@ -413,7 +393,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                                     let api = draft().short_url_api;
                                     busy.set(Some(translate_ui(current.locale, tr::page_tr_077())));
                                     let task = state.read().runtime.tokio().spawn(async move {
-                                        generate_short_url(&api, &generated).await
+                                        generate_short_url(current.locale, &api, &generated).await
                                     });
                                     arkit::dioxus_core::spawn_forever(async move {
                                         match task.await {
@@ -426,7 +406,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                                                 );
                                             }
                                             Ok(Err(error)) => converter_notice(state, error),
-                                            Err(error) => converter_notice(state, format!("短链任务失败：{error}")),
+                                            Err(error) => converter_notice(state, translate_ui(current.locale, tr::hard_zh_033(error.to_string()))),
                                         }
                                         busy.set(None);
                                     });
@@ -463,7 +443,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                             width: Some("100%".into()),
                             disabled: Some(is_busy || generated_value.is_empty()),
                             onclick: move |_| {
-                                match clash_install_url(&generated_url(), &short_url()) {
+                                match clash_install_url(current.locale, &generated_url(), &short_url()) {
                                     Ok(url) => open_converter_url(state, url),
                                     Err(error) => converter_notice(state, error),
                                 }
@@ -478,11 +458,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
             row { height: spacing::LG }
             {card(
                 translate_ui(current.locale, tr::page_tr_084()),
-                Some(tr(
-                    current.locale,
-                    "短链会跟随最多 10 次重定向，并将最终转换参数还原到上方表单",
-                    "Short URLs follow up to 10 redirects and restore final conversion parameters into the form",
-                ).to_owned()),
+                Some(translate_ui(current.locale, tr::hard_zh_045())),
                 rsx! {
                     column {
                         width: "100%",
@@ -503,7 +479,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                                 let input = parse_url();
                                 busy.set(Some(translate_ui(current.locale, tr::page_tr_085())));
                                 let task = state.read().runtime.tokio().spawn(async move {
-                                    resolve_and_parse_conversion_url(&input).await
+                                    resolve_and_parse_conversion_url(current.locale, &input).await
                                 });
                                 arkit::dioxus_core::spawn_forever(async move {
                                     match task.await {
@@ -512,14 +488,14 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                                             parsed.short_url_api = previous.short_url_api;
                                             parsed.config_upload_api = previous.config_upload_api;
                                             custom_params_text.set(format_custom_params(&parsed.custom_params));
-                                            let _ = save_draft(&parsed);
+                                            let _ = save_draft(current.locale, &parsed);
                                             draft.set(parsed);
                                             generated_url.set(String::new());
                                             short_url.set(String::new());
                                             converter_notice(state, translate_ui(current.locale, tr::page_tr_086()));
                                         }
                                         Ok(Err(error)) => converter_notice(state, error),
-                                        Err(error) => converter_notice(state, format!("链接解析任务失败：{error}")),
+                                        Err(error) => converter_notice(state, translate_ui(current.locale, tr::hard_zh_034(error.to_string()))),
                                     }
                                     busy.set(None);
                                 });
@@ -538,11 +514,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
             row { height: spacing::LG }
             {card(
                 translate_ui(current.locale, tr::page_tr_088()),
-                Some(tr(
-                    current.locale,
-                    "以下操作会把转换链接或配置内容发送到对应第三方服务；地址可替换为自建服务",
-                    "These actions send conversion URLs or config content to the configured third-party services; self-hosted endpoints are supported",
-                ).to_owned()),
+                Some(translate_ui(current.locale, tr::hard_zh_046())),
                 rsx! {
                     Form {
                         surface: false,
@@ -593,14 +565,14 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                                 let api = draft().config_upload_api;
                                 busy.set(Some(translate_ui(current.locale, tr::page_tr_093())));
                                 let task = state.read().runtime.tokio().spawn(async move {
-                                    upload_remote_config(&api, &content).await
+                                    upload_remote_config(current.locale, &api, &content).await
                                 });
                                 arkit::dioxus_core::spawn_forever(async move {
                                     match task.await {
                                         Ok(Ok(url)) => {
                                             let mut next = draft();
                                             next.remote_config = url.clone();
-                                            let _ = save_draft(&next);
+                                            let _ = save_draft(current.locale, &next);
                                             draft.set(next);
                                             upload_content.set(String::new());
                                             copy_converter_text(
@@ -610,7 +582,7 @@ pub(crate) fn subscription_converter_page(state: Signal<State>) -> Element {
                                             );
                                         }
                                         Ok(Err(error)) => converter_notice(state, error),
-                                        Err(error) => converter_notice(state, format!("配置上传任务失败：{error}")),
+                                        Err(error) => converter_notice(state, translate_ui(state.read().locale, tr::hard_zh_035(error.to_string()))),
                                     }
                                     busy.set(None);
                                 });
@@ -703,8 +675,14 @@ fn copy_converter_text(state: Signal<State>, text: String, success: String) {
     arkit::dioxus_core::spawn_forever(async move {
         match task.await {
             Ok(Ok(())) => converter_notice(state, success),
-            Ok(Err(error)) => converter_notice(state, format!("复制失败：{error}")),
-            Err(error) => converter_notice(state, format!("复制任务失败：{error}")),
+            Ok(Err(error)) => converter_notice(
+                state,
+                translate_ui(state.read().locale, tr::hard_zh_036(error)),
+            ),
+            Err(error) => converter_notice(
+                state,
+                translate_ui(state.read().locale, tr::hard_zh_037(error.to_string())),
+            ),
         }
     });
 }
@@ -718,8 +696,14 @@ fn open_converter_url(state: Signal<State>, url: String) {
     arkit::dioxus_core::spawn_forever(async move {
         match task.await {
             Ok(Ok(())) => {}
-            Ok(Err(error)) => converter_notice(state, format!("打开链接失败：{error}")),
-            Err(error) => converter_notice(state, format!("打开链接任务失败：{error}")),
+            Ok(Err(error)) => converter_notice(
+                state,
+                translate_ui(state.read().locale, tr::hard_zh_038(error.to_string())),
+            ),
+            Err(error) => converter_notice(
+                state,
+                translate_ui(state.read().locale, tr::hard_zh_039(error.to_string())),
+            ),
         }
     });
 }

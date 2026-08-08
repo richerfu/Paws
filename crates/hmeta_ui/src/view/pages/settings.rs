@@ -86,14 +86,7 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
     let controller_secret_label = controller_secret
         .as_deref()
         .map(mask_controller_secret)
-        .unwrap_or_else(|| {
-            tr(
-                current.locale,
-                "保存后自动生成",
-                "Generated automatically when saved",
-            )
-            .to_owned()
-        });
+        .unwrap_or_else(|| translate_ui(current.locale, tr::hard_zh_027()));
 
     let body = rsx! {
         column {
@@ -323,20 +316,15 @@ fn copy_controller_secret(state: Signal<State>, secret: String) {
         .spawn(async move { crate::bridge::copy_text(secret).await });
     arkit::dioxus_core::spawn_forever(async move {
         let message = match task.await {
-            Ok(Ok(())) => tr(
-                state.read().locale,
-                "访问密钥已复制",
-                "Access secret copied",
-            )
-            .to_owned(),
+            Ok(Ok(())) => translate_ui(state.read().locale, tr::hard_zh_028()),
             Ok(Err(error)) => format!(
                 "{}{}",
-                tr(state.read().locale, "复制失败：", "Copy failed: "),
+                translate_ui(state.read().locale, tr::hard_zh_029()),
                 error
             ),
             Err(error) => format!(
                 "{}{}",
-                tr(state.read().locale, "复制任务失败：", "Copy task failed: "),
+                translate_ui(state.read().locale, tr::hard_zh_030()),
                 error
             ),
         };

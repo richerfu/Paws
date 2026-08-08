@@ -101,14 +101,7 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                     || export_pending.is_some()
                     || delete_pending.is_some(),
                 detail: if archive.active {
-                    format!(
-                        "{detail} · {}",
-                        tr(
-                            locale,
-                            "正在写入，停止记录后可删除",
-                            "Recording; stop before deleting"
-                        )
-                    )
+                    format!("{detail} · {}", translate_ui(locale, tr::hard_zh_017()))
                 } else {
                     detail
                 },

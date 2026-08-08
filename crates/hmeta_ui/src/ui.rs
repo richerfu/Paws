@@ -490,10 +490,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             state.preferences.language = preference;
             state.refresh_system_preferences();
             let message = match state.preferences.save() {
-                Ok(()) if state.locale == UiLocale::ZhCn => "语言设置已更新".to_owned(),
+                Ok(()) if state.locale == UiLocale::ZhCn => {
+                    translate_ui(state.locale, tr::hard_zh_051()).to_owned()
+                }
                 Ok(()) => "Language preference updated".to_owned(),
                 Err(error) if state.locale == UiLocale::ZhCn => {
-                    format!("语言设置保存失败：{error}")
+                    translate_ui(state.locale, tr::hard_zh_047(error))
                 }
                 Err(error) => format!("Failed to save language preference: {error}"),
             };
@@ -503,10 +505,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             state.preferences.theme = preference;
             state.refresh_system_preferences();
             let message = match state.preferences.save() {
-                Ok(()) if state.locale == UiLocale::ZhCn => "主题设置已更新".to_owned(),
+                Ok(()) if state.locale == UiLocale::ZhCn => {
+                    translate_ui(state.locale, tr::hard_zh_052()).to_owned()
+                }
                 Ok(()) => "Theme preference updated".to_owned(),
                 Err(error) if state.locale == UiLocale::ZhCn => {
-                    format!("主题设置保存失败：{error}")
+                    translate_ui(state.locale, tr::hard_zh_048(error))
                 }
                 Err(error) => format!("Failed to save theme preference: {error}"),
             };
@@ -518,12 +522,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             {
                 show_toast(
                     state,
-                    if state.locale == UiLocale::ZhCn {
-                        "正在等待系统 VPN 服务"
-                    } else {
-                        "Waiting for the system VPN service"
-                    }
-                    .to_owned(),
+                    translate_ui(state.locale, tr::hard_zh_053()).to_owned(),
                 )
             } else if state.snapshot.vpn_running {
                 let ui_locale = state.locale;
@@ -711,15 +710,17 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 return Command::none();
             }
             state.controller_diagnostic_pending = Some("dns".to_owned());
+            let locale = state.locale;
             Command::perform(
-                async {
+                async move {
+                    let locale = locale;
                     hmeta_core::shared_core()
                         .flush_dns_cache_via_controller()
                         .await
                         .map_err(|error| error.to_string())?;
                     Ok((
                         load_snapshot().await,
-                        "DNS 缓存已清理 / DNS cache flushed".to_owned(),
+                        translate_ui(locale, tr::hard_zh_054()).to_owned(),
                     ))
                 },
                 Action::ControllerDiagnosticFinished,
@@ -730,15 +731,16 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 return Command::none();
             }
             state.controller_diagnostic_pending = Some("fakeip".to_owned());
+            let locale = state.locale;
             Command::perform(
-                async {
+                async move {
                     hmeta_core::shared_core()
                         .flush_fake_ip_cache_via_controller()
                         .await
                         .map_err(|error| error.to_string())?;
                     Ok((
                         load_snapshot().await,
-                        "Fake-IP 缓存已清理 / Fake-IP cache flushed".to_owned(),
+                        translate_ui(locale, tr::hard_zh_055()).to_owned(),
                     ))
                 },
                 Action::ControllerDiagnosticFinished,
@@ -749,6 +751,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 return Command::none();
             }
             state.controller_diagnostic_pending = Some(format!("provider:{provider_name}"));
+            let locale = state.locale;
             Command::perform(
                 async move {
                     hmeta_core::shared_core()
@@ -757,7 +760,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         .map_err(|error| error.to_string())?;
                     Ok((
                         load_snapshot().await,
-                        format!("Provider {provider_name} 健康检查完成"),
+                        translate_ui(locale, tr::hard_zh_049(provider_name)),
                     ))
                 },
                 Action::ControllerDiagnosticFinished,
@@ -798,9 +801,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     state.snapshot = snapshot;
                     show_toast(state, message)
                 }
-                Err(error) => {
-                    show_toast(state, format!("诊断操作失败 / Diagnostic failed: {error}"))
-                }
+                Err(error) => show_toast(state, translate_ui(state.locale, tr::hard_zh_050(error))),
             }
         }
         Action::CloseConnection(connection_id) => Command::perform(
@@ -859,7 +860,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             }
             if state.snapshot.active_profile.is_none() {
                 lookup.error = Some(if state.locale == UiLocale::ZhCn {
-                    "请先启用一个订阅配置".to_owned()
+                    translate_ui(state.locale, tr::hard_zh_056()).to_owned()
                 } else {
                     "Activate a profile before querying rules".to_owned()
                 });
@@ -867,7 +868,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             }
             if lookup.query.trim().is_empty() {
                 lookup.error = Some(if state.locale == UiLocale::ZhCn {
-                    "请输入域名或 IP 地址".to_owned()
+                    translate_ui(state.locale, tr::hard_zh_057()).to_owned()
                 } else {
                     "Enter a domain name or IP address".to_owned()
                 });
@@ -1001,7 +1002,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             }
             let Some(profile_id) = state.snapshot.active_profile.clone() else {
                 editor.error = Some(if state.locale == UiLocale::ZhCn {
-                    "请先启用一个订阅配置".to_owned()
+                    translate_ui(state.locale, tr::hard_zh_056()).to_owned()
                 } else {
                     "Activate a profile before adding a rule".to_owned()
                 });
@@ -1118,23 +1119,16 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     show_toast(
                         state,
                         if state.log_recording.enabled {
-                            locale_text(state.locale, "已开始记录日志", "Log recording started")
+                            translate_ui(state.locale, tr::hard_zh_058())
                         } else {
-                            locale_text(state.locale, "已停止记录日志", "Log recording stopped")
+                            translate_ui(state.locale, tr::hard_zh_059())
                         }
                         .to_owned(),
                     )
                 }
                 Err(error) => show_toast(
                     state,
-                    format!(
-                        "{}{error}",
-                        locale_text(
-                            state.locale,
-                            "切换日志记录失败：",
-                            "Failed to change log recording: "
-                        )
-                    ),
+                    format!("{}{error}", translate_ui(state.locale, tr::hard_zh_060())),
                 ),
             }
         }
@@ -1154,15 +1148,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     state,
                     format!(
                         "{}{file_name}",
-                        locale_text(state.locale, "日志已导出：", "Log exported: ")
+                        translate_ui(state.locale, tr::hard_zh_061())
                     ),
                 ),
                 Err(error) => show_toast(
                     state,
-                    format!(
-                        "{}{error}",
-                        locale_text(state.locale, "日志导出失败：", "Failed to export log: ")
-                    ),
+                    format!("{}{error}", translate_ui(state.locale, tr::hard_zh_062())),
                 ),
             }
         }
@@ -1184,17 +1175,14 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         state,
                         format!(
                             "{}{}",
-                            locale_text(state.locale, "日志已删除：", "Log deleted: "),
+                            translate_ui(state.locale, tr::hard_zh_063()),
                             result.file_name
                         ),
                     )
                 }
                 Err(error) => show_toast(
                     state,
-                    format!(
-                        "{}{error}",
-                        locale_text(state.locale, "日志删除失败：", "Failed to delete log: ")
-                    ),
+                    format!("{}{error}", translate_ui(state.locale, tr::hard_zh_064())),
                 ),
             }
         }
@@ -1637,25 +1625,13 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     format!(
                         "{}{}",
                         profile_name,
-                        if state.locale == UiLocale::ZhCn {
-                            " 的订阅信息已更新"
-                        } else {
-                            " subscription updated"
-                        }
+                        translate_ui(state.locale, tr::hard_zh_065())
                     ),
                 )
             }
             Err(error) => show_toast(
                 state,
-                format!(
-                    "{}{}",
-                    if state.locale == UiLocale::ZhCn {
-                        "更新订阅失败："
-                    } else {
-                        "Update subscription failed: "
-                    },
-                    error
-                ),
+                format!("{}{}", translate_ui(state.locale, tr::hard_zh_066()), error),
             ),
         },
         Action::ExportProfile(profile_id) => {
@@ -1690,24 +1666,12 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 format!(
                     "{}{}",
                     profile_name,
-                    if state.locale == UiLocale::ZhCn {
-                        " 已导出"
-                    } else {
-                        " exported"
-                    }
+                    translate_ui(state.locale, tr::hard_zh_067())
                 ),
             ),
             Err(error) => show_toast(
                 state,
-                format!(
-                    "{}{}",
-                    if state.locale == UiLocale::ZhCn {
-                        "导出配置失败："
-                    } else {
-                        "Export profile failed: "
-                    },
-                    error
-                ),
+                format!("{}{}", translate_ui(state.locale, tr::hard_zh_068()), error),
             ),
         },
         Action::OpenYamlEditor(profile_id) => {

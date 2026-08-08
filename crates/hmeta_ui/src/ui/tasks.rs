@@ -744,50 +744,29 @@ pub(super) fn profile_delete_vpn_action_label(
 
 pub(super) fn manual_rule_saved_message(result: &ManualRuleSaveResult, locale: UiLocale) -> String {
     let mut parts = vec![
-        match (locale, result.applied.mutation.kind) {
-            (UiLocale::ZhCn, ManualRuleMutationKind::Added) => "手动规则已添加".to_owned(),
-            (UiLocale::ZhCn, ManualRuleMutationKind::Updated) => "冲突规则已更新".to_owned(),
-            (UiLocale::ZhCn, ManualRuleMutationKind::Reenabled) => "手动规则已重新启用".to_owned(),
-            (UiLocale::ZhCn, ManualRuleMutationKind::Unchanged) => "相同规则已存在".to_owned(),
-            (_, ManualRuleMutationKind::Added) => "Manual rule added".to_owned(),
-            (_, ManualRuleMutationKind::Updated) => "Conflicting rule updated".to_owned(),
-            (_, ManualRuleMutationKind::Reenabled) => "Manual rule re-enabled".to_owned(),
-            (_, ManualRuleMutationKind::Unchanged) => "The same rule already exists".to_owned(),
+        match result.applied.mutation.kind {
+            ManualRuleMutationKind::Added => translate_ui(locale, tr::manual_rule_added()),
+            ManualRuleMutationKind::Updated => translate_ui(locale, tr::manual_rule_updated()),
+            ManualRuleMutationKind::Reenabled => translate_ui(locale, tr::manual_rule_reenabled()),
+            ManualRuleMutationKind::Unchanged => translate_ui(locale, tr::manual_rule_unchanged()),
         },
         result.applied.mutation.line.clone(),
     ];
     if result.applied.live_updated {
-        parts.push(if locale == UiLocale::ZhCn {
-            "运行时规则已热更新".to_owned()
-        } else {
-            "Runtime rules updated live".to_owned()
-        });
+        parts.push(translate_ui(locale, tr::manual_rule_live_updated()));
     } else {
-        parts.push(if locale == UiLocale::ZhCn {
-            "将在 VPN 下次启动时生效".to_owned()
-        } else {
-            "Takes effect on the next VPN start".to_owned()
-        });
+        parts.push(translate_ui(locale, tr::manual_rule_next_start()));
     }
     if !result.applied.rule_mode_active {
-        parts.push(if locale == UiLocale::ZhCn {
-            "当前不是规则模式，切换到规则模式后才会命中".to_owned()
-        } else {
-            "Rule mode is not active; switch to Rule mode for matching".to_owned()
-        });
+        parts.push(translate_ui(locale, tr::manual_rule_mode_inactive()));
     }
     if let Some(error) = &result.connection_close_error {
-        parts.push(if locale == UiLocale::ZhCn {
-            format!("规则已保存，但断开当前连接失败：{error}")
-        } else {
-            format!("Rule saved, but the current connection could not be closed: {error}")
-        });
+        parts.push(translate_ui(
+            locale,
+            tr::manual_rule_close_failed(error.clone()),
+        ));
     } else if result.connection_close_requested {
-        parts.push(if locale == UiLocale::ZhCn {
-            "当前连接已断开，新连接将使用新规则".to_owned()
-        } else {
-            "Current connection closed; the new rule applies when it reconnects".to_owned()
-        });
+        parts.push(translate_ui(locale, tr::manual_rule_connection_closed()));
     }
     parts.join(" · ")
 }

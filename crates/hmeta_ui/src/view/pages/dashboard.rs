@@ -70,8 +70,9 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
     let quick_count = quick_summary.members;
     let quick_group_count = quick_summary.groups;
     let proxy_group_context = match current.locale {
-        UiLocale::ZhCn => format!(
-            "{global_node_count} 个全局节点 · {quick_count} 个节点 · {quick_group_count} 个分组"
+        UiLocale::ZhCn => translate_ui(
+            current.locale,
+            tr::hard_zh_012(global_node_count, quick_count, quick_group_count),
         ),
         UiLocale::En => format!(
             "{global_node_count} global nodes · {quick_count} nodes · {quick_group_count} groups"
@@ -356,7 +357,7 @@ mod exit_location_tests {
 
         assert_eq!(
             exit_location_label(&location, false, UiLocale::ZhCn),
-            "未连接"
+            translate_ui(current.locale, tr::hard_zh_013())
         );
     }
 }
