@@ -14,9 +14,9 @@ hmeta_profile = { path = "crates/hmeta_profile" }
 hmeta_core = { path = "crates/hmeta_core" }
 hmeta_vpn = { path = "crates/hmeta_vpn" }
 
-# Local arkit checkout; supports declarative `#[entry(plugins = [...])]`
-# bridge-plugin registration (no hand-written init/render needed).
-arkit = { path = "/Volumes/PSSD/code/ohos-rs/arkit/crates/arkit", features = ["router", "shadcn"] }
+# arkit mainline; declarative `#[entry(plugins = [...])]` bridge-plugin
+# registration (no hand-written init/render needed).
+arkit = { git = "https://github.com/richerfu/arkit.git", rev = "56a34eea3876b56761b3646d7e3ab9b9ae4e0320", features = ["router", "shadcn"] }
 ohos-ashmem-binding = "0.1.0"
 
 # Pluginized platform capabilities from openharmony-ability. The source
