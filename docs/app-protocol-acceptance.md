@@ -1,4 +1,4 @@
-# HMeta App Protocol Acceptance Matrix
+# Paws App Protocol Acceptance Matrix
 
 This matrix is the manual App-side regression flow for the local protocol lab in
 `local-protocol-tests`. It is meant to be run after changes to VPN startup,
@@ -48,15 +48,15 @@ and `debug automation echo result`, while negative modes must produce
 `debug automation delay failed as expected` and
 `debug automation echo failed as expected`.
 
-For HMETA-MEOW-001 egress-protection acceptance, add
+For PAWS-MEOW-001 egress-protection acceptance, add
 `--require-protect-success` to require a successful `protectProcessNet()` log
 instead of accepting an explicit protection failure as diagnostic evidence.
 
 For process-external traffic acceptance, add `--device-probe-command` with a
 device-side HTTP/TCP command that reaches the printed echo URL, and optionally
 `--device-probe-match` for the expected payload. The command runs through
-`hdc shell`, outside the HMeta process, so it is useful for checking whether
-non-HMeta traffic traverses the active VPN TUN on a given test device.
+`hdc shell`, outside the Paws process, so it is useful for checking whether
+non-Paws traffic traverses the active VPN TUN on a given test device.
 
 Start one local protocol server from the repository root and keep it running
 while testing:

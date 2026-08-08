@@ -22,7 +22,7 @@ scripts/package-hap.sh
 ```
 
 The package script runs `ohrs build --arch aarch`, copies the freshly built
-`libhmeta_ui.so` into `entry/libs/arm64-v8a/`, then calls
+`libpaws_ui.so` into `entry/libs/arm64-v8a/`, then calls
 `hvigorw default@PackageHap --mode module -p module=entry@default`. It
 auto-detects DevEco Studio's bundled `hvigorw` and SDK paths when the command
 line tools in `PATH` do not match the current HarmonyOS 6.1 project model. It

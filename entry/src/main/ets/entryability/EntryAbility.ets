@@ -5,9 +5,9 @@ import { EagerPlugin, LazyPlugin, NativeAbility } from '@ohos-rs/ability';
 import { FilesPlugin } from '@ohos-rs/ability-plugin-files';
 import { UrlPlugin } from '@ohos-rs/ability-plugin-url';
 import window from '@ohos.window';
-import hmetaUi from 'libhmeta_ui.so';
+import pawsUi from 'libpaws_ui.so';
 import { describeError } from '../common/Errors';
-import { setHMetaBundleName } from '../vpnability/VpnConfig';
+import { setPawsBundleName } from '../vpnability/VpnConfig';
 import { runDebugAutomation } from '../automation/DebugAutomation';
 import { ClipboardPlugin } from '../plugins/ClipboardPlugin';
 import { ColorModePlugin } from '../plugins/ColorModePlugin';
@@ -16,7 +16,7 @@ import { ScanPlugin } from '../plugins/ScanPlugin';
 import { VpnPlugin } from '../plugins/VpnPlugin';
 
 const LOG_DOMAIN: number = 0x0000;
-const LOG_TAG: string = 'HMetaEntry';
+const LOG_TAG: string = 'PawsEntry';
 
 /**
  * Thin assembly point: loads the native module, installs the built-in
@@ -25,7 +25,7 @@ const LOG_TAG: string = 'HMetaEntry';
  * in the plugins; debug automation lives in `DebugAutomation`.
  */
 export default class EntryAbility extends NativeAbility {
-  public moduleName: string = 'hmeta_ui';
+  public moduleName: string = 'paws_ui';
   public defaultPage: boolean = false;
 
   private readonly vpnPlugin: VpnPlugin = new VpnPlugin();
@@ -43,7 +43,7 @@ export default class EntryAbility extends NativeAbility {
 
   private configureNativeHome(): void {
     try {
-      hmetaUi.configureAppHome(`${this.context.filesDir}/paws`);
+      pawsUi.configureAppHome(`${this.context.filesDir}/paws`);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'configured native home');
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'configure native home failed %{public}s', describeError(err));
@@ -59,7 +59,7 @@ export default class EntryAbility extends NativeAbility {
       if (locale.length === 0) {
         return;
       }
-      (hmetaUi as ESObject).configureUiLocale(locale);
+      (pawsUi as ESObject).configureUiLocale(locale);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'configured native locale %{public}s', locale);
     } catch (err) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'configure native locale skipped %{public}s', describeError(err));
@@ -69,7 +69,7 @@ export default class EntryAbility extends NativeAbility {
   private configureNativeAppearance(colorMode?: ConfigurationConstant.ColorMode): void {
     try {
       const mode = colorMode ?? this.context.config.colorMode ?? ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET;
-      (hmetaUi as ESObject).configureSystemColorMode(mode);
+      (pawsUi as ESObject).configureSystemColorMode(mode);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'configured native color mode %{public}d', mode);
     } catch (err) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'configure native color mode skipped %{public}s', describeError(err));
@@ -78,7 +78,7 @@ export default class EntryAbility extends NativeAbility {
 
   private seedGeodataFromRawfiles(): void {
     try {
-      const seeded = hmetaUi.seedGeodataFromRawfiles(this.context.resourceManager);
+      const seeded = pawsUi.seedGeodataFromRawfiles(this.context.resourceManager);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'seeded %{public}d geodata rawfiles', seeded);
     } catch (err) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'geodata rawfile seed skipped %{public}s', describeError(err));
@@ -87,7 +87,7 @@ export default class EntryAbility extends NativeAbility {
 
   public async onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): Promise<void> {
     try {
-      setHMetaBundleName(this.context.applicationInfo.name);
+      setPawsBundleName(this.context.applicationInfo.name);
       this.configureNativeHome();
       this.configureNativeLocale();
       this.configureNativeAppearance();

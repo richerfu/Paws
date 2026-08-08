@@ -91,15 +91,15 @@ hdc_cmd shell aa force-stop "$BUNDLE_NAME" >/dev/null 2>&1 || true
 hdc_cmd shell aa start -b "$BUNDLE_NAME" -a "$ABILITY_NAME" >/dev/null
 sleep 5
 
-home_layout="$LOG_DIR/hmeta-settings-home.json"
-root_layout="$LOG_DIR/hmeta-settings-alignment.json"
-network_layout="$LOG_DIR/hmeta-network-child.json"
-about_layout="$LOG_DIR/hmeta-about-optimized.json"
+home_layout="$LOG_DIR/paws-settings-home.json"
+root_layout="$LOG_DIR/paws-settings-alignment.json"
+network_layout="$LOG_DIR/paws-network-child.json"
+about_layout="$LOG_DIR/paws-about-optimized.json"
 
-dump_layout /data/local/tmp/hmeta-settings-home.json "$home_layout"
+dump_layout /data/local/tmp/paws-settings-home.json "$home_layout"
 click_text "$home_layout" "设置" last
 sleep 1
-dump_layout /data/local/tmp/hmeta-settings-alignment.json "$root_layout"
+dump_layout /data/local/tmp/paws-settings-alignment.json "$root_layout"
 for text in "常规" "版本" "引擎" "网络设置"; do
   assert_text "$root_layout" "$text"
 done
@@ -112,31 +112,31 @@ if [ "$version_left" != "$engine_left" ]; then
     "$version_left" "$engine_left" >&2
   exit 1
 fi
-capture_screen /data/local/tmp/hmeta-settings-alignment.jpeg \
-  "$LOG_DIR/hmeta-settings-alignment.jpeg"
+capture_screen /data/local/tmp/paws-settings-alignment.jpeg \
+  "$LOG_DIR/paws-settings-alignment.jpeg"
 
 click_text "$root_layout" "网络设置" last
 sleep 1
-dump_layout /data/local/tmp/hmeta-network-child.json "$network_layout"
+dump_layout /data/local/tmp/paws-network-child.json "$network_layout"
 assert_text "$network_layout" "网络设置"
 bottom_tab_count="$(jq '[.. | objects | select(.attributes?.text == "首页" or .attributes?.text == "订阅" or .attributes?.text == "流量")] | length' "$network_layout")"
 if [ "$bottom_tab_count" -ne 0 ]; then
   printf 'Secondary network page still renders the main bottom navigation\n' >&2
   exit 1
 fi
-capture_screen /data/local/tmp/hmeta-network-child.jpeg \
-  "$LOG_DIR/hmeta-network-child.jpeg"
+capture_screen /data/local/tmp/paws-network-child.jpeg \
+  "$LOG_DIR/paws-network-child.jpeg"
 
 # The secondary-page back action is the top-left 40 vp icon button.
 hdc_cmd shell uitest uiInput click 80 220 >/dev/null
 sleep 1
 hdc_cmd shell uitest uiInput swipe 660 2200 660 700 600 >/dev/null
 sleep 1
-dump_layout /data/local/tmp/hmeta-settings-about-entry.json \
-  "$LOG_DIR/hmeta-settings-about-entry.json"
-click_text "$LOG_DIR/hmeta-settings-about-entry.json" "关于" last
+dump_layout /data/local/tmp/paws-settings-about-entry.json \
+  "$LOG_DIR/paws-settings-about-entry.json"
+click_text "$LOG_DIR/paws-settings-about-entry.json" "关于" last
 sleep 1
-dump_layout /data/local/tmp/hmeta-about-optimized.json "$about_layout"
+dump_layout /data/local/tmp/paws-about-optimized.json "$about_layout"
 for text in "Paws" "隐私" "meow-rs" "arkit"; do
   assert_text "$about_layout" "$text"
 done
@@ -155,7 +155,7 @@ if [ "$meow_top" != "$arkit_top" ]; then
     "$meow_top" "$arkit_top" >&2
   exit 1
 fi
-capture_screen /data/local/tmp/hmeta-about-optimized.jpeg \
-  "$LOG_DIR/hmeta-about-optimized.jpeg"
+capture_screen /data/local/tmp/paws-about-optimized.jpeg \
+  "$LOG_DIR/paws-about-optimized.jpeg"
 
 printf 'Settings/About UI smoke passed. Evidence: %s\n' "$LOG_DIR"

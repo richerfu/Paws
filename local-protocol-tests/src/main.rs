@@ -355,7 +355,7 @@ async fn handle_http_connect(
                 .await?;
             return Ok(());
         }
-        if !request.contains("X-HMeta-Test: local-protocol") {
+        if !request.contains("X-Paws-Test: local-protocol") {
             inbound
                 .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
                 .await?;

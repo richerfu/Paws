@@ -1,30 +1,30 @@
 import { Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import hmetaUi from 'libhmeta_ui.so';
+import pawsUi from 'libpaws_ui.so';
 import { describeError } from '../common/Errors';
 
 const LOG_DOMAIN: number = 0x0000;
-const LOG_TAG: string = 'HMetaAutomation';
+const LOG_TAG: string = 'PawsAutomation';
 
-interface HMetaAutomationParams {
-  hmetaProfileContent?: string;
-  hmetaProfileContentBase64?: string;
-  hmetaProfileContentEscaped?: string;
-  hmetaProfileUrl?: string;
-  hmetaProfileName?: string;
-  hmetaAutoStartVpn?: string | boolean;
-  hmetaDelayProxy?: string;
-  hmetaDelayUrl?: string;
-  hmetaDelayTimeoutMs?: string | number;
-  hmetaExpectDelayFailure?: string | boolean;
-  hmetaEchoProxy?: string;
-  hmetaEchoUrl?: string;
-  hmetaEchoPayload?: string;
-  hmetaEchoTimeoutMs?: string | number;
-  hmetaExpectEchoFailure?: string | boolean;
+interface PawsAutomationParams {
+  pawsProfileContent?: string;
+  pawsProfileContentBase64?: string;
+  pawsProfileContentEscaped?: string;
+  pawsProfileUrl?: string;
+  pawsProfileName?: string;
+  pawsAutoStartVpn?: string | boolean;
+  pawsDelayProxy?: string;
+  pawsDelayUrl?: string;
+  pawsDelayTimeoutMs?: string | number;
+  pawsExpectDelayFailure?: string | boolean;
+  pawsEchoProxy?: string;
+  pawsEchoUrl?: string;
+  pawsEchoPayload?: string;
+  pawsEchoTimeoutMs?: string | number;
+  pawsExpectEchoFailure?: string | boolean;
 }
 
-interface HMetaSnapshot {
+interface PawsSnapshot {
   vpnOptions?: Record<string, Object>;
 }
 
@@ -48,14 +48,14 @@ async function run(
   startVpn: (optionsJson: string) => Promise<void>,
 ): Promise<void> {
   const profileContent = automationProfileContent(want);
-  const profileUrl = wantString(want, 'hmetaProfileUrl');
-  const profileName = wantString(want, 'hmetaProfileName') || 'Paws Smoke Profile';
-  const delayProxy = wantString(want, 'hmetaDelayProxy');
-  const echoProxy = wantString(want, 'hmetaEchoProxy');
+  const profileUrl = wantString(want, 'pawsProfileUrl');
+  const profileName = wantString(want, 'pawsProfileName') || 'Paws Smoke Profile';
+  const delayProxy = wantString(want, 'pawsDelayProxy');
+  const echoProxy = wantString(want, 'pawsEchoProxy');
   if (
     profileContent.length === 0 &&
     profileUrl.length === 0 &&
-    !wantBool(want, 'hmetaAutoStartVpn') &&
+    !wantBool(want, 'pawsAutoStartVpn') &&
     delayProxy.length === 0 &&
     echoProxy.length === 0
   ) {
@@ -64,18 +64,18 @@ async function run(
 
   let profileId = '';
   if (profileContent.length > 0) {
-    profileId = await hmetaUi.importProfileFromContent(profileName, 'harmony-smoke', profileContent);
+    profileId = await pawsUi.importProfileFromContent(profileName, 'harmony-smoke', profileContent);
   } else if (profileUrl.length > 0) {
-    profileId = await hmetaUi.importProfileFromUrl(profileUrl, profileName);
+    profileId = await pawsUi.importProfileFromUrl(profileUrl, profileName);
   }
 
   if (profileId.length > 0) {
-    await hmetaUi.activateProfile(profileId);
-    await hmetaUi.reloadConfig(profileId);
+    await pawsUi.activateProfile(profileId);
+    await pawsUi.reloadConfig(profileId);
     hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation profile ready %{public}s', profileId);
   }
 
-  if (wantBool(want, 'hmetaAutoStartVpn')) {
+  if (wantBool(want, 'pawsAutoStartVpn')) {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation requested VPN start');
     startVpn(activeVpnOptionsJson()).catch((err: Error) => {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'debug automation VPN start failed %{public}s', err.message);
@@ -88,26 +88,26 @@ async function run(
 
 function activeVpnOptionsJson(): string {
   try {
-    const snapshot = JSON.parse(hmetaUi.querySnapshot()) as HMetaSnapshot;
+    const snapshot = JSON.parse(pawsUi.querySnapshot()) as PawsSnapshot;
     if (snapshot.vpnOptions) {
       return JSON.stringify(snapshot.vpnOptions);
     }
   } catch (err) {
     hilog.error(LOG_DOMAIN, LOG_TAG, 'read active VPN options failed %{public}s', describeError(err));
   }
-  return hmetaUi.defaultVpnOptions();
+  return pawsUi.defaultVpnOptions();
 }
 
 async function runDebugDelay(want: Want): Promise<void> {
-  const proxy = wantString(want, 'hmetaDelayProxy');
+  const proxy = wantString(want, 'pawsDelayProxy');
   if (proxy.length === 0) {
     return;
   }
-  const url = wantString(want, 'hmetaDelayUrl');
-  const timeoutMs = wantNumber(want, 'hmetaDelayTimeoutMs') || 5000;
-  const expectFailure = wantBool(want, 'hmetaExpectDelayFailure');
+  const url = wantString(want, 'pawsDelayUrl');
+  const timeoutMs = wantNumber(want, 'pawsDelayTimeoutMs') || 5000;
+  const expectFailure = wantBool(want, 'pawsExpectDelayFailure');
   try {
-    const delay = await hmetaUi.testProxyDelay(proxy, url.length > 0 ? url : undefined, timeoutMs);
+    const delay = await pawsUi.testProxyDelay(proxy, url.length > 0 ? url : undefined, timeoutMs);
     if (expectFailure) {
       throw new Error(`delay unexpectedly succeeded in ${delay} ms`);
     }
@@ -124,19 +124,19 @@ async function runDebugDelay(want: Want): Promise<void> {
 }
 
 async function runDebugEcho(want: Want): Promise<void> {
-  const proxy = wantString(want, 'hmetaEchoProxy');
+  const proxy = wantString(want, 'pawsEchoProxy');
   if (proxy.length === 0) {
     return;
   }
-  const url = wantString(want, 'hmetaEchoUrl');
+  const url = wantString(want, 'pawsEchoUrl');
   if (url.length === 0) {
     throw new Error('debug echo URL is required');
   }
-  const payload = wantString(want, 'hmetaEchoPayload') || 'hmeta-echo-payload';
-  const timeoutMs = wantNumber(want, 'hmetaEchoTimeoutMs') || 5000;
-  const expectFailure = wantBool(want, 'hmetaExpectEchoFailure');
+  const payload = wantString(want, 'pawsEchoPayload') || 'paws-echo-payload';
+  const timeoutMs = wantNumber(want, 'pawsEchoTimeoutMs') || 5000;
+  const expectFailure = wantBool(want, 'pawsExpectEchoFailure');
   try {
-    const echoed = await hmetaUi.testProxyEcho(proxy, url, payload, timeoutMs);
+    const echoed = await pawsUi.testProxyEcho(proxy, url, payload, timeoutMs);
     if (expectFailure) {
       throw new Error(`echo unexpectedly succeeded: ${echoed}`);
     }
@@ -156,58 +156,58 @@ async function runDebugEcho(want: Want): Promise<void> {
   }
 }
 
-function automationParam(want: Want, key: keyof HMetaAutomationParams): string | number | boolean | undefined {
-  const params = want.parameters as HMetaAutomationParams | undefined;
+function automationParam(want: Want, key: keyof PawsAutomationParams): string | number | boolean | undefined {
+  const params = want.parameters as PawsAutomationParams | undefined;
   if (!params) {
     return undefined;
   }
   switch (key) {
-    case 'hmetaProfileContent':
-      return params.hmetaProfileContent;
-    case 'hmetaProfileContentBase64':
-      return params.hmetaProfileContentBase64;
-    case 'hmetaProfileContentEscaped':
-      return params.hmetaProfileContentEscaped;
-    case 'hmetaProfileUrl':
-      return params.hmetaProfileUrl;
-    case 'hmetaProfileName':
-      return params.hmetaProfileName;
-    case 'hmetaAutoStartVpn':
-      return params.hmetaAutoStartVpn;
-    case 'hmetaDelayProxy':
-      return params.hmetaDelayProxy;
-    case 'hmetaDelayUrl':
-      return params.hmetaDelayUrl;
-    case 'hmetaDelayTimeoutMs':
-      return params.hmetaDelayTimeoutMs;
-    case 'hmetaExpectDelayFailure':
-      return params.hmetaExpectDelayFailure;
-    case 'hmetaEchoProxy':
-      return params.hmetaEchoProxy;
-    case 'hmetaEchoUrl':
-      return params.hmetaEchoUrl;
-    case 'hmetaEchoPayload':
-      return params.hmetaEchoPayload;
-    case 'hmetaEchoTimeoutMs':
-      return params.hmetaEchoTimeoutMs;
-    case 'hmetaExpectEchoFailure':
-      return params.hmetaExpectEchoFailure;
+    case 'pawsProfileContent':
+      return params.pawsProfileContent;
+    case 'pawsProfileContentBase64':
+      return params.pawsProfileContentBase64;
+    case 'pawsProfileContentEscaped':
+      return params.pawsProfileContentEscaped;
+    case 'pawsProfileUrl':
+      return params.pawsProfileUrl;
+    case 'pawsProfileName':
+      return params.pawsProfileName;
+    case 'pawsAutoStartVpn':
+      return params.pawsAutoStartVpn;
+    case 'pawsDelayProxy':
+      return params.pawsDelayProxy;
+    case 'pawsDelayUrl':
+      return params.pawsDelayUrl;
+    case 'pawsDelayTimeoutMs':
+      return params.pawsDelayTimeoutMs;
+    case 'pawsExpectDelayFailure':
+      return params.pawsExpectDelayFailure;
+    case 'pawsEchoProxy':
+      return params.pawsEchoProxy;
+    case 'pawsEchoUrl':
+      return params.pawsEchoUrl;
+    case 'pawsEchoPayload':
+      return params.pawsEchoPayload;
+    case 'pawsEchoTimeoutMs':
+      return params.pawsEchoTimeoutMs;
+    case 'pawsExpectEchoFailure':
+      return params.pawsExpectEchoFailure;
     default:
       return undefined;
   }
 }
 
-function wantString(want: Want, key: keyof HMetaAutomationParams): string {
+function wantString(want: Want, key: keyof PawsAutomationParams): string {
   const value = automationParam(want, key);
   return typeof value === 'string' ? value : '';
 }
 
-function wantBool(want: Want, key: keyof HMetaAutomationParams): boolean {
+function wantBool(want: Want, key: keyof PawsAutomationParams): boolean {
   const value = automationParam(want, key);
   return value === true || value === 'true' || value === '1' || value === 'yes';
 }
 
-function wantNumber(want: Want, key: keyof HMetaAutomationParams): number {
+function wantNumber(want: Want, key: keyof PawsAutomationParams): number {
   const value = automationParam(want, key);
   if (typeof value === 'number') {
     return value;
@@ -220,15 +220,15 @@ function wantNumber(want: Want, key: keyof HMetaAutomationParams): number {
 }
 
 function automationProfileContent(want: Want): string {
-  const raw = wantString(want, 'hmetaProfileContent');
+  const raw = wantString(want, 'pawsProfileContent');
   if (raw.length > 0) {
     return raw;
   }
-  const base64 = wantString(want, 'hmetaProfileContentBase64');
+  const base64 = wantString(want, 'pawsProfileContentBase64');
   if (base64.length > 0) {
     return decodeBase64Utf8(base64);
   }
-  const escaped = wantString(want, 'hmetaProfileContentEscaped');
+  const escaped = wantString(want, 'pawsProfileContentEscaped');
   return escaped.length > 0 ? escaped.replace(/\\n/g, '\n') : '';
 }
 

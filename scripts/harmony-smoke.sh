@@ -7,8 +7,8 @@ OHRS="${OHRS:-ohrs}"
 BUNDLE_NAME="${BUNDLE_NAME:-com.richerfu.paws}"
 ABILITY_NAME="${ABILITY_NAME:-EntryAbility}"
 HAP_PATH="${HAP_PATH:-$ROOT_DIR/entry/build/default/outputs/default/entry-default-unsigned.hap}"
-HAP_LIB_PATH="${HAP_LIB_PATH:-libs/arm64-v8a/libhmeta_ui.so}"
-NAPI_DTS_PATH="${NAPI_DTS_PATH:-$ROOT_DIR/entry/src/main/cpp/types/libhmeta_ui/Index.d.ts}"
+HAP_LIB_PATH="${HAP_LIB_PATH:-libs/arm64-v8a/libpaws_ui.so}"
+NAPI_DTS_PATH="${NAPI_DTS_PATH:-$ROOT_DIR/entry/src/main/cpp/types/libpaws_ui/Index.d.ts}"
 LOG_DIR="${LOG_DIR:-$ROOT_DIR/smoke-logs}"
 HILOG_SECONDS="${HILOG_SECONDS:-20}"
 HDC_TARGET="${HDC_TARGET:-}"
@@ -27,7 +27,7 @@ DELAY_TIMEOUT_MS="${DELAY_TIMEOUT_MS:-5000}"
 EXPECT_DELAY_FAILURE="${EXPECT_DELAY_FAILURE:-0}"
 ECHO_PROXY="${ECHO_PROXY:-}"
 ECHO_URL="${ECHO_URL:-}"
-ECHO_PAYLOAD="${ECHO_PAYLOAD:-hmeta-echo-payload}"
+ECHO_PAYLOAD="${ECHO_PAYLOAD:-paws-echo-payload}"
 ECHO_TIMEOUT_MS="${ECHO_TIMEOUT_MS:-5000}"
 EXPECT_ECHO_FAILURE="${EXPECT_ECHO_FAILURE:-0}"
 DEVICE_PROBE_COMMAND="${DEVICE_PROBE_COMMAND:-}"
@@ -48,7 +48,7 @@ Options:
   --no-build             Skip ohrs build.
   --hap PATH             Install this HAP instead of the default signed HAP.
   --skip-hap-export-check
-                         Skip package check that HAP libhmeta_ui.so contains
+                         Skip package check that HAP libpaws_ui.so contains
                          NAPI functions declared in Index.d.ts.
   --no-force-stop        Do not force-stop the app before install/launch.
   --target KEY           Pass an hdc target key, matching "hdc -t KEY ...".
@@ -252,9 +252,9 @@ verify_hap_native_exports() {
   fi
 
   mkdir -p "$LOG_DIR"
-  declared_exports="$LOG_DIR/hmeta-napi-declared-$(date +%Y%m%d-%H%M%S).txt"
-  missing_exports="$LOG_DIR/hmeta-napi-missing-$(date +%Y%m%d-%H%M%S).txt"
-  hap_strings="$LOG_DIR/hmeta-hap-lib-strings-$(date +%Y%m%d-%H%M%S).txt"
+  declared_exports="$LOG_DIR/paws-napi-declared-$(date +%Y%m%d-%H%M%S).txt"
+  missing_exports="$LOG_DIR/paws-napi-missing-$(date +%Y%m%d-%H%M%S).txt"
+  hap_strings="$LOG_DIR/paws-hap-lib-strings-$(date +%Y%m%d-%H%M%S).txt"
 
   sed -n 's/^export declare function \([^(]*\)(.*/\1/p' "$NAPI_DTS_PATH" \
     | sort -u >"$declared_exports"
@@ -282,7 +282,7 @@ verify_hap_native_exports() {
     echo "Library entry: $HAP_LIB_PATH" >&2
     echo "Expected declarations: $declared_exports" >&2
     echo "Extracted strings: $hap_strings" >&2
-    echo "Rebuild/copy the latest libhmeta_ui.so into entry/libs/arm64-v8a before signing." >&2
+    echo "Rebuild/copy the latest libpaws_ui.so into entry/libs/arm64-v8a before signing." >&2
     exit 1
   fi
 }
@@ -429,7 +429,7 @@ start_protocol_lab() {
 
 start_hilog_capture() {
   mkdir -p "$LOG_DIR"
-  HILOG_PATH="$LOG_DIR/hmeta-smoke-$(date +%Y%m%d-%H%M%S).hilog"
+  HILOG_PATH="$LOG_DIR/paws-smoke-$(date +%Y%m%d-%H%M%S).hilog"
   : >"$HILOG_PATH"
   hdc_cmd shell hilog -r >>"$HILOG_PATH" 2>&1 || true
   HILOG_CAPTURE_ACTIVE=1
@@ -554,29 +554,29 @@ hdc_cmd install -r "$HAP_PATH"
 force_stop_app
 AA_ARGS="aa start -b $(shell_quote "$BUNDLE_NAME") -a $(shell_quote "$ABILITY_NAME")"
 if [ -n "$PROFILE_CONTENT_BASE64" ]; then
-  AA_ARGS="$AA_ARGS --ps hmetaProfileContentBase64 $(shell_quote "$PROFILE_CONTENT_BASE64") --ps hmetaProfileName $(shell_quote "$PROFILE_NAME")"
+  AA_ARGS="$AA_ARGS --ps pawsProfileContentBase64 $(shell_quote "$PROFILE_CONTENT_BASE64") --ps pawsProfileName $(shell_quote "$PROFILE_NAME")"
 elif [ -n "$PROFILE_URL" ]; then
-  AA_ARGS="$AA_ARGS --ps hmetaProfileUrl $(shell_quote "$PROFILE_URL") --ps hmetaProfileName $(shell_quote "$PROFILE_NAME")"
+  AA_ARGS="$AA_ARGS --ps pawsProfileUrl $(shell_quote "$PROFILE_URL") --ps pawsProfileName $(shell_quote "$PROFILE_NAME")"
 fi
 if [ "$AUTO_START_VPN" -eq 1 ]; then
-  AA_ARGS="$AA_ARGS --ps hmetaAutoStartVpn true"
+  AA_ARGS="$AA_ARGS --ps pawsAutoStartVpn true"
 fi
 if [ -n "$DELAY_PROXY" ]; then
-  AA_ARGS="$AA_ARGS --ps hmetaDelayProxy $(shell_quote "$DELAY_PROXY") --ps hmetaDelayTimeoutMs $(shell_quote "$DELAY_TIMEOUT_MS")"
+  AA_ARGS="$AA_ARGS --ps pawsDelayProxy $(shell_quote "$DELAY_PROXY") --ps pawsDelayTimeoutMs $(shell_quote "$DELAY_TIMEOUT_MS")"
   if [ -n "$DELAY_URL" ]; then
-    AA_ARGS="$AA_ARGS --ps hmetaDelayUrl $(shell_quote "$DELAY_URL")"
+    AA_ARGS="$AA_ARGS --ps pawsDelayUrl $(shell_quote "$DELAY_URL")"
   fi
   if expect_delay_failure_enabled; then
-    AA_ARGS="$AA_ARGS --ps hmetaExpectDelayFailure true"
+    AA_ARGS="$AA_ARGS --ps pawsExpectDelayFailure true"
   fi
 fi
 if [ -n "$ECHO_PROXY" ]; then
-  AA_ARGS="$AA_ARGS --ps hmetaEchoProxy $(shell_quote "$ECHO_PROXY") --ps hmetaEchoPayload $(shell_quote "$ECHO_PAYLOAD") --ps hmetaEchoTimeoutMs $(shell_quote "$ECHO_TIMEOUT_MS")"
+  AA_ARGS="$AA_ARGS --ps pawsEchoProxy $(shell_quote "$ECHO_PROXY") --ps pawsEchoPayload $(shell_quote "$ECHO_PAYLOAD") --ps pawsEchoTimeoutMs $(shell_quote "$ECHO_TIMEOUT_MS")"
   if [ -n "$ECHO_URL" ]; then
-    AA_ARGS="$AA_ARGS --ps hmetaEchoUrl $(shell_quote "$ECHO_URL")"
+    AA_ARGS="$AA_ARGS --ps pawsEchoUrl $(shell_quote "$ECHO_URL")"
   fi
   if expect_echo_failure_enabled; then
-    AA_ARGS="$AA_ARGS --ps hmetaExpectEchoFailure true"
+    AA_ARGS="$AA_ARGS --ps pawsExpectEchoFailure true"
   fi
 fi
 hdc_cmd shell "$AA_ARGS"
@@ -587,7 +587,7 @@ fi
 
 stop_hilog_capture
 
-require_log_marker 'HMetaEntry|HMetaVpn|hmeta core|meow-rs' 'HMeta app/core markers'
+require_log_marker 'PawsEntry|PawsVpn|paws core|meow-rs' 'Paws app/core markers'
 if [ -n "$PROFILE_CONTENT_BASE64" ] || [ -n "$PROFILE_URL" ]; then
   require_log_marker 'debug automation profile ready' 'debug profile import/reload completed'
 fi

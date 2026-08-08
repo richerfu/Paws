@@ -73,24 +73,24 @@ fi
 hdc_cmd shell aa start \
   -b "$BUNDLE_NAME" \
   -a "$ABILITY_NAME" \
-  --ps hmetaProfileUrl "$PROFILE_URL" \
-  --ps hmetaProfileName "$PROFILE_NAME" >/dev/null
+  --ps pawsProfileUrl "$PROFILE_URL" \
+  --ps pawsProfileName "$PROFILE_NAME" >/dev/null
 # Cold startup includes native library initialization and subscription download.
 # The emulator regularly needs around three seconds before the first snapshot.
 sleep 6
 
-home_layout="$LOG_DIR/hmeta-subscription-home.json"
-list_layout="$LOG_DIR/hmeta-subscription-list.json"
-menu_layout="$LOG_DIR/hmeta-subscription-actions.json"
-edit_layout="$LOG_DIR/hmeta-subscription-edit.json"
+home_layout="$LOG_DIR/paws-subscription-home.json"
+list_layout="$LOG_DIR/paws-subscription-list.json"
+menu_layout="$LOG_DIR/paws-subscription-actions.json"
+edit_layout="$LOG_DIR/paws-subscription-edit.json"
 
-dump_layout /data/local/tmp/hmeta-subscription-home.json "$home_layout"
+dump_layout /data/local/tmp/paws-subscription-home.json "$home_layout"
 assert_text "$home_layout" "$PROFILE_NAME"
 assert_text "$home_layout" "首页"
 
 click_text "$home_layout" "订阅" last
 sleep 1
-dump_layout /data/local/tmp/hmeta-subscription-list.json "$list_layout"
+dump_layout /data/local/tmp/paws-subscription-list.json "$list_layout"
 assert_text "$list_layout" "订阅"
 assert_text "$list_layout" "$PROFILE_NAME"
 assert_text "$list_layout" "$PROFILE_URL"
@@ -99,8 +99,8 @@ if ! jq -e '.. | objects | select(.attributes?.text | type == "string" and endsw
   printf 'Imported subscription card has no updated timestamp\n' >&2
   exit 1
 fi
-capture_screen /data/local/tmp/hmeta-subscription-list.jpeg \
-  "$LOG_DIR/hmeta-subscription-list.jpeg"
+capture_screen /data/local/tmp/paws-subscription-list.jpeg \
+  "$LOG_DIR/paws-subscription-list.jpeg"
 
 name_bounds="$(jq -r --arg expected "$PROFILE_NAME" \
   '[.. | objects | select(.attributes?.text == $expected) | .attributes.bounds] | last // empty' \
@@ -114,21 +114,21 @@ menu_x="$((display_right - 90))"
 hdc_cmd shell uitest uiInput click "$menu_x" "$menu_y" >/dev/null
 sleep 1
 
-dump_layout /data/local/tmp/hmeta-subscription-actions.json "$menu_layout"
+dump_layout /data/local/tmp/paws-subscription-actions.json "$menu_layout"
 for action in "编辑订阅" "编辑 YAML" "导出配置" "刷新订阅" "删除配置"; do
   assert_text "$menu_layout" "$action"
 done
-capture_screen /data/local/tmp/hmeta-subscription-actions.jpeg \
-  "$LOG_DIR/hmeta-subscription-actions.jpeg"
+capture_screen /data/local/tmp/paws-subscription-actions.jpeg \
+  "$LOG_DIR/paws-subscription-actions.jpeg"
 
 click_text "$menu_layout" "编辑订阅" last
 sleep 1
-dump_layout /data/local/tmp/hmeta-subscription-edit.json "$edit_layout"
+dump_layout /data/local/tmp/paws-subscription-edit.json "$edit_layout"
 assert_text "$edit_layout" "编辑订阅"
 assert_text "$edit_layout" "名称"
 assert_text "$edit_layout" "订阅地址"
 assert_text "$edit_layout" "保存修改"
-capture_screen /data/local/tmp/hmeta-subscription-edit.jpeg \
-  "$LOG_DIR/hmeta-subscription-edit.jpeg"
+capture_screen /data/local/tmp/paws-subscription-edit.jpeg \
+  "$LOG_DIR/paws-subscription-edit.jpeg"
 
 printf 'Subscription UI smoke passed. Evidence: %s\n' "$LOG_DIR"

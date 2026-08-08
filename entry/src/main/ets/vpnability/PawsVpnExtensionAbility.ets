@@ -2,34 +2,34 @@ import { Want, wantAgent, WantAgent } from '@kit.AbilityKit';
 import { vpnExtension, VpnExtensionAbility } from '@kit.NetworkKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import hmetaUi from 'libhmeta_ui.so';
+import pawsUi from 'libpaws_ui.so';
 import {
-  HMetaVpnConfig,
-  HMETA_ENTRY_ABILITY,
-  HMETA_MODULE_NAME,
+  PawsVpnConfig,
+  PAWS_ENTRY_ABILITY,
+  PAWS_MODULE_NAME,
   parseOptions,
   readPlatformSharedMemoryFds,
   readPlatformStartAttemptId,
   readOptionsJson,
-  currentHMetaBundleName,
-  setHMetaBundleName,
+  currentPawsBundleName,
+  setPawsBundleName,
 } from './VpnConfig';
 
 const LOG_DOMAIN: number = 0x0000;
-const LOG_TAG: string = 'HMetaVpn';
+const LOG_TAG: string = 'PawsVpn';
 const VPN_SPEED_NOTIFICATION_ID: number = 1001;
 const NOTIFICATION_RETRY_DELAY_MS: number = 30000;
 
-interface HMetaTrafficSnapshot {
+interface PawsTrafficSnapshot {
   downloadSpeed?: number;
   uploadSpeed?: number;
 }
 
-interface HMetaRuntimeSnapshot {
-  traffic?: HMetaTrafficSnapshot;
+interface PawsRuntimeSnapshot {
+  traffic?: PawsTrafficSnapshot;
 }
 
-interface HMetaErrorLike {
+interface PawsErrorLike {
   code?: number;
   message?: string;
   name?: string;
@@ -49,7 +49,7 @@ function describeError(err: Error | Object | string | number | boolean | null | 
   if (!err) {
     return '';
   }
-  const like = err as HMetaErrorLike;
+  const like = err as PawsErrorLike;
   if (typeof like.message === 'string' && like.message.length > 0) {
     const code = typeof like.code === 'number' ? `code=${like.code} ` : '';
     const name = typeof like.name === 'string' && like.name.length > 0 ? `${like.name}: ` : '';
@@ -76,7 +76,7 @@ function formatSpeed(bytesPerSecond: number | undefined): string {
   return `${gigabytes < 10 ? gigabytes.toFixed(1) : Math.round(gigabytes)} GB/s`;
 }
 
-export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
+export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   private vpnConnection?: vpnExtension.VpnConnection;
   private tunFd: number = -1;
   private starting: boolean = false;
@@ -103,14 +103,14 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
 
   public onDestroy(): void {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'onDestroy');
-    hmetaUi.setPlatformVpnRunning(false);
+    pawsUi.setPlatformVpnRunning(false);
     this.destroyVpn();
   }
 
   private configureNativeHome(): void {
     try {
-      setHMetaBundleName(this.context.applicationInfo.name);
-      hmetaUi.configureAppHome(`${this.context.filesDir}/paws`);
+      setPawsBundleName(this.context.applicationInfo.name);
+      pawsUi.configureAppHome(`${this.context.filesDir}/paws`);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'configured native home');
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'configure native home failed %{public}s', describeError(err));
@@ -133,7 +133,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
       return;
     }
     try {
-      hmetaUi.attachPlatformSharedMemory(sharedMemory.ashmemFd, sharedMemory.notificationFd);
+      pawsUi.attachPlatformSharedMemory(sharedMemory.ashmemFd, sharedMemory.notificationFd);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'attached platform shared memory');
       this.startPlatformSubscription();
     } catch (err) {
@@ -144,7 +144,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     let attemptId: string;
     try {
       attemptId = readPlatformStartAttemptId(want);
-      hmetaUi.bindPlatformVpnStart(attemptId);
+      pawsUi.bindPlatformVpnStart(attemptId);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'bound VPN start attempt %{public}s', attemptId);
     } catch (err) {
       const message = describeError(err) || 'VPN request has no valid start attempt';
@@ -156,7 +156,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     if (this.tunFd >= 0) {
       this.starting = false;
       try {
-        hmetaUi.setPlatformVpnRunning(true);
+        pawsUi.setPlatformVpnRunning(true);
         hilog.info(LOG_DOMAIN, LOG_TAG, 'reported existing VPN to rebound platform shared memory');
       } catch (err) {
         this.recordVpnFailure(`report existing VPN state failed: ${describeError(err)}`);
@@ -165,7 +165,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     }
     if (this.starting) {
       try {
-        hmetaUi.setPlatformVpnStarting(true);
+        pawsUi.setPlatformVpnStarting(true);
         hilog.info(LOG_DOMAIN, LOG_TAG, 'reported pending VPN to rebound platform shared memory');
       } catch (err) {
         this.recordVpnFailure(`report pending VPN state failed: ${describeError(err)}`);
@@ -174,18 +174,18 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     }
     this.starting = true;
     try {
-      hmetaUi.setPlatformVpnStarting(true);
+      pawsUi.setPlatformVpnStarting(true);
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'record VPN starting failed %{public}s', describeError(err));
     }
     const optionsJson = readOptionsJson(want);
     const options = parseOptions(optionsJson);
-    const config = new HMetaVpnConfig(options);
+    const config = new PawsVpnConfig(options);
     const startedAt = Date.now();
 
     try {
       this.vpnConnection = vpnExtension.createVpnConnection(this.context);
-      const nativePrepare: Promise<string> = hmetaUi.prepareVpn()
+      const nativePrepare: Promise<string> = pawsUi.prepareVpn()
         .then((_loaded: boolean) => '')
         .catch((err: Error) => describeError(err) || 'prepare native vpn failed');
       this.vpnConnection
@@ -202,7 +202,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
           try {
             await this.vpnConnection?.protectProcessNet();
             try {
-              hmetaUi.setPlatformNetworkProtected(true);
+              pawsUi.setPlatformNetworkProtected(true);
             } catch (stateErr) {
               hilog.error(LOG_DOMAIN, LOG_TAG, 'record protect success failed %{public}s', describeError(stateErr));
             }
@@ -210,7 +210,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
           } catch (err) {
             const message = describeError(err) || 'protect process network failed';
             try {
-              hmetaUi.setPlatformNetworkProtected(false, message);
+              pawsUi.setPlatformNetworkProtected(false, message);
             } catch (stateErr) {
               hilog.error(LOG_DOMAIN, LOG_TAG, 'record protect failure failed %{public}s', describeError(stateErr));
             }
@@ -221,7 +221,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
             throw new Error(prepareError);
           }
           hilog.info(LOG_DOMAIN, LOG_TAG, 'native profile ready in %{public}d ms', Date.now() - startedAt);
-          await hmetaUi.startVpn(fd, optionsJson);
+          await pawsUi.startVpn(fd, optionsJson);
           this.startTelemetry();
           this.starting = false;
           hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN started in %{public}d ms', Date.now() - startedAt);
@@ -248,7 +248,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
   private recordVpnFailure(message: string): void {
     this.stopSpeedNotification();
     try {
-      hmetaUi.setPlatformVpnFailed(message);
+      pawsUi.setPlatformVpnFailed(message);
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'record VPN failure failed %{public}s', describeError(err));
     }
@@ -258,7 +258,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     this.stopPlatformSubscription();
     this.stopTelemetry();
     this.stopSpeedNotification();
-    hmetaUi.stopVpn()
+    pawsUi.stopVpn()
       .then(() => this.persistTelemetry(false))
       .catch((err: Error) => {
         hilog.error(LOG_DOMAIN, LOG_TAG, 'stop native vpn failed %{public}s', describeError(err));
@@ -289,9 +289,9 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
   private async runPlatformSubscription(): Promise<void> {
     while (this.platformSubscriptionActive) {
       try {
-        const changed = await hmetaUi.waitForPlatformChange(1000);
+        const changed = await pawsUi.waitForPlatformChange(1000);
         if (changed && this.platformSubscriptionActive) {
-          hmetaUi.syncPlatformChanges();
+          pawsUi.syncPlatformChanges();
         }
       } catch (err) {
         hilog.error(LOG_DOMAIN, LOG_TAG, 'platform subscription failed %{public}s', describeError(err));
@@ -315,7 +315,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
 
   private persistTelemetry(publishNotification: boolean = true): void {
     try {
-      hmetaUi.persistVpnTelemetry();
+      pawsUi.persistVpnTelemetry();
       if (publishNotification) {
         this.publishSpeedNotification();
       }
@@ -336,11 +336,11 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
       request = wantAgent.getWantAgent({
         wants: [
           {
-            bundleName: currentHMetaBundleName(),
-            moduleName: HMETA_MODULE_NAME,
-            abilityName: HMETA_ENTRY_ABILITY,
+            bundleName: currentPawsBundleName(),
+            moduleName: PAWS_MODULE_NAME,
+            abilityName: PAWS_ENTRY_ABILITY,
             parameters: {
-              hmetaNotification: true,
+              pawsNotification: true,
             },
           },
         ],
@@ -370,9 +370,9 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
       return;
     }
 
-    let snapshot: HMetaRuntimeSnapshot;
+    let snapshot: PawsRuntimeSnapshot;
     try {
-      snapshot = JSON.parse(hmetaUi.querySnapshot()) as HMetaRuntimeSnapshot;
+      snapshot = JSON.parse(pawsUi.querySnapshot()) as PawsRuntimeSnapshot;
     } catch (err) {
       hilog.warn(LOG_DOMAIN, LOG_TAG, 'read notification telemetry failed %{public}s', describeError(err));
       return;
@@ -441,7 +441,7 @@ export default class HMetaVpnExtensionAbility extends VpnExtensionAbility {
     }
     try {
       await connection.destroy();
-      hmetaUi.setPlatformNetworkProtected(false);
+      pawsUi.setPlatformNetworkProtected(false);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'destroy vpn success');
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'destroy vpn failed %{public}s', describeError(err));

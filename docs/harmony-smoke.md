@@ -1,6 +1,6 @@
 # HarmonyOS Smoke Validation
 
-This smoke check is the first automation layer for HMETA-MEOW-014. It covers
+This smoke check is the first automation layer for PAWS-MEOW-014. It covers
 the device loop that is easy to regress during VPN and native binding work:
 
 - build aarch HAP
@@ -9,7 +9,7 @@ the device loop that is easy to regress during VPN and native binding work:
 - optionally start `local-protocol-tests` and import its generated profile
 - optionally request VPN start
 - capture `hilog`
-- verify HMeta log markers are present, including TUN/protection markers when
+- verify Paws log markers are present, including TUN/protection markers when
   VPN start is requested
 
 Run it with a HarmonyOS device connected:
@@ -32,13 +32,13 @@ scripts/harmony-protocol-matrix.sh --mock-advertise-host 192.168.1.23
 scripts/harmony-protocol-matrix.sh --allow-vpn-unsupported --no-require-protect-success --mock-advertise-host 192.168.1.23
 scripts/harmony-subscription-ui-smoke.sh
 scripts/harmony-settings-ui-smoke.sh
-scripts/harmony-smoke.sh --protocol-mode direct --auto-start-vpn --device-probe-command 'toybox wget -q -O - http://192.168.1.23:12345' --device-probe-match hmeta
+scripts/harmony-smoke.sh --protocol-mode direct --auto-start-vpn --device-probe-command 'toybox wget -q -O - http://192.168.1.23:12345' --device-probe-match paws
 scripts/harmony-smoke.sh --profile local-protocol-tests/generated/http.yaml --delay-proxy HTTP-MOCK --delay-url http://192.168.1.23:12345
 scripts/harmony-smoke.sh --profile-url https://example.test/profile.yaml --profile-name RemoteSmoke
 ```
 
 The script writes logs to `smoke-logs/`. When it fails, inspect the generated
-`.hilog` file first; it should contain `HMetaEntry`, `HMetaVpn`, `hmeta core`,
+`.hilog` file first; it should contain `PawsEntry`, `PawsVpn`, `paws core`,
 or `meow-rs` markers after a successful launch.
 
 The current default package for simulator/local validation is unsigned. Use
@@ -51,9 +51,9 @@ each protocol run starts from a fresh EntryAbility/VpnExtensionAbility process.
 Pass `--no-force-stop` only when intentionally testing `onNewWant` handling for
 an already running app.
 
-The script also checks the HAP before install: `libs/arm64-v8a/libhmeta_ui.so`
+The script also checks the HAP before install: `libs/arm64-v8a/libpaws_ui.so`
 must contain every NAPI function declared in
-`entry/src/main/cpp/types/libhmeta_ui/Index.d.ts`. This catches stale native
+`entry/src/main/cpp/types/libpaws_ui/Index.d.ts`. This catches stale native
 libraries in signed packages before they reach the device. Pass
 `--skip-hap-export-check` only for diagnosing package contents manually.
 
@@ -71,40 +71,40 @@ negative modes such as `http-bad-auth`, `http-down`, `socks5-bad-auth`,
 
 `EntryAbility` accepts these smoke-only Want parameters:
 
-- `hmetaProfileContent`: raw YAML/profile content.
-- `hmetaProfileContentBase64`: base64 UTF-8 profile content. This is what
+- `pawsProfileContent`: raw YAML/profile content.
+- `pawsProfileContentBase64`: base64 UTF-8 profile content. This is what
   `scripts/harmony-smoke.sh --profile` uses because it is stable through
   `hdc shell aa start` argument parsing.
-- `hmetaProfileContentEscaped`: profile content with `\n` line escapes,
+- `pawsProfileContentEscaped`: profile content with `\n` line escapes,
   retained for compatibility.
-- `hmetaProfileUrl`: remote profile URL.
-- `hmetaProfileName`: optional imported profile name.
-- `hmetaAutoStartVpn`: `true`, `1`, or `yes` to request VPN start after import.
-- `hmetaDelayProxy`: proxy name used for a debug delay check.
-- `hmetaDelayUrl`: optional URL used for that debug delay check.
-- `hmetaDelayTimeoutMs`: optional delay timeout in milliseconds.
-- `hmetaExpectDelayFailure`: `true`, `1`, or `yes` when delay failure is the
+- `pawsProfileUrl`: remote profile URL.
+- `pawsProfileName`: optional imported profile name.
+- `pawsAutoStartVpn`: `true`, `1`, or `yes` to request VPN start after import.
+- `pawsDelayProxy`: proxy name used for a debug delay check.
+- `pawsDelayUrl`: optional URL used for that debug delay check.
+- `pawsDelayTimeoutMs`: optional delay timeout in milliseconds.
+- `pawsExpectDelayFailure`: `true`, `1`, or `yes` when delay failure is the
   expected result.
-- `hmetaEchoProxy`: proxy name used for a debug TCP echo roundtrip.
-- `hmetaEchoUrl`: echo server URL for the debug TCP echo roundtrip.
-- `hmetaEchoPayload`: optional UTF-8 payload expected to be echoed
+- `pawsEchoProxy`: proxy name used for a debug TCP echo roundtrip.
+- `pawsEchoUrl`: echo server URL for the debug TCP echo roundtrip.
+- `pawsEchoPayload`: optional UTF-8 payload expected to be echoed
   byte-for-byte.
-- `hmetaEchoTimeoutMs`: optional echo timeout in milliseconds.
-- `hmetaExpectEchoFailure`: `true`, `1`, or `yes` when echo failure is the
+- `pawsEchoTimeoutMs`: optional echo timeout in milliseconds.
+- `pawsExpectEchoFailure`: `true`, `1`, or `yes` when echo failure is the
   expected result.
 
 `scripts/harmony-smoke.sh` also accepts `--device-probe-command` to run an
 arbitrary `hdc shell` command after the app launch/VPN settle window. Use
 `--device-probe-match` to require a regex in the command output, or
 `--expect-device-probe-failure` for negative modes. The probe runs outside the
-HMeta process, so it is the first automation hook for checking whether device
+Paws process, so it is the first automation hook for checking whether device
 traffic from another process traverses the active VPN.
 
 The script uses these parameters when `--profile`, `--profile-url`, and
 `--auto-start-vpn` are passed. It also sets the delay and echo parameters
 automatically for `--protocol-mode`.
 
-Pass `--require-protect-success` when validating HMETA-MEOW-001 on a device.
+Pass `--require-protect-success` when validating PAWS-MEOW-001 on a device.
 Without it, the smoke only requires an explicit process-network protection
 result, so devices that log `protect process network failed` still preserve
 diagnostic evidence instead of failing before hilog is saved.
@@ -139,7 +139,7 @@ evidence and the exact remaining physical-device flow.
 ## Current Scope
 
 The script can now drive install, launch, profile import/reload, and VPN start
-request. With `--auto-start-vpn`, it requires `HMetaVpn` logs for TUN creation
+request. With `--auto-start-vpn`, it requires `PawsVpn` logs for TUN creation
 and either successful process-network protection or an explicit protection
 failure; `--require-protect-success` tightens that to successful protection
 only. With `--protocol-mode`, it can start the local mock profile generator
