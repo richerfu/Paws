@@ -19,7 +19,7 @@ proxies:
     username: alice
     password: wrong-password
     headers:
-      X-HMeta-Test: local-protocol
+      X-Paws-Test: local-protocol
 proxy-groups:
   - name: Proxy
     type: select

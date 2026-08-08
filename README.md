@@ -7,10 +7,6 @@ Its product flow follows
 VPN lifecycle, native bridge, packaging, and device validation are implemented
 in this repository.
 
-> Paws is under active development. Validate system VPN behavior on a physical
-> device or a standard VPN-enabled OpenHarmony QEMU image. A DevEco simulator
-> can validate UI and profile flows, but does not prove that a TUN was created.
-
 ## Architecture
 
 ```text
@@ -22,8 +18,8 @@ HarmonyOS abilities (ArkTS)
     |  VpnConnection TUN + protectProcessNet()
     v
 Paws Rust runtime
-    |  hmeta_core + hmeta_profile
-    |  hmeta_vpn + netstack-smoltcp/lwIP
+    |  paws_core + paws_profile
+    |  paws_vpn + netstack-smoltcp/lwIP
     v
 meow-rs
     |  Config, rule engine, proxy, DNS, external controller
@@ -217,11 +213,11 @@ entry/                         HarmonyOS application module
   src/main/cpp/types/          Generated N-API declarations
   src/main/resources/          UI resources and packaged GeoData
 crates/
-  hmeta_ui/                    Native ArkUI interface and N-API exports
-  hmeta_core/                  Runtime lifecycle and meow-rs integration
-  hmeta_profile/               Profiles, subscriptions, rules, and persistence
-  hmeta_vpn/                   TUN TCP/UDP and DNS forwarding
-  hmeta_model/                 Shared data model
+  paws_ui/                    Native ArkUI interface and N-API exports
+  paws_core/                  Runtime lifecycle and meow-rs integration
+  paws_profile/               Profiles, subscriptions, rules, and persistence
+  paws_vpn/                   TUN TCP/UDP and DNS forwarding
+  paws_model/                 Shared data model
 local-protocol-tests/          Echo servers, mock proxies, and generated profiles
 scripts/                       Build, package, smoke, and regression automation
 docs/                          Release, protocol, GeoData, and validation notes

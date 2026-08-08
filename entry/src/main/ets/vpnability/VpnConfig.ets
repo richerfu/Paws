@@ -1,19 +1,19 @@
 import { Want } from '@kit.AbilityKit';
 
-export const HMETA_BUNDLE_NAME: string = 'com.richerfu.paws';
-export const HMETA_MODULE_NAME: string = 'entry';
-export const HMETA_ENTRY_ABILITY: string = 'EntryAbility';
-export const HMETA_VPN_ABILITY: string = 'HMetaVpnExtensionAbility';
+export const PAWS_BUNDLE_NAME: string = 'com.richerfu.paws';
+export const PAWS_MODULE_NAME: string = 'entry';
+export const PAWS_ENTRY_ABILITY: string = 'EntryAbility';
+export const PAWS_VPN_ABILITY: string = 'PawsVpnExtensionAbility';
 
-let hmetaBundleName: string = HMETA_BUNDLE_NAME;
+let pawsBundleName: string = PAWS_BUNDLE_NAME;
 
-export function setHMetaBundleName(bundleName?: string): void {
+export function setPawsBundleName(bundleName?: string): void {
   const value = bundleName?.trim() ?? '';
-  hmetaBundleName = value.length > 0 ? value : HMETA_BUNDLE_NAME;
+  pawsBundleName = value.length > 0 ? value : PAWS_BUNDLE_NAME;
 }
 
-export function currentHMetaBundleName(): string {
-  return hmetaBundleName;
+export function currentPawsBundleName(): string {
+  return pawsBundleName;
 }
 
 export class NetAddress {
@@ -91,7 +91,7 @@ const DEFAULT_OPTIONS: VpnOptions = {
 
 export const DEFAULT_OPTIONS_JSON: string = JSON.stringify(DEFAULT_OPTIONS);
 
-export class HMetaVpnConfig {
+export class PawsVpnConfig {
   public addresses: LinkAddress[];
   public routes: RouteInfo[];
   public dnsAddresses: string[];
@@ -119,17 +119,17 @@ export class HMetaVpnConfig {
   }
 }
 
-const HMETA_ASHMEM_FD_KEY = 'hmetaPlatformAshmem';
-const HMETA_NOTIFICATION_FD_KEY = 'hmetaPlatformNotification';
-const HMETA_START_ATTEMPT_ID_KEY = 'hmetaStartAttemptId';
-const HMETA_SYSTEM_PARAMETERS_KEY = 'myParams';
+const PAWS_ASHMEM_FD_KEY = 'pawsPlatformAshmem';
+const PAWS_NOTIFICATION_FD_KEY = 'pawsPlatformNotification';
+const PAWS_START_ATTEMPT_ID_KEY = 'pawsStartAttemptId';
+const PAWS_SYSTEM_PARAMETERS_KEY = 'myParams';
 
-export interface HMetaPlatformSharedMemoryFds {
+export interface PawsPlatformSharedMemoryFds {
   ashmemFd: number;
   notificationFd: number;
 }
 
-class HMetaWantFileDescriptor {
+class PawsWantFileDescriptor {
   public type: string = 'FD';
   public value: number;
 
@@ -138,30 +138,30 @@ class HMetaWantFileDescriptor {
   }
 }
 
-interface HMetaVpnWantParameters extends Record<string, Object> {
+interface PawsVpnWantParameters extends Record<string, Object> {
   optionsJson: string;
 }
 
 export function buildVpnWant(
   optionsJson?: string,
-  sharedMemory?: HMetaPlatformSharedMemoryFds,
+  sharedMemory?: PawsPlatformSharedMemoryFds,
   startAttemptId?: string,
 ): Want {
-  const parameters: HMetaVpnWantParameters = {
+  const parameters: PawsVpnWantParameters = {
     optionsJson: optionsJson ?? '',
   };
   if (sharedMemory) {
-    parameters[HMETA_ASHMEM_FD_KEY] = new HMetaWantFileDescriptor(sharedMemory.ashmemFd);
-    parameters[HMETA_NOTIFICATION_FD_KEY] = new HMetaWantFileDescriptor(sharedMemory.notificationFd);
+    parameters[PAWS_ASHMEM_FD_KEY] = new PawsWantFileDescriptor(sharedMemory.ashmemFd);
+    parameters[PAWS_NOTIFICATION_FD_KEY] = new PawsWantFileDescriptor(sharedMemory.notificationFd);
   }
   if (startAttemptId && startAttemptId.length > 0) {
-    parameters[HMETA_START_ATTEMPT_ID_KEY] = startAttemptId;
+    parameters[PAWS_START_ATTEMPT_ID_KEY] = startAttemptId;
   }
   return {
     deviceId: '',
-    bundleName: currentHMetaBundleName(),
-    moduleName: HMETA_MODULE_NAME,
-    abilityName: HMETA_VPN_ABILITY,
+    bundleName: currentPawsBundleName(),
+    moduleName: PAWS_MODULE_NAME,
+    abilityName: PAWS_VPN_ABILITY,
     parameters,
   };
 }
@@ -179,20 +179,20 @@ function readVpnParameters(want?: Want): Record<string, Object> | undefined {
   if (typeof parameters['optionsJson'] === 'string') {
     return parameters;
   }
-  const nested = parameters[HMETA_SYSTEM_PARAMETERS_KEY];
+  const nested = parameters[PAWS_SYSTEM_PARAMETERS_KEY];
   if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
     return nested as Record<string, Object>;
   }
   return parameters;
 }
 
-export function readPlatformSharedMemoryFds(want: Want): HMetaPlatformSharedMemoryFds | undefined {
-  let ashmemFd = want.fds?.[HMETA_ASHMEM_FD_KEY];
-  let notificationFd = want.fds?.[HMETA_NOTIFICATION_FD_KEY];
+export function readPlatformSharedMemoryFds(want: Want): PawsPlatformSharedMemoryFds | undefined {
+  let ashmemFd = want.fds?.[PAWS_ASHMEM_FD_KEY];
+  let notificationFd = want.fds?.[PAWS_NOTIFICATION_FD_KEY];
   if (!isValidFileDescriptor(ashmemFd) || !isValidFileDescriptor(notificationFd)) {
     const parameters = readVpnParameters(want);
-    ashmemFd = readFileDescriptorParameter(parameters, HMETA_ASHMEM_FD_KEY);
-    notificationFd = readFileDescriptorParameter(parameters, HMETA_NOTIFICATION_FD_KEY);
+    ashmemFd = readFileDescriptorParameter(parameters, PAWS_ASHMEM_FD_KEY);
+    notificationFd = readFileDescriptorParameter(parameters, PAWS_NOTIFICATION_FD_KEY);
   }
   if (!isValidFileDescriptor(ashmemFd) || !isValidFileDescriptor(notificationFd)) {
     return undefined;
@@ -204,7 +204,7 @@ export function readPlatformSharedMemoryFds(want: Want): HMetaPlatformSharedMemo
 }
 
 export function readPlatformStartAttemptId(want?: Want): string {
-  const value = readVpnParameters(want)?.[HMETA_START_ATTEMPT_ID_KEY];
+  const value = readVpnParameters(want)?.[PAWS_START_ATTEMPT_ID_KEY];
   if (typeof value === 'string' && value.length > 0) {
     return value;
   }
@@ -223,7 +223,7 @@ function readFileDescriptorParameter(
   parameters: Record<string, Object> | undefined,
   key: string,
 ): number | undefined {
-  const descriptor = parameters?.[key] as HMetaWantFileDescriptor | undefined;
+  const descriptor = parameters?.[key] as PawsWantFileDescriptor | undefined;
   if (!descriptor || descriptor.type !== 'FD' || !isValidFileDescriptor(descriptor.value)) {
     return undefined;
   }

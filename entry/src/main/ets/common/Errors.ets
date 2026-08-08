@@ -2,7 +2,7 @@
  * Shared error description helper for the ArkTS side. Tolerant of the many
  * error shapes thrown by HarmonyOS platform APIs.
  */
-interface HMetaErrorLike {
+interface PawsErrorLike {
   code?: number;
   message?: string;
   name?: string;
@@ -22,7 +22,7 @@ export function describeError(err: Error | Object | string | number | boolean | 
   if (!err) {
     return '';
   }
-  const like = err as HMetaErrorLike;
+  const like = err as PawsErrorLike;
   if (typeof like.message === 'string' && like.message.length > 0) {
     const code = typeof like.code === 'number' ? `code=${like.code} ` : '';
     const name = typeof like.name === 'string' && like.name.length > 0 ? `${like.name}: ` : '';

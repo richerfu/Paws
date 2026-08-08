@@ -18,7 +18,7 @@ proxies:
     username: alice
     password: s3cr3t
     headers:
-      X-HMeta-Test: local-protocol
+      X-Paws-Test: local-protocol
 proxy-groups:
   - name: Proxy
     type: select

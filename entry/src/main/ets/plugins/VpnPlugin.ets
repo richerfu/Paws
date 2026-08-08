@@ -2,9 +2,9 @@ import { AsyncPluginBase, BridgeCallContext, BridgeContextRequirement, BridgePlu
 import { vpnExtension } from '@kit.NetworkKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import hmetaUi from 'libhmeta_ui.so';
+import pawsUi from 'libpaws_ui.so';
 import { describeError } from '../common/Errors';
-import { buildVpnWant, HMetaPlatformSharedMemoryFds } from '../vpnability/VpnConfig';
+import { buildVpnWant, PawsPlatformSharedMemoryFds } from '../vpnability/VpnConfig';
 
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'PawsVpn';
@@ -32,7 +32,7 @@ export class VpnPlugin extends AsyncPluginBase {
 
   private vpnStartRequest: Promise<void> | undefined = undefined;
   private activeVpnStartAttemptId: string = '';
-  private platformSharedMemory?: HMetaPlatformSharedMemoryFds;
+  private platformSharedMemory?: PawsPlatformSharedMemoryFds;
 
   onInstall(context: BridgePluginContext): void {
     this.initializePlatformSharedMemory();
@@ -79,7 +79,7 @@ export class VpnPlugin extends AsyncPluginBase {
 
   private initializePlatformSharedMemory(): void {
     try {
-      const fields = hmetaUi.initializePlatformSharedMemory().split(',');
+      const fields = pawsUi.initializePlatformSharedMemory().split(',');
       const ashmemFd = Number(fields[0]);
       const notificationFd = Number(fields[1]);
       if (fields.length !== 2 || !Number.isInteger(ashmemFd) || ashmemFd < 0 ||
@@ -118,7 +118,7 @@ export class VpnPlugin extends AsyncPluginBase {
     this.runVpnStartDispatch(optionsJson, attemptId, context).catch((err: Error) => {
       const message = describeError(err) || 'system rejected VPN start';
       try {
-        hmetaUi.failUnattachedPlatformVpnStart(attemptId, message);
+        pawsUi.failUnattachedPlatformVpnStart(attemptId, message);
       } catch (innerErr) {
         hilog.error(
           LOG_DOMAIN,
@@ -148,7 +148,7 @@ export class VpnPlugin extends AsyncPluginBase {
     await this.invokeVpnExtensionStart(optionsJson, attemptId);
     hilog.info(LOG_DOMAIN, LOG_TAG, 'system acknowledged VPN start attempt %{public}s', attemptId);
 
-    if (await hmetaUi.awaitPlatformVpnStartAttachment(attemptId, VPN_EXTENSION_ATTACH_GRACE_MS)) {
+    if (await pawsUi.awaitPlatformVpnStartAttachment(attemptId, VPN_EXTENSION_ATTACH_GRACE_MS)) {
       return;
     }
 
@@ -165,7 +165,7 @@ export class VpnPlugin extends AsyncPluginBase {
     await this.invokeVpnExtensionStart(optionsJson, attemptId);
     hilog.info(LOG_DOMAIN, LOG_TAG, 'redispatched VPN start attempt %{public}s', attemptId);
 
-    if (!(await hmetaUi.awaitPlatformVpnStartAttachment(
+    if (!(await pawsUi.awaitPlatformVpnStartAttachment(
       attemptId,
       VPN_EXTENSION_REDISPATCH_ATTACH_TIMEOUT_MS,
     ))) {
@@ -177,12 +177,12 @@ export class VpnPlugin extends AsyncPluginBase {
     let attemptId: string = '';
     try {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'request VPN start received');
-      attemptId = hmetaUi.beginPlatformVpnStart();
+      attemptId = pawsUi.beginPlatformVpnStart();
       this.activeVpnStartAttemptId = attemptId;
 
       this.dispatchVpnStart(optionsJson, attemptId, context);
 
-      const outcome = await hmetaUi.awaitPlatformVpnStart(attemptId);
+      const outcome = await pawsUi.awaitPlatformVpnStart(attemptId);
       if (outcome !== 'connected') {
         throw new Error(`unexpected VPN start outcome: ${outcome}`);
       }
@@ -195,7 +195,7 @@ export class VpnPlugin extends AsyncPluginBase {
       const message = describeError(err) || 'request VPN start failed';
       if (attemptId.length > 0) {
         try {
-          hmetaUi.failPlatformVpnStart(attemptId, message);
+          pawsUi.failPlatformVpnStart(attemptId, message);
         } catch (innerErr) {
           hilog.error(
             LOG_DOMAIN,
@@ -232,10 +232,10 @@ export class VpnPlugin extends AsyncPluginBase {
     try {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'request VPN stop received');
       if (this.activeVpnStartAttemptId.length > 0) {
-        hmetaUi.cancelPlatformVpnStart(this.activeVpnStartAttemptId);
+        pawsUi.cancelPlatformVpnStart(this.activeVpnStartAttemptId);
       }
       await vpnExtension.stopVpnExtensionAbility(buildVpnWant());
-      hmetaUi.setPlatformVpnRunning(false);
+      pawsUi.setPlatformVpnRunning(false);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'requested VPN stop');
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'request VPN stop failed %{public}s', describeError(err));

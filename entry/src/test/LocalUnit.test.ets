@@ -2,18 +2,18 @@ import { describe, beforeAll, beforeEach, afterEach, afterAll, it, expect } from
 import { Want } from '@kit.AbilityKit';
 import {
   buildVpnWant,
-  currentHMetaBundleName,
+  currentPawsBundleName,
   DEFAULT_OPTIONS_JSON,
-  HMetaVpnConfig,
-  HMETA_BUNDLE_NAME,
-  HMETA_MODULE_NAME,
-  HMETA_VPN_ABILITY,
+  PawsVpnConfig,
+  PAWS_BUNDLE_NAME,
+  PAWS_MODULE_NAME,
+  PAWS_VPN_ABILITY,
   parseLinkAddress,
   parseOptions,
   readOptionsJson,
   readPlatformSharedMemoryFds,
   readPlatformStartAttemptId,
-  setHMetaBundleName,
+  setPawsBundleName,
 } from '../main/ets/vpnability/VpnConfig';
 
 export default function localUnitTest() {
@@ -21,7 +21,7 @@ export default function localUnitTest() {
     beforeAll(() => {
     });
     beforeEach(() => {
-      setHMetaBundleName(HMETA_BUNDLE_NAME);
+      setPawsBundleName(PAWS_BUNDLE_NAME);
     });
     afterEach(() => {
     });
@@ -30,19 +30,19 @@ export default function localUnitTest() {
 
     it('buildsVpnWantForExtensionAbility', 0, () => {
       const want = buildVpnWant('{"mtu":1400}');
-      expect(want.bundleName).assertEqual(HMETA_BUNDLE_NAME);
-      expect(want.moduleName).assertEqual(HMETA_MODULE_NAME);
-      expect(want.abilityName).assertEqual(HMETA_VPN_ABILITY);
+      expect(want.bundleName).assertEqual(PAWS_BUNDLE_NAME);
+      expect(want.moduleName).assertEqual(PAWS_MODULE_NAME);
+      expect(want.abilityName).assertEqual(PAWS_VPN_ABILITY);
       expect(want.parameters?.optionsJson).assertEqual('{"mtu":1400}');
     });
 
     it('usesRuntimeBundleNameForVpnWant', 0, () => {
-      setHMetaBundleName(' com.example.hmeta.debug ');
-      expect(currentHMetaBundleName()).assertEqual('com.example.hmeta.debug');
-      expect(buildVpnWant().bundleName).assertEqual('com.example.hmeta.debug');
+      setPawsBundleName(' com.example.paws.debug ');
+      expect(currentPawsBundleName()).assertEqual('com.example.paws.debug');
+      expect(buildVpnWant().bundleName).assertEqual('com.example.paws.debug');
 
-      setHMetaBundleName('');
-      expect(currentHMetaBundleName()).assertEqual(HMETA_BUNDLE_NAME);
+      setPawsBundleName('');
+      expect(currentPawsBundleName()).assertEqual(PAWS_BUNDLE_NAME);
     });
 
     it('parsesOptionsAndFallsBackToDefaultJson', 0, () => {
@@ -64,7 +64,7 @@ export default function localUnitTest() {
     });
 
     it('buildsVpnConfigForIpv4AndIpv6', 0, () => {
-      const config = new HMetaVpnConfig({
+      const config = new PawsVpnConfig({
         addresses: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
         routes: ['0.0.0.0/0', '::/0'],
         dnsAddresses: ['172.19.0.2'],
@@ -93,11 +93,11 @@ export default function localUnitTest() {
       const want = {
         parameters: {
           optionsJson: '{"addresses":["172.19.0.1/30"]}',
-          hmetaStartAttemptId: 'attempt-direct',
+          pawsStartAttemptId: 'attempt-direct',
         },
         fds: {
-          hmetaPlatformAshmem: 21,
-          hmetaPlatformNotification: 22,
+          pawsPlatformAshmem: 21,
+          pawsPlatformNotification: 22,
         },
       } as Want;
 
@@ -115,12 +115,12 @@ export default function localUnitTest() {
           callingPid: 1234,
           myParams: {
             optionsJson: '{"addresses":["172.19.0.1/30"]}',
-            hmetaStartAttemptId: 'attempt-first-authorization',
-            hmetaPlatformAshmem: {
+            pawsStartAttemptId: 'attempt-first-authorization',
+            pawsPlatformAshmem: {
               type: 'FD',
               value: 31,
             },
-            hmetaPlatformNotification: {
+            pawsPlatformNotification: {
               type: 'FD',
               value: 32,
             },
@@ -140,11 +140,11 @@ export default function localUnitTest() {
         parameters: {
           myParams: {
             optionsJson: '{"addresses":["172.19.0.1/30"]}',
-            hmetaPlatformAshmem: {
+            pawsPlatformAshmem: {
               type: 'not-an-fd',
               value: 31,
             },
-            hmetaPlatformNotification: {
+            pawsPlatformNotification: {
               type: 'FD',
               value: -1,
             },

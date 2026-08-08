@@ -1,4 +1,4 @@
-# HMeta 全量迁移集成验证（2026-07-16）
+# Paws 全量迁移集成验证（2026-07-16）
 
 ## 基线与结论
 
@@ -24,7 +24,7 @@
 | 订阅导入后 UI | 通过 | 列表、选中态、操作菜单、编辑订阅自动化与截图 |
 | 设置/关于 UI | 通过 | 行对齐、二级页导航、长文本、隐私列表、仓库入口自动化与截图 |
 | VPN 启动状态机 | 通过 | `starting` 持久化、跨进程状态、15 秒超时、失败态可见 |
-| 模拟器系统 VPN/TUN | 不支持 | 只有启动请求，无 `HMetaVpn`、TUN fd 或 protect 回调 |
+| 模拟器系统 VPN/TUN | 不支持 | 只有启动请求，无 `PawsVpn`、TUN fd 或 protect 回调 |
 | 当前构建真机系统 VPN/TUN | 待验收 | 按本文“真机最终验收”执行 |
 
 Harmony 协议矩阵使用的完整命令：
@@ -65,9 +65,9 @@ vless vless-bad-uuid
 
 证据文件位于 `smoke-logs/`：
 
-- `hmeta-subscription-list.jpeg`
-- `hmeta-subscription-actions.jpeg`
-- `hmeta-subscription-edit.jpeg`
+- `paws-subscription-list.jpeg`
+- `paws-subscription-actions.jpeg`
+- `paws-subscription-edit.jpeg`
 - 对应的 `.json` UI tree
 
 ## 设置、路由与长文本验收
@@ -83,9 +83,9 @@ vless vless-bad-uuid
 
 证据文件位于 `smoke-logs/`：
 
-- `hmeta-settings-alignment.jpeg`
-- `hmeta-network-child.jpeg`
-- `hmeta-about-optimized.jpeg`
+- `paws-settings-alignment.jpeg`
+- `paws-network-child.jpeg`
+- `paws-about-optimized.jpeg`
 - 对应的 `.json` UI tree
 
 ## 模拟器 VPN 限制与降级行为
@@ -100,9 +100,9 @@ vless vless-bad-uuid
 
 对应证据：
 
-- `smoke-logs/hmeta-vpn-timeout-home.jpeg`
-- `smoke-logs/hmeta-vpn-timeout-home.json`
-- `smoke-logs/hmeta-smoke-20260717-000056.hilog`
+- `smoke-logs/paws-vpn-timeout-home.jpeg`
+- `smoke-logs/paws-vpn-timeout-home.json`
+- `smoke-logs/paws-smoke-20260717-000056.hilog`
 
 日志中应有 `request VPN start received`、delay/echo 成功和 `VPN extension startup timed out`，不应有 `created tun fd`。这证明的是模拟器降级正确，不代表系统 VPN 已通过。
 
@@ -143,7 +143,7 @@ scripts/harmony-protocol-matrix.sh \
 
 ### 3. 验证其他进程流量穿过 VPN
 
-HMeta 进程内 delay/echo 只能验证 meow outbound，不能代替系统 TUN 验收。至少增加一个 `hdc shell` 或测试 App 发起的外部请求：
+Paws 进程内 delay/echo 只能验证 meow outbound，不能代替系统 TUN 验收。至少增加一个 `hdc shell` 或测试 App 发起的外部请求：
 
 ```sh
 HDC_TARGET=<device-key> \

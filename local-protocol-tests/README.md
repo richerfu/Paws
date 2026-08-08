@@ -1,6 +1,6 @@
 # Local Protocol Tests
 
-This directory is a manual protocol lab for the HMeta app.
+This directory is a manual protocol lab for the Paws app.
 
 It starts local echo/mock servers on random loopback ports, generates a Clash YAML profile with those ports filled in, and keeps the servers alive while you import that profile into the app.
 

@@ -1939,114 +1939,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hmeta_core"
-version = "1.0.0"
-dependencies = [
- "axum",
- "base64",
- "dashmap",
- "futures",
- "hmeta_model",
- "hmeta_profile",
- "hmeta_vpn",
- "libc",
- "meow-api",
- "meow-common",
- "meow-config",
- "meow-dns",
- "meow-listener",
- "meow-proxy",
- "meow-tunnel",
- "ohos-ashmem-binding",
- "once_cell",
- "parking_lot",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "shadowsocks",
- "thiserror 2.0.19",
- "time",
- "tokio",
- "tokio-tungstenite 0.24.0",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "hmeta_model"
-version = "1.0.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "hmeta_profile"
-version = "1.0.0"
-dependencies = [
- "base64",
- "getrandom 0.2.17",
- "hmeta_model",
- "ipnet",
- "percent-encoding",
- "serde",
- "serde_json",
- "serde_yaml",
- "thiserror 2.0.19",
- "url",
-]
-
-[[package]]
-name = "hmeta_ui"
-version = "1.0.0"
-dependencies = [
- "arkit",
- "base64",
- "dioxus",
- "hmeta_core",
- "hmeta_model",
- "napi-build-ohos",
- "napi-derive-ohos",
- "napi-ohos",
- "ohos-fileshare-binding",
- "ohos-fileuri-binding",
- "ohos-resource-manager-binding",
- "openharmony-ability-plugin-files",
- "openharmony-ability-plugin-url",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "time",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "hmeta_vpn"
-version = "1.0.0"
-dependencies = [
- "async-trait",
- "futures",
- "hmeta_model",
- "libc",
- "lwip",
- "meow-common",
- "meow-dns",
- "meow-listener",
- "meow-trie",
- "meow-tunnel",
- "netstack-smoltcp",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "tun-rs",
-]
-
-[[package]]
 name = "home"
 version = "0.5.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3824,6 +3716,114 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "paws_core"
+version = "1.0.0"
+dependencies = [
+ "axum",
+ "base64",
+ "dashmap",
+ "futures",
+ "libc",
+ "meow-api",
+ "meow-common",
+ "meow-config",
+ "meow-dns",
+ "meow-listener",
+ "meow-proxy",
+ "meow-tunnel",
+ "ohos-ashmem-binding",
+ "once_cell",
+ "parking_lot",
+ "paws_model",
+ "paws_profile",
+ "paws_vpn",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "shadowsocks",
+ "thiserror 2.0.19",
+ "time",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "paws_model"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "paws_profile"
+version = "1.0.0"
+dependencies = [
+ "base64",
+ "getrandom 0.2.17",
+ "ipnet",
+ "paws_model",
+ "percent-encoding",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.19",
+ "url",
+]
+
+[[package]]
+name = "paws_ui"
+version = "1.0.0"
+dependencies = [
+ "arkit",
+ "base64",
+ "dioxus",
+ "napi-build-ohos",
+ "napi-derive-ohos",
+ "napi-ohos",
+ "ohos-fileshare-binding",
+ "ohos-fileuri-binding",
+ "ohos-resource-manager-binding",
+ "openharmony-ability-plugin-files",
+ "openharmony-ability-plugin-url",
+ "paws_core",
+ "paws_model",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "time",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "paws_vpn"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "libc",
+ "lwip",
+ "meow-common",
+ "meow-dns",
+ "meow-listener",
+ "meow-trie",
+ "meow-tunnel",
+ "netstack-smoltcp",
+ "paws_model",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tun-rs",
+]
 
 [[package]]
 name = "pem"

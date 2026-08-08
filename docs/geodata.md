@@ -1,6 +1,6 @@
 # GeoData Rawfiles
 
-HMeta seeds meow-rs geodata from HarmonyOS rawfiles on app startup. Runtime
+Paws seeds meow-rs geodata from HarmonyOS rawfiles on app startup. Runtime
 YAML points meow-rs at the app-private copies:
 
 - `Country.mmdb`

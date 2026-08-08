@@ -1,5 +1,5 @@
 [package]
-name = "hmeta-local-protocol-tests"
+name = "paws-local-protocol-tests"
 version = "1.0.0"
 edition = "2021"
 publish = false
