@@ -16,10 +16,11 @@ impl UiLocale {
         }
     }
 
+    /// The catalog locale id (matches `tr::CATALOG` in `i18n.rs`).
     pub(crate) fn language_tag(self) -> &'static str {
         match self {
             Self::ZhCn => "zh-CN",
-            Self::En => "en",
+            Self::En => "en-US",
         }
     }
 }

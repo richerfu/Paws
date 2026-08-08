@@ -20,5 +20,5 @@ fn locale_parser_defaults_to_zh_cn() {
 #[test]
 fn language_tags_roundtrip() {
     assert_eq!(UiLocale::ZhCn.language_tag(), "zh-CN");
-    assert_eq!(UiLocale::En.language_tag(), "en");
+    assert_eq!(UiLocale::En.language_tag(), "en-US");
 }

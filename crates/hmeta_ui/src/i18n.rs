@@ -18,12 +18,5 @@ use crate::locale::UiLocale;
 
 /// Resolve one catalog message for the given locale (non-hook context).
 pub(crate) fn translate_ui(locale: UiLocale, message: arkit::i18n::TypedMessage) -> String {
-    arkit::i18n::translate(
-        &tr::CATALOG,
-        match locale {
-            UiLocale::ZhCn => "zh-CN",
-            UiLocale::En => "en",
-        },
-        message,
-    )
+    arkit::i18n::translate(&tr::CATALOG, locale.language_tag(), message)
 }
