@@ -55,17 +55,6 @@ fn current_app() -> Result<OpenHarmonyApp> {
         .ok_or_else(|| Error::from_reason("OpenHarmony app not initialized"))
 }
 
-/// Installs every application-owned `paws.*` plugin. Called from `init`
-/// before any ArkTS plugin event is delivered.
-pub(crate) fn register_all(app: &OpenHarmonyApp) -> Result<()> {
-    app.register_plugin(PawsScanBridgePlugin)?;
-    app.register_plugin(PawsClipboardBridgePlugin)?;
-    app.register_plugin(PawsColorModeBridgePlugin)?;
-    app.register_plugin(PawsVpnBridgePlugin)?;
-    app.register_plugin(PawsExportBridgePlugin)?;
-    Ok(())
-}
-
 async fn call_async<P, R, S>(action: &str, request: R) -> std::result::Result<S, String>
 where
     P: BridgePlugin<Mode = AsyncBridge>,
@@ -154,12 +143,7 @@ pub(crate) fn set_color_mode(color_mode: i32) -> Result<()> {
             )
             .await;
     };
-    #[cfg(target_env = "ohos")]
     napi_ohos::bindgen_prelude::spawn(task);
-    #[cfg(not(target_env = "ohos"))]
-    {
-        let _ = task;
-    }
     Ok(())
 }
 
@@ -232,7 +216,7 @@ pub(crate) async fn scan_subscription_code() -> std::result::Result<String, Stri
     Ok(response.content)
 }
 
-// --- Picker URI helpers (OpenHarmony only) ---
+// --- Picker URI helpers ---
 
 fn read_text_from_path(path: &PathBuf) -> std::result::Result<String, String> {
     let bytes = std::fs::read(path)
@@ -252,10 +236,8 @@ fn picker_uri_to_path(uri: &str) -> Option<PathBuf> {
     uri_to_native_path(trimmed)
 }
 
-#[cfg(target_env = "ohos")]
 const FILE_SHARE_READ_MODE: u32 = 1 << 0;
 
-#[cfg(target_env = "ohos")]
 fn uri_to_native_path(uri: &str) -> Option<PathBuf> {
     match ohos_fileuri_binding::get_path_from_uri(uri) {
         Ok(path) => Some(PathBuf::from(path)),
@@ -266,14 +248,6 @@ fn uri_to_native_path(uri: &str) -> Option<PathBuf> {
     }
 }
 
-#[cfg(not(target_env = "ohos"))]
-fn uri_to_native_path(uri: &str) -> Option<PathBuf> {
-    uri.strip_prefix("file://")
-        .map(PathBuf::from)
-        .or_else(|| Some(PathBuf::from(uri)))
-}
-
-#[cfg(target_env = "ohos")]
 fn persist_uris_with_mode(uris: &[String], operation_mode: u32) -> Result<()> {
     let policies = uris
         .iter()
@@ -299,12 +273,6 @@ fn persist_uris_with_mode(uris: &[String], operation_mode: u32) -> Result<()> {
     }
 }
 
-#[cfg(target_env = "ohos")]
 fn persist_uris_or_err(uris: &[String]) -> Result<()> {
     persist_uris_with_mode(uris, FILE_SHARE_READ_MODE)
-}
-
-#[cfg(not(target_env = "ohos"))]
-fn persist_uris_or_err(_uris: &[String]) -> Result<()> {
-    Ok(())
 }

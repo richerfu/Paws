@@ -1,14 +1,9 @@
 use hmeta_model::{RuntimeMode, VpnOptions};
 use napi_derive_ohos::napi;
-#[cfg(target_env = "ohos")]
-use napi_ohos::Env;
-use napi_ohos::{bindgen_prelude::Object, Error, Result, Status};
-#[cfg(target_env = "ohos")]
+use napi_ohos::{bindgen_prelude::Object, Env, Error, Result, Status};
 use ohos_resource_manager_binding::ResourceManager;
 use std::collections::BTreeMap;
-#[cfg(target_env = "ohos")]
 use std::path::{Path, PathBuf};
-#[cfg(target_env = "ohos")]
 use std::{fs, io};
 
 mod activity_filter;
@@ -169,16 +164,13 @@ pub fn configure_system_color_mode(color_mode: i32) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_env = "ohos")]
 const GEODATA_RAW_DIR: &str = "geodata";
-#[cfg(target_env = "ohos")]
 const GEODATA_SEED_FILES: &[(&str, &str)] = &[
     ("geodata/Country.mmdb", "Country.mmdb"),
     ("geodata/GeoLite2-ASN.mmdb", "GeoLite2-ASN.mmdb"),
     ("geodata/geosite.dat", "geosite.dat"),
 ];
 
-#[cfg(target_env = "ohos")]
 #[napi]
 pub fn seed_geodata_from_rawfiles<'a>(
     env: Env,
@@ -220,7 +212,6 @@ pub fn seed_geodata_from_rawfiles<'a>(
     Ok(seeded)
 }
 
-#[cfg(target_env = "ohos")]
 fn write_seed_file(dest: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = dest.with_extension("seed.tmp");
     fs::write(&tmp, bytes).map_err(io_to_napi)?;
@@ -230,7 +221,6 @@ fn write_seed_file(dest: &Path, bytes: &[u8]) -> Result<()> {
     })
 }
 
-#[cfg(target_env = "ohos")]
 fn io_to_napi(err: io::Error) -> Error {
     Error::new(Status::GenericFailure, err.to_string())
 }
