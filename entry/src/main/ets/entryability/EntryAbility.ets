@@ -114,6 +114,7 @@ export default class EntryAbility extends NativeAbility {
     await super.onWindowStageCreate(windowStage);
     try {
       const win = await windowStage.getMainWindow();
+      await win.setWindowLayoutFullScreen(true);
       await win.setUIContent('pages/Index');
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'set UI content failed %{public}s', JSON.stringify(err) ?? '');

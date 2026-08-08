@@ -320,7 +320,7 @@ fn copy_controller_secret(state: Signal<State>, secret: String) {
         .read()
         .runtime
         .tokio()
-        .spawn(async move { platform_callbacks::copy_text(secret).await });
+        .spawn(async move { crate::bridge::copy_text(secret).await });
     arkit::dioxus_core::spawn_forever(async move {
         let message = match task.await {
             Ok(Ok(())) => tr(

@@ -157,7 +157,7 @@ fn network_ports_are_editable_and_lan_access_requires_a_secret() {
     let ui = fs::read_to_string("src/ui.rs").unwrap();
     let model = fs::read_to_string("../hmeta_model/src/lib.rs").unwrap();
     let core = fs::read_to_string("../hmeta_core/src/lib.rs").unwrap();
-    let callbacks = fs::read_to_string("src/platform_callbacks.rs").unwrap();
+    let callbacks = fs::read_to_string("src/bridge/mod.rs").unwrap();
 
     assert!(page.contains("混合代理端口"));
     assert!(page.contains("控制器端口"));
@@ -168,7 +168,7 @@ fn network_ports_are_editable_and_lan_access_requires_a_secret() {
     assert!(page.contains("0.0.0.0:{controller_port_value}"));
     assert!(page.contains("Authorization: Bearer <secret>"));
     assert!(page.contains("copy_controller_secret"));
-    assert!(page.contains("platform_callbacks::copy_text(secret)"));
+    assert!(page.contains("crate::bridge::copy_text(secret)"));
     assert!(ui.contains("Action::SaveNetworkSettings"));
     assert!(ui.contains("set_profile_network_config"));
     assert!(ui.contains("mixed_port != state.snapshot.network_ports.mixed_port"));

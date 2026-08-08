@@ -2,6 +2,7 @@ const UI: &str = concat!(
     include_str!("../src/ui.rs"),
     include_str!("../src/ui/tasks.rs")
 );
+const VPN_PLUGIN: &str = include_str!("../../../entry/src/main/ets/plugins/VpnPlugin.ets");
 const ENTRY_ABILITY: &str =
     include_str!("../../../entry/src/main/ets/entryability/EntryAbility.ets");
 const VPN_ABILITY: &str =
@@ -34,15 +35,15 @@ fn vpn_start_does_not_reload_the_already_active_profile_or_wait_a_fixed_delay() 
 #[test]
 fn notification_permission_is_deferred_until_after_the_vpn_ability_launches() {
     let request = section(
-        ENTRY_ABILITY,
-        "private async requestStartVpn",
-        "private async ensureSpeedNotificationPermission",
+        VPN_PLUGIN,
+        "async requestStartVpn",
+        "private async requestStopVpnWithContext",
     );
     let launch = request
         .find("vpnExtension.startVpnExtensionAbility")
         .expect("VPN ability launch");
     let permission = request
-        .find("this.ensureSpeedNotificationPermission()")
+        .find("this.ensureSpeedNotificationPermission(context)")
         .expect("deferred notification permission");
 
     assert!(launch < permission);
@@ -58,9 +59,9 @@ fn first_authorization_start_is_coordinated_by_the_extension_terminal_state() {
     assert!(NAPI_TYPES.contains("failUnattachedPlatformVpnStart("));
 
     let request = section(
-        ENTRY_ABILITY,
-        "private async requestStartVpn",
-        "private async ensureSpeedNotificationPermission",
+        VPN_PLUGIN,
+        "async requestStartVpn",
+        "private async requestStopVpnWithContext",
     );
     assert!(request.contains("beginPlatformVpnStart()"));
     assert!(request.contains("awaitPlatformVpnStart(attemptId)"));
