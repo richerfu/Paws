@@ -28,6 +28,15 @@ use hmeta_model::{
     ManualRuleMatchKind, ManualRuleMutationKind, ManualRuleSpec, RuntimeMode, RuntimeSnapshot,
     TrafficHistoryPoint, VpnLifecycle,
 };
+
+// App-level messages resolved through arkit's compile-time i18n catalog.
+arkit::i18n::i18n! {
+    pub mod tr {
+        path: "locales",
+        fallback: "zh-CN",
+        locales: ["zh-CN", "en-US"],
+    }
+}
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -2141,12 +2150,8 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         .to_owned(),
                 );
             };
-            let invalid_port_suffix = ui_tr(
-                state.locale,
-                "必须是 1024–65535 之间的整数",
-                " must be an integer between 1024 and 65535",
-            );
-            let parse_port = |value: &str, label: &str| {
+            let invalid_port_suffix = translate_ui(state.locale, tr::network_port_invalid_suffix());
+            let parse_port = |value: &str, label: String| {
                 value
                     .trim()
                     .parse::<u16>()
@@ -2154,14 +2159,14 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             };
             let mixed_port = match parse_port(
                 &mixed_port,
-                ui_tr(state.locale, "混合代理端口", "Mixed proxy port"),
+                translate_ui(state.locale, tr::mixed_proxy_port()),
             ) {
                 Ok(port) => port,
                 Err(error) => return show_toast(state, error),
             };
             let controller_port = match parse_port(
                 &controller_port,
-                ui_tr(state.locale, "控制器端口", "Controller port"),
+                translate_ui(state.locale, tr::controller_port()),
             ) {
                 Ok(port) => port,
                 Err(error) => return show_toast(state, error),
@@ -2174,19 +2179,9 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 let message = if mixed_port < hmeta_model::NetworkPortConfig::MIN_PORT
                     || controller_port < hmeta_model::NetworkPortConfig::MIN_PORT
                 {
-                    ui_tr(
-                        state.locale,
-                        "端口必须在 1024–65535 之间",
-                        "Ports must be between 1024 and 65535",
-                    )
-                    .to_owned()
+                    translate_ui(state.locale, tr::network_ports_range())
                 } else if mixed_port == controller_port {
-                    ui_tr(
-                        state.locale,
-                        "混合代理端口和控制器端口不能相同",
-                        "Mixed proxy and controller ports must be different",
-                    )
-                    .to_owned()
+                    translate_ui(state.locale, tr::network_ports_different())
                 } else {
                     error.to_string()
                 };
@@ -2218,7 +2213,7 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 show_toast(
                     state,
                     settings_saved_message(
-                        ui_tr(state.locale, "网络设置", "Network settings"),
+                        &translate_ui(state.locale, tr::network_settings()),
                         result.restart_requested,
                         result.restart_error.as_deref(),
                         strings(state.locale),
@@ -2227,25 +2222,21 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             }
             Err(error) => show_toast(
                 state,
-                format!(
-                    "{}{}",
-                    ui_tr(
-                        state.locale,
-                        "保存网络设置失败：",
-                        "Failed to save network settings: "
-                    ),
-                    error
-                ),
+                translate_ui(state.locale, tr::network_settings_save_failed(error)),
             ),
         },
     }
 }
 
-fn ui_tr(locale: UiLocale, zh: &'static str, en: &'static str) -> &'static str {
-    match locale {
-        UiLocale::ZhCn => zh,
-        UiLocale::En => en,
-    }
+fn translate_ui(locale: UiLocale, message: arkit::i18n::TypedMessage) -> String {
+    arkit::i18n::translate(
+        &tr::CATALOG,
+        match locale {
+            UiLocale::ZhCn => "zh-CN",
+            UiLocale::En => "en-US",
+        },
+        message,
+    )
 }
 
 fn open_manual_rule_editor(
