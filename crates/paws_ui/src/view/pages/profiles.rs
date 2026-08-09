@@ -581,7 +581,7 @@ fn profile_import_dialog(
     mut open_signal: Signal<bool>,
     url: Signal<String>,
     name: Signal<String>,
-    submitted: Signal<bool>,
+    mut submitted: Signal<bool>,
 ) -> Element {
     let import_loading = current.profile_import_loading;
     let error_value = current.profile_import_error.clone().unwrap_or_default();
@@ -596,13 +596,13 @@ fn profile_import_dialog(
             open: open,
             content_key: content_key,
             on_close: move |_| {
-                if !state.read().profile_import_loading {
-                    open_signal.set(false);
-                    dispatch(state, Action::ResetProfileImportFeedback);
-                }
+                open_signal.set(false);
+                submitted.set(false);
+                dispatch(state, Action::CancelProfileImport);
             },
             ProfileImportDialogBody {
                 state,
+                open_signal,
                 url,
                 name,
                 submitted,
@@ -616,6 +616,7 @@ fn profile_import_dialog(
 #[component]
 fn ProfileImportDialogBody(
     state: Signal<State>,
+    mut open_signal: Signal<bool>,
     mut url: Signal<String>,
     mut name: Signal<String>,
     mut submitted: Signal<bool>,
@@ -722,34 +723,51 @@ fn ProfileImportDialogBody(
             }
         }
         DialogFooter {
-            FlatButton {
-                variant: FlatButtonVariant::Primary,
-                width: Some("100%".into()),
-                disabled: Some(import_loading),
-                onclick: move |_| {
-                    if !state.read().profile_import_loading {
-                        submitted.set(true);
-                        dispatch(state, Action::ImportProfileFromUrl {
-                            url: url(),
-                            name: name(),
-                        });
-                    }
-                },
-                if import_loading {
-                    Spinner { size: 16.0, color: Some(primary_text()) }
-                } else {
-                    {arkit::icon("download", 16.0, primary_text())}
-                }
-                text {
-                    content: if import_loading {
-                        loading_label
-                    } else {
-                        translate_ui(locale, tr::profiles_import_submit())
+            row {
+                width: "100%",
+                FlatButton {
+                    variant: FlatButtonVariant::Outline,
+                    onclick: move |_| {
+                        open_signal.set(false);
+                        submitted.set(false);
+                        dispatch(state, Action::CancelProfileImport);
                     },
-                    margin_left: 8.0,
-                    font_size: 14.0,
-                    font_weight: 600,
-                    font_color: primary_text(),
+                    text {
+                        content: translate_ui(locale, tr::profiles_import_cancel()),
+                        font_size: 13.0,
+                        font_weight: 600,
+                        font_color: text_color(),
+                    }
+                }
+                row { layout_weight: 1.0 }
+                FlatButton {
+                    variant: FlatButtonVariant::Primary,
+                    disabled: Some(import_loading),
+                    onclick: move |_| {
+                        if !state.read().profile_import_loading {
+                            submitted.set(true);
+                            dispatch(state, Action::ImportProfileFromUrl {
+                                url: url(),
+                                name: name(),
+                            });
+                        }
+                    },
+                    if import_loading {
+                        Spinner { size: 16.0, color: Some(primary_text()) }
+                    } else {
+                        {arkit::icon("download", 16.0, primary_text())}
+                    }
+                    text {
+                        content: if import_loading {
+                            loading_label
+                        } else {
+                            translate_ui(locale, tr::profiles_import_submit())
+                        },
+                        margin_left: 8.0,
+                        font_size: 14.0,
+                        font_weight: 600,
+                        font_color: primary_text(),
+                    }
                 }
             }
         }

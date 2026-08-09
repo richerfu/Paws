@@ -202,6 +202,7 @@ profiles-scan-failed-prefix = 扫码失败：
 profiles-import-cancel = 取消
 profiles-import-url-required = 请输入配置 URL
 profiles-import-failed-prefix = 导入配置失败：
+profiles-import-timeout = 导入超时，请检查网络或配置文件后重试
 profiles-import-toast-prefix = 配置 
 profiles-import-toast-success-suffix =  已导入并启用
 profiles-import-toast-restart-suffix =  已导入并启用，已请求重启 VPN

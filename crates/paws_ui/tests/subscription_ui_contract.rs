@@ -222,6 +222,31 @@ fn network_import_has_a_real_pending_and_success_lifecycle() {
 }
 
 #[test]
+fn profile_import_can_close_while_pending_and_discards_stale_results() {
+    let dialog = section(VIEW, "fn profile_import_dialog", "fn yaml_editor_dialog");
+
+    assert!(dialog.contains("Action::CancelProfileImport"));
+    assert!(dialog.contains("profiles_import_cancel"));
+    assert!(dialog.contains("open_signal.set(false)"));
+    assert!(!dialog.contains("if !state.read().profile_import_loading {\n                    open_signal.set(false)"));
+
+    assert!(UI.contains("profile_import_request_id: Option<u64>"));
+    assert!(UI.contains("profile_import_cancel_tx"));
+    assert!(UI.contains("if !state.finish_profile_import(request_id)"));
+    assert!(UI.contains("send_replace(true)"));
+}
+
+#[test]
+fn profile_import_has_cancellable_timeout_and_visible_errors() {
+    assert!(UI.contains("PROFILE_IMPORT_TIMEOUT"));
+    assert!(UI.contains("Duration::from_secs(120)"));
+    assert!(UI.contains("tokio::select!"));
+    assert!(UI.contains("profiles_import_timeout"));
+    assert!(UI.contains("profiles_import_failed_prefix"));
+    assert!(UI.contains("show_toast(state, message)"));
+}
+
+#[test]
 fn proxy_node_names_use_native_width_based_ellipsis() {
     let page = section(VIEW, "fn proxies_page", "fn profiles_page");
 

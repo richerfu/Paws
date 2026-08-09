@@ -202,6 +202,7 @@ profiles-scan-failed-prefix = Scan failed:
 profiles-import-cancel = Cancel
 profiles-import-url-required = Enter a profile URL
 profiles-import-failed-prefix = Import failed: 
+profiles-import-timeout = Import timed out. Check the network or profile file and try again.
 profiles-import-toast-prefix = Profile 
 profiles-import-toast-success-suffix =  imported and activated
 profiles-import-toast-restart-suffix =  imported and activated; VPN restart requested

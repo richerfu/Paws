@@ -2,6 +2,37 @@ use super::*;
 use crate::i18n::{tr, translate_ui};
 use crate::locale::UiLocale;
 
+const PROFILE_IMPORT_TIMEOUT: Duration = Duration::from_secs(120);
+
+pub(super) async fn run_profile_import_task<F, T>(
+    task: F,
+    mut cancel_rx: tokio::sync::watch::Receiver<bool>,
+    locale: UiLocale,
+) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>> + Send,
+{
+    let cancelled = async move {
+        if *cancel_rx.borrow() {
+            return;
+        }
+        while cancel_rx.changed().await.is_ok() {
+            if *cancel_rx.borrow() {
+                return;
+            }
+        }
+    };
+
+    tokio::select! {
+        biased;
+        _ = cancelled => Err("profile import cancelled".to_owned()),
+        result = task => result,
+        _ = tokio::time::sleep(PROFILE_IMPORT_TIMEOUT) => {
+            Err(translate_ui(locale, tr::profiles_import_timeout()).to_owned())
+        }
+    }
+}
+
 pub(super) async fn load_snapshot() -> RuntimeSnapshot {
     let core = paws_core::shared_core();
     let _ = core.sync_external_controller_config().await;

@@ -131,16 +131,23 @@ pub(crate) enum Action {
     DeleteLogArchive(String),
     LogArchiveDeleted(Result<LogArchiveDeleteResult, String>),
     ResetProfileImportFeedback,
+    CancelProfileImport,
     ImportLocalProfile,
     ScanProfileSubscription {
         name: String,
     },
-    LocalProfileImportFinished(Result<ProfileImportResult, String>),
+    LocalProfileImportFinished {
+        request_id: u64,
+        result: Result<ProfileImportResult, String>,
+    },
     ImportProfileFromUrl {
         url: String,
         name: String,
     },
-    ProfileImportFinished(Result<ProfileImportResult, String>),
+    ProfileImportFinished {
+        request_id: u64,
+        result: Result<ProfileImportResult, String>,
+    },
     ImportRules,
     RulesImported(Result<RuleImportResult, String>),
     ActivateProfile(String),
@@ -224,6 +231,9 @@ pub(crate) struct State {
     profile_import_error: Option<String>,
     profile_import_loading: bool,
     profile_import_succeeded: bool,
+    next_profile_import_request_id: u64,
+    profile_import_request_id: Option<u64>,
+    profile_import_cancel_tx: Option<tokio::sync::watch::Sender<bool>>,
     rule_import_loading: bool,
     yaml_editor_open: bool,
     yaml_editor_profile_id: Option<String>,
@@ -422,6 +432,9 @@ impl State {
             profile_import_error: None,
             profile_import_loading: false,
             profile_import_succeeded: false,
+            next_profile_import_request_id: 0,
+            profile_import_request_id: None,
+            profile_import_cancel_tx: None,
             rule_import_loading: false,
             yaml_editor_open: false,
             yaml_editor_profile_id: None,
@@ -457,6 +470,42 @@ impl State {
 
     pub(crate) fn theme_dark(&self) -> bool {
         self.theme_dark
+    }
+
+    fn begin_profile_import(&mut self) -> (u64, tokio::sync::watch::Receiver<bool>) {
+        self.cancel_profile_import();
+        self.next_profile_import_request_id = self.next_profile_import_request_id.wrapping_add(1);
+        if self.next_profile_import_request_id == 0 {
+            self.next_profile_import_request_id = 1;
+        }
+        let request_id = self.next_profile_import_request_id;
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+        self.profile_import_request_id = Some(request_id);
+        self.profile_import_cancel_tx = Some(cancel_tx);
+        self.profile_import_loading = true;
+        self.profile_import_error = None;
+        self.profile_import_succeeded = false;
+        (request_id, cancel_rx)
+    }
+
+    fn cancel_profile_import(&mut self) {
+        if let Some(cancel_tx) = self.profile_import_cancel_tx.take() {
+            cancel_tx.send_replace(true);
+        }
+        self.profile_import_request_id = None;
+        self.profile_import_loading = false;
+        self.profile_import_error = None;
+        self.profile_import_succeeded = false;
+    }
+
+    fn finish_profile_import(&mut self, request_id: u64) -> bool {
+        if self.profile_import_request_id != Some(request_id) {
+            return false;
+        }
+        self.profile_import_request_id = None;
+        self.profile_import_cancel_tx = None;
+        self.profile_import_loading = false;
+        true
     }
 
     fn refresh_system_preferences(&mut self) {
@@ -1201,36 +1250,46 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             state.profile_import_succeeded = false;
             Command::none()
         }
+        Action::CancelProfileImport => {
+            state.cancel_profile_import();
+            Command::none()
+        }
         Action::ImportLocalProfile => {
             if state.profile_import_loading {
                 return Command::none();
             }
-            state.profile_import_loading = true;
-            state.profile_import_error = None;
-            state.profile_import_succeeded = false;
             let was_vpn_running = state.snapshot.vpn_running;
             let ui_locale = state.locale;
+            let (request_id, cancel_rx) = state.begin_profile_import();
             Command::perform(
-                import_profile_file_and_snapshot(was_vpn_running, ui_locale),
-                Action::LocalProfileImportFinished,
+                run_profile_import_task(
+                    import_profile_file_and_snapshot(was_vpn_running, ui_locale),
+                    cancel_rx,
+                    ui_locale,
+                ),
+                move |result| Action::LocalProfileImportFinished { request_id, result },
             )
         }
         Action::ScanProfileSubscription { name } => {
             if state.profile_import_loading {
                 return Command::none();
             }
-            state.profile_import_loading = true;
-            state.profile_import_error = None;
-            state.profile_import_succeeded = false;
             let was_vpn_running = state.snapshot.vpn_running;
             let ui_locale = state.locale;
+            let (request_id, cancel_rx) = state.begin_profile_import();
             Command::perform(
-                scan_profile_subscription_and_snapshot(name, was_vpn_running, ui_locale),
-                Action::LocalProfileImportFinished,
+                run_profile_import_task(
+                    scan_profile_subscription_and_snapshot(name, was_vpn_running, ui_locale),
+                    cancel_rx,
+                    ui_locale,
+                ),
+                move |result| Action::LocalProfileImportFinished { request_id, result },
             )
         }
-        Action::LocalProfileImportFinished(result) => {
-            state.profile_import_loading = false;
+        Action::LocalProfileImportFinished { request_id, result } => {
+            if !state.finish_profile_import(request_id) {
+                return Command::none();
+            }
             match result {
                 Ok(result) => {
                     state.snapshot = result.snapshot;
@@ -1253,16 +1312,14 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                         state.profile_import_succeeded = false;
                         Command::none()
                     } else {
-                        state.profile_import_error = Some(error.clone());
+                        let message = format!(
+                            "{}{}",
+                            translate_ui(state.locale, tr::profiles_import_failed_prefix()),
+                            error
+                        );
+                        state.profile_import_error = Some(message.clone());
                         state.profile_import_succeeded = false;
-                        show_toast(
-                            state,
-                            format!(
-                                "{}{}",
-                                translate_ui(state.locale, tr::profiles_import_failed_prefix()),
-                                error
-                            ),
-                        )
+                        show_toast(state, message)
                     }
                 }
             }
@@ -1282,17 +1339,22 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 "" => None,
                 value => Some(value.to_owned()),
             };
-            state.profile_import_loading = true;
-            state.profile_import_error = None;
             let was_vpn_running = state.snapshot.vpn_running;
             let ui_locale = state.locale;
+            let (request_id, cancel_rx) = state.begin_profile_import();
             Command::perform(
-                import_profile_url_and_snapshot(url, name, was_vpn_running, ui_locale),
-                Action::ProfileImportFinished,
+                run_profile_import_task(
+                    import_profile_url_and_snapshot(url, name, was_vpn_running, ui_locale),
+                    cancel_rx,
+                    ui_locale,
+                ),
+                move |result| Action::ProfileImportFinished { request_id, result },
             )
         }
-        Action::ProfileImportFinished(result) => {
-            state.profile_import_loading = false;
+        Action::ProfileImportFinished { request_id, result } => {
+            if !state.finish_profile_import(request_id) {
+                return Command::none();
+            }
             match result {
                 Ok(result) => {
                     state.snapshot = result.snapshot;
@@ -1309,9 +1371,14 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     )
                 }
                 Err(error) => {
-                    state.profile_import_error = Some(error);
+                    let message = format!(
+                        "{}{}",
+                        translate_ui(state.locale, tr::profiles_import_failed_prefix()),
+                        error
+                    );
+                    state.profile_import_error = Some(message.clone());
                     state.profile_import_succeeded = false;
-                    Command::none()
+                    show_toast(state, message)
                 }
             }
         }
