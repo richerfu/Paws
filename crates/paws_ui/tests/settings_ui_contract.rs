@@ -1,8 +1,11 @@
 use std::fs;
 
 #[test]
-fn application_root_explicitly_preserves_safe_area() {
+fn application_root_delegates_safe_area_to_arkts_host() {
     let source = fs::read_to_string("src/view.rs").unwrap();
+    let ability =
+        fs::read_to_string("../../entry/src/main/ets/entryability/EntryAbility.ets").unwrap();
+    let page = fs::read_to_string("../../entry/src/main/ets/pages/Index.ets").unwrap();
     let app = source
         .split("pub(crate) fn App()")
         .nth(1)
@@ -11,8 +14,15 @@ fn application_root_explicitly_preserves_safe_area() {
         .next()
         .unwrap();
 
-    assert!(app.contains("SafeArea {"));
+    assert!(!app.contains("SafeArea {"));
     assert!(app.contains("ThemeProvider {"));
+    assert!(ability.contains("initializeSafeArea(win);"));
+    assert!(
+        ability.find("initializeSafeArea(win);").unwrap()
+            < ability.find("setUIContent('pages/Index')").unwrap()
+    );
+    assert!(page.contains("getSafeAreaInsets()"));
+    assert!(page.contains(".padding({"));
 }
 
 #[test]
