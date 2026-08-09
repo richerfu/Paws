@@ -632,6 +632,33 @@ async fn platform_start_completes_only_on_matching_connected_terminal() {
 }
 
 #[tokio::test]
+async fn platform_vpn_state_changes_are_delivered_by_revisioned_events() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-events-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let initial_revision = core.platform_vpn_event_revision();
+
+    core.begin_platform_vpn_start().unwrap();
+    let starting_revision = core
+        .await_platform_vpn_event(initial_revision)
+        .await
+        .unwrap();
+    assert!(starting_revision > initial_revision);
+    assert_eq!(core.snapshot().unwrap().vpn_lifecycle, VpnLifecycle::Starting);
+
+    core.set_platform_vpn_running(true).unwrap();
+    let connected_revision = core
+        .await_platform_vpn_event(starting_revision)
+        .await
+        .unwrap();
+    assert!(connected_revision > starting_revision);
+    assert!(core.snapshot().unwrap().vpn_running);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
 async fn platform_start_failure_is_exactly_once() {
     let root = std::env::temp_dir().join(format!("paws-platform-vpn-failed-{}", now_unix_nanos()));
     let core = CoreHandle::new_with_profile_root(&root);
@@ -3438,8 +3465,6 @@ vless://b831381d-6324-4d53-ad4f-8cda48b30811@127.0.0.1:443?type=tcp&security=tls
 vless://b831381d-6324-4d53-ad4f-8cda48b30811@127.0.0.1:443?type=tcp&tls=true&sni=localhost#VLESS-TLS-QUERY
 vless://b831381d-6324-4d53-ad4f-8cda48b30811@127.0.0.1:443?type=tcp&encryption=none#VLESS-ENCRYPTION-NONE
 vless://b831381d-6324-4d53-ad4f-8cda48b30811@127.0.0.1:443?type=tcp&udp=false#VLESS-UDP-OFF
-trojan://test-trojan-password@127.0.0.1:443?type=grpc&serviceName=svc&sni=localhost&allowInsecure=1&fast-open=true#TROJAN-GRPC
-trojan://test-trojan-password@127.0.0.1:443?type=grpc&grpc-service-name=alias-svc&grpc-mode=gun&serverName=localhost&allow-insecure=allow#TROJAN-GRPC-ALIAS
 http://user:pass@127.0.0.1:8080?headers=User-Agent%3DPaws%3BProxy-Authorization%3DBearer%20token#HTTP-SHARE
 socks5://sock:sockpass@127.0.0.1:1080?tls=true&skip-cert-verify=true&udp=true&fastOpen=true#SOCKS5-SHARE
 ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@127.0.0.1:8388?plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dlocalhost&TFO=true#SS-OBFS
@@ -3494,14 +3519,6 @@ ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@127.0.0.1:8390?plugin=Simple-Obfs%3Bobfs%3Dhttp
     assert!(proxy_group
         .proxies
         .iter()
-        .any(|proxy| proxy.name == "TROJAN-GRPC"));
-    assert!(proxy_group
-        .proxies
-        .iter()
-        .any(|proxy| proxy.name == "TROJAN-GRPC-ALIAS"));
-    assert!(proxy_group
-        .proxies
-        .iter()
         .any(|proxy| proxy.name == "HTTP-SHARE"));
     assert!(proxy_group
         .proxies
@@ -3519,6 +3536,51 @@ ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@127.0.0.1:8390?plugin=Simple-Obfs%3Bobfs%3Dhttp
         .proxies
         .iter()
         .any(|proxy| proxy.name == "SS-OBFS-CASE"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unsupported_transport_options_are_rejected_instead_of_ignored() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-transport-contract-test-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(root);
+    let trojan_grpc = "trojan://password@example.test:443?type=grpc&serviceName=svc&sni=edge.example.test#TROJAN-GRPC";
+    let error = core
+        .import_profile_from_content("unsupported", "clipboard", trojan_grpc, None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Trojan network 'grpc' is not implemented"));
+
+    let ws_h2 = r#"
+proxies:
+  - name: WS-H2
+    type: vless
+    server: edge.example.test
+    port: 443
+    uuid: b831381d-6324-4d53-ad4f-8cda48b30811
+    tls: true
+    network: ws
+    alpn: [h2, http/1.1]
+    ws-opts:
+      headers:
+        Host: cdn.example.test
+proxy-groups:
+  - name: Proxy
+    type: select
+    proxies: [WS-H2]
+rules: [MATCH,Proxy]
+"#;
+    let error = core
+        .validate_profile_content(ws_h2)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("WebSocket ALPN must be exactly http/1.1"));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

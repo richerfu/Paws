@@ -195,7 +195,17 @@ impl PlatformIpc {
     }
 
     pub(crate) fn wait_for_change(&self, timeout: Duration) -> Result<bool> {
-        self.notification.wait(timeout)
+        self.notification.wait(Some(timeout))
+    }
+
+    /// Wait for the peer process to publish a new frame.
+    ///
+    /// The UI process gives this blocking subscription to one dedicated
+    /// event pump. All in-process consumers subscribe to a Rust watch channel
+    /// instead of racing to drain this socket.
+    pub(crate) fn wait_for_change_event(&self) -> Result<()> {
+        while !self.notification.wait(None)? {}
+        Ok(())
     }
 
     pub(crate) fn is_ui(&self) -> bool {
@@ -358,12 +368,14 @@ impl SocketNotification {
         }
     }
 
-    fn wait(&self, timeout: Duration) -> Result<bool> {
+    fn wait(&self, timeout: Option<Duration>) -> Result<bool> {
         let _subscription = self
             .subscription
             .lock()
             .map_err(|_| PlatformIpcError::LockPoisoned)?;
-        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+        let timeout_ms = timeout
+            .map(|timeout| timeout.as_millis().min(i32::MAX as u128) as i32)
+            .unwrap_or(-1);
         let fd = self.local.as_raw_fd();
         let mut descriptor = libc::pollfd {
             fd,
@@ -532,5 +544,28 @@ mod tests {
         );
         header[8] ^= 1;
         assert!(FrameHeader::parse(&header, 1024).is_none());
+    }
+
+    #[test]
+    fn blocking_event_subscription_wakes_for_peer_publication() {
+        let (local, peer) = create_notification_pair().unwrap();
+        let subscription = Arc::new(SocketNotification {
+            local,
+            transfer: None,
+            subscription: Mutex::new(()),
+        });
+        let notifier = SocketNotification {
+            local: peer,
+            transfer: None,
+            subscription: Mutex::new(()),
+        };
+        let waiter = {
+            let subscription = Arc::clone(&subscription);
+            std::thread::spawn(move || subscription.wait(None))
+        };
+
+        notifier.notify().unwrap();
+
+        assert!(waiter.join().unwrap().unwrap());
     }
 }

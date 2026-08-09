@@ -32,6 +32,7 @@ const DNS_BURST_CAP: usize = 256;
 const DNS_CACHE_MAX_TTL: u32 = 300;
 const DNS_CACHE_MAX_RECORDS: usize = 512;
 const DNS_TABLE_MAX_RECORDS: usize = 1024;
+const DNS_TABLE_MAX_HOSTS_PER_IP: usize = 16;
 const DNS_RECENT_QUERY_LIMIT: usize = 16;
 const UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const UDP_SWEEP_INTERVAL: Duration = Duration::from_secs(15);

@@ -1,13 +1,14 @@
 use std::fs;
 
 #[test]
-fn application_root_delegates_safe_area_to_arkts_host() {
+fn application_root_keeps_overlays_edge_to_edge_and_insets_only_app_layout() {
     let source = fs::read_to_string("src/view.rs").unwrap();
     let ability =
         fs::read_to_string("../../entry/src/main/ets/entryability/EntryAbility.ets").unwrap();
     let page = fs::read_to_string("../../entry/src/main/ets/pages/Index.ets").unwrap();
+    let plugin = fs::read_to_string("../../entry/src/main/ets/plugins/SafeAreaPlugin.ets").unwrap();
     let app = source
-        .split("pub(crate) fn App()")
+        .split("pub(crate) fn App(")
         .nth(1)
         .unwrap()
         .split("fn AppShell()")
@@ -16,13 +17,29 @@ fn application_root_delegates_safe_area_to_arkts_host() {
 
     assert!(!app.contains("SafeArea {"));
     assert!(app.contains("ThemeProvider {"));
-    assert!(ability.contains("initializeSafeArea(win);"));
+    assert!(app.contains("NotificationHost { center: notifications }"));
+    assert!(ability.contains("this.safeAreaPlugin.captureInitialSafeArea()"));
     assert!(
-        ability.find("initializeSafeArea(win);").unwrap()
+        ability
+            .find("this.safeAreaPlugin.captureInitialSafeArea()")
+            .unwrap()
             < ability.find("setUIContent('pages/Index')").unwrap()
     );
-    assert!(page.contains("getSafeAreaInsets()"));
-    assert!(page.contains(".padding({"));
+    assert!(!page.contains("getSafeAreaInsets()"));
+    assert!(!page.contains(".padding({"));
+    assert!(plugin.contains("getWindowAvoidArea(type)"));
+    assert!(plugin.contains("TYPE_NAVIGATION_INDICATOR"));
+
+    let shell = source
+        .split("fn AppShell()")
+        .nth(1)
+        .unwrap()
+        .split("fn vpn_floating_action")
+        .next()
+        .unwrap();
+    assert!(shell.contains("window_metrics.content_rect.is_empty()"));
+    assert!(shell.contains("padding_top: safe_area.top"));
+    assert!(shell.contains("padding_bottom: safe_area.bottom"));
 }
 
 #[test]

@@ -281,8 +281,9 @@ fn dialog_content_key(parts: &[&str]) -> u64 {
     hasher.finish()
 }
 
-#[component]
-pub(crate) fn App() -> Element {
+#[allow(non_snake_case)]
+pub(crate) fn App(initial_safe_area: bridge::InitialSafeArea) -> Element {
+    use_context_provider(move || initial_safe_area);
     let notifications = use_notification_center();
     let runtime = arkit::use_runtime_handle();
     let initial_runtime = runtime.clone();
@@ -339,19 +340,24 @@ pub(crate) fn App() -> Element {
             return;
         }
         bootstrapped.set(true);
+        let vpn_event_revision = state.peek().vpn_event_revision;
         run_command(
             state,
             Command::batch([
                 Command::perform(bootstrap_active_profile(), Action::SnapshotLoaded),
                 Command::perform(delayed_snapshot(), Action::TickSnapshot),
+                Command::perform(
+                    await_vpn_state_event(vpn_event_revision),
+                    Action::VpnStateEvent,
+                ),
             ]),
         );
     });
 
     rsx! {
-        // The ArkTS host sizes the XComponent to the safe viewport before
-        // arkit's first render, so applying a second native inset here would
-        // both duplicate avoidance and reintroduce first-frame reflow.
+        // The full Arkit tree remains edge-to-edge. AppShell applies the safe
+        // area to business layout; root portals such as NotificationHost read
+        // the same window metrics independently and therefore avoid only once.
         ThemeProvider {
             theme,
             Router::<Route> {}
@@ -362,6 +368,13 @@ pub(crate) fn App() -> Element {
 
 #[component]
 fn AppShell() -> Element {
+    let initial_safe_area = use_context::<bridge::InitialSafeArea>().0;
+    let window_metrics = arkit::use_window_metrics();
+    let safe_area = if window_metrics.content_rect.is_empty() {
+        initial_safe_area
+    } else {
+        window_metrics.safe_area
+    };
     let state = use_context::<Signal<State>>();
     let current = state.read().clone();
     let route = use_route::<Route>();
@@ -378,6 +391,10 @@ fn AppShell() -> Element {
             height: "100%",
             background_color: bg(),
             alignment: "top-start",
+            padding_top: safe_area.top,
+            padding_right: safe_area.right,
+            padding_bottom: safe_area.bottom,
+            padding_left: safe_area.left,
             column {
                 width: "100%",
                 height: "100%",

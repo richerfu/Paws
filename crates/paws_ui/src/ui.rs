@@ -70,7 +70,7 @@ pub(crate) enum Action {
     SetThemePreference(ThemePreference),
     StartStopVpn,
     VpnCommandFinished(Result<VpnCommandResult, String>),
-    VpnCommandSnapshot(RuntimeSnapshot),
+    VpnStateEvent(Result<VpnStateEventResult, String>),
     SetMode(RuntimeMode),
     ModeChanged(Result<ModeChangeResult, String>),
     SelectProxy {
@@ -234,6 +234,7 @@ pub(crate) struct State {
     yaml_editor_saving: bool,
     yaml_editor_testing: bool,
     vpn_command_pending: Option<VpnCommandAction>,
+    vpn_event_revision: u64,
     proxy_selection_pending: Option<(String, String)>,
     proxy_delay_loading: bool,
     controller_diagnostic_pending: Option<String>,
@@ -296,6 +297,12 @@ pub(crate) struct VpnCommandResult {
     action: VpnCommandAction,
     profile_name: Option<String>,
     request_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct VpnStateEventResult {
+    revision: u64,
+    snapshot: RuntimeSnapshot,
 }
 
 #[derive(Debug, Clone)]
@@ -401,6 +408,7 @@ impl State {
     pub(crate) fn new(notifications: NotificationCenter, runtime: arkit::RuntimeHandle) -> Self {
         let core = paws_core::shared_core();
         let snapshot = core.snapshot().unwrap_or_default();
+        let vpn_event_revision = core.platform_vpn_event_revision();
         let log_recording = core.log_recording_status().unwrap_or_default();
         let preferences = UiPreferences::load();
         let locale = preferences.language.resolve(&system_language());
@@ -424,6 +432,7 @@ impl State {
             yaml_editor_saving: false,
             yaml_editor_testing: false,
             vpn_command_pending: None,
+            vpn_event_revision,
             proxy_selection_pending: None,
             proxy_delay_loading: false,
             controller_diagnostic_pending: None,
@@ -527,13 +536,10 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
             } else if state.snapshot.vpn_running {
                 let ui_locale = state.locale;
                 state.vpn_command_pending = Some(VpnCommandAction::Stop);
-                Command::batch([
-                    Command::perform(
-                        stop_vpn_command_and_snapshot(ui_locale),
-                        Action::VpnCommandFinished,
-                    ),
-                    Command::perform(delayed_vpn_snapshot(), Action::VpnCommandSnapshot),
-                ])
+                Command::perform(
+                    stop_vpn_command_and_snapshot(ui_locale),
+                    Action::VpnCommandFinished,
+                )
             } else if let Some(profile_id) = state.snapshot.active_profile.clone().or_else(|| {
                 state
                     .snapshot
@@ -550,13 +556,10 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                     .unwrap_or_else(|| profile_id.clone());
                 let ui_locale = state.locale;
                 state.vpn_command_pending = Some(VpnCommandAction::Start);
-                Command::batch([
-                    Command::perform(
-                        start_vpn_command_and_snapshot(profile_id, profile_name, ui_locale),
-                        Action::VpnCommandFinished,
-                    ),
-                    Command::perform(delayed_vpn_snapshot(), Action::VpnCommandSnapshot),
-                ])
+                Command::perform(
+                    start_vpn_command_and_snapshot(profile_id, profile_name, ui_locale),
+                    Action::VpnCommandFinished,
+                )
             } else {
                 show_toast(
                     state,
@@ -587,15 +590,22 @@ pub(crate) fn reduce(state: &mut State, message: Action) -> Command<Action> {
                 show_toast(state, error)
             }
         },
-        Action::VpnCommandSnapshot(snapshot) => {
-            state.snapshot = snapshot;
-            reconcile_vpn_command(state);
-            if state.vpn_command_pending.is_some() {
-                Command::perform(delayed_vpn_snapshot(), Action::VpnCommandSnapshot)
-            } else {
-                Command::none()
+        Action::VpnStateEvent(result) => match result {
+            Ok(event) => {
+                state.vpn_event_revision = event.revision;
+                state.snapshot = event.snapshot;
+                reconcile_vpn_command(state);
+                state.refresh_system_preferences();
+                Command::perform(
+                    await_vpn_state_event(state.vpn_event_revision),
+                    Action::VpnStateEvent,
+                )
             }
-        }
+            Err(error) => {
+                state.vpn_command_pending = None;
+                show_toast(state, error)
+            }
+        },
         Action::SetMode(mode) => Command::perform(
             async move {
                 let core = paws_core::shared_core();

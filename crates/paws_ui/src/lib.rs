@@ -47,8 +47,9 @@ use arkit::prelude::Element;
     bridge::PawsExportBridgePlugin,
 ])]
 fn app(handle: arkit::openharmony_ability::OpenHarmonyApp) -> Element {
+    let initial_safe_area = bridge::initial_safe_area(&handle);
     bridge::set_app(handle);
-    ui::App()
+    ui::App(initial_safe_area)
 }
 
 #[napi]

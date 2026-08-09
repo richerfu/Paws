@@ -38,6 +38,7 @@ use tracing_subscriber::Layer;
 
 mod controller;
 mod exit_location;
+pub mod http_client;
 mod log_recording;
 mod logging;
 mod platform_ipc;
@@ -305,6 +306,8 @@ pub struct CoreHandle {
     state: Mutex<CoreState>,
     platform_ipc: Mutex<Option<Arc<PlatformIpc>>>,
     platform_start_tx: tokio::sync::watch::Sender<PlatformStartEvent>,
+    platform_vpn_event_sequence: AtomicU64,
+    platform_vpn_event_tx: tokio::sync::watch::Sender<u64>,
     config_reload_lock: tokio::sync::Mutex<()>,
     exit_location_refresh_lock: tokio::sync::Mutex<()>,
     mixed_listener: Mutex<Option<MixedListenerRuntime>>,
@@ -357,10 +360,13 @@ impl CoreHandle {
     fn new() -> Self {
         install_runtime_log_layer();
         let (platform_start_tx, _) = tokio::sync::watch::channel(PlatformStartEvent::default());
+        let (platform_vpn_event_tx, _) = tokio::sync::watch::channel(0);
         Self {
             state: Mutex::new(CoreState::default()),
             platform_ipc: Mutex::new(None),
             platform_start_tx,
+            platform_vpn_event_sequence: AtomicU64::new(0),
+            platform_vpn_event_tx,
             config_reload_lock: tokio::sync::Mutex::new(()),
             exit_location_refresh_lock: tokio::sync::Mutex::new(()),
             mixed_listener: Mutex::new(None),
@@ -374,6 +380,7 @@ impl CoreHandle {
     fn new_with_profile_root(root: impl Into<std::path::PathBuf>) -> Self {
         install_runtime_log_layer();
         let (platform_start_tx, _) = tokio::sync::watch::channel(PlatformStartEvent::default());
+        let (platform_vpn_event_tx, _) = tokio::sync::watch::channel(0);
         let profiles = ProfileStore::open(root).expect("test profile store");
         let log_root = profiles.root().to_path_buf();
         log_recording::set_recording_enabled(&log_root, true)
@@ -435,6 +442,8 @@ impl CoreHandle {
             }),
             platform_ipc: Mutex::new(None),
             platform_start_tx,
+            platform_vpn_event_sequence: AtomicU64::new(0),
+            platform_vpn_event_tx,
             config_reload_lock: tokio::sync::Mutex::new(()),
             exit_location_refresh_lock: tokio::sync::Mutex::new(()),
             mixed_listener: Mutex::new(None),
@@ -459,7 +468,9 @@ impl CoreHandle {
         CORE.clone()
     }
 
-    pub fn initialize_platform_shared_memory(&self) -> Result<PlatformSharedMemoryFds, PawsError> {
+    pub fn initialize_platform_shared_memory(
+        self: &Arc<Self>,
+    ) -> Result<PlatformSharedMemoryFds, PawsError> {
         {
             let platform = self
                 .platform_ipc
@@ -488,8 +499,9 @@ impl CoreHandle {
                 .platform_ipc
                 .lock()
                 .map_err(|_| PawsError::Core("platform IPC lock poisoned".to_owned()))?;
-            *slot = Some(platform);
+            *slot = Some(Arc::clone(&platform));
         }
+        self.start_platform_vpn_event_pump(platform)?;
         let mut state = self.lock_state()?;
         state.runtime_ui_cache_writes_enabled = true;
         self.persist_platform_vpn_state_locked(&mut state)?;
@@ -543,6 +555,72 @@ impl CoreHandle {
             .map_err(platform_ipc_error)
     }
 
+    /// Current in-process VPN state event revision.
+    ///
+    /// UI consumers keep this revision and await the next one. The revision
+    /// is independent from the cross-process shared-memory generation so
+    /// local transitions such as `starting` are delivered through the same
+    /// event stream as remote Extension transitions.
+    pub fn platform_vpn_event_revision(&self) -> u64 {
+        self.platform_vpn_event_sequence.load(Ordering::Acquire)
+    }
+
+    /// Await the first VPN state event newer than `after_revision`.
+    pub async fn await_platform_vpn_event(
+        &self,
+        after_revision: u64,
+    ) -> Result<u64, PawsError> {
+        let mut receiver = self.platform_vpn_event_tx.subscribe();
+        loop {
+            let revision = *receiver.borrow_and_update();
+            if revision > after_revision {
+                return Ok(revision);
+            }
+            receiver.changed().await.map_err(|_| {
+                PawsError::Core("platform VPN event stream closed".to_owned())
+            })?;
+        }
+    }
+
+    fn start_platform_vpn_event_pump(
+        self: &Arc<Self>,
+        platform: Arc<PlatformIpc>,
+    ) -> Result<(), PawsError> {
+        let core = Arc::clone(self);
+        std::thread::Builder::new()
+            .name("paws-platform-vpn-events".to_owned())
+            .spawn(move || loop {
+                if let Err(error) = platform.wait_for_change_event() {
+                    core.record_platform_vpn_event_pump_failure(error.to_string());
+                    break;
+                }
+                if let Err(error) = core.sync_platform_changes() {
+                    core.record_platform_vpn_event_pump_failure(error.to_string());
+                    break;
+                }
+            })
+            .map(|_| ())
+            .map_err(|error| {
+                PawsError::Core(format!("start platform VPN event pump failed: {error}"))
+            })
+    }
+
+    fn record_platform_vpn_event_pump_failure(&self, error: String) {
+        let Ok(mut state) = self.lock_state() else {
+            return;
+        };
+        let message = format!("platform VPN event pump failed: {error}");
+        if state.platform_start_outcome == PlatformStartOutcome::Pending {
+            state.platform_vpn_starting = false;
+            state.platform_vpn_running = false;
+            state.platform_network_protected = false;
+            state.platform_network_protect_error = Some(message.clone());
+            state.platform_start_outcome = PlatformStartOutcome::Failed;
+        }
+        state.logs.push(warning_log(message));
+        self.notify_platform_vpn_state_locked(&state);
+    }
+
     fn platform_ipc(&self) -> Result<Option<Arc<PlatformIpc>>, PawsError> {
         self.platform_ipc
             .lock()
@@ -550,32 +628,72 @@ impl CoreHandle {
             .map_err(|_| PawsError::Core("platform IPC lock poisoned".to_owned()))
     }
 
+    pub fn external_http_route(
+        &self,
+    ) -> Result<(Option<String>, http_client::ExternalHttpRoute), PawsError> {
+        let state = self.lock_state()?;
+        if self.vpn.is_running() || state.platform_vpn_running {
+            Ok((
+                Some(format!(
+                    "http://127.0.0.1:{}",
+                    state.network_ports.mixed_port
+                )),
+                http_client::ExternalHttpRoute::CurrentProxy,
+            ))
+        } else {
+            Ok((None, http_client::ExternalHttpRoute::Direct))
+        }
+    }
+
+    async fn download_subscription(
+        &self,
+        url: &str,
+        context: &str,
+    ) -> Result<http_client::ExternalTextResponse, PawsError> {
+        let (proxy_url, route) = self.external_http_route()?;
+        let client = http_client::shared_external_http_client()
+            .map_err(|error| PawsError::Core(error.to_string()))?;
+        let request = client
+            .request(
+                reqwest::Method::GET,
+                url,
+                proxy_url.as_deref(),
+                http_client::ExternalRequestKind::Subscription,
+            )
+            .map_err(|error| PawsError::Core(error.to_string()))?;
+        let response = request.send().await.map_err(|error| {
+            PawsError::Core(format!(
+                "{context} request via {route} failed: {}",
+                error.without_url()
+            ))
+        })?;
+        http_client::read_external_text_response(
+            response,
+            context,
+            route,
+            http_client::EXTERNAL_HTTP_MAX_BODY_BYTES,
+        )
+        .await
+        .map_err(|error| PawsError::Core(error.to_string()))
+    }
+
     pub async fn import_profile_from_url(
         &self,
         url: &str,
         name: Option<String>,
     ) -> Result<String, PawsError> {
-        let response = reqwest::get(url)
-            .await
-            .map_err(|err| PawsError::Core(format!("profile download failed: {err}")))?;
-        if !response.status().is_success() {
-            return Err(PawsError::Core(format!(
-                "profile download failed with HTTP {}",
-                response.status()
-            )));
-        }
-        let subscription_user_info = subscription_userinfo_from_headers(response.headers());
-        let subscription_metadata = subscription_metadata_from_headers(response.headers());
+        let response = self
+            .download_subscription(url, "profile download")
+            .await?;
+        let subscription_user_info = subscription_userinfo_from_headers(&response.headers);
+        let subscription_metadata = subscription_metadata_from_headers(&response.headers);
         let header_name =
-            subscription_profile_name_from_headers(response.headers()).or_else(|| {
+            subscription_profile_name_from_headers(&response.headers).or_else(|| {
                 subscription_metadata
                     .as_ref()
                     .and_then(|meta| meta.title.clone())
             });
-        let raw_yaml = response
-            .text()
-            .await
-            .map_err(|err| PawsError::Core(format!("profile body read failed: {err}")))?;
+        let raw_yaml = response.body;
         let subscription_user_info = subscription_user_info
             .or_else(|| paws_profile::parse_subscription_userinfo_comment(&raw_yaml));
         let subscription_metadata = paws_profile::merge_subscription_metadata(
@@ -658,21 +776,12 @@ impl CoreHandle {
         profile_id: &str,
         url: &str,
     ) -> Result<(), PawsError> {
-        let response = reqwest::get(url)
-            .await
-            .map_err(|err| PawsError::Core(format!("profile refresh failed: {err}")))?;
-        if !response.status().is_success() {
-            return Err(PawsError::Core(format!(
-                "profile refresh failed with HTTP {}",
-                response.status()
-            )));
-        }
-        let subscription_user_info = subscription_userinfo_from_headers(response.headers());
-        let subscription_metadata = subscription_metadata_from_headers(response.headers());
-        let raw_yaml = response
-            .text()
-            .await
-            .map_err(|err| PawsError::Core(format!("profile body read failed: {err}")))?;
+        let response = self
+            .download_subscription(url, "profile refresh")
+            .await?;
+        let subscription_user_info = subscription_userinfo_from_headers(&response.headers);
+        let subscription_metadata = subscription_metadata_from_headers(&response.headers);
+        let raw_yaml = response.body;
         let subscription_user_info = subscription_user_info
             .or_else(|| paws_profile::parse_subscription_userinfo_comment(&raw_yaml));
         let subscription_metadata = paws_profile::merge_subscription_metadata(
@@ -1066,7 +1175,6 @@ impl CoreHandle {
             .start(fd, options.clone(), tunnel.clone(), sniffer_config)?;
         let mixed_listener = self.restart_mixed_listener(tunnel, mixed_port).await;
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         state.vpn_options = options;
         state.engine_loaded = true;
         state.platform_vpn_starting = false;
@@ -1312,7 +1420,6 @@ impl CoreHandle {
     /// published through shared memory.
     pub fn begin_platform_vpn_start(&self) -> Result<String, PawsError> {
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         if state.platform_start_outcome == PlatformStartOutcome::Pending {
             return Err(PawsError::Core(
                 "platform VPN start is already pending".to_owned(),
@@ -1349,7 +1456,6 @@ impl CoreHandle {
             ));
         }
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         if state.platform_start_attempt_id != attempt_id {
             return Err(PawsError::Core(format!(
                 "stale platform VPN start attempt {attempt_id}"
@@ -1393,8 +1499,7 @@ impl CoreHandle {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let event = {
-                let mut state = self.lock_state()?;
-                self.sync_platform_vpn_state_locked(&mut state);
+                let state = self.lock_state()?;
                 self.platform_start_event_locked(&state)
             };
             if event.attempt_id != attempt_id || event.outcome != PlatformStartOutcome::Pending {
@@ -1410,7 +1515,6 @@ impl CoreHandle {
                         "platform VPN start coordinator closed".to_owned()
                     ))?;
                 }
-                _ = tokio::time::sleep(Duration::from_millis(25)) => {}
                 _ = tokio::time::sleep_until(deadline) => return Ok(false),
             }
         }
@@ -1438,8 +1542,7 @@ impl CoreHandle {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let event = {
-                let mut state = self.lock_state()?;
-                self.sync_platform_vpn_state_locked(&mut state);
+                let state = self.lock_state()?;
                 self.platform_start_event_locked(&state)
             };
             if event.attempt_id != attempt_id {
@@ -1477,9 +1580,6 @@ impl CoreHandle {
                         "platform VPN start coordinator closed".to_owned()
                     ))?;
                 }
-                changed = self.wait_for_platform_change(Duration::from_secs(1)) => {
-                    changed?;
-                }
                 _ = tokio::time::sleep_until(deadline) => {
                     self.fail_platform_vpn_start(
                         attempt_id,
@@ -1515,7 +1615,6 @@ impl CoreHandle {
         require_unattached: bool,
     ) -> Result<bool, PawsError> {
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         if !self.platform_start_is_pending_locked(&state, attempt_id)
             || (require_unattached && state.platform_extension_attached)
         {
@@ -1537,7 +1636,6 @@ impl CoreHandle {
     /// Cancel only the matching pending start transaction.
     pub fn cancel_platform_vpn_start(&self, attempt_id: &str) -> Result<bool, PawsError> {
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         if !self.platform_start_is_pending_locked(&state, attempt_id) {
             return Ok(false);
         }
@@ -1581,7 +1679,6 @@ impl CoreHandle {
 
     pub fn set_platform_vpn_starting(&self, starting: bool) -> Result<(), PawsError> {
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         state.platform_vpn_starting = starting;
         if starting {
             state.platform_vpn_running = false;
@@ -1598,7 +1695,6 @@ impl CoreHandle {
 
     pub fn expire_platform_vpn_start(&self) -> Result<bool, PawsError> {
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         if !state.platform_vpn_starting || state.platform_vpn_running {
             return Ok(false);
         }
@@ -1618,7 +1714,6 @@ impl CoreHandle {
 
     pub fn set_platform_vpn_failed(&self, error: String) -> Result<(), PawsError> {
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         state.platform_vpn_starting = false;
         state.platform_vpn_running = false;
         state.platform_network_protected = false;
@@ -1639,7 +1734,6 @@ impl CoreHandle {
         }
         let stats = if running { None } else { self.vpn.stats() };
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         state.platform_vpn_starting = false;
         if state.platform_vpn_running != running {
             invalidate_exit_location(&mut state);
@@ -1671,7 +1765,6 @@ impl CoreHandle {
         error: Option<String>,
     ) -> Result<(), PawsError> {
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         state.platform_network_protected = protected;
         state.platform_network_protect_error = error.filter(|value| !value.trim().is_empty());
         if protected {
@@ -1911,7 +2004,6 @@ impl CoreHandle {
 
     pub fn set_mode(&self, mode: RuntimeMode) -> Result<(), PawsError> {
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         if mode == RuntimeMode::Global && state.tunnel.is_none() {
             return Err(PawsError::Core(
                 "Global mode requires an active profile with at least one proxy node".to_owned(),
@@ -3091,7 +3183,6 @@ impl CoreHandle {
         };
         let (revision, mixed_port) = {
             let mut state = self.lock_state()?;
-            self.sync_platform_vpn_state_locked(&mut state);
             let connected = self.vpn.is_running() || state.platform_vpn_running;
             if !connected {
                 if state.last_exit_location_check.is_some()
@@ -3124,7 +3215,6 @@ impl CoreHandle {
 
         let result = probe_exit_location(mixed_port).await;
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         if state.exit_location_revision != revision
             || !(self.vpn.is_running() || state.platform_vpn_running)
         {
@@ -3165,7 +3255,6 @@ impl CoreHandle {
         allow_platform_telemetry: bool,
     ) -> Result<RuntimeSnapshot, PawsError> {
         let mut state = self.lock_state()?;
-        self.sync_platform_vpn_state_locked(&mut state);
         state.logs.sync_session();
         if let Ok(mut runtime_logs) = RUNTIME_LOGS.lock() {
             runtime_logs.sync(state.logs.root());
@@ -3462,10 +3551,10 @@ impl CoreHandle {
         state.platform_vpn_state_updated_at =
             now_unix_nanos().max(state.platform_vpn_state_updated_at.saturating_add(1));
         let Some(platform) = self.platform_ipc()? else {
-            self.notify_platform_start_locked(state);
+            self.notify_platform_vpn_state_locked(state);
             return Ok(());
         };
-        self.notify_platform_start_locked(state);
+        self.notify_platform_vpn_state_locked(state);
         platform
             .publish_state(platform_vpn_state(state))
             .map_err(platform_ipc_error)
@@ -3570,7 +3659,7 @@ impl CoreHandle {
                 state.platform_network_protected = remote.network_protected;
                 state.platform_network_protect_error = remote.network_protect_error;
                 state.platform_vpn_state_updated_at = remote.updated_at;
-                self.notify_platform_start_locked(state);
+                self.notify_platform_vpn_state_locked(state);
             }
         }
         if let Some(control) = envelope
@@ -3605,6 +3694,15 @@ impl CoreHandle {
         if changed {
             self.platform_start_tx.send_replace(event);
         }
+    }
+
+    fn notify_platform_vpn_state_locked(&self, state: &CoreState) {
+        self.notify_platform_start_locked(state);
+        let revision = self
+            .platform_vpn_event_sequence
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        self.platform_vpn_event_tx.send_replace(revision);
     }
 
     fn sync_platform_vpn_control_locked(&self, state: &mut CoreState, control: PlatformVpnControl) {

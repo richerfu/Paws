@@ -7,12 +7,12 @@ import { UrlPlugin } from '@ohos-rs/ability-plugin-url';
 import window from '@ohos.window';
 import pawsUi from 'libpaws_ui.so';
 import { describeError } from '../common/Errors';
-import { initializeSafeArea } from '../common/SafeAreaBootstrap';
 import { setPawsBundleName } from '../vpnability/VpnConfig';
 import { runDebugAutomation } from '../automation/DebugAutomation';
 import { ClipboardPlugin } from '../plugins/ClipboardPlugin';
 import { ColorModePlugin } from '../plugins/ColorModePlugin';
 import { ExportPlugin } from '../plugins/ExportPlugin';
+import { SafeAreaPlugin } from '../plugins/SafeAreaPlugin';
 import { ScanPlugin } from '../plugins/ScanPlugin';
 import { VpnPlugin } from '../plugins/VpnPlugin';
 
@@ -30,16 +30,26 @@ export default class EntryAbility extends NativeAbility {
   public defaultPage: boolean = false;
 
   private readonly vpnPlugin: VpnPlugin = new VpnPlugin();
+  private readonly safeAreaPlugin: SafeAreaPlugin = new SafeAreaPlugin(
+    (options: window.AvoidAreaOptions): void => {
+      this.forEachLifecycle((lifecycle) =>
+        lifecycle.windowStageEventCallback.onAvoidAreaChange(options),
+      );
+    },
+  );
 
   public bridgePlugins = [
     new LazyPlugin(() => new FilesPlugin()),
     new LazyPlugin(() => new UrlPlugin()),
-    // The VPN plugin instance is shared with debug automation.
-    new LazyPlugin(() => this.vpnPlugin),
+    // VPN owns a process-lifetime IPC event pump and must be installed before
+    // the UI subscribes to lifecycle events. The instance is also shared with
+    // debug automation.
+    new EagerPlugin(this.vpnPlugin),
     new LazyPlugin(() => new ScanPlugin()),
     new LazyPlugin(() => new ClipboardPlugin()),
     new LazyPlugin(() => new ColorModePlugin()),
     new LazyPlugin(() => new ExportPlugin()),
+    new EagerPlugin(this.safeAreaPlugin),
   ];
 
   private configureNativeHome(): void {
@@ -116,7 +126,11 @@ export default class EntryAbility extends NativeAbility {
     try {
       const win = await windowStage.getMainWindow();
       await win.setWindowLayoutFullScreen(true);
-      initializeSafeArea(win);
+      try {
+        await this.safeAreaPlugin.captureInitialSafeArea();
+      } catch (err) {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'initial safe area skipped %{public}s', describeError(err));
+      }
       await win.setUIContent('pages/Index');
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'set UI content failed %{public}s', JSON.stringify(err) ?? '');

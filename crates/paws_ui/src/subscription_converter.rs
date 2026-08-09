@@ -1,7 +1,11 @@
 use crate::i18n::{tr, translate_ui};
 use crate::locale::UiLocale;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use reqwest::redirect::Policy;
+use paws_core::http_client::{
+    read_external_text_response, shared_external_http_client, ExternalHttpRoute,
+    ExternalRequestKind, ExternalTextResponse, EXTERNAL_HTTP_MAX_BODY_BYTES,
+};
+use reqwest::{Method, RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -36,6 +40,40 @@ const KNOWN_PARAMS: &[&str] = &[
     "clash.doh",
     "new_name",
 ];
+
+fn external_request(
+    method: Method,
+    url: &str,
+) -> Result<(RequestBuilder, ExternalHttpRoute), String> {
+    let (proxy_url, route) = paws_core::shared_core()
+        .external_http_route()
+        .map_err(|error| error.to_string())?;
+    let request = shared_external_http_client()
+        .map_err(|error| error.to_string())?
+        .request(
+            method,
+            url,
+            proxy_url.as_deref(),
+            ExternalRequestKind::Generic,
+        )
+        .map_err(|error| error.to_string())?;
+    Ok((request, route))
+}
+
+async fn external_text(
+    response: Response,
+    context: &str,
+    route: ExternalHttpRoute,
+) -> Result<ExternalTextResponse, String> {
+    read_external_text_response(
+        response,
+        context,
+        route,
+        EXTERNAL_HTTP_MAX_BODY_BYTES,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ClientType {
@@ -422,16 +460,16 @@ pub(crate) async fn resolve_and_parse_conversion_url(
     if input.contains("target") {
         return parse_conversion_url(locale, input);
     }
-    let client = reqwest::Client::builder()
-        .redirect(Policy::limited(10))
-        .build()
-        .map_err(|err| translate_ui(locale, tr::conv_010(err.to_string())))?;
-    let response = client
-        .get(input)
+    let (request, route) = external_request(Method::GET, input)
+        .map_err(|err| translate_ui(locale, tr::conv_010(err)))?;
+    let response = request
         .send()
         .await
-        .map_err(|err| translate_ui(locale, tr::conv_011(err.to_string())))?;
-    parse_conversion_url(locale, response.url().as_str())
+        .map_err(|err| translate_ui(locale, tr::conv_011(err.without_url().to_string())))?;
+    let response = external_text(response, "conversion URL resolve", route)
+        .await
+        .map_err(|err| translate_ui(locale, tr::conv_011(err)))?;
+    parse_conversion_url(locale, response.final_url.as_str())
 }
 
 pub(crate) async fn generate_short_url(
@@ -442,20 +480,18 @@ pub(crate) async fn generate_short_url(
     let api = validate_service_url(locale, api, &translate_ui(locale, tr::conv_012()))?;
     let form = reqwest::multipart::Form::new()
         .text("longUrl", BASE64_STANDARD.encode(long_url.as_bytes()));
-    let response = reqwest::Client::new()
-        .post(api)
+    let (request, route) = external_request(Method::POST, api.as_str())
+        .map_err(|err| translate_ui(locale, tr::conv_013(err)))?;
+    let response = request
         .multipart(form)
         .send()
         .await
-        .map_err(|err| translate_ui(locale, tr::conv_013(err.to_string())))?;
-    let status = response.status();
-    let value: Value = response
-        .json()
+        .map_err(|err| translate_ui(locale, tr::conv_013(err.without_url().to_string())))?;
+    let response = external_text(response, "short URL generation", route)
         .await
+        .map_err(|err| translate_ui(locale, tr::conv_015(err)))?;
+    let value: Value = serde_json::from_str(&response.body)
         .map_err(|err| translate_ui(locale, tr::conv_014(err.to_string())))?;
-    if !status.is_success() {
-        return Err(translate_ui(locale, tr::conv_015(status.to_string())));
-    }
     let code_ok = value.get("Code").and_then(Value::as_i64) == Some(1)
         || value.get("Code").and_then(Value::as_str) == Some("1");
     let short_url = value
@@ -482,20 +518,18 @@ pub(crate) async fn upload_remote_config(
     if content.trim().is_empty() {
         return Err(translate_ui(locale, tr::conv_018()));
     }
-    let response = reqwest::Client::new()
-        .post(api)
+    let (request, route) = external_request(Method::POST, api.as_str())
+        .map_err(|err| translate_ui(locale, tr::conv_019(err)))?;
+    let response = request
         .json(&serde_json::json!({ "content": content }))
         .send()
         .await
-        .map_err(|err| translate_ui(locale, tr::conv_019(err.to_string())))?;
-    let status = response.status();
-    let value: Value = response
-        .json()
+        .map_err(|err| translate_ui(locale, tr::conv_019(err.without_url().to_string())))?;
+    let response = external_text(response, "remote config upload", route)
         .await
+        .map_err(|err| translate_ui(locale, tr::conv_021(err)))?;
+    let value: Value = serde_json::from_str(&response.body)
         .map_err(|err| translate_ui(locale, tr::conv_020(err.to_string())))?;
-    if !status.is_success() {
-        return Err(translate_ui(locale, tr::conv_021(status.to_string())));
-    }
     let uploaded = value
         .get("data")
         .and_then(|data| data.get("url"))
@@ -522,15 +556,16 @@ pub(crate) async fn fetch_backend_version(
     let parent = path.strip_suffix("/sub").unwrap_or(path);
     url.set_path(&format!("{parent}/version"));
     url.set_query(None);
-    let response = reqwest::get(url)
+    let (request, route) = external_request(Method::GET, url.as_str())
+        .map_err(|err| translate_ui(locale, tr::conv_024(err)))?;
+    let response = request
+        .send()
         .await
-        .map_err(|err| translate_ui(locale, tr::conv_024(err.to_string())))?
-        .error_for_status()
-        .map_err(|err| translate_ui(locale, tr::conv_024(err.to_string())))?;
-    let text = response
-        .text()
+        .map_err(|err| translate_ui(locale, tr::conv_024(err.without_url().to_string())))?;
+    let text = external_text(response, "backend version fetch", route)
         .await
-        .map_err(|err| translate_ui(locale, tr::conv_025(err.to_string())))?;
+        .map_err(|err| translate_ui(locale, tr::conv_025(err)))?
+        .body;
     Ok(text
         .replace("backend\n", "")
         .replace("subconverter", "")

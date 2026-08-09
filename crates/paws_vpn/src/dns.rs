@@ -7,7 +7,7 @@ pub(super) fn monotonic_ms() -> u64 {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct DnsTable {
-    pub(super) records: Arc<Mutex<HashMap<IpAddr, DnsTableRecord>>>,
+    pub(super) records: Arc<Mutex<HashMap<IpAddr, Vec<DnsTableRecord>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -30,37 +30,83 @@ impl DnsTable {
             if !records.contains_key(&ip) && records.len() >= DNS_TABLE_MAX_RECORDS {
                 evict_earliest_dns_table_record(&mut records);
             }
-            records.insert(
-                ip,
-                DnsTableRecord {
-                    host,
-                    expires_at_ms: monotonic_ms().saturating_add(ttl_ms),
-                },
-            );
+            let expires_at_ms = monotonic_ms().saturating_add(ttl_ms);
+            let candidates = records.entry(ip).or_default();
+            if let Some(existing) = candidates
+                .iter_mut()
+                .find(|record| record.host.eq_ignore_ascii_case(&host))
+            {
+                existing.host = host;
+                existing.expires_at_ms = expires_at_ms;
+                return;
+            }
+            if candidates.len() >= DNS_TABLE_MAX_HOSTS_PER_IP {
+                if let Some(index) = candidates
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, record)| record.expires_at_ms)
+                    .map(|(index, _)| index)
+                {
+                    candidates.remove(index);
+                }
+            }
+            candidates.push(DnsTableRecord {
+                host,
+                expires_at_ms,
+            });
         }
     }
 
     pub(super) fn lookup(&self, ip: IpAddr) -> Option<String> {
         let mut records = self.records.lock().ok()?;
-        let record = records.get(&ip)?;
-        if record.expires_at_ms <= monotonic_ms() {
-            records.remove(&ip);
-            None
-        } else {
-            Some(record.host.clone())
-        }
+        prune_expired_dns_table_records(&mut records);
+        let candidates = records.get(&ip)?;
+        (candidates.len() == 1).then(|| candidates[0].host.clone())
+    }
+
+    pub(super) fn has_candidates(&self, ip: IpAddr) -> bool {
+        let Ok(mut records) = self.records.lock() else {
+            return false;
+        };
+        prune_expired_dns_table_records(&mut records);
+        records.get(&ip).is_some_and(|records| !records.is_empty())
+    }
+
+    #[cfg(test)]
+    pub(super) fn lookup_candidates(&self, ip: IpAddr) -> Vec<String> {
+        let Ok(mut records) = self.records.lock() else {
+            return Vec::new();
+        };
+        prune_expired_dns_table_records(&mut records);
+        records
+            .get(&ip)
+            .map(|records| records.iter().map(|record| record.host.clone()).collect())
+            .unwrap_or_default()
     }
 }
 
-pub(super) fn prune_expired_dns_table_records(records: &mut HashMap<IpAddr, DnsTableRecord>) {
+pub(super) fn prune_expired_dns_table_records(
+    records: &mut HashMap<IpAddr, Vec<DnsTableRecord>>,
+) {
     let now = monotonic_ms();
-    records.retain(|_, record| record.expires_at_ms > now);
+    records.retain(|_, candidates| {
+        candidates.retain(|record| record.expires_at_ms > now);
+        !candidates.is_empty()
+    });
 }
 
-pub(super) fn evict_earliest_dns_table_record(records: &mut HashMap<IpAddr, DnsTableRecord>) {
+pub(super) fn evict_earliest_dns_table_record(
+    records: &mut HashMap<IpAddr, Vec<DnsTableRecord>>,
+) {
     if let Some(ip) = records
         .iter()
-        .min_by_key(|(_, record)| record.expires_at_ms)
+        .min_by_key(|(_, candidates)| {
+            candidates
+                .iter()
+                .map(|record| record.expires_at_ms)
+                .min()
+                .unwrap_or(u64::MAX)
+        })
         .map(|(ip, _)| *ip)
     {
         records.remove(&ip);

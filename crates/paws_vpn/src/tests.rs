@@ -454,6 +454,24 @@ fn dns_table_restores_host() {
 }
 
 #[test]
+fn dns_table_preserves_shared_ip_hosts_without_guessing() {
+    let table = DnsTable::default();
+    let ip = IpAddr::V4(Ipv4Addr::new(104, 16, 0, 1));
+    table.insert(ip, "one.example.test".to_owned(), 60);
+    table.insert(ip, "two.example.test".to_owned(), 60);
+
+    assert_eq!(
+        table.lookup_candidates(ip),
+        vec![
+            "one.example.test".to_owned(),
+            "two.example.test".to_owned()
+        ]
+    );
+    assert_eq!(table.lookup(ip), None);
+    assert!(table.has_candidates(ip));
+}
+
+#[test]
 fn tcp_metadata_restores_host_from_dns_table() {
     let table = DnsTable::default();
     let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(172, 19, 0, 1)), 40123);
@@ -466,7 +484,7 @@ fn tcp_metadata_restores_host_from_dns_table() {
     assert_eq!(metadata.network, Network::Tcp);
     assert_eq!(metadata.src_ip, Some(local.ip()));
     assert_eq!(metadata.src_port, local.port());
-    assert_eq!(metadata.dst_ip, None);
+    assert_eq!(metadata.dst_ip, Some(remote_ip));
     assert_eq!(metadata.dst_port, remote.port());
     assert_eq!(metadata.host, "tcp.example.test");
     assert_eq!(metadata.in_name, "paws-vpn");
@@ -485,6 +503,32 @@ fn tcp_metadata_keeps_destination_ip_without_dns_table_host() {
     assert_eq!(metadata.dst_ip, Some(remote_ip));
     assert_eq!(metadata.dst_port, remote.port());
     assert!(metadata.host.is_empty());
+}
+
+#[tokio::test]
+async fn dns_mapped_http_flow_uses_actual_host_and_replays_bytes() {
+    let payload = b"GET / HTTP/1.1\r\nHost: actual.example.test\r\n\r\n".to_vec();
+    let (mut client, mut server) = tokio::io::duplex(SNIFF_BUFFER_SIZE * 2);
+    client.write_all(&payload).await.unwrap();
+    client.shutdown().await.unwrap();
+    let remote_ip = IpAddr::V4(Ipv4Addr::new(104, 16, 0, 1));
+    let mut metadata = Metadata {
+        network: Network::Tcp,
+        dst_ip: Some(remote_ip),
+        dst_port: 80,
+        host: "stale.example.test".into(),
+        ..Metadata::default()
+    };
+
+    let prefix = sniff_dns_mapped_destination(&mut server, &mut metadata).await;
+    let mut replay = ReplayConn::new(server, prefix);
+    let mut received = Vec::new();
+    replay.read_to_end(&mut received).await.unwrap();
+
+    assert_eq!(metadata.host, "actual.example.test");
+    assert_eq!(metadata.sniff_host, "actual.example.test");
+    assert_eq!(metadata.dst_ip, Some(remote_ip));
+    assert_eq!(received, payload);
 }
 
 #[test]
@@ -637,7 +681,7 @@ fn dns_table_expires_stale_records() {
     table.insert(ip, "expired.test".to_owned(), 60);
     {
         let mut records = table.records.lock().unwrap();
-        records.get_mut(&ip).unwrap().expires_at_ms = monotonic_ms().saturating_sub(1);
+        records.get_mut(&ip).unwrap()[0].expires_at_ms = monotonic_ms().saturating_sub(1);
     }
     assert_eq!(table.lookup(ip), None);
     assert!(!table.records.lock().unwrap().contains_key(&ip));
@@ -658,7 +702,7 @@ fn dns_table_evicts_earliest_record_when_full() {
     }
     {
         let mut records = table.records.lock().unwrap();
-        records.get_mut(&oldest_ip).unwrap().expires_at_ms = 1;
+        records.get_mut(&oldest_ip).unwrap()[0].expires_at_ms = 1;
     }
 
     table.insert(

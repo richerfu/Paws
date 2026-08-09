@@ -86,6 +86,7 @@ pub(super) async fn validate_meow_config(
 }
 
 pub(super) async fn load_meow_config(raw_yaml: &str) -> Result<Config, PawsError> {
+    validate_transport_contract(raw_yaml)?;
     // meow's async loader performs YAML decoding and a substantial part of
     // proxy construction before its first await. Keep that CPU-heavy work off
     // the UI/runtime worker that initiated a dashboard bootstrap.
@@ -97,6 +98,157 @@ pub(super) async fn load_meow_config(raw_yaml: &str) -> Result<Config, PawsError
     .await
     .map_err(|err| PawsError::Core(format!("meow config worker failed: {err}")))?
     .map_err(|err| PawsError::Core(format!("meow config load failed: {err}")))
+}
+
+fn validate_transport_contract(raw_yaml: &str) -> Result<(), PawsError> {
+    let document = serde_yaml::from_str::<serde_yaml::Value>(raw_yaml)
+        .map_err(|error| PawsError::Core(format!("profile YAML parse failed: {error}")))?;
+    let Some(root) = document.as_mapping() else {
+        return Ok(());
+    };
+    let Some(proxies) = yaml_value(root, "proxies").and_then(serde_yaml::Value::as_sequence) else {
+        return Ok(());
+    };
+    for proxy in proxies {
+        let Some(proxy) = proxy.as_mapping() else {
+            continue;
+        };
+        let proxy_type = yaml_string(proxy, "type")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let name = safe_proxy_name(yaml_string(proxy, "name").unwrap_or("<unnamed>"));
+        let network = yaml_string(proxy, "network")
+            .unwrap_or("tcp")
+            .to_ascii_lowercase();
+
+        if proxy_type == "trojan" {
+            if network != "tcp" {
+                return Err(PawsError::Core(format!(
+                    "proxy '{name}': Trojan network '{network}' is not implemented by the current engine; refusing to ignore it"
+                )));
+            }
+            if yaml_string(proxy, "client-fingerprint").is_some() {
+                return Err(PawsError::Core(format!(
+                    "proxy '{name}': Trojan client-fingerprint is not implemented by the current engine; refusing to ignore it"
+                )));
+            }
+        }
+
+        if matches!(proxy_type.as_str(), "vless" | "vmess") {
+            if yaml_value(proxy, "fingerprint").is_some()
+                && yaml_value(proxy, "client-fingerprint").is_none()
+            {
+                return Err(PawsError::Core(format!(
+                    "proxy '{name}': use 'client-fingerprint'; the 'fingerprint' alias is ignored by the current engine"
+                )));
+            }
+            if yaml_value(proxy, "sni").is_some() && yaml_value(proxy, "servername").is_none() {
+                return Err(PawsError::Core(format!(
+                    "proxy '{name}': use 'servername'; the 'sni' alias is ignored for {proxy_type} by the current engine"
+                )));
+            }
+            if let Some(fingerprint) = yaml_string(proxy, "client-fingerprint") {
+                let fingerprint = fingerprint.to_ascii_lowercase();
+                if !matches!(
+                    fingerprint.as_str(),
+                    "chrome"
+                        | "chrome120"
+                        | "firefox"
+                        | "firefox120"
+                        | "safari"
+                        | "safari16"
+                        | "ios"
+                        | "android"
+                        | "edge"
+                        | "random"
+                ) {
+                    return Err(PawsError::Core(format!(
+                        "proxy '{name}': unsupported TLS client-fingerprint '{fingerprint}'"
+                    )));
+                }
+            }
+        }
+
+        if matches!(proxy_type.as_str(), "vless" | "vmess") && network == "ws" {
+            validate_websocket_contract(proxy, &name)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_websocket_contract(
+    proxy: &serde_yaml::Mapping,
+    name: &str,
+) -> Result<(), PawsError> {
+    if let Some(alpn) = yaml_value(proxy, "alpn") {
+        let valid = match alpn {
+            serde_yaml::Value::Sequence(values) => {
+                !values.is_empty()
+                    && values.iter().all(|value| {
+                        value
+                            .as_str()
+                            .is_some_and(|value| value.eq_ignore_ascii_case("http/1.1"))
+                    })
+            }
+            serde_yaml::Value::String(value) => value.eq_ignore_ascii_case("http/1.1"),
+            _ => false,
+        };
+        if !valid {
+            return Err(PawsError::Core(format!(
+                "proxy '{name}': WebSocket ALPN must be exactly http/1.1; advertising h2 can negotiate a protocol this engine cannot speak"
+            )));
+        }
+    }
+
+    let headers = yaml_value(proxy, "ws-opts")
+        .and_then(serde_yaml::Value::as_mapping)
+        .and_then(|options| yaml_value(options, "headers"))
+        .and_then(serde_yaml::Value::as_mapping);
+    if let Some(headers) = headers {
+        for (key, value) in headers {
+            let Some(key) = key.as_str() else {
+                return Err(PawsError::Core(format!(
+                    "proxy '{name}': WebSocket header names must be strings"
+                )));
+            };
+            if key.eq_ignore_ascii_case("host") && key != "Host" {
+                return Err(PawsError::Core(format!(
+                    "proxy '{name}': WebSocket host header must use the exact key 'Host' with the current engine"
+                )));
+            }
+            if key == "Host" && value.as_str().is_none() {
+                return Err(PawsError::Core(format!(
+                    "proxy '{name}': WebSocket Host header must be a string"
+                )));
+            }
+            if !key.eq_ignore_ascii_case("host") {
+                return Err(PawsError::Core(format!(
+                    "proxy '{name}': WebSocket header '{key}' is not supported by the current engine; refusing to drop it"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn yaml_value<'a>(
+    mapping: &'a serde_yaml::Mapping,
+    name: &str,
+) -> Option<&'a serde_yaml::Value> {
+    mapping
+        .iter()
+        .find_map(|(key, value)| (key.as_str() == Some(name)).then_some(value))
+}
+
+fn yaml_string<'a>(mapping: &'a serde_yaml::Mapping, name: &str) -> Option<&'a str> {
+    yaml_value(mapping, name).and_then(serde_yaml::Value::as_str)
+}
+
+fn safe_proxy_name(name: &str) -> String {
+    name.chars()
+        .filter(|character| !character.is_control())
+        .take(128)
+        .collect()
 }
 
 pub(super) fn tunnel_from_config(config: Config, mode: RuntimeMode) -> Tunnel {

@@ -10,6 +10,8 @@ const VPN_ABILITY: &str =
 const VPN_CONFIG: &str = include_str!("../../../entry/src/main/ets/vpnability/VpnConfig.ets");
 const NAPI_TYPES: &str = include_str!("../../../entry/src/main/cpp/types/libpaws_ui/Index.d.ts");
 const PLATFORM_CALLBACKS: &str = include_str!("../src/bridge/mod.rs");
+const CORE: &str = include_str!("../../paws_core/src/lib.rs");
+const PLATFORM_IPC: &str = include_str!("../../paws_core/src/platform_ipc.rs");
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let start = source.find(start).expect("section start");
@@ -19,7 +21,7 @@ fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 }
 
 #[test]
-fn vpn_start_does_not_reload_the_already_active_profile_or_wait_a_fixed_delay() {
+fn vpn_start_does_not_reload_the_already_active_profile_or_poll_state() {
     let start = section(
         UI,
         "async fn start_vpn_command_and_snapshot",
@@ -28,8 +30,9 @@ fn vpn_start_does_not_reload_the_already_active_profile_or_wait_a_fixed_delay() 
 
     assert!(start.contains("active_profile.as_deref() != Some(profile_id.as_str())"));
     assert!(!start.contains("Duration::from_millis(350)"));
-    assert!(UI.contains("delayed_vpn_snapshot"));
-    assert!(UI.contains("Duration::from_millis(200)"));
+    assert!(UI.contains("await_vpn_state_event"));
+    assert!(!UI.contains("delayed_vpn_snapshot"));
+    assert!(!UI.contains("Duration::from_millis(200)"));
 }
 
 #[test]
@@ -117,14 +120,23 @@ fn first_authorization_want_unwraps_nested_parameters_and_descriptors() {
 }
 
 #[test]
-fn routine_ui_refresh_does_not_compete_for_the_start_notification_waiter() {
-    let delayed = section(
-        UI,
-        "async fn delayed_snapshot",
-        "async fn delayed_vpn_snapshot",
+fn platform_vpn_state_uses_one_event_pump_and_in_process_subscribers() {
+    assert!(CORE.contains("start_platform_vpn_event_pump"));
+    assert!(CORE.contains("platform.wait_for_change_event()"));
+    assert!(CORE.contains("platform_vpn_event_tx"));
+    assert!(CORE.contains("await_platform_vpn_event"));
+    assert!(PLATFORM_IPC.contains("self.notification.wait(None)"));
+
+    let terminal_wait = section(
+        CORE,
+        "async fn await_platform_vpn_start_with_deadline",
+        "pub fn fail_unattached_platform_vpn_start",
     );
-    assert!(delayed.contains("tokio::time::sleep"));
-    assert!(!delayed.contains("wait_for_platform_change"));
+    assert!(terminal_wait.contains("receiver.changed()"));
+    assert!(!terminal_wait.contains("wait_for_platform_change"));
+
+    assert!(ENTRY_ABILITY.contains("new EagerPlugin(this.vpnPlugin)"));
+    assert!(!UI.contains("delayed_vpn_snapshot"));
 }
 
 #[test]

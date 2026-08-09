@@ -1,0 +1,4 @@
+[env]
+# boring-sys treats unknown Unix targets as libstdc++ by default. OpenHarmony's
+# NDK ships libc++, so select the runtime explicitly for this cross target.
+BORING_BSSL_RUST_CPPLIB_aarch64_unknown_linux_ohos = "c++"

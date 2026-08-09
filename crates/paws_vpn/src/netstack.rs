@@ -440,9 +440,14 @@ pub(super) async fn handle_tcp_stream<S>(
 {
     let mut metadata = tcp_metadata_for_stream(src_addr, dst_addr, &dns_table);
     let mut stream = stream;
-    let prefix = match sniffer {
-        Some(sniffer) => sniffer.sniff(&mut stream, &mut metadata).await,
-        None => Vec::new(),
+    let dns_mapped = dns_table.has_candidates(dst_addr.ip());
+    let prefix = if dns_mapped && dns_mapping_sniff_protocol(dst_addr.port()).is_some() {
+        sniff_dns_mapped_destination(&mut stream, &mut metadata).await
+    } else {
+        match sniffer {
+            Some(sniffer) => sniffer.sniff(&mut stream, &mut metadata).await,
+            None => Vec::new(),
+        }
     };
     let proxy_conn: Box<dyn ProxyConn> = Box::new(ReplayConn::new(stream, prefix));
     let inner = tunnel.inner().clone();
@@ -455,7 +460,7 @@ pub(super) fn tcp_metadata_for_stream(
     dns_table: &DnsTable,
 ) -> Metadata {
     let (host, dst_ip) = match dns_table.lookup(dst_addr.ip()) {
-        Some(host) => (host, None),
+        Some(host) => (host, Some(dst_addr.ip())),
         None => (String::new(), Some(dst_addr.ip())),
     };
     Metadata {
@@ -476,6 +481,41 @@ pub(super) fn tcp_metadata_for_stream(
 pub(super) enum SniffProtocol {
     Tls,
     Http,
+}
+
+pub(super) fn dns_mapping_sniff_protocol(port: u16) -> Option<SniffProtocol> {
+    match port {
+        80 | 2052 | 2082 | 2086 | 2095 | 8080 | 8880 => Some(SniffProtocol::Http),
+        443 | 2053 | 2083 | 2087 | 2096 | 8443 => Some(SniffProtocol::Tls),
+        _ => None,
+    }
+}
+
+pub(super) async fn sniff_dns_mapped_destination<S>(
+    stream: &mut S,
+    metadata: &mut Metadata,
+) -> Vec<u8>
+where
+    S: AsyncRead + Unpin,
+{
+    let Some(protocol) = dns_mapping_sniff_protocol(metadata.dst_port) else {
+        return Vec::new();
+    };
+    let mut prefix = vec![0_u8; SNIFF_BUFFER_SIZE];
+    let Ok(Ok(size)) = tokio::time::timeout(Duration::from_millis(100), stream.read(&mut prefix)).await
+    else {
+        return Vec::new();
+    };
+    prefix.truncate(size);
+    let host = match protocol {
+        SniffProtocol::Tls => sniff_tls(&prefix),
+        SniffProtocol::Http => sniff_http(&prefix),
+    };
+    if let Some(host) = host {
+        metadata.host = host.as_str().into();
+        metadata.sniff_host = host.into();
+    }
+    prefix
 }
 
 pub(super) struct HarmonyTcpSniffer {

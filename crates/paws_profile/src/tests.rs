@@ -1297,7 +1297,7 @@ socks5://user:pass@socks-case.example.test:1080?TLS=TRUE&SKIP-CERT-VERIFY=TRUE#S
         get_string(vless, "client-fingerprint").as_deref(),
         Some("chrome")
     );
-    assert_eq!(get_string_list(vless, "alpn"), vec!["h2", "http/1.1"]);
+    assert_eq!(get_string_list(vless, "alpn"), vec!["http/1.1"]);
     let ws_opts = vless
         .get(&value_key("ws-opts"))
         .and_then(Value::as_mapping)
@@ -1719,7 +1719,7 @@ vmess://{vmess_grpc_alias}
         get_string(vless_ws_opts, "early-data-header-name").as_deref(),
         Some("Sec-WebSocket-Protocol")
     );
-    assert_eq!(get_string_list(vless, "alpn"), vec!["h2", "http/1.1"]);
+    assert_eq!(get_string_list(vless, "alpn"), vec!["http/1.1"]);
 
     let trojan = proxies
         .iter()

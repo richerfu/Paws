@@ -13,17 +13,25 @@ pub(super) async fn load_snapshot() -> RuntimeSnapshot {
 }
 
 pub(super) async fn delayed_snapshot() -> RuntimeSnapshot {
-    // A pending platform start transaction owns the ashmem notification
-    // waiter. Regular UI refreshes use a bounded timer and synchronize the
-    // latest frame while loading the snapshot, avoiding competing reads from
-    // the single notification socket.
+    // Runtime telemetry remains sampled for charts and counters. VPN
+    // lifecycle transitions are delivered independently by the platform
+    // event stream and never depend on this timer.
     tokio::time::sleep(Duration::from_millis(1000)).await;
     load_snapshot().await
 }
 
-pub(super) async fn delayed_vpn_snapshot() -> RuntimeSnapshot {
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    load_snapshot().await
+pub(super) async fn await_vpn_state_event(
+    after_revision: u64,
+) -> Result<VpnStateEventResult, String> {
+    let core = paws_core::shared_core();
+    let revision = core
+        .await_platform_vpn_event(after_revision)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(VpnStateEventResult {
+        revision,
+        snapshot: load_snapshot().await,
+    })
 }
 
 pub(super) async fn bootstrap_active_profile() -> RuntimeSnapshot {

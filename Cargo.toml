@@ -27,7 +27,7 @@ openharmony-ability-plugin-url = { git = "https://github.com/harmony-contrib/ope
 
 meow-api = "0.19.0"
 meow-common = "0.19.0"
-meow-config = { version = "0.19.0", features = ["anytls"] }
+meow-config = { version = "0.19.0", features = ["anytls", "boring-tls"] }
 meow-dns = "0.19.0"
 meow-listener = "0.19.0"
 meow-proxy = { version = "0.19.0", features = ["anytls"] }
@@ -52,7 +52,7 @@ napi-ohos = { version = "1.1", features = ["napi8", "tokio_rt"] }
 once_cell = "1"
 parking_lot = "0.12"
 percent-encoding = "2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "cookies", "gzip", "brotli", "json", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"

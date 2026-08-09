@@ -651,7 +651,12 @@ pub(super) fn parse_vmess_link(link: &str) -> Result<Mapping, PawsError> {
         put_string(&mut proxy, "client-fingerprint", fingerprint);
     }
     if let Some(alpn) = json_str_any(&value, &["alpn"]) {
-        put_string_sequence(&mut proxy, "alpn", split_list(alpn));
+        let alpn = if network.as_deref() == Some("ws") {
+            vec!["http/1.1".to_owned()]
+        } else {
+            split_list(alpn)
+        };
+        put_string_sequence(&mut proxy, "alpn", alpn);
     }
     if json_truthy_any(&value, &["udp"]) {
         put_bool(&mut proxy, "udp", true);
@@ -1298,7 +1303,14 @@ pub(super) fn apply_query_tls_options(proxy: &mut Mapping, query: &HashMap<Strin
         put_string(proxy, "client-fingerprint", fingerprint);
     }
     if let Some(alpn) = query.get("alpn") {
-        put_string_sequence(proxy, "alpn", split_list(alpn));
+        let websocket = query_get_any(query, &["type", "network"])
+            .is_some_and(|network| network.eq_ignore_ascii_case("ws"));
+        let alpn = if websocket {
+            vec!["http/1.1".to_owned()]
+        } else {
+            split_list(alpn)
+        };
+        put_string_sequence(proxy, "alpn", alpn);
     }
     if query
         .get("security")
