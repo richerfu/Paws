@@ -7,6 +7,7 @@ import { UrlPlugin } from '@ohos-rs/ability-plugin-url';
 import window from '@ohos.window';
 import pawsUi from 'libpaws_ui.so';
 import { describeError } from '../common/Errors';
+import { initializeSafeArea } from '../common/SafeAreaBootstrap';
 import { setPawsBundleName } from '../vpnability/VpnConfig';
 import { runDebugAutomation } from '../automation/DebugAutomation';
 import { ClipboardPlugin } from '../plugins/ClipboardPlugin';
@@ -115,6 +116,7 @@ export default class EntryAbility extends NativeAbility {
     try {
       const win = await windowStage.getMainWindow();
       await win.setWindowLayoutFullScreen(true);
+      initializeSafeArea(win);
       await win.setUIContent('pages/Index');
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'set UI content failed %{public}s', JSON.stringify(err) ?? '');

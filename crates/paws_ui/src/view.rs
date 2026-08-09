@@ -349,14 +349,13 @@ pub(crate) fn App() -> Element {
     });
 
     rsx! {
-        // Arkit's entrypoint is edge-to-edge by default. Keep Paws' existing
-        // full-app safe-area behavior explicit at the application boundary.
-        SafeArea {
-            ThemeProvider {
-                theme,
-                Router::<Route> {}
-                NotificationHost { center: notifications }
-            }
+        // The ArkTS host sizes the XComponent to the safe viewport before
+        // arkit's first render, so applying a second native inset here would
+        // both duplicate avoidance and reintroduce first-frame reflow.
+        ThemeProvider {
+            theme,
+            Router::<Route> {}
+            NotificationHost { center: notifications }
         }
     }
 }
