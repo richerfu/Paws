@@ -1,7 +1,7 @@
 import { AbilityConstant, Configuration, ConfigurationConstant, Want } from '@kit.AbilityKit';
 import { i18n } from '@kit.LocalizationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { EagerPlugin, LazyPlugin, NativeAbility } from '@ohos-rs/ability';
+import { LazyPlugin, NativeAbility } from '@ohos-rs/ability';
 import { FilesPlugin } from '@ohos-rs/ability-plugin-files';
 import { UrlPlugin } from '@ohos-rs/ability-plugin-url';
 import window from '@ohos.window';
@@ -29,28 +29,53 @@ export default class EntryAbility extends NativeAbility {
   public moduleName: string = 'paws_ui';
   public defaultPage: boolean = false;
 
-  private readonly vpnPlugin: VpnPlugin = new VpnPlugin();
-  private readonly safeAreaPlugin: SafeAreaPlugin = new SafeAreaPlugin(
-    (options: window.AvoidAreaOptions): void => {
-      this.forEachLifecycle((lifecycle) =>
-        lifecycle.windowStageEventCallback.onAvoidAreaChange(options),
-      );
-    },
-  );
+  private vpnPlugin?: VpnPlugin;
+  private safeAreaPlugin?: SafeAreaPlugin;
 
   public bridgePlugins = [
     new LazyPlugin(() => new FilesPlugin()),
     new LazyPlugin(() => new UrlPlugin()),
-    // VPN owns a process-lifetime IPC event pump and must be installed before
-    // the UI subscribes to lifecycle events. The instance is also shared with
-    // debug automation.
-    new EagerPlugin(this.vpnPlugin),
+    // The active session instance is retained for debug automation while the
+    // factory still creates a fresh plugin for every Ability session.
+    new LazyPlugin(() => this.createVpnPlugin()),
     new LazyPlugin(() => new ScanPlugin()),
     new LazyPlugin(() => new ClipboardPlugin()),
     new LazyPlugin(() => new ColorModePlugin()),
     new LazyPlugin(() => new ExportPlugin()),
-    new EagerPlugin(this.safeAreaPlugin),
+    new LazyPlugin(() => this.createSafeAreaPlugin()),
   ];
+
+  private createVpnPlugin(): VpnPlugin {
+    const plugin = new VpnPlugin();
+    this.vpnPlugin = plugin;
+    return plugin;
+  }
+
+  private createSafeAreaPlugin(): SafeAreaPlugin {
+    const plugin = new SafeAreaPlugin((options: window.AvoidAreaOptions): void => {
+      this.forEachLifecycle((lifecycle) =>
+        lifecycle.windowStageEventCallback.onAvoidAreaChange(options),
+      );
+    });
+    this.safeAreaPlugin = plugin;
+    return plugin;
+  }
+
+  private requestStartVpn(optionsJson: string): Promise<void> {
+    const plugin = this.vpnPlugin;
+    if (plugin === undefined) {
+      return Promise.reject(new Error('VPN plugin is not attached to the active Ability session'));
+    }
+    return plugin.requestStartVpn(optionsJson);
+  }
+
+  private async captureInitialSafeArea(): Promise<void> {
+    const plugin = this.safeAreaPlugin;
+    if (plugin === undefined) {
+      throw new Error('safe-area plugin is not attached to the active Ability session');
+    }
+    await plugin.captureInitialSafeArea();
+  }
 
   private configureNativeHome(): void {
     try {
@@ -107,12 +132,12 @@ export default class EntryAbility extends NativeAbility {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'native initialization failed %{public}s', describeError(err));
     }
     await super.onCreate(want, launchParam);
-    runDebugAutomation(want, (optionsJson: string) => this.vpnPlugin.requestStartVpn(optionsJson));
+    runDebugAutomation(want, (optionsJson: string) => this.requestStartVpn(optionsJson));
   }
 
   public onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     super.onNewWant(want, launchParam);
-    runDebugAutomation(want, (optionsJson: string) => this.vpnPlugin.requestStartVpn(optionsJson));
+    runDebugAutomation(want, (optionsJson: string) => this.requestStartVpn(optionsJson));
   }
 
   public onConfigurationUpdate(newConfig: Configuration): void {
@@ -127,7 +152,7 @@ export default class EntryAbility extends NativeAbility {
       const win = await windowStage.getMainWindow();
       await win.setWindowLayoutFullScreen(true);
       try {
-        await this.safeAreaPlugin.captureInitialSafeArea();
+        await this.captureInitialSafeArea();
       } catch (err) {
         hilog.info(LOG_DOMAIN, LOG_TAG, 'initial safe area skipped %{public}s', describeError(err));
       }

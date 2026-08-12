@@ -3,7 +3,7 @@ import {
   BridgeCallContext,
   BridgeContextRequirement,
   BridgeLifecycleEvent,
-  BridgePluginContext,
+  BridgePluginHookContext,
   BridgeTypedValue,
 } from '@ohos-rs/ability';
 import window from '@ohos.window';
@@ -25,7 +25,6 @@ export type AvoidAreaPublisher = (options: window.AvoidAreaOptions) => void;
  */
 export class SafeAreaPlugin extends AsyncPluginBase {
   readonly id = 'paws.safe-area';
-  readonly version = 1;
   readonly requires: BridgeContextRequirement[] = ['window-stage'];
 
   private captured: boolean = false;
@@ -36,7 +35,7 @@ export class SafeAreaPlugin extends AsyncPluginBase {
     this.publishAvoidArea = publishAvoidArea;
   }
 
-  onLifecycle(event: BridgeLifecycleEvent, _context: BridgePluginContext): void {
+  onLifecycle(event: BridgeLifecycleEvent, _context: BridgePluginHookContext): void {
     if (event.kind === 'window-stage-destroy') {
       this.captured = false;
     }

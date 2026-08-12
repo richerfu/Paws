@@ -22,7 +22,6 @@ interface ExportTextRequest {
  */
 export class ExportPlugin extends AsyncPluginBase {
   readonly id = 'paws.export';
-  readonly version = 1;
   readonly requires: BridgeContextRequirement[] = ['ability'];
 
   async invokeAsync(

@@ -18,10 +18,10 @@ fn application_root_keeps_overlays_edge_to_edge_and_insets_only_app_layout() {
     assert!(!app.contains("SafeArea {"));
     assert!(app.contains("ThemeProvider {"));
     assert!(app.contains("NotificationHost { center: notifications }"));
-    assert!(ability.contains("this.safeAreaPlugin.captureInitialSafeArea()"));
+    assert!(ability.contains("await this.captureInitialSafeArea()"));
     assert!(
         ability
-            .find("this.safeAreaPlugin.captureInitialSafeArea()")
+            .find("await this.captureInitialSafeArea()")
             .unwrap()
             < ability.find("setUIContent('pages/Index')").unwrap()
     );
