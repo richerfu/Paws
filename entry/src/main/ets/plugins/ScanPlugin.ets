@@ -20,7 +20,6 @@ interface ScanErrorLike {
  */
 export class ScanPlugin extends AsyncPluginBase {
   readonly id = 'paws.scan';
-  readonly version = 1;
   readonly requires: BridgeContextRequirement[] = ['ability'];
 
   async invokeAsync(

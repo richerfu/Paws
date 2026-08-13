@@ -19,7 +19,6 @@ interface ColorModeRequest {
  */
 export class ColorModePlugin extends AsyncPluginBase {
   readonly id = 'paws.color-mode';
-  readonly version = 1;
   readonly requires: BridgeContextRequirement[] = ['ability'];
 
   async invokeAsync(

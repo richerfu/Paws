@@ -135,7 +135,7 @@ fn platform_vpn_state_uses_one_event_pump_and_in_process_subscribers() {
     assert!(terminal_wait.contains("receiver.changed()"));
     assert!(!terminal_wait.contains("wait_for_platform_change"));
 
-    assert!(ENTRY_ABILITY.contains("new EagerPlugin(this.vpnPlugin)"));
+    assert!(ENTRY_ABILITY.contains("new LazyPlugin(() => this.createVpnPlugin())"));
     assert!(!UI.contains("delayed_vpn_snapshot"));
 }
 

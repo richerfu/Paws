@@ -29,7 +29,7 @@ pub(crate) use self::clipboard::{
 };
 pub(crate) use self::color_mode::{ColorModeRequest, ColorModeResponse, PawsColorModeBridgePlugin};
 pub(crate) use self::export::{ExportTextRequest, ExportTextResponse, PawsExportBridgePlugin};
-pub(crate) use self::safe_area::{initial_safe_area, InitialSafeArea};
+pub(crate) use self::safe_area::{initial_safe_area, InitialSafeArea, PawsSafeAreaBridgePlugin};
 pub(crate) use self::scan::{PawsScanBridgePlugin, ScanRequest, ScanResponse};
 pub(crate) use self::vpn::{
     PawsVpnBridgePlugin, VpnStartRequest, VpnStartResponse, VpnStopRequest, VpnStopResponse,

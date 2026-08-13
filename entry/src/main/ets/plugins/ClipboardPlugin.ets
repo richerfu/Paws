@@ -18,7 +18,6 @@ interface ClipboardSetRequest {
  */
 export class ClipboardPlugin extends AsyncPluginBase {
   readonly id = 'paws.clipboard';
-  readonly version = 1;
   readonly requires: BridgeContextRequirement[] = ['ability'];
 
   async invokeAsync(

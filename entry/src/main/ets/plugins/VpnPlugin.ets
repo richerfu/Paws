@@ -1,4 +1,11 @@
-import { AsyncPluginBase, BridgeCallContext, BridgeContextRequirement, BridgePluginContext, BridgeTypedValue } from '@ohos-rs/ability';
+import {
+  AsyncPluginBase,
+  BridgeCallContext,
+  BridgeContextRequirement,
+  BridgePluginContext,
+  BridgePluginHookContext,
+  BridgeTypedValue,
+} from '@ohos-rs/ability';
 import { vpnExtension } from '@kit.NetworkKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -27,21 +34,20 @@ interface VpnStartRequest {
  */
 export class VpnPlugin extends AsyncPluginBase {
   readonly id = 'paws.vpn';
-  readonly version = 1;
   readonly requires: BridgeContextRequirement[] = ['ability'];
 
   private vpnStartRequest: Promise<void> | undefined = undefined;
   private activeVpnStartAttemptId: string = '';
   private platformSharedMemory?: PawsPlatformSharedMemoryFds;
 
-  onInstall(context: BridgePluginContext): void {
+  onInstall(_context: BridgePluginHookContext): void {
     this.initializePlatformSharedMemory();
   }
 
   async invokeAsync(
     action: string,
     request: BridgeTypedValue,
-    _context: BridgePluginContext,
+    _context: BridgeCallContext,
   ): Promise<BridgeTypedValue> {
     if (action === 'start-vpn') {
       if (request.typeName !== VPN_START_REQUEST_TYPE || typeof request.value !== 'object') {
