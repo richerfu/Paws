@@ -1,7 +1,25 @@
 //! Initial safe-area snapshot captured by the ArkTS `paws.safe-area` plugin.
 
-use arkit::openharmony_ability::{AvoidArea, AvoidAreaType, OpenHarmonyApp};
+use arkit::openharmony_ability::{
+    AsyncBridge, AvoidArea, AvoidAreaType, BridgeContextRequirement, BridgePlugin, OpenHarmonyApp,
+};
 use arkit::EdgeInsets;
+
+/// Rust declaration paired with the ArkTS `SafeAreaPlugin` factory.
+///
+/// The plugin has no callable actions: its only job is to seed the native
+/// lifecycle with the window's current visual avoid areas before the
+/// XComponent mounts. It still needs a Rust declaration so ability beta.2
+/// attaches its session-scoped ArkTS context.
+pub struct PawsSafeAreaBridgePlugin;
+
+impl BridgePlugin for PawsSafeAreaBridgePlugin {
+    type Mode = AsyncBridge;
+
+    const ID: &'static str = "paws.safe-area";
+    const REQUIRED_CONTEXTS: &'static [BridgeContextRequirement] =
+        &[BridgeContextRequirement::WindowStage];
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct InitialSafeArea(pub(crate) EdgeInsets);
@@ -48,7 +66,16 @@ fn combine_visual_avoid_areas(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arkit::openharmony_ability::Rect;
+    use arkit::openharmony_ability::{BridgePlugin, Rect};
+
+    #[test]
+    fn safe_area_plugin_matches_the_arkts_factory() {
+        assert_eq!(PawsSafeAreaBridgePlugin::ID, "paws.safe-area");
+        assert_eq!(
+            PawsSafeAreaBridgePlugin::REQUIRED_CONTEXTS,
+            &[BridgeContextRequirement::WindowStage]
+        );
+    }
 
     fn avoid(top: i32, right: i32, bottom: i32, left: i32, visible: bool) -> AvoidArea {
         AvoidArea {

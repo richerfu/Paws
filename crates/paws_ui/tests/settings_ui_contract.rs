@@ -5,6 +5,7 @@ fn application_root_keeps_overlays_edge_to_edge_and_insets_only_app_layout() {
     let source = fs::read_to_string("src/view.rs").unwrap();
     let ability =
         fs::read_to_string("../../entry/src/main/ets/entryability/EntryAbility.ets").unwrap();
+    let native_entry = fs::read_to_string("src/lib.rs").unwrap();
     let page = fs::read_to_string("../../entry/src/main/ets/pages/Index.ets").unwrap();
     let plugin = fs::read_to_string("../../entry/src/main/ets/plugins/SafeAreaPlugin.ets").unwrap();
     let app = source
@@ -19,10 +20,11 @@ fn application_root_keeps_overlays_edge_to_edge_and_insets_only_app_layout() {
     assert!(app.contains("ThemeProvider {"));
     assert!(app.contains("NotificationHost { center: notifications }"));
     assert!(ability.contains("await this.captureInitialSafeArea()"));
+    assert!(ability.contains("protected async loadWindowStageContent"));
+    assert!(!ability.contains("public async onWindowStageCreate"));
+    assert!(native_entry.contains("bridge::PawsSafeAreaBridgePlugin"));
     assert!(
-        ability
-            .find("await this.captureInitialSafeArea()")
-            .unwrap()
+        ability.find("await this.captureInitialSafeArea()").unwrap()
             < ability.find("setUIContent('pages/Index')").unwrap()
     );
     assert!(!page.contains("getSafeAreaInsets()"));

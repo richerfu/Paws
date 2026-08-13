@@ -45,6 +45,7 @@ use arkit::prelude::Element;
     bridge::PawsColorModeBridgePlugin,
     bridge::PawsVpnBridgePlugin,
     bridge::PawsExportBridgePlugin,
+    bridge::PawsSafeAreaBridgePlugin,
 ])]
 fn app(handle: arkit::openharmony_ability::OpenHarmonyApp) -> Element {
     let initial_safe_area = bridge::initial_safe_area(&handle);
