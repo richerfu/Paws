@@ -12,6 +12,7 @@ const NAPI_TYPES: &str = include_str!("../../../entry/src/main/cpp/types/libpaws
 const PLATFORM_CALLBACKS: &str = include_str!("../src/bridge/mod.rs");
 const CORE: &str = include_str!("../../paws_core/src/lib.rs");
 const PLATFORM_IPC: &str = include_str!("../../paws_core/src/platform_ipc.rs");
+const NETSTACK: &str = include_str!("../../paws_vpn/src/netstack.rs");
 
 fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
     let start = source.find(start).expect("section start");
@@ -57,9 +58,9 @@ fn notification_permission_is_deferred_until_after_the_vpn_ability_launches() {
 fn first_authorization_start_is_coordinated_by_the_extension_terminal_state() {
     assert!(NAPI_TYPES.contains("beginPlatformVpnStart(): string"));
     assert!(NAPI_TYPES.contains("bindPlatformVpnStart(attemptId: string): void"));
-    assert!(NAPI_TYPES.contains("awaitPlatformVpnStartAttachment("));
     assert!(NAPI_TYPES.contains("awaitPlatformVpnStart(attemptId: string): Promise<string>"));
     assert!(NAPI_TYPES.contains("failUnattachedPlatformVpnStart("));
+    assert!(!NAPI_TYPES.contains("awaitPlatformVpnStartAttachment"));
 
     let request = section(
         VPN_PLUGIN,
@@ -70,8 +71,13 @@ fn first_authorization_start_is_coordinated_by_the_extension_terminal_state() {
     assert!(request.contains("awaitPlatformVpnStart(attemptId)"));
     assert!(request.contains("failUnattachedPlatformVpnStart(attemptId, message)"));
     assert!(request.contains("buildVpnWant(optionsJson, this.platformSharedMemory, attemptId)"));
-    assert!(request.contains("awaitPlatformVpnStartAttachment"));
-    assert!(request.contains("redispatching attempt"));
+    // The original Want is redispatch unconditionally after the system
+    // acknowledgement; no timed attach probing participates in the flow.
+    assert!(request.contains("system acknowledged VPN start attempt"));
+    assert!(request.contains("redispatching VPN start attempt"));
+    assert!(request.contains("redispatched VPN start attempt"));
+    assert!(!request.contains("awaitPlatformVpnStartAttachment"));
+    assert!(!request.contains("VPN_EXTENSION_ATTACH_GRACE_MS"));
     assert!(!request.contains("Promise.race"));
     assert!(!request.contains("15000"));
 
@@ -91,6 +97,40 @@ fn first_authorization_start_is_coordinated_by_the_extension_terminal_state() {
         .expect("terminal state");
     assert!(attach < bind);
     assert!(bind < running);
+}
+
+#[test]
+fn vpn_extension_subscription_is_event_driven_without_polling() {
+    assert!(NAPI_TYPES.contains("waitForPlatformChangeEvent(): Promise<boolean>"));
+    assert!(NAPI_TYPES.contains("cancelPlatformChangeWait(): void"));
+    assert!(!NAPI_TYPES.contains("waitForPlatformChange(timeoutMs"));
+
+    let subscription = section(
+        VPN_ABILITY,
+        "private async runPlatformSubscription",
+        "private startTelemetry",
+    );
+    assert!(subscription.contains("await pawsUi.waitForPlatformChangeEvent()"));
+    assert!(subscription.contains("pawsUi.syncPlatformChanges()"));
+    assert!(!subscription.contains("waitForPlatformChange(1000)"));
+    // Stopping the subscription wakes the parked waiter so the loop unwinds
+    // without waiting for the next peer frame.
+    assert!(VPN_ABILITY.contains("cancelPlatformChangeWait"));
+
+    assert!(CORE.contains("wait_for_platform_change_event"));
+    assert!(CORE.contains("cancel_platform_change_wait"));
+    assert!(PLATFORM_IPC.contains("wait_event_cancellable"));
+    assert!(PLATFORM_IPC.contains("cancel_event_waits"));
+}
+
+#[test]
+fn tun_reader_parks_on_readiness_instead_of_busy_polling() {
+    assert!(NETSTACK.contains("AsyncFd"));
+    assert!(NETSTACK.contains("reader_tun.readable()"));
+    assert!(NETSTACK.contains("reader_shutdown.notified()"));
+    assert!(NETSTACK.contains("guard.clear_ready()"));
+    assert!(!NETSTACK.contains("from_micros(200)"));
+    assert!(!NETSTACK.contains("yield_now"));
 }
 
 #[test]
@@ -183,7 +223,7 @@ fn dashboard_mount_does_not_wait_for_profile_parsing() {
 
     let window = section(
         ENTRY_ABILITY,
-        "public async onWindowStageCreate",
+        "protected async loadWindowStageContent",
         "\n  }\n}",
     );
     assert!(window.contains("win.setUIContent('pages/Index')"));

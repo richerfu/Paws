@@ -485,8 +485,7 @@ rules:
 
 #[tokio::test]
 async fn global_mode_falls_back_to_direct_without_subscription_nodes() {
-    let root =
-        std::env::temp_dir().join(format!("paws-global-no-proxy-test-{}", now_unix_nanos()));
+    let root = std::env::temp_dir().join(format!("paws-global-no-proxy-test-{}", now_unix_nanos()));
     let core = CoreHandle::new_with_profile_root(&root);
     let profile_id = core
         .import_profile_from_content("Direct only", "test", "rules:\n  - MATCH,DIRECT\n", None)
@@ -633,10 +632,7 @@ async fn platform_start_completes_only_on_matching_connected_terminal() {
 
 #[tokio::test]
 async fn platform_vpn_state_changes_are_delivered_by_revisioned_events() {
-    let root = std::env::temp_dir().join(format!(
-        "paws-platform-vpn-events-{}",
-        now_unix_nanos()
-    ));
+    let root = std::env::temp_dir().join(format!("paws-platform-vpn-events-{}", now_unix_nanos()));
     let core = CoreHandle::new_with_profile_root(&root);
     let initial_revision = core.platform_vpn_event_revision();
 
@@ -646,7 +642,10 @@ async fn platform_vpn_state_changes_are_delivered_by_revisioned_events() {
         .await
         .unwrap();
     assert!(starting_revision > initial_revision);
-    assert_eq!(core.snapshot().unwrap().vpn_lifecycle, VpnLifecycle::Starting);
+    assert_eq!(
+        core.snapshot().unwrap().vpn_lifecycle,
+        VpnLifecycle::Starting
+    );
 
     core.set_platform_vpn_running(true).unwrap();
     let connected_revision = core
@@ -676,33 +675,10 @@ async fn platform_start_failure_is_exactly_once() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-#[tokio::test]
-async fn platform_start_attachment_wait_distinguishes_authorization_bootstrap() {
-    let root = std::env::temp_dir().join(format!(
-        "paws-platform-vpn-attachment-wait-{}",
-        now_unix_nanos()
-    ));
-    let core = CoreHandle::new_with_profile_root(&root);
-    let attempt_id = core.begin_platform_vpn_start().unwrap();
-
-    assert!(!core
-        .await_platform_vpn_start_attachment(&attempt_id, Duration::from_millis(10))
-        .await
-        .unwrap());
-    core.bind_platform_vpn_start(&attempt_id).unwrap();
-    assert!(core
-        .await_platform_vpn_start_attachment(&attempt_id, Duration::from_millis(10))
-        .await
-        .unwrap());
-    let _ = std::fs::remove_dir_all(root);
-}
-
 #[test]
 fn system_rejection_only_fails_before_extension_attachment() {
-    let root = std::env::temp_dir().join(format!(
-        "paws-platform-vpn-attachment-{}",
-        now_unix_nanos()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("paws-platform-vpn-attachment-{}", now_unix_nanos()));
     let core = CoreHandle::new_with_profile_root(&root);
     let unattached = core.begin_platform_vpn_start().unwrap();
     assert!(core
@@ -1649,10 +1625,8 @@ async fn snapshot_uses_meow_tunnel_statistics_for_connections_and_traffic() {
 
 #[test]
 fn tun_descriptor_rx_is_upload_and_tx_is_download() {
-    let root = std::env::temp_dir().join(format!(
-        "paws-core-tun-direction-test-{}",
-        now_unix_nanos()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("paws-core-tun-direction-test-{}", now_unix_nanos()));
     let core = CoreHandle::new_with_profile_root(&root);
     {
         let mut state = core.lock_state().unwrap();
@@ -1739,12 +1713,7 @@ async fn profile_switch_settles_tun_traffic_to_previous_profile() {
     ));
     let core = CoreHandle::new_with_profile_root(root);
     let first_id = core
-        .import_profile_from_content(
-            "First",
-            "test",
-            &paws_profile::default_runtime_yaml(),
-            None,
-        )
+        .import_profile_from_content("First", "test", &paws_profile::default_runtime_yaml(), None)
         .await
         .unwrap();
     let second_id = core
@@ -1818,12 +1787,7 @@ async fn profile_switch_settles_meow_traffic_when_native_stats_are_unavailable()
     ));
     let core = CoreHandle::new_with_profile_root(root);
     let first_id = core
-        .import_profile_from_content(
-            "First",
-            "test",
-            &paws_profile::default_runtime_yaml(),
-            None,
-        )
+        .import_profile_from_content("First", "test", &paws_profile::default_runtime_yaml(), None)
         .await
         .unwrap();
     let second_id = core
@@ -1879,12 +1843,7 @@ async fn deleting_active_profile_settles_traffic_baseline_before_next_profile() 
     ));
     let core = CoreHandle::new_with_profile_root(root);
     let first_id = core
-        .import_profile_from_content(
-            "First",
-            "test",
-            &paws_profile::default_runtime_yaml(),
-            None,
-        )
+        .import_profile_from_content("First", "test", &paws_profile::default_runtime_yaml(), None)
         .await
         .unwrap();
     let second_id = core

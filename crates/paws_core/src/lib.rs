@@ -3,15 +3,6 @@ use axum::http::Method;
 use axum::middleware::Next;
 use axum::response::Response as AxumResponse;
 use futures::StreamExt;
-use paws_model::{
-    from_json, to_json, AboutSnapshot, ConnectionSummary, ControllerAccessConfig,
-    ControllerDiagnostics, DnsSnapshot, ExitLocationSnapshot, PawsError, LogEntry,
-    ManualRuleMutation, ManualRuleSpec, NetworkPortConfig, ProfileSummary, ProviderProxySummary,
-    ProviderSummary, ProxyGroup, ProxyItem, RequestSummary, RuntimeMode, RuntimeSnapshot,
-    TrafficHistoryPoint, TrafficSnapshot, VpnLifecycle, VpnOptions,
-};
-use paws_profile::{normalize_profile_content, ProfileStore};
-use paws_vpn::{TunSession, TunStats};
 use meow_common::sniffer::SnifferConfig;
 use meow_common::{AdapterType, ConnType, Metadata, Network, TunnelMode};
 use meow_config::{
@@ -22,6 +13,15 @@ use meow_listener::MixedListener;
 use meow_tunnel::rule_ir::LazyMatchOutcome;
 use meow_tunnel::Tunnel;
 use once_cell::sync::Lazy;
+use paws_model::{
+    from_json, to_json, AboutSnapshot, ConnectionSummary, ControllerAccessConfig,
+    ControllerDiagnostics, DnsSnapshot, ExitLocationSnapshot, LogEntry, ManualRuleMutation,
+    ManualRuleSpec, NetworkPortConfig, PawsError, ProfileSummary, ProviderProxySummary,
+    ProviderSummary, ProxyGroup, ProxyItem, RequestSummary, RuntimeMode, RuntimeSnapshot,
+    TrafficHistoryPoint, TrafficSnapshot, VpnLifecycle, VpnOptions,
+};
+use paws_profile::{normalize_profile_content, ProfileStore};
+use paws_vpn::{TunSession, TunStats};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
@@ -532,6 +532,9 @@ impl CoreHandle {
         // process. Always replace the old ashmem session with the descriptors
         // from the latest Want so state is published back to the current UI.
         drop(previous);
+        // Wake any waiter parked on the replaced session so the subscription
+        // loop re-enters the wait against the latest descriptors.
+        platform_ipc::cancel_event_waits();
         self.lock_state()?.runtime_ui_cache_writes_enabled = false;
         self.sync_platform_changes()
     }
@@ -542,17 +545,27 @@ impl CoreHandle {
         Ok(())
     }
 
-    pub async fn wait_for_platform_change(&self, timeout: Duration) -> Result<bool, PawsError> {
+    /// Block until the peer process publishes a platform frame.
+    ///
+    /// Fully event driven: the wait parks on the session notification socket
+    /// together with a process-local cancellation socket. It resolves when a
+    /// frame arrives (`Ok(true)`) or when [`Self::cancel_platform_change_wait`]
+    /// is invoked (`Ok(false)`); it never polls.
+    pub async fn wait_for_platform_change_event(&self) -> Result<bool, PawsError> {
         let Some(platform) = self.platform_ipc()? else {
-            tokio::time::sleep(timeout).await;
             return Ok(false);
         };
-        tokio::task::spawn_blocking(move || platform.wait_for_change(timeout))
+        tokio::task::spawn_blocking(move || platform.wait_for_change_event_cancellable())
             .await
             .map_err(|error| {
                 PawsError::Core(format!("platform subscription task failed: {error}"))
             })?
             .map_err(platform_ipc_error)
+    }
+
+    /// Wake the in-process waiter parked in [`Self::wait_for_platform_change_event`].
+    pub fn cancel_platform_change_wait(&self) {
+        platform_ipc::cancel_event_waits();
     }
 
     /// Current in-process VPN state event revision.
@@ -566,19 +579,17 @@ impl CoreHandle {
     }
 
     /// Await the first VPN state event newer than `after_revision`.
-    pub async fn await_platform_vpn_event(
-        &self,
-        after_revision: u64,
-    ) -> Result<u64, PawsError> {
+    pub async fn await_platform_vpn_event(&self, after_revision: u64) -> Result<u64, PawsError> {
         let mut receiver = self.platform_vpn_event_tx.subscribe();
         loop {
             let revision = *receiver.borrow_and_update();
             if revision > after_revision {
                 return Ok(revision);
             }
-            receiver.changed().await.map_err(|_| {
-                PawsError::Core("platform VPN event stream closed".to_owned())
-            })?;
+            receiver
+                .changed()
+                .await
+                .map_err(|_| PawsError::Core("platform VPN event stream closed".to_owned()))?;
         }
     }
 
@@ -682,17 +693,14 @@ impl CoreHandle {
         url: &str,
         name: Option<String>,
     ) -> Result<String, PawsError> {
-        let response = self
-            .download_subscription(url, "profile download")
-            .await?;
+        let response = self.download_subscription(url, "profile download").await?;
         let subscription_user_info = subscription_userinfo_from_headers(&response.headers);
         let subscription_metadata = subscription_metadata_from_headers(&response.headers);
-        let header_name =
-            subscription_profile_name_from_headers(&response.headers).or_else(|| {
-                subscription_metadata
-                    .as_ref()
-                    .and_then(|meta| meta.title.clone())
-            });
+        let header_name = subscription_profile_name_from_headers(&response.headers).or_else(|| {
+            subscription_metadata
+                .as_ref()
+                .and_then(|meta| meta.title.clone())
+        });
         let raw_yaml = response.body;
         let subscription_user_info = subscription_user_info
             .or_else(|| paws_profile::parse_subscription_userinfo_comment(&raw_yaml));
@@ -771,14 +779,8 @@ impl CoreHandle {
         result
     }
 
-    async fn refresh_profile_from_url(
-        &self,
-        profile_id: &str,
-        url: &str,
-    ) -> Result<(), PawsError> {
-        let response = self
-            .download_subscription(url, "profile refresh")
-            .await?;
+    async fn refresh_profile_from_url(&self, profile_id: &str, url: &str) -> Result<(), PawsError> {
+        let response = self.download_subscription(url, "profile refresh").await?;
         let subscription_user_info = subscription_userinfo_from_headers(&response.headers);
         let subscription_metadata = subscription_metadata_from_headers(&response.headers);
         let raw_yaml = response.body;
@@ -1477,47 +1479,6 @@ impl CoreHandle {
             self.persist_platform_vpn_state_locked(&mut state)?;
         }
         Ok(())
-    }
-
-    /// Wait briefly for the VPN Extension to accept the matching Want.
-    ///
-    /// Some HarmonyOS authorization dialogs start the Extension with a new,
-    /// parameter-free Want. Callers use this signal to decide whether the
-    /// original Want containing the shared-memory descriptors must be sent
-    /// again after authorization succeeds.
-    pub async fn await_platform_vpn_start_attachment(
-        &self,
-        attempt_id: &str,
-        timeout: Duration,
-    ) -> Result<bool, PawsError> {
-        if attempt_id.is_empty() {
-            return Err(PawsError::Core(
-                "platform VPN start attempt id is empty".to_owned(),
-            ));
-        }
-        let mut receiver = self.platform_start_tx.subscribe();
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            let event = {
-                let state = self.lock_state()?;
-                self.platform_start_event_locked(&state)
-            };
-            if event.attempt_id != attempt_id || event.outcome != PlatformStartOutcome::Pending {
-                return Ok(event.attempt_id == attempt_id && event.extension_attached);
-            }
-            if event.extension_attached {
-                return Ok(true);
-            }
-
-            tokio::select! {
-                changed = receiver.changed() => {
-                    changed.map_err(|_| PawsError::Core(
-                        "platform VPN start coordinator closed".to_owned()
-                    ))?;
-                }
-                _ = tokio::time::sleep_until(deadline) => return Ok(false),
-            }
-        }
     }
 
     pub async fn await_platform_vpn_start(
@@ -3206,9 +3167,7 @@ impl CoreHandle {
             }
 
             state.tunnel.as_ref().ok_or_else(|| {
-                PawsError::Core(
-                    "cannot query exit location before the tunnel is loaded".to_owned(),
-                )
+                PawsError::Core("cannot query exit location before the tunnel is loaded".to_owned())
             })?;
             (state.exit_location_revision, state.network_ports.mixed_port)
         };

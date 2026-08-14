@@ -1,4 +1,6 @@
 use super::*;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use tokio::io::unix::AsyncFd;
 
 pub(super) async fn run_netstack_vpn(
     stack_kind: VpnStack,
@@ -6,6 +8,7 @@ pub(super) async fn run_netstack_vpn(
     tunnel: Tunnel,
     stats: Arc<SharedStats>,
     running: Arc<AtomicBool>,
+    shutdown: Arc<Notify>,
     dns_hijacking: bool,
     sniffer_config: SnifferConfig,
     dns_table: DnsTable,
@@ -18,10 +21,14 @@ pub(super) async fn run_netstack_vpn(
     } else {
         None
     };
+    // Wrap the duplicated fd so the reader parks in an epoll-backed
+    // readiness wait instead of busy-polling, and every exit path closes the
+    // descriptor exactly once (AsyncFd owns it from this point on).
+    let tun = match AsyncFd::new(unsafe { OwnedFd::from_raw_fd(fd) }) {
+        Ok(tun) => Arc::new(tun),
+        Err(error) => return Err(error),
+    };
     if !running.load(Ordering::SeqCst) {
-        unsafe {
-            libc::close(fd);
-        }
         return Ok(());
     }
 
@@ -54,9 +61,6 @@ pub(super) async fn run_netstack_vpn(
     } = match runtime {
         Ok(runtime) => runtime,
         Err(error) => {
-            unsafe {
-                libc::close(fd);
-            }
             return Err(error);
         }
     };
@@ -73,9 +77,10 @@ pub(super) async fn run_netstack_vpn(
     });
 
     let writer_stats = stats.clone();
+    let writer_tun = Arc::clone(&tun);
     let writer_handle = tokio::spawn(async move {
         while let Some(pkt) = egress_rx.recv().await {
-            if write_tun_packet(fd, &pkt).await {
+            if write_tun_packet(writer_tun.get_ref().as_raw_fd(), &pkt).await {
                 writer_stats.tx_packets.fetch_add(1, Ordering::Relaxed);
                 writer_stats
                     .tx_bytes
@@ -85,77 +90,107 @@ pub(super) async fn run_netstack_vpn(
     });
 
     let reader_running = running;
+    let reader_shutdown = Arc::clone(&shutdown);
     let reader_stats = stats;
     let reader_dns_table = dns_table;
     let reader_dns_cache = dns_cache;
     let reader_tunnel = tunnel;
     let reader_egress_tx = egress_tx;
+    let reader_tun = Arc::clone(&tun);
     let reader_handle = tokio::spawn(async move {
         let mut read_buf = vec![0_u8; 65535];
         let dns_sem = Arc::new(Semaphore::new(DNS_BURST_CAP));
-        while reader_running.load(Ordering::SeqCst) {
-            tokio::task::yield_now().await;
-            let mut did_work = false;
+        let mut stopped = false;
+        while reader_running.load(Ordering::SeqCst) && !stopped {
+            // Park until the TUN is readable or shutdown is requested. No
+            // polling: the wait is an epoll registration plus the shutdown
+            // Notify, so an idle tunnel costs no wakeups.
+            let mut guard = tokio::select! {
+                ready = reader_tun.readable() => match ready {
+                    Ok(guard) => guard,
+                    Err(_) => break,
+                },
+                _ = reader_shutdown.notified() => break,
+            };
             loop {
-                let n =
-                    unsafe { libc::read(fd, read_buf.as_mut_ptr() as *mut c_void, read_buf.len()) };
-                if n <= 0 {
-                    break;
-                }
-                did_work = true;
-                let n = n as usize;
-                let ip_data = &read_buf[..n];
-                reader_stats.rx_packets.fetch_add(1, Ordering::Relaxed);
-                reader_stats.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
+                let n = unsafe {
+                    libc::read(
+                        reader_tun.get_ref().as_raw_fd(),
+                        read_buf.as_mut_ptr() as *mut c_void,
+                        read_buf.len(),
+                    )
+                };
+                if n > 0 {
+                    let n = n as usize;
+                    let ip_data = &read_buf[..n];
+                    reader_stats.rx_packets.fetch_add(1, Ordering::Relaxed);
+                    reader_stats.rx_bytes.fetch_add(n as u64, Ordering::Relaxed);
 
-                if let Some((src_ip, src_port, dst_ip, dst_port, payload)) =
-                    tun_dns_query_from_packet(dns_hijacking, ip_data)
-                {
-                    reader_stats.udp_packets.fetch_add(1, Ordering::Relaxed);
-                    reader_stats.dns_packets.fetch_add(1, Ordering::Relaxed);
-                    if let Some(query) = parse_dns_query(payload) {
-                        reader_stats.record_dns_query(query.name, query.kind.as_str().to_owned());
-                    }
-                    let permit = match dns_sem.clone().try_acquire_owned() {
-                        Ok(permit) => permit,
-                        Err(_) => {
-                            reader_stats.dropped_packets.fetch_add(1, Ordering::Relaxed);
-                            if let Some(packet) = build_dns_servfail_udp_packet(
-                                src_ip, src_port, dst_ip, dst_port, payload,
-                            ) {
-                                let _ = reader_egress_tx.send(packet);
-                            }
-                            continue;
+                    if let Some((src_ip, src_port, dst_ip, dst_port, payload)) =
+                        tun_dns_query_from_packet(dns_hijacking, ip_data)
+                    {
+                        reader_stats.udp_packets.fetch_add(1, Ordering::Relaxed);
+                        reader_stats.dns_packets.fetch_add(1, Ordering::Relaxed);
+                        if let Some(query) = parse_dns_query(payload) {
+                            reader_stats
+                                .record_dns_query(query.name, query.kind.as_str().to_owned());
                         }
-                    };
-                    let query = payload.to_vec();
-                    let reply_tx = reader_egress_tx.clone();
-                    let dns_table = reader_dns_table.clone();
-                    let dns_cache = reader_dns_cache.clone();
-                    let tunnel = reader_tunnel.clone();
-                    let stats = reader_stats.clone();
-                    tokio::spawn(async move {
-                        let _permit = permit;
-                        handle_dns_query(
-                            tunnel, dns_table, dns_cache, stats, src_ip, src_port, dst_ip,
-                            dst_port, query, reply_tx,
-                        )
-                        .await;
-                    });
+                        let permit = match dns_sem.clone().try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                reader_stats.dropped_packets.fetch_add(1, Ordering::Relaxed);
+                                if let Some(packet) = build_dns_servfail_udp_packet(
+                                    src_ip, src_port, dst_ip, dst_port, payload,
+                                ) {
+                                    let _ = reader_egress_tx.send(packet);
+                                }
+                                continue;
+                            }
+                        };
+                        let query = payload.to_vec();
+                        let reply_tx = reader_egress_tx.clone();
+                        let dns_table = reader_dns_table.clone();
+                        let dns_cache = reader_dns_cache.clone();
+                        let tunnel = reader_tunnel.clone();
+                        let stats = reader_stats.clone();
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            handle_dns_query(
+                                tunnel, dns_table, dns_cache, stats, src_ip, src_port, dst_ip,
+                                dst_port, query, reply_tx,
+                            )
+                            .await;
+                        });
+                        continue;
+                    }
+
+                    match ingress_tx.try_send(ip_data.to_vec()) {
+                        Ok(()) => {}
+                        Err(mpsc::error::TrySendError::Full(frame)) => {
+                            let _ = ingress_tx.send(frame).await;
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => break,
+                    }
                     continue;
                 }
-
-                match ingress_tx.try_send(ip_data.to_vec()) {
-                    Ok(()) => {}
-                    Err(mpsc::error::TrySendError::Full(frame)) => {
-                        let _ = ingress_tx.send(frame).await;
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => break,
+                if n == 0 {
+                    // The system closed the TUN: treat it as an orderly stop.
+                    stopped = true;
+                    break;
                 }
-            }
-
-            if !did_work {
-                tokio::time::sleep(tokio::time::Duration::from_micros(200)).await;
+                let error = io::Error::last_os_error();
+                match error.kind() {
+                    io::ErrorKind::Interrupted => continue,
+                    io::ErrorKind::WouldBlock => {
+                        // Drained; drop readiness and park again.
+                        guard.clear_ready();
+                        break;
+                    }
+                    _ => {
+                        stopped = true;
+                        break;
+                    }
+                }
             }
         }
     });
@@ -170,9 +205,9 @@ pub(super) async fn run_netstack_vpn(
     let _ = udp_sweeper_handle.await;
     writer_handle.abort();
     let _ = writer_handle.await;
-    unsafe {
-        libc::close(fd);
-    }
+    // The AsyncFd owns the duplicated TUN descriptor and closes it when the
+    // final Arc clone (reader, writer, this scope) drops.
+    drop(tun);
     Ok(())
 }
 
@@ -502,7 +537,8 @@ where
         return Vec::new();
     };
     let mut prefix = vec![0_u8; SNIFF_BUFFER_SIZE];
-    let Ok(Ok(size)) = tokio::time::timeout(Duration::from_millis(100), stream.read(&mut prefix)).await
+    let Ok(Ok(size)) =
+        tokio::time::timeout(Duration::from_millis(100), stream.read(&mut prefix)).await
     else {
         return Vec::new();
     };

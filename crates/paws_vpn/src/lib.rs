@@ -1,11 +1,11 @@
 use futures::{SinkExt, StreamExt};
-use paws_model::{DnsQuerySummary, PawsError, VpnOptions, VpnStack};
 use meow_common::sniffer::{sniff_http, sniff_tls, SnifferConfig};
 use meow_common::{ConnType, Metadata, Network, ProxyConn, ProxyPacketConn};
 use meow_listener::SnifferRuntime;
 use meow_trie::DomainTrie;
 use meow_tunnel::Tunnel;
 use netstack_smoltcp::StackBuilder;
+use paws_model::{DnsQuerySummary, PawsError, VpnOptions, VpnStack};
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{mpsc, Notify, Semaphore};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
 
@@ -128,6 +128,7 @@ impl SharedStats {
 struct RunningTask {
     handle: JoinHandle<()>,
     running: Arc<AtomicBool>,
+    shutdown: Arc<Notify>,
     stats: Arc<SharedStats>,
     dns_table: DnsTable,
     dns_cache: DnsResponseCache,
@@ -136,6 +137,9 @@ struct RunningTask {
 impl RunningTask {
     fn abort(self) {
         self.running.store(false, Ordering::SeqCst);
+        // Wake the TUN reader parked in its readiness wait so the task can
+        // unwind promptly instead of waiting for the next packet.
+        self.shutdown.notify_waiters();
         let _handle = self.handle;
     }
 }
@@ -178,6 +182,8 @@ impl TunSession {
         let task_stats = stats.clone();
         let running = Arc::new(AtomicBool::new(true));
         let task_running = running.clone();
+        let shutdown = Arc::new(Notify::new());
+        let task_shutdown = shutdown.clone();
         let dns_table = DnsTable::default();
         let dns_cache = DnsResponseCache::default();
         let dns_hijacking = options.dns_hijacking;
@@ -190,6 +196,7 @@ impl TunSession {
                 tunnel,
                 task_stats,
                 task_running,
+                task_shutdown,
                 dns_hijacking,
                 sniffer_config,
                 task_dns_table,
@@ -217,6 +224,7 @@ impl TunSession {
             Some(RunningTask {
                 handle,
                 running,
+                shutdown,
                 stats,
                 dns_table,
                 dns_cache,

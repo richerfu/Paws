@@ -462,10 +462,7 @@ fn dns_table_preserves_shared_ip_hosts_without_guessing() {
 
     assert_eq!(
         table.lookup_candidates(ip),
-        vec![
-            "one.example.test".to_owned(),
-            "two.example.test".to_owned()
-        ]
+        vec!["one.example.test".to_owned(), "two.example.test".to_owned()]
     );
     assert_eq!(table.lookup(ip), None);
     assert!(table.has_candidates(ip));

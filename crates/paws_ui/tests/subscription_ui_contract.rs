@@ -228,7 +228,9 @@ fn profile_import_can_close_while_pending_and_discards_stale_results() {
     assert!(dialog.contains("Action::CancelProfileImport"));
     assert!(dialog.contains("profiles_import_cancel"));
     assert!(dialog.contains("open_signal.set(false)"));
-    assert!(!dialog.contains("if !state.read().profile_import_loading {\n                    open_signal.set(false)"));
+    assert!(!dialog.contains(
+        "if !state.read().profile_import_loading {\n                    open_signal.set(false)"
+    ));
 
     assert!(UI.contains("profile_import_request_id: Option<u64>"));
     assert!(UI.contains("profile_import_cancel_tx"));

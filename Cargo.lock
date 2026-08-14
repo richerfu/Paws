@@ -3601,7 +3601,7 @@ dependencies = [
 
 [[package]]
 name = "ohos-fileshare-binding"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "libc",
  "ohos-fileshare-sys",
@@ -3609,11 +3609,11 @@ dependencies = [
 
 [[package]]
 name = "ohos-fileshare-sys"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "ohos-fileuri-binding"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "libc",
  "ohos-fileuri-sys",
@@ -3621,7 +3621,7 @@ dependencies = [
 
 [[package]]
 name = "ohos-fileuri-sys"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "ohos-hilog-binding"
@@ -3649,7 +3649,7 @@ dependencies = [
  "napi-sys-ohos",
  "ohos-enum-derive",
  "ohos-image-sys",
- "ohos-resource-manager-sys 0.3.2",
+ "ohos-resource-manager-sys 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -3664,7 +3664,7 @@ dependencies = [
  "ohos-image-native-sys",
  "ohos-native-buffer-binding",
  "ohos-native-buffer-sys",
- "ohos-resource-manager-sys 0.3.2",
+ "ohos-resource-manager-sys 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -3675,7 +3675,7 @@ checksum = "331baf1db1c885dcbcdb81dce0563fa9f9fd3a27802ddcbf1726eb6784bd020e"
 dependencies = [
  "napi-sys-ohos",
  "ohos-native-buffer-sys",
- "ohos-resource-manager-sys 0.3.2",
+ "ohos-resource-manager-sys 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -3685,7 +3685,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e367c84b78af5ae77d5335601396c1d0af89543becca08f75aedf4ba5258d74c"
 dependencies = [
  "napi-sys-ohos",
- "ohos-resource-manager-sys 0.3.2",
+ "ohos-resource-manager-sys 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -3741,15 +3741,15 @@ dependencies = [
 
 [[package]]
 name = "ohos-resource-manager-binding"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "napi-ohos",
- "ohos-resource-manager-sys 0.3.1",
+ "ohos-resource-manager-sys 0.3.2",
 ]
 
 [[package]]
 name = "ohos-resource-manager-sys"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "napi-sys-ohos",
 ]

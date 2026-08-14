@@ -165,10 +165,8 @@ fn activity_rules_are_normalized_and_replace_conflicting_targets() {
 
 #[test]
 fn activity_ip_rules_use_canonical_host_prefixes_and_deduplicate() {
-    let root = std::env::temp_dir().join(format!(
-        "paws-profile-test-{}",
-        next_id("activity-ip-rule")
-    ));
+    let root =
+        std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("activity-ip-rule")));
     let mut store = ProfileStore::open(root).unwrap();
     store.seed_default().unwrap();
     store
@@ -220,8 +218,7 @@ fn activity_rules_reject_domain_ip_mixups_and_invalid_prefixes() {
 
 #[test]
 fn rule_reorder_updates_runtime_yaml_order() {
-    let root =
-        std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("reorder-rules")));
+    let root = std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("reorder-rules")));
     let mut store = ProfileStore::open(root).unwrap();
     store.seed_default().unwrap();
     let rule_ids = store
@@ -726,10 +723,8 @@ fn subscription_metadata_comment_is_parsed() {
 
 #[test]
 fn imported_profile_uses_subscription_metadata_comment_as_fallback() {
-    let root = std::env::temp_dir().join(format!(
-        "paws-profile-test-{}",
-        next_id("comment-metadata")
-    ));
+    let root =
+        std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("comment-metadata")));
     let mut store = ProfileStore::open(root).unwrap();
     let profile_id = store
             .import_profile_content_with_subscription_metadata(
@@ -2283,8 +2278,7 @@ rules:
 
 #[test]
 fn provider_cache_paths_are_profile_scoped_and_sanitized() {
-    let root =
-        std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("provider-path")));
+    let root = std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("provider-path")));
     let mut store = ProfileStore::open(root.clone()).unwrap();
     let profile_id = store
         .import_profile_content(
@@ -2437,8 +2431,7 @@ rules:
 
 #[test]
 fn geodata_files_report_app_private_resource_state() {
-    let root =
-        std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("geodata-state")));
+    let root = std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("geodata-state")));
     let store = ProfileStore::open(root.clone()).unwrap();
     let files = store.geodata_files();
     assert_eq!(files.len(), 3);
@@ -2805,8 +2798,7 @@ fn updates_dns_config_in_profile_yaml() {
 
 #[test]
 fn runtime_yaml_adds_default_nameserver_for_encrypted_dns_hostnames() {
-    let root =
-        std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("dns-bootstrap")));
+    let root = std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("dns-bootstrap")));
     let mut store = ProfileStore::open(root).unwrap();
     let profile_id = store
         .import_profile_content(
@@ -2889,10 +2881,8 @@ rules: []
 
 #[test]
 fn runtime_yaml_disables_subscription_system_hosts_dns_lookup() {
-    let root = std::env::temp_dir().join(format!(
-        "paws-profile-test-{}",
-        next_id("dns-system-hosts")
-    ));
+    let root =
+        std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("dns-system-hosts")));
     let mut store = ProfileStore::open(root).unwrap();
     let profile_id = store
         .import_profile_content(
