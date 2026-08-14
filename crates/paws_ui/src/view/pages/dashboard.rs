@@ -11,6 +11,8 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
         || matches!(snapshot.vpn_lifecycle, VpnLifecycle::Starting);
     let vpn_stopping = current.vpn_command_pending == Some(VpnCommandAction::Stop);
     let transitioning = vpn_starting || vpn_stopping;
+    let disabled = current.vpn_command_pending.is_some()
+        || matches!(snapshot.vpn_lifecycle, VpnLifecycle::Starting);
     let connected = snapshot.vpn_running && !transitioning;
     let status_label = if vpn_starting {
         translate_ui(current.locale, tr::page_tr_248())
@@ -106,43 +108,53 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
             layout_weight: 1.0,
             column {
                 width: "100%",
-                row {
+                button {
+                    button_type: "normal",
                     width: "100%",
                     height: 52.0,
-                    align_items: "center",
+                    padding: 0.0,
+                    background_color: 0x00000000,
+                    border_width: 0.0,
+                    enabled: !disabled,
+                    onclick: move |_| dispatch(state, Action::StartStopVpn),
                     row {
-                        width: 42.0,
-                        height: 42.0,
+                        width: "100%",
+                        height: 52.0,
                         align_items: "center",
-                        justify_content: "center",
-                        background_color: muted(),
-                        border_radius: 10.0,
-                        if transitioning {
-                            Spinner { size: 20.0, color: Some(status_color) }
-                        } else {
-                            {arkit::icon(status_icon, 20.0, status_color)}
+                        row {
+                            width: 42.0,
+                            height: 42.0,
+                            align_items: "center",
+                            justify_content: "center",
+                            background_color: muted(),
+                            border_radius: 10.0,
+                            if transitioning {
+                                Spinner { size: 20.0, color: Some(status_color) }
+                            } else {
+                                {arkit::icon(status_icon, 20.0, status_color)}
+                            }
                         }
-                    }
-                    column {
-                        layout_weight: 1.0,
-                        margin_left: 12.0,
-                        align_items: "start",
-                        text {
-                            content: status_label,
-                            font_size: 19.0,
-                            line_height: 24.0,
-                            font_weight: 700,
-                            font_color: status_color,
-                        }
-                        text {
-                            width: "100%",
-                            content: profile,
-                            margin_top: 1.0,
-                            font_size: 11.0,
-                            line_height: 16.0,
-                            font_color: subtle(),
-                            max_lines: 1,
-                            text_overflow: "ellipsis",
+                        column {
+                            layout_weight: 1.0,
+                            margin_left: 12.0,
+                            align_items: "start",
+                            text {
+                                content: status_label,
+                                font_size: 19.0,
+                                line_height: 24.0,
+                                font_weight: 700,
+                                font_color: status_color,
+                            }
+                            text {
+                                width: "100%",
+                                content: profile,
+                                margin_top: 1.0,
+                                font_size: typography::XS,
+                                line_height: 16.0,
+                                font_color: subtle(),
+                                max_lines: 1,
+                                text_overflow: "ellipsis",
+                            }
                         }
                     }
                 }
@@ -181,7 +193,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                         font_weight: 700,
                         font_color: text_color(),
                     }
-                    text { content: proxy_group_context, margin_top: 1.0, font_size: 10.0, line_height: 14.0, font_color: subtle(), max_lines: 1 }
+                    text { content: proxy_group_context, margin_top: 1.0, font_size: typography::XS, line_height: 16.0, font_color: subtle(), max_lines: 1 }
                 }
                 if quick_count > 0 {
                     Button {
@@ -191,7 +203,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                         onclick: move |_| {
                             all_nodes_navigator.push(Route::Proxies {});
                         },
-                        text { content: translate_ui(current.locale, tr::page_tr_255()), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                        text { content: translate_ui(current.locale, tr::page_tr_273()), font_size: typography::XS, font_weight: 600, font_color: text_color() }
                         {arkit::icon("chevron-right", 14.0, subtle())}
                     }
                 }
@@ -201,21 +213,20 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                 column {
                     layout_weight: 1.0,
                     width: "100%",
+                    padding_top: 36.0,
                     align_items: "center",
-                    justify_content: "center",
-                    {arkit::icon("rss", 21.0, subtle())}
-                    text { content: translate_ui(current.locale, tr::page_tr_256()), margin_top: 9.0, font_size: 14.0, font_weight: 700, font_color: text_color() }
-                    text { content: translate_ui(current.locale, tr::page_tr_257()), margin_top: 3.0, font_size: 11.0, line_height: 16.0, font_color: subtle(), text_align: "center" }
-                    row { height: 10.0 }
-                    Button {
-                        variant: ButtonVariant::Default,
-                        size: ButtonSize::Sm,
-                        shadow: Some(false),
+                    justify_content: "start",
+                    {arkit::icon("rss", 22.0, subtle())}
+                    text { content: translate_ui(current.locale, tr::page_tr_256()), margin_top: 12.0, font_size: typography::SM, font_weight: 700, font_color: text_color() }
+                    text { content: translate_ui(current.locale, tr::page_tr_257()), margin_top: 6.0, font_size: typography::XS, line_height: 18.0, font_color: subtle(), text_align: "center" }
+                    row { height: 16.0 }
+                    FlatButton {
+                        variant: FlatButtonVariant::Primary,
                         onclick: move |_| {
                             subscriptions_navigator.push(Route::Profiles {});
                         },
                         {arkit::icon("plus", 14.0, primary_text())}
-                        text { content: translate_ui(current.locale, tr::page_tr_098()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: primary_text() }
+                        text { content: translate_ui(current.locale, tr::page_tr_098()), margin_left: 8.0, font_size: typography::SM, font_weight: 600, font_color: primary_text() }
                     }
                 }
             } else {
@@ -261,7 +272,7 @@ fn dashboard_connection_row(icon_name: &'static str, label: String, value: Strin
                 width: 68.0,
                 content: label,
                 margin_left: 8.0,
-                font_size: 11.0,
+                font_size: typography::XS,
                 line_height: 18.0,
                 font_color: subtle(),
                 max_lines: 1,
@@ -357,7 +368,7 @@ mod exit_location_tests {
 
         assert_eq!(
             exit_location_label(&location, false, UiLocale::ZhCn),
-            translate_ui(current.locale, tr::hard_zh_013())
+            translate_ui(UiLocale::ZhCn, tr::page_tr_126())
         );
     }
 }

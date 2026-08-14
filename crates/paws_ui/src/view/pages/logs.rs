@@ -134,7 +134,7 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                         current.log_recording.archives.len(),
                         translate_ui(locale, tr::page_tr_264())
                     ),
-                    font_size: 11.0,
+                    font_size: typography::XS,
                     font_color: subtle(),
                 }
             }
@@ -210,12 +210,12 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                     align_items: "center",
                     text {
                         content: format!("{} / {} {}", shown_log_count, total_log_count, translate_ui(locale, tr::page_tr_267())),
-                        font_size: 11.0,
+                        font_size: typography::XS,
                         font_color: subtle(),
                     }
                     row { layout_weight: 1.0 }
                     if !empty {
-                        text { content: translate_ui(locale, tr::page_tr_268()), font_size: 11.0, font_color: subtle() }
+                        text { content: translate_ui(locale, tr::page_tr_268()), font_size: typography::XS, font_color: subtle() }
                     }
                 }
                 row {
@@ -463,7 +463,7 @@ fn VirtualLogArchiveRowView(
                     width: "100%",
                     content: item.detail,
                     padding_top: 4.0,
-                    font_size: 11.0,
+                    font_size: typography::XS,
                     font_weight: 400,
                     font_color: palette.muted_foreground,
                     line_height: 16.0,
@@ -555,7 +555,7 @@ fn VirtualLogRowView(
             text {
                 width: "100%",
                 content: item.meta,
-                font_size: 10.0,
+                font_size: typography::XS,
                 font_weight: 500,
                 font_color: item.color,
                 line_height: 15.0,

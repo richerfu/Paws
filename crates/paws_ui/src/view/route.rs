@@ -58,7 +58,7 @@ impl Route {
 
     pub(super) fn icon(&self) -> &'static str {
         match self {
-            Self::Dashboard {} => "compass",
+            Self::Dashboard {} => "house",
             Self::Proxies {} => "git-branch",
             Self::Profiles {} => "rss",
             Self::Requests {} => "activity",
@@ -70,7 +70,7 @@ impl Route {
             Self::Appearance {} => "palette",
             Self::Settings {} => "settings",
             Self::SubscriptionConverter {} => "refresh-cw",
-            Self::About {} => "badge-info",
+            Self::About {} => "paw-print",
             Self::Privacy {} => "shield-check",
         }
     }
