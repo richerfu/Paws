@@ -263,7 +263,7 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                             }
                         }
                         FormItem {
-                            label: "Fallback".to_owned(),
+                            label: translate_ui(current.locale, tr::page_tr_276()),
                             Textarea {
                                 value: Some(dns_fallbacks_value.clone()),
                                 height: Some(76.0),

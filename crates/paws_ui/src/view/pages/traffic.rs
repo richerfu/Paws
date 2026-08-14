@@ -79,9 +79,23 @@ pub(crate) fn traffic_page(state: Signal<State>) -> Element {
             row {
                 width: "100%",
                 align_items: "center",
-                text { content: if connected { translate_ui(current.locale, tr::page_tr_125()) } else { translate_ui(current.locale, tr::page_tr_126()) }, font_size: 14.0, font_weight: 650, font_color: if connected { success() } else { subtle() } }
-                row { layout_weight: 1.0 }
-                {pill(if connected { translate_ui(current.locale, tr::page_tr_127()) } else { translate_ui(current.locale, tr::page_tr_128()) }.to_owned(), if connected { success() } else { subtle() })}
+                row {
+                    width: 8.0,
+                    height: 8.0,
+                    border_radius: 4.0,
+                    background_color: if connected { success() } else { subtle() },
+                }
+                text {
+                    content: if connected {
+                        translate_ui(current.locale, tr::page_tr_125())
+                    } else {
+                        translate_ui(current.locale, tr::page_tr_126())
+                    },
+                    margin_left: 8.0,
+                    font_size: typography::SM,
+                    font_weight: 650,
+                    font_color: if connected { success() } else { subtle() },
+                }
             }
             row { height: 18.0 }
             text { content: translate_ui(current.locale, tr::page_tr_129()), font_size: 17.0, font_weight: 700, font_color: text_color() }
@@ -124,7 +138,33 @@ pub(crate) fn traffic_page(state: Signal<State>) -> Element {
                         width: "100%",
                         {info_row(translate_ui(current.locale, tr::traffic_peak_download()), format_speed(peak_download))}
                         {info_row(translate_ui(current.locale, tr::traffic_peak_upload()), format_speed(peak_upload))}
-                        {speed_bars(&snapshot.traffic_history)}
+                        if peak_download == 0 && peak_upload == 0 {
+                            column {
+                                width: "100%",
+                                height: 72.0,
+                                margin_top: 10.0,
+                                padding: 12.0,
+                                align_items: "center",
+                                justify_content: "center",
+                                background_color: muted(),
+                                border_radius: 8.0,
+                                text {
+                                    content: translate_ui(current.locale, tr::page_tr_274()),
+                                    font_size: typography::XS,
+                                    font_weight: 600,
+                                    font_color: text_color(),
+                                }
+                                text {
+                                    content: translate_ui(current.locale, tr::page_tr_275()),
+                                    margin_top: 4.0,
+                                    font_size: typography::XS,
+                                    font_color: subtle(),
+                                    text_align: "center",
+                                }
+                            }
+                        } else {
+                            {speed_bars(&snapshot.traffic_history)}
+                        }
                     }
                 }
             )}

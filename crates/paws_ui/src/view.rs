@@ -916,7 +916,7 @@ fn speed_bars(history: &[TrafficHistoryPoint]) -> Element {
         .iter()
         .map(|point| point.download_speed.max(point.upload_speed))
         .max()
-        .unwrap_or(1)
+        .unwrap_or(0)
         .max(1);
     let bars = history.iter().rev().take(24).rev().enumerate().map(|(index, point)| {
         let ratio = point.download_speed.max(point.upload_speed) as f32 / max as f32;

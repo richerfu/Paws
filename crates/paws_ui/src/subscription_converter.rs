@@ -238,7 +238,7 @@ pub(crate) struct SubscriptionConverterDraft {
 impl Default for SubscriptionConverterDraft {
     fn default() -> Self {
         Self {
-            advanced: true,
+            advanced: false,
             source_sub_url: String::new(),
             client_type: "clash".to_owned(),
             backend: DEFAULT_BACKEND.to_owned(),

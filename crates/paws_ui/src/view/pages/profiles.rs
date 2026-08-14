@@ -68,9 +68,9 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                     key: "{profile.id}",
                     width: "100%",
                     height: 108.0,
-                    background_color: surface(),
+                    background_color: if active { muted() } else { surface() },
                     border_width: 1.0,
-                    border_color: line(),
+                    border_color: if active { success() } else { line() },
                     border_radius: 10.0,
                     clip: true,
                     row {
@@ -80,7 +80,7 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                             height: 106.0,
                             padding_left: 16.0,
                             padding_right: 8.0,
-                            background_color: surface(),
+                            background_color: 0x00000000,
                             border_width: 0.0,
                             border_radius: 0.0,
                             onclick: move |_| {
@@ -111,7 +111,7 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                                     text {
                                         content: truncate_text(&source.replace(['\n', '\r'], " "), 54),
                                         margin_top: 4.0,
-                                        font_size: 11.0,
+                                        font_size: typography::XS,
                                         line_height: 16.0,
                                         font_color: subtle(),
                                         max_lines: 1,
@@ -121,7 +121,7 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                                             width: "100%",
                                             content: compact(&error),
                                             margin_top: 6.0,
-                                            font_size: 11.0,
+                                            font_size: typography::XS,
                                             line_height: 16.0,
                                             font_color: danger(),
                                             max_lines: 1,
@@ -132,10 +132,10 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                                             margin_top: 6.0,
                                             align_items: "center",
                                             {arkit::icon("clock", 12.0, subtle())}
-                                            text { content: updated, margin_left: 5.0, font_size: 11.0, font_color: subtle(), max_lines: 1 }
+                                            text { content: updated, margin_left: 5.0, font_size: typography::XS, font_color: subtle(), max_lines: 1 }
                                             if let Some(usage) = usage {
                                                 row { layout_weight: 1.0 }
-                                                text { content: usage, margin_left: 8.0, font_size: 11.0, font_color: subtle(), max_lines: 1 }
+                                                text { content: usage, margin_left: 8.0, font_size: typography::XS, font_color: subtle(), max_lines: 1 }
                                             }
                                         }
                                     }

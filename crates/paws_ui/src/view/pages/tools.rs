@@ -7,19 +7,6 @@ pub(crate) fn tools_page(state: Signal<State>) -> Element {
         column {
             width: "100%",
             {settings_section(
-                translate_ui(current.locale, tr::page_tr_019()),
-                vec![
-                    settings_value_row("package", translate_ui(current.locale, tr::page_tr_020()), about.app_version),
-                    settings_value_row("cpu", translate_ui(current.locale, tr::page_tr_021()), format!("meow-rs {}", about.meow_rs_version)),
-                    settings_route_row(
-                        Route::SubscriptionConverter {},
-                        current.locale,
-                        translate_ui(current.locale, tr::hard_zh_023()),
-                    ),
-                ],
-            )}
-            row { height: spacing::LG }
-            {settings_section(
                 translate_ui(current.locale, tr::page_tr_022()),
                 vec![settings_route_row(
                     Route::Appearance {},
@@ -34,6 +21,15 @@ pub(crate) fn tools_page(state: Signal<State>) -> Element {
                     Route::Settings {},
                     current.locale,
                     translate_ui(current.locale, tr::page_tr_025()),
+                )],
+            )}
+            row { height: spacing::LG }
+            {settings_section(
+                translate_ui(current.locale, tr::page_tr_272()),
+                vec![settings_route_row(
+                    Route::SubscriptionConverter {},
+                    current.locale,
+                    translate_ui(current.locale, tr::hard_zh_023()),
                 )],
             )}
             row { height: spacing::LG }
@@ -55,6 +51,20 @@ pub(crate) fn tools_page(state: Signal<State>) -> Element {
                     translate_ui(current.locale, tr::page_tr_032()),
                 )],
             )}
+            row { height: spacing::XXL }
+            row {
+                width: "100%",
+                justify_content: "center",
+                text {
+                    content: format!(
+                        "Paws {} · meow-rs {}",
+                        about.app_version,
+                        about.meow_rs_version
+                    ),
+                    font_size: typography::XS,
+                    font_color: subtle(),
+                }
+            }
         }
     };
     scaffold(state, Route::Tools {}, rsx! {}, body)
@@ -104,7 +114,7 @@ fn settings_route_row(page: Route, locale: UiLocale, subtitle: impl Into<String>
         button {
             button_type: "normal",
             width: "100%",
-            height: 68.0,
+            height: 60.0,
             padding: 0.0,
             background_color: 0x00000000,
             border_width: 0.0,
@@ -149,6 +159,7 @@ fn settings_route_row(page: Route, locale: UiLocale, subtitle: impl Into<String>
     }
 }
 
+#[allow(dead_code)]
 fn settings_value_row(
     icon: &'static str,
     title: impl Into<String>,
@@ -199,9 +210,40 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
     let body = rsx! {
         column {
             width: "100%",
+            column {
+                width: "100%",
+                padding_top: spacing::SM,
+                padding_bottom: spacing::LG,
+                align_items: "center",
+                row {
+                    width: 56.0,
+                    height: 56.0,
+                    align_items: "center",
+                    justify_content: "center",
+                    background_color: muted(),
+                    border_radius: 16.0,
+                    {arkit::icon("paw-print", 26.0, text_color())}
+                }
+                text {
+                    content: "Paws",
+                    margin_top: spacing::MD,
+                    font_size: typography::XL,
+                    line_height: 28.0,
+                    font_weight: 700,
+                    font_color: text_color(),
+                }
+                text {
+                    content: translate_ui(current.locale, tr::page_tr_033()),
+                    margin_top: spacing::XXS,
+                    font_size: typography::SM,
+                    line_height: 20.0,
+                    font_color: subtle(),
+                    text_align: "center",
+                }
+            }
             {card(
-                "Paws",
-                Some(translate_ui(current.locale, tr::page_tr_033())),
+                translate_ui(current.locale, tr::page_tr_020()),
+                None,
                 rsx! {
                     column {
                         width: "100%",

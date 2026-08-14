@@ -80,7 +80,7 @@ pub(crate) fn proxies_page(state: Signal<State>) -> Element {
                 align_items: "center",
                 text {
                     content: result_summary,
-                    font_size: 11.0,
+                    font_size: typography::XS,
                     font_color: subtle(),
                 }
             }
@@ -286,8 +286,8 @@ fn VirtualProxySectionRow(locale: UiLocale, palette: VirtualProxyPalette) -> Ele
             text {
                 content: description,
                 width: "100%",
-                font_size: 9.0,
-                line_height: 14.0,
+                font_size: typography::XS,
+                line_height: 16.0,
                 font_color: palette.muted_foreground,
                 max_lines: 1,
                 text_overflow: "ellipsis",
@@ -328,7 +328,7 @@ fn VirtualProxyGroupRow(
     rsx! {
         row {
             width: "100%",
-            height: 78.0,
+            height: 86.0,
             background_color: palette.surface,
             padding_left: 13.0,
             padding_right: 12.0,
@@ -356,10 +356,10 @@ fn VirtualProxyGroupRow(
                 text {
                     width: "100%",
                     content: title,
-                    font_size: 13.0,
+                    font_size: typography::SM,
                     font_weight: 650,
                     font_color: palette.foreground,
-                    line_height: 18.0,
+                    line_height: 20.0,
                     max_lines: 1,
                     text_overflow: "ellipsis",
                 }
@@ -374,8 +374,8 @@ fn VirtualProxyGroupRow(
                             UiLocale::En => format!("{} members", group.member_count),
                         }
                     ),
-                    font_size: 9.0,
-                    line_height: 14.0,
+                    font_size: typography::XS,
+                    line_height: 16.0,
                     font_color: palette.muted_foreground,
                     max_lines: 1,
                     text_overflow: "ellipsis",
@@ -383,8 +383,8 @@ fn VirtualProxyGroupRow(
                 text {
                     width: "100%",
                     content: format!("{} · {}", translate_ui(locale, tr::page_tr_161()), selected),
-                    font_size: 10.0,
-                    line_height: 15.0,
+                    font_size: typography::XS,
+                    line_height: 16.0,
                     font_weight: 600,
                     font_color: palette.success,
                     max_lines: 1,
@@ -446,7 +446,7 @@ fn VirtualProxyMemberRow(
     rsx! {
         row {
             width: "100%",
-            height: 62.0,
+            height: 66.0,
             background_color: if selected || member.pinned {
                 palette.selected_surface
             } else {
@@ -491,19 +491,19 @@ fn VirtualProxyMemberRow(
                 text {
                     width: "100%",
                     content: member.name,
-                    font_size: 13.0,
+                    font_size: typography::SM,
                     font_weight: if selected { 650 } else { 450 },
                     font_color: if selected { palette.success } else { palette.foreground },
-                    line_height: 18.0,
+                    line_height: 20.0,
                     max_lines: 1,
                     text_overflow: "ellipsis",
                 }
                 text {
                     width: "100%",
                     content: detail,
-                    font_size: 9.0,
+                    font_size: typography::XS,
                     font_color: palette.muted_foreground,
-                    line_height: 14.0,
+                    line_height: 16.0,
                     max_lines: 1,
                     text_overflow: "ellipsis",
                 }
@@ -517,7 +517,7 @@ fn VirtualProxyMemberRow(
                     delay
                 },
                 margin_left: 8.0,
-                font_size: 10.0,
+                font_size: typography::XS,
                 font_weight: if selected { 600 } else { 400 },
                 font_color: if member.delay_ms.is_some() || selected {
                     palette.success
