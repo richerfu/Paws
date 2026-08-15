@@ -1,8 +1,8 @@
 #[path = "../src/manual_rule.rs"]
 mod manual_rule;
 
-use paws_model::{ManualRuleMatchKind, RuleSummary};
 use manual_rule::{find_manual_rule_conflict, manual_rule_preview};
+use paws_model::{ManualRuleMatchKind, RuleSummary};
 
 fn rule(line: &str, source: &str) -> RuleSummary {
     RuleSummary {

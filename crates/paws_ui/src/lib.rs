@@ -1,7 +1,7 @@
-use paws_model::{RuntimeMode, VpnOptions};
 use napi_derive_ohos::napi;
 use napi_ohos::{bindgen_prelude::Object, Env, Error, Result, Status};
 use ohos_resource_manager_binding::ResourceManager;
+use paws_model::{RuntimeMode, VpnOptions};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
@@ -75,11 +75,16 @@ pub fn attach_platform_shared_memory(ashmem_fd: i32, notification_fd: i32) -> Re
 }
 
 #[napi]
-pub async fn wait_for_platform_change(timeout_ms: u32) -> Result<bool> {
+pub async fn wait_for_platform_change_event() -> Result<bool> {
     paws_core::shared_core()
-        .wait_for_platform_change(std::time::Duration::from_millis(u64::from(timeout_ms)))
+        .wait_for_platform_change_event()
         .await
         .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn cancel_platform_change_wait() {
+    paws_core::shared_core().cancel_platform_change_wait();
 }
 
 #[napi]
@@ -100,20 +105,6 @@ pub fn begin_platform_vpn_start() -> Result<String> {
 pub fn bind_platform_vpn_start(attempt_id: String) -> Result<()> {
     paws_core::shared_core()
         .bind_platform_vpn_start(&attempt_id)
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn await_platform_vpn_start_attachment(
-    attempt_id: String,
-    timeout_ms: u32,
-) -> Result<bool> {
-    paws_core::shared_core()
-        .await_platform_vpn_start_attachment(
-            &attempt_id,
-            std::time::Duration::from_millis(u64::from(timeout_ms)),
-        )
-        .await
         .map_err(to_napi_error)
 }
 
@@ -630,9 +621,7 @@ pub fn clear_request_history() -> Result<()> {
 
 #[napi]
 pub fn clear_logs() -> Result<()> {
-    paws_core::shared_core()
-        .clear_logs()
-        .map_err(to_napi_error)
+    paws_core::shared_core().clear_logs().map_err(to_napi_error)
 }
 
 #[napi]

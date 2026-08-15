@@ -16,7 +16,9 @@ const I18N_SOURCE: &str = include_str!("../src/i18n.rs");
 
 #[test]
 fn every_ui_locale_tag_is_declared_in_the_catalog() {
-    let start = I18N_SOURCE.find("locales:").expect("catalog `locales:` list");
+    let start = I18N_SOURCE
+        .find("locales:")
+        .expect("catalog `locales:` list");
     let tail = &I18N_SOURCE[start..];
     let open = tail.find('[').expect("catalog locales array");
     let close = tail[open..].find(']').expect("catalog locales close") + open;

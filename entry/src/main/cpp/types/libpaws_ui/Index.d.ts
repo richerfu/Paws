@@ -96,11 +96,11 @@ export declare function attachPlatformSharedMemory(ashmemFd: number, notificatio
 
 export declare function awaitPlatformVpnStart(attemptId: string): Promise<string>
 
-export declare function awaitPlatformVpnStartAttachment(attemptId: string, timeoutMs: number): Promise<boolean>
-
 export declare function beginPlatformVpnStart(): string
 
 export declare function bindPlatformVpnStart(attemptId: string): void
+
+export declare function cancelPlatformChangeWait(): void
 
 export declare function cancelPlatformVpnStart(attemptId: string): boolean
 
@@ -221,7 +221,7 @@ export declare function updateProfileSubscription(profileId: string, name: strin
 
 export declare function validateProfileContent(rawYaml: string): Promise<void>
 
-export declare function waitForPlatformChange(timeoutMs: number): Promise<boolean>
+export declare function waitForPlatformChangeEvent(): Promise<boolean>
 
 export interface AbilityInitContext {
   basePath?: string

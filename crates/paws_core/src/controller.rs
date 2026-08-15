@@ -176,10 +176,7 @@ fn validate_transport_contract(raw_yaml: &str) -> Result<(), PawsError> {
     Ok(())
 }
 
-fn validate_websocket_contract(
-    proxy: &serde_yaml::Mapping,
-    name: &str,
-) -> Result<(), PawsError> {
+fn validate_websocket_contract(proxy: &serde_yaml::Mapping, name: &str) -> Result<(), PawsError> {
     if let Some(alpn) = yaml_value(proxy, "alpn") {
         let valid = match alpn {
             serde_yaml::Value::Sequence(values) => {
@@ -231,10 +228,7 @@ fn validate_websocket_contract(
     Ok(())
 }
 
-fn yaml_value<'a>(
-    mapping: &'a serde_yaml::Mapping,
-    name: &str,
-) -> Option<&'a serde_yaml::Value> {
+fn yaml_value<'a>(mapping: &'a serde_yaml::Mapping, name: &str) -> Option<&'a serde_yaml::Value> {
     mapping
         .iter()
         .find_map(|(key, value)| (key.as_str() == Some(name)).then_some(value))
@@ -278,12 +272,10 @@ pub(super) fn merge_external_raw_config(
     let profile = profile
         .as_mapping_mut()
         .ok_or_else(|| PawsError::Core("profile YAML root must be a mapping".to_owned()))?;
-    let baseline = serde_yaml::to_value(baseline).map_err(|error| {
-        PawsError::Core(format!("cannot serialize controller config: {error}"))
-    })?;
-    let current = serde_yaml::to_value(current).map_err(|error| {
-        PawsError::Core(format!("cannot serialize controller config: {error}"))
-    })?;
+    let baseline = serde_yaml::to_value(baseline)
+        .map_err(|error| PawsError::Core(format!("cannot serialize controller config: {error}")))?;
+    let current = serde_yaml::to_value(current)
+        .map_err(|error| PawsError::Core(format!("cannot serialize controller config: {error}")))?;
     let baseline = baseline
         .as_mapping()
         .ok_or_else(|| PawsError::Core("controller baseline is not a mapping".to_owned()))?;

@@ -85,9 +85,7 @@ impl DnsTable {
     }
 }
 
-pub(super) fn prune_expired_dns_table_records(
-    records: &mut HashMap<IpAddr, Vec<DnsTableRecord>>,
-) {
+pub(super) fn prune_expired_dns_table_records(records: &mut HashMap<IpAddr, Vec<DnsTableRecord>>) {
     let now = monotonic_ms();
     records.retain(|_, candidates| {
         candidates.retain(|record| record.expires_at_ms > now);
@@ -95,9 +93,7 @@ pub(super) fn prune_expired_dns_table_records(
     });
 }
 
-pub(super) fn evict_earliest_dns_table_record(
-    records: &mut HashMap<IpAddr, Vec<DnsTableRecord>>,
-) {
+pub(super) fn evict_earliest_dns_table_record(records: &mut HashMap<IpAddr, Vec<DnsTableRecord>>) {
     if let Some(ip) = records
         .iter()
         .min_by_key(|(_, candidates)| {

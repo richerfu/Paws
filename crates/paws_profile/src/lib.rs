@@ -1,12 +1,12 @@
 use base64::Engine;
+use ipnet::IpNet;
 use paws_model::{
-    ControllerAccessConfig, GeodataFileSummary, PawsError, ManualRuleMatchKind,
-    ManualRuleMutation, ManualRuleMutationKind, ManualRuleSpec, NetworkPortConfig, ProfileSummary,
+    ControllerAccessConfig, GeodataFileSummary, ManualRuleMatchKind, ManualRuleMutation,
+    ManualRuleMutationKind, ManualRuleSpec, NetworkPortConfig, PawsError, ProfileSummary,
     ProviderSummary, RuleSummary, RuntimeMode, SubscriptionMetadata, SubscriptionUserInfo,
     VpnOptions, VpnStack, DEFAULT_CHINA_DNS_SERVERS, DEFAULT_GLOBAL_DNS_FALLBACKS,
     DEFAULT_MIXED_PORT,
 };
-use ipnet::IpNet;
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
@@ -662,11 +662,7 @@ impl ProfileStore {
         if allow_lan && secret.is_none() {
             secret = Some(ControllerSecretGenerator::generate()?);
         }
-        put_i64(
-            &mut paws,
-            "mixed-port",
-            i64::from(network_ports.mixed_port),
-        );
+        put_i64(&mut paws, "mixed-port", i64::from(network_ports.mixed_port));
         put_i64(
             &mut paws,
             "controller-port",

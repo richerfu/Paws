@@ -65,14 +65,9 @@ async fn external_text(
     context: &str,
     route: ExternalHttpRoute,
 ) -> Result<ExternalTextResponse, String> {
-    read_external_text_response(
-        response,
-        context,
-        route,
-        EXTERNAL_HTTP_MAX_BODY_BYTES,
-    )
-    .await
-    .map_err(|error| error.to_string())
+    read_external_text_response(response, context, route, EXTERNAL_HTTP_MAX_BODY_BYTES)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

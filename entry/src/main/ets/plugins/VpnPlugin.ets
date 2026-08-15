@@ -15,8 +15,6 @@ import { buildVpnWant, PawsPlatformSharedMemoryFds } from '../vpnability/VpnConf
 
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'PawsVpn';
-const VPN_EXTENSION_ATTACH_GRACE_MS: number = 350;
-const VPN_EXTENSION_REDISPATCH_ATTACH_TIMEOUT_MS: number = 5000;
 
 const VPN_START_REQUEST_TYPE = 'paws.VpnStartRequest';
 const VPN_START_RESPONSE_TYPE = 'paws.VpnStartResponse';
@@ -154,29 +152,22 @@ export class VpnPlugin extends AsyncPluginBase {
     await this.invokeVpnExtensionStart(optionsJson, attemptId);
     hilog.info(LOG_DOMAIN, LOG_TAG, 'system acknowledged VPN start attempt %{public}s', attemptId);
 
-    if (await pawsUi.awaitPlatformVpnStartAttachment(attemptId, VPN_EXTENSION_ATTACH_GRACE_MS)) {
-      return;
-    }
-
     // The first-authorization dialog on some HarmonyOS builds starts the VPN
-    // Extension with a new Want containing only bundleName/abilityName. Once
-    // authorization succeeds, send the original payload again so the running
-    // Extension receives the ashmem descriptors and attempt id via onRequest.
+    // Extension with a replacement Want containing only bundleName/abilityName.
+    // Redispatch the original payload unconditionally once the system promise
+    // resolves: the Extension is either running (the Want is delivered again
+    // via onRequest) or was already started with the full parameters (the
+    // repeated start is idempotent). The terminal outcome is owned entirely
+    // by the Extension's shared-memory events, so no timed attach probing is
+    // needed.
     hilog.warn(
       LOG_DOMAIN,
       LOG_TAG,
-      'VPN Extension did not receive the authorized Want; redispatching attempt %{public}s',
+      'redispatching VPN start attempt %{public}s after system acknowledgement',
       attemptId,
     );
     await this.invokeVpnExtensionStart(optionsJson, attemptId);
     hilog.info(LOG_DOMAIN, LOG_TAG, 'redispatched VPN start attempt %{public}s', attemptId);
-
-    if (!(await pawsUi.awaitPlatformVpnStartAttachment(
-      attemptId,
-      VPN_EXTENSION_REDISPATCH_ATTACH_TIMEOUT_MS,
-    ))) {
-      throw new Error('VPN Extension did not receive the shared-memory descriptors after authorization');
-    }
   }
 
   private async performStartVpn(optionsJson: string, context: BridgePluginContext): Promise<void> {

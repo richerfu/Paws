@@ -1,10 +1,10 @@
 #[path = "../src/log_filter.rs"]
 mod log_filter;
 
-use paws_model::LogEntry;
 use log_filter::{
     matches_log_filter, matches_log_filter_normalized, normalize_log_query, LogLevelFilter,
 };
+use paws_model::LogEntry;
 
 fn log(level: &str, message: &str, timestamp: &str) -> LogEntry {
     LogEntry {

@@ -1,4 +1,4 @@
-use paws_model::{PawsError, LogEntry};
+use paws_model::{LogEntry, PawsError};
 use std::collections::VecDeque;
 use std::fs;
 use std::io::Write;
