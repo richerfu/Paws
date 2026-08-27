@@ -196,8 +196,8 @@ impl ProfileStore {
         fs::create_dir_all(root.join("profiles")).map_err(io_error)?;
         fs::create_dir_all(root.join("backups")).map_err(io_error)?;
         fs::create_dir_all(root.join("runtime")).map_err(io_error)?;
-        fs::create_dir_all(root.join("providers/proxy")).map_err(io_error)?;
-        fs::create_dir_all(root.join("providers/rule")).map_err(io_error)?;
+        fs::create_dir_all(root.join("runtime/providers/proxy")).map_err(io_error)?;
+        fs::create_dir_all(root.join("runtime/providers/rule")).map_err(io_error)?;
         fs::create_dir_all(root.join("geodata")).map_err(io_error)?;
 
         let index_path = root.join("profiles.json");
@@ -480,6 +480,8 @@ impl ProfileStore {
             let _ = fs::remove_file(self.root.join(backup_path));
         }
         let _ = fs::remove_file(self.root.join("runtime").join(format!("{profile_id}.yaml")));
+        let _ = fs::remove_dir_all(self.root.join("runtime/providers/proxy").join(profile_id));
+        let _ = fs::remove_dir_all(self.root.join("runtime/providers/rule").join(profile_id));
         let _ = fs::remove_dir_all(self.root.join("providers/proxy").join(profile_id));
         let _ = fs::remove_dir_all(self.root.join("providers/rule").join(profile_id));
         self.rules.retain(|_, rule| rule.profile_id != profile_id);

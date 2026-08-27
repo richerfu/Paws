@@ -11,7 +11,7 @@ use std::time::Duration;
 pub const EXTERNAL_HTTP_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const EXTERNAL_HTTP_ERROR_BODY_BYTES: usize = 64 * 1024;
 const APP_USER_AGENT: &str = concat!("Paws/", env!("CARGO_PKG_VERSION"));
-const SUBSCRIPTION_USER_AGENT: &str = concat!("clash.meta/0.19.0 Paws/", env!("CARGO_PKG_VERSION"));
+const SUBSCRIPTION_USER_AGENT: &str = concat!("clash.meta/0.21.2 Paws/", env!("CARGO_PKG_VERSION"));
 const SUBSCRIPTION_ACCEPT: &str =
     "application/yaml, text/yaml, text/plain, application/octet-stream, */*";
 
@@ -348,7 +348,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(response.body.contains("ua=clash.meta/0.19.0 Paws/"));
+            assert!(response.body.contains("ua=clash.meta/0.21.2 Paws/"));
             assert_eq!(
                 response.body.contains("cookie=true"),
                 expected_cookie,

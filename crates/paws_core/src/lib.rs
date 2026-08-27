@@ -79,7 +79,7 @@ const MIXED_LISTENER_READY_RETRY: Duration = Duration::from_millis(25);
 const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = "1.0.0";
-const MEOW_RS_VERSION: &str = "0.19.0";
+const MEOW_RS_VERSION: &str = "0.21.2";
 const ARKIT_REV: &str = "e8e0be16ff22add530d3fd3edebe9f94aa392094";
 const RUST_VERSION: &str = "1.89";
 
@@ -1881,8 +1881,26 @@ impl CoreHandle {
         };
         let yaml_ready = Instant::now();
 
-        let config = load_meow_config(&runtime_yaml).await?;
+        let config = load_meow_config_from_path(&runtime_yaml, &runtime_path).await?;
         let meow_ready = Instant::now();
+        // Match Meow's mobile integration: proxy upstream hostnames use the
+        // configured meow DNS (including proxy-server-nameserver) instead of
+        // libc resolution, whose sockets can loop back through an active VPN.
+        const VPN_PLATFORM: bool = cfg!(any(
+            target_os = "android",
+            target_os = "ios",
+            target_env = "ohos"
+        ));
+        if config.dns.enabled || VPN_PLATFORM {
+            meow_common::set_host_resolver(Arc::new(
+                meow_dns::ResolverHostHook::new_with_proxy_resolver(
+                    Arc::clone(&config.dns.resolver),
+                    config.dns.proxy_resolver.clone(),
+                ),
+            ));
+        } else {
+            meow_common::clear_host_resolver();
+        }
         let raw_config = config.raw.clone();
         let loaded_rule_lines = raw_config.rules.clone().unwrap_or_default();
         let proxy_provider_registry = config.proxy_providers.clone();

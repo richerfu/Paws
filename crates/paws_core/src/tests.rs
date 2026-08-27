@@ -2355,7 +2355,7 @@ async fn controller_exposes_loaded_provider_registries() {
         )
         .await
         .unwrap();
-    let runtime_provider_dir = root.join("providers/proxy").join(&profile_id);
+    let runtime_provider_dir = root.join("runtime/providers/proxy").join(&profile_id);
     std::fs::create_dir_all(&runtime_provider_dir).unwrap();
     std::fs::write(
         runtime_provider_dir.join("LocalProxyProvider.yaml"),
@@ -2548,7 +2548,7 @@ async fn provider_refresh_disambiguates_same_name_by_type() {
         )
         .await
         .unwrap();
-    let runtime_provider_dir = root.join("providers/proxy").join(&profile_id);
+    let runtime_provider_dir = root.join("runtime/providers/proxy").join(&profile_id);
     std::fs::create_dir_all(&runtime_provider_dir).unwrap();
     std::fs::write(
         runtime_provider_dir.join("Shared.yaml"),

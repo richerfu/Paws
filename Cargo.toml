@@ -24,14 +24,14 @@ ohos-ashmem-binding = "0.1.0"
 openharmony-ability-plugin-files = "1.0.0-beta.1"
 openharmony-ability-plugin-url = "1.0.0-beta.1"
 
-meow-api = "0.19.0"
-meow-common = "0.19.0"
-meow-config = { version = "0.19.0", features = ["anytls", "boring-tls"] }
-meow-dns = "0.19.0"
-meow-listener = "0.19.0"
-meow-proxy = { version = "0.19.0", features = ["anytls"] }
-meow-trie = "0.19.0"
-meow-tunnel = "0.19.0"
+meow-api = "0.21.2"
+meow-common = "0.21.2"
+meow-config = { version = "0.21.2", features = ["anytls", "boring-tls"] }
+meow-dns = "0.21.2"
+meow-listener = "0.21.2"
+meow-proxy = { version = "0.21.2", features = ["anytls"] }
+meow-trie = "0.21.2"
+meow-tunnel = "0.21.2"
 
 anyhow = "1"
 async-trait = "0.1"

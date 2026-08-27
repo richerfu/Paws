@@ -2244,7 +2244,7 @@ rules:
         .unwrap();
 
     let runtime_path = root.join("runtime").join(format!("{profile_id}.yaml"));
-    let provider_dir = root.join("providers/proxy").join(&profile_id);
+    let provider_dir = root.join("runtime/providers/proxy").join(&profile_id);
     let provider_path = provider_dir.join("remote.yaml");
     let runtime_yaml = std::fs::read_to_string(&runtime_path).unwrap();
     let provider = store
@@ -2331,7 +2331,7 @@ rules:
         .find(|provider| provider.name == "../escape")
         .expect("escaped provider");
     let provider_path = provider.path.as_deref().expect("provider path");
-    let expected_dir = root.join("providers/proxy").join(&profile_id);
+    let expected_dir = root.join("runtime/providers/proxy").join(&profile_id);
     let provider_path = Path::new(provider_path);
     assert!(provider_path.starts_with(&expected_dir));
     assert_eq!(provider_path.parent(), Some(expected_dir.as_path()));
@@ -2352,7 +2352,7 @@ rules:
         .find(|provider| provider.name == "remote-rules")
         .expect("rule provider");
     let rule_provider_path = rule_provider.path.as_deref().expect("rule provider path");
-    let expected_rule_dir = root.join("providers/rule").join(&profile_id);
+    let expected_rule_dir = root.join("runtime/providers/rule").join(&profile_id);
     let rule_provider_path = Path::new(rule_provider_path);
     assert!(rule_provider_path.starts_with(&expected_rule_dir));
     assert_eq!(
@@ -2363,6 +2363,60 @@ rules:
     assert_eq!(rule_provider.behavior.as_deref(), Some("domain"));
     assert_eq!(rule_provider.format.as_deref(), Some("mrs"));
     assert_eq!(rule_provider.interval_seconds, Some(7200));
+}
+
+#[test]
+fn legacy_provider_cache_is_migrated_into_the_runtime_cache_root() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-profile-test-{}",
+        next_id("provider-cache-migration")
+    ));
+    let mut store = ProfileStore::open(root.clone()).unwrap();
+    let profile_id = store
+        .import_profile_content(
+            "Providers",
+            "local",
+            r#"
+proxy-providers:
+  remote:
+    type: file
+    path: ignored.yaml
+proxies: []
+proxy-groups:
+  - name: Proxy
+    type: select
+    use:
+      - remote
+    proxies:
+      - DIRECT
+rules:
+  - MATCH,DIRECT
+"#,
+            None,
+        )
+        .unwrap();
+    let legacy_dir = root.join("providers/proxy").join(&profile_id);
+    std::fs::create_dir_all(&legacy_dir).unwrap();
+    let content =
+        "proxies:\n  - name: Cached\n    type: http\n    server: 127.0.0.1\n    port: 9\n";
+    std::fs::write(legacy_dir.join("remote.yaml"), content).unwrap();
+
+    let yaml = store
+        .build_runtime_yaml(&profile_id, RuntimeMode::Rule, &VpnOptions::default())
+        .unwrap();
+    let migrated_path = root
+        .join("runtime/providers/proxy")
+        .join(&profile_id)
+        .join("remote.yaml");
+
+    assert_eq!(std::fs::read_to_string(&migrated_path).unwrap(), content);
+    let provider = store
+        .providers_from_yaml(&yaml)
+        .into_iter()
+        .find(|provider| provider.name == "remote")
+        .expect("remote provider");
+    assert_eq!(provider.path.as_deref(), migrated_path.to_str());
+    assert!(provider.cache_exists);
 }
 
 #[test]
