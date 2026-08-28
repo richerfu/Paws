@@ -229,7 +229,7 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
                     margin_top: spacing::MD,
                     font_size: typography::XL,
                     line_height: 28.0,
-                    font_weight: 700,
+                    font_weight: 600,
                     font_color: text_color(),
                 }
                 text {

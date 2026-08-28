@@ -47,7 +47,7 @@ fn YamlEditorDialogBody(state: Signal<State>) -> Element {
             width: "100%",
             text {
                 content: format!("{} {} · {} {} · {}", summary.lines, translate_ui(current.locale, tr::profiles_yaml_lines_unit()), summary.characters, translate_ui(current.locale, tr::profiles_yaml_chars_unit()), if summary.changed { translate_ui(current.locale, tr::profiles_yaml_changed()) } else { translate_ui(current.locale, tr::profiles_yaml_unchanged()) }),
-                font_size: 12.0,
+                font_size: typography::XS,
                 font_color: subtle(),
             }
             row { height: 8.0 }

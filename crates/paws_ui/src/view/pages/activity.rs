@@ -451,8 +451,7 @@ fn VirtualRequestRowView(
                     foreground: if item.active { palette.success } else { palette.muted_foreground },
                 }
                 VirtualIconAction {
-                    content: "+".to_owned(),
-                    font_size: 18.0,
+                    icon: "plus",
                     foreground: palette.muted_foreground,
                     margin_right: 0.0,
                     accessibility: item.rule_accessibility.clone(),
@@ -560,16 +559,14 @@ fn VirtualConnectionRowView(
                     }
                 }
                 VirtualIconAction {
-                    content: "+".to_owned(),
-                    font_size: 18.0,
+                    icon: "plus",
                     foreground: palette.muted_foreground,
                     margin_right: spacing::MD,
                     accessibility: item.rule_accessibility.clone(),
                     on_click: move |_| on_add_rule.call(rule_context.clone()),
                 }
                 VirtualIconAction {
-                    content: "×".to_owned(),
-                    font_size: 16.0,
+                    icon: "x",
                     foreground: palette.danger,
                     margin_right: 0.0,
                     accessibility: item.close_accessibility.clone(),
@@ -647,35 +644,27 @@ fn VirtualStatusBadge(label: String, background: u32, foreground: u32) -> Elemen
 
 /// shadcn Button size="icon" variant="ghost".
 ///
-/// + and × use the *same* fixed text box (size / weight / line-height / align)
-/// so a pair of trailing actions stays level and optically centered.
-///
-/// `margin_right` is the trailing gap after this action (space before the next
-/// icon, matching Badge→+ spacing on request rows).
+/// Trailing actions share a fixed 28×28 hit target so a pair of icons stays
+/// level. `margin_right` is the gap after this action.
 #[component]
 fn VirtualIconAction(
-    content: String,
-    font_size: f32,
+    icon: &'static str,
     foreground: u32,
     margin_right: f32,
     accessibility: String,
     on_click: EventHandler<()>,
 ) -> Element {
     rsx! {
-        text {
+        row {
             width: ACTIVITY_ACTION_SIZE,
             height: ACTIVITY_ACTION_SIZE,
             margin_right,
+            align_items: "center",
+            justify_content: "center",
             background_color: 0x0000_0000,
-            content,
-            font_size,
-            font_color: foreground,
-            font_weight: 400,
-            text_align: "center",
-            line_height: ACTIVITY_ACTION_SIZE,
-            max_lines: 1,
             border_radius: 6.0,
             onclick: move |_| on_click.call(()),
+            {arkit::icon(icon, 16.0, foreground)}
         }
         text { content: accessibility, width: 0.0, height: 0.0, opacity: 0.0 }
     }
@@ -791,9 +780,9 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
             title: translate_ui(locale, tr::page_tr_004()),
             description: Some(translate_ui(locale, tr::page_tr_007())),
         }
-            row { height: 14.0 }
-            text { content: translate_ui(locale, tr::page_tr_008()), font_size: 11.0, font_weight: 650, font_color: subtle() }
-            row { height: 6.0 }
+            row { height: spacing::MD }
+            {field_label(translate_ui(locale, tr::page_tr_008()))}
+            row { height: spacing::XS }
             FlatSegmented {
                 options: vec![exact_label, suffix_label, ip_label],
                 selected: selected_match,
@@ -820,9 +809,9 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                 disabled: editor.submitting,
                 on_change: move |value| dispatch(state, Action::SetManualRuleValue(value)),
             }
-            row { height: 10.0 }
-            text { content: translate_ui(locale, tr::page_tr_012()), font_size: 11.0, font_weight: 650, font_color: subtle() }
-            row { height: 6.0 }
+            row { height: spacing::MD }
+            {field_label(translate_ui(locale, tr::page_tr_012()))}
+            row { height: spacing::XS }
             // arkit shadcn Select (overlay panel). Ignore changes while submitting.
             column {
                 width: "100%",
@@ -841,14 +830,14 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
             }
             column {
                 width: "100%",
-                margin_top: 10.0,
-                padding: 9.0,
+                margin_top: spacing::MD,
+                padding: spacing::SM,
                 border_width: 1.0,
                 border_color: line(),
-                border_radius: 7.0,
+                border_radius: 8.0,
                 background_color: muted(),
-                text { content: translate_ui(locale, tr::page_tr_013()), font_size: 10.0, font_weight: 650, font_color: subtle() }
-                text { content: preview, margin_top: 3.0, font_size: 11.0, font_color: text_color(), max_lines: 2, text_overflow: "ellipsis" }
+                text { content: translate_ui(locale, tr::page_tr_013()), font_size: typography::XS, font_weight: 500, font_color: subtle() }
+                text { content: preview, margin_top: 3.0, font_size: typography::XS, font_color: text_color(), max_lines: 2, text_overflow: "ellipsis" }
             }
             if let Some(message) = conflict_message {
                 text { content: message, margin_top: 8.0, font_size: 11.0, line_height: 16.0, font_color: warning() }
@@ -884,7 +873,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                 } else {
                     {arkit::icon("route", 16.0, primary_text())}
                 }
-                text { content: if editor.submitting { translate_ui(locale, tr::page_tr_017()) } else { translate_ui(locale, tr::page_tr_018()) }, margin_left: 8.0, font_size: 13.0, font_weight: 650, font_color: primary_text() }
+                text { content: if editor.submitting { translate_ui(locale, tr::page_tr_017()) } else { translate_ui(locale, tr::page_tr_018()) }, margin_left: 8.0, font_size: typography::SM, font_weight: 600, font_color: primary_text() }
             }
         }
     }

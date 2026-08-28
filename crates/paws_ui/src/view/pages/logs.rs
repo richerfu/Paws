@@ -117,16 +117,14 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                 width: "100%",
                 height: 32.0,
                 align_items: "center",
-                text {
-                    content: if recording_enabled {
+                {status_chip(
+                    if recording_enabled {
                         translate_ui(locale, tr::page_tr_262())
                     } else {
                         translate_ui(locale, tr::page_tr_263())
                     },
-                    font_size: 12.0,
-                    font_weight: 600,
-                    font_color: if recording_enabled { success() } else { subtle() },
-                }
+                    if recording_enabled { success() } else { subtle() },
+                )}
                 row { layout_weight: 1.0 }
                 text {
                     content: format!(
@@ -435,14 +433,14 @@ fn VirtualLogArchiveRowView(
             width: "100%",
             height: 72.0,
             background_color: palette.surface,
-            padding_top: 8.0,
-            padding_right: 8.0,
-            padding_bottom: 8.0,
-            padding_left: 14.0,
-            margin_bottom: 7.0,
+            padding_top: spacing::SM,
+            padding_right: spacing::SM,
+            padding_bottom: spacing::SM,
+            padding_left: spacing::MD,
+            margin_bottom: spacing::SM,
             border_width: 1.0,
             border_color: palette.border,
-            border_radius: 9.0,
+            border_radius: 8.0,
             clip: true,
             align_items: "center",
             column {
@@ -473,14 +471,16 @@ fn VirtualLogArchiveRowView(
                 text { content: accessibility_text, width: 0.0, height: 0.0, opacity: 0.0 }
             }
             VirtualLogArchiveAction {
-                content: if item.exporting { "…".to_owned() } else { "↓".to_owned() },
+                icon: "download",
+                pending: item.exporting,
                 color: export_color,
                 accessibility: if item.exporting { "exporting log".to_owned() } else { "export log".to_owned() },
                 disabled: item.export_disabled,
                 on_click: move |_| on_export.call(export_file_name.clone()),
             }
             VirtualLogArchiveAction {
-                content: if item.deleting { "…".to_owned() } else { "×".to_owned() },
+                icon: "x",
+                pending: item.deleting,
                 color: delete_color,
                 accessibility: if item.deleting {
                     "deleting log".to_owned()
@@ -498,24 +498,19 @@ fn VirtualLogArchiveRowView(
 
 #[component]
 fn VirtualLogArchiveAction(
-    content: String,
+    icon: &'static str,
+    pending: bool,
     color: u32,
     accessibility: String,
     disabled: bool,
     on_click: EventHandler<()>,
 ) -> Element {
-    let font_size = if content == "…" { 18.0 } else { 20.0 };
     rsx! {
-        text {
+        row {
             width: 40.0,
             height: 40.0,
-            content,
-            font_size,
-            font_color: color,
-            font_weight: 500,
-            text_align: "center",
-            line_height: 40.0,
-            max_lines: 1,
+            align_items: "center",
+            justify_content: "center",
             enabled: !disabled,
             opacity: if disabled { 0.55 } else { 1.0 },
             onclick: move |_| {
@@ -523,6 +518,11 @@ fn VirtualLogArchiveAction(
                     on_click.call(());
                 }
             },
+            if pending {
+                Spinner { size: 16.0, color: Some(color) }
+            } else {
+                {arkit::icon(icon, 16.0, color)}
+            }
         }
         text { content: accessibility, width: 0.0, height: 0.0, opacity: 0.0 }
     }
@@ -541,14 +541,14 @@ fn VirtualLogRowView(
             width: "100%",
             height: 76.0,
             background_color: palette.surface,
-            padding_top: 9.0,
-            padding_right: 11.0,
-            padding_bottom: 9.0,
-            padding_left: 11.0,
-            margin_bottom: 7.0,
+            padding_top: spacing::SM,
+            padding_right: spacing::MD,
+            padding_bottom: spacing::SM,
+            padding_left: spacing::MD,
+            margin_bottom: spacing::SM,
             border_width: 1.0,
             border_color: palette.border,
-            border_radius: 9.0,
+            border_radius: 8.0,
             clip: true,
             align_items: "start",
             onclick: move |_| on_open.call(open_item.clone()),
@@ -603,7 +603,7 @@ fn log_detail_dialog(
                 alignment: "top-start",
                 scroll_bar: "off",
                 background_color: muted(),
-                border_radius: 9.0,
+                border_radius: 8.0,
                 column {
                     width: "100%",
                     padding: 12.0,

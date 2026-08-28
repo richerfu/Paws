@@ -70,16 +70,16 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                     height: 108.0,
                     background_color: if active { muted() } else { surface() },
                     border_width: 1.0,
-                    border_color: if active { success() } else { line() },
-                    border_radius: 10.0,
+                    border_color: line(),
+                    border_radius: 8.0,
                     clip: true,
                     row {
                         layout_weight: 1.0,
                         button {
                             width: "100%",
                             height: 106.0,
-                            padding_left: 16.0,
-                            padding_right: 8.0,
+                            padding_left: spacing::LG,
+                            padding_right: spacing::SM,
                             background_color: 0x00000000,
                             border_width: 0.0,
                             border_radius: 0.0,
@@ -94,23 +94,23 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                                 column {
                                     width: 24.0,
                                     align_items: "start",
-                                    {arkit::icon(if active { "circle-check" } else { "circle" }, 20.0, if active { success() } else { subtle() })}
+                                    {arkit::icon(if active { "circle-check" } else { "circle" }, 18.0, if active { success() } else { subtle() })}
                                 }
                                 column {
                                     layout_weight: 1.0,
-                                    padding_top: 12.0,
-                                    padding_bottom: 12.0,
+                                    padding_top: spacing::MD,
+                                    padding_bottom: spacing::MD,
                                     align_items: "start",
                                     text {
                                         content: truncate_text(&profile.name, 40),
-                                        font_size: 15.0,
-                                        font_weight: 700,
+                                        font_size: typography::SM,
+                                        font_weight: 600,
                                         font_color: text_color(),
                                         max_lines: 1,
                                     }
                                     text {
                                         content: truncate_text(&source.replace(['\n', '\r'], " "), 54),
-                                        margin_top: 4.0,
+                                        margin_top: spacing::XXS,
                                         font_size: typography::XS,
                                         line_height: 16.0,
                                         font_color: subtle(),
@@ -120,7 +120,7 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                                         text {
                                             width: "100%",
                                             content: compact(&error),
-                                            margin_top: 6.0,
+                                            margin_top: spacing::XS,
                                             font_size: typography::XS,
                                             line_height: 16.0,
                                             font_color: danger(),
@@ -129,13 +129,13 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                                     } else {
                                         row {
                                             width: "100%",
-                                            margin_top: 6.0,
+                                            margin_top: spacing::XS,
                                             align_items: "center",
                                             {arkit::icon("clock", 12.0, subtle())}
-                                            text { content: updated, margin_left: 5.0, font_size: typography::XS, font_color: subtle(), max_lines: 1 }
+                                            text { content: updated, margin_left: spacing::XXS, font_size: typography::XS, font_color: subtle(), max_lines: 1 }
                                             if let Some(usage) = usage {
                                                 row { layout_weight: 1.0 }
-                                                text { content: usage, margin_left: 8.0, font_size: typography::XS, font_color: subtle(), max_lines: 1 }
+                                                text { content: usage, margin_left: spacing::SM, font_size: typography::XS, font_color: subtle(), max_lines: 1 }
                                             }
                                         }
                                     }
@@ -187,13 +187,9 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
             if !has_profiles {
                 column {
                     width: "100%",
-                    height: 360.0,
                     align_items: "center",
-                    justify_content: "center",
-                    {arkit::icon("rss", 30.0, subtle())}
-                    text { content: translate_ui(current.locale, tr::profiles_empty_title()), margin_top: 16.0, font_size: 17.0, font_weight: 700, font_color: text_color() }
-                    text { content: translate_ui(current.locale, tr::page_tr_097()), margin_top: 6.0, font_size: 13.0, line_height: 19.0, font_color: subtle(), text_align: "center" }
-                    row { height: 18.0 }
+                    {empty_state("rss", translate_ui(current.locale, tr::profiles_empty_title()), translate_ui(current.locale, tr::page_tr_097()))}
+                    row { height: spacing::LG }
                     FlatButton {
                         variant: FlatButtonVariant::Primary,
                         onclick: move |_| {
@@ -201,7 +197,7 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                             import_open.set(true);
                         },
                         {arkit::icon("plus", 16.0, primary_text())}
-                        text { content: translate_ui(current.locale, tr::page_tr_098()), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
+                        text { content: translate_ui(current.locale, tr::page_tr_098()), margin_left: 8.0, font_size: typography::SM, font_weight: 600, font_color: primary_text() }
                     }
                 }
             } else {
@@ -303,12 +299,12 @@ fn profile_action_dialog(
                 title: truncate_text(&profile.name, 42),
                 description: Some(translate_ui(locale, tr::page_tr_099())),
             }
-            row { height: 14.0 }
+            row { height: spacing::MD }
             column {
                 width: "100%",
                 border_width: 1.0,
                 border_color: line(),
-                border_radius: 9.0,
+                border_radius: 8.0,
                 clip: true,
                 if !profile.active {
                     button {
@@ -487,24 +483,18 @@ fn profile_edit_dialog(
                 title: translate_ui(locale, tr::page_tr_101()),
                 description: Some(translate_ui(locale, tr::page_tr_107())),
             }
-            row { height: 18.0 }
-            row {
-                width: "100%",
-                text { content: translate_ui(locale, tr::page_tr_108()), font_size: 12.0, font_weight: 600, font_color: text_color() }
-            }
-            row { height: 6.0 }
+            row { height: spacing::LG }
+            {field_label(translate_ui(locale, tr::page_tr_108()))}
+            row { height: spacing::XS }
             Input {
                 value: Some(name()),
                 placeholder: Some(translate_ui(locale, tr::page_tr_109())),
                 width: Some("100%".into()),
                 on_change: move |value| name.set(value),
             }
-            row { height: 14.0 }
-            row {
-                width: "100%",
-                text { content: translate_ui(locale, tr::page_tr_110()), font_size: 12.0, font_weight: 600, font_color: text_color() }
-            }
-            row { height: 6.0 }
+            row { height: spacing::MD }
+            {field_label(translate_ui(locale, tr::page_tr_110()))}
+            row { height: spacing::XS }
             Input {
                 value: Some(url()),
                 placeholder: Some("https://".to_owned()),

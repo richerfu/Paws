@@ -278,10 +278,10 @@ fn VirtualProxySectionRow(locale: UiLocale, palette: VirtualProxyPalette) -> Ele
             justify_content: "center",
             text {
                 content: title,
-                font_size: 12.0,
-                line_height: 17.0,
-                font_weight: 700,
-                font_color: palette.foreground,
+                font_size: typography::SM,
+                line_height: 20.0,
+                font_weight: 500,
+                font_color: palette.muted_foreground,
             }
             text {
                 content: description,
@@ -330,12 +330,12 @@ fn VirtualProxyGroupRow(
             width: "100%",
             height: 86.0,
             background_color: palette.surface,
-            padding_left: 13.0,
-            padding_right: 12.0,
-            margin_bottom: 6.0,
+            padding_left: spacing::MD,
+            padding_right: spacing::MD,
+            margin_bottom: spacing::SM,
             border_width: 1.0,
             border_color: palette.border,
-            border_radius: 10.0,
+            border_radius: 8.0,
             clip: true,
             align_items: "center",
             justify_content: "center",
@@ -346,7 +346,7 @@ fn VirtualProxyGroupRow(
                 align_items: "center",
                 justify_content: "center",
                 background_color: palette.selected_surface,
-                border_radius: 8.0,
+                border_radius: 6.0,
                 {arkit::icon("git-branch", 17.0, palette.foreground)}
             }
             column {
@@ -357,7 +357,7 @@ fn VirtualProxyGroupRow(
                     width: "100%",
                     content: title,
                     font_size: typography::SM,
-                    font_weight: 650,
+                    font_weight: 600,
                     font_color: palette.foreground,
                     line_height: 20.0,
                     max_lines: 1,
@@ -452,12 +452,12 @@ fn VirtualProxyMemberRow(
             } else {
                 palette.surface
             },
-            padding_right: 12.0,
+            padding_right: spacing::MD,
             padding_left: 22.0,
-            margin_bottom: 4.0,
+            margin_bottom: spacing::XXS,
             border_width: 1.0,
             border_color: palette.border,
-            border_radius: 9.0,
+            border_radius: 8.0,
             clip: true,
             align_items: "center",
             onclick: move |_| {

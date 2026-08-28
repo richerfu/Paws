@@ -222,9 +222,11 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 }
                                 if let Some(secret) = controller_secret.clone() {
                                     FlatButton {
+                                        variant: FlatButtonVariant::Outline,
+                                        size: ButtonSize::Sm,
                                         onclick: move |_| copy_controller_secret(state, secret.clone()),
-                                        {arkit::icon("copy", 16.0, text_color())}
-                                        text { content: translate_ui(current.locale, tr::page_tr_242()), margin_left: 6.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
+                                        {arkit::icon("copy", 14.0, text_color())}
+                                        text { content: translate_ui(current.locale, tr::page_tr_242()), margin_left: 6.0, font_size: typography::XS, font_weight: 600, font_color: text_color() }
                                     }
                                 }
                             }
