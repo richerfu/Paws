@@ -206,12 +206,15 @@ pub fn vpn_options_from_yaml(raw_yaml: &str) -> Result<VpnOptions, PawsError> {
     Ok(options)
 }
 
+pub const DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS: i64 = 10;
+
 pub fn default_runtime_yaml() -> String {
     let ports = NetworkPortConfig::default();
     format!(
         r#"mixed-port: {}
 mode: rule
 log-level: info
+tcp-connect-timeout: {}
 external-controller: {}:{}
 dns:
   enable: true
@@ -241,7 +244,10 @@ proxy-groups:
 rules:
   - MATCH,DIRECT
 "#,
-        ports.mixed_port, CONTROLLER_LOOPBACK_HOST, ports.controller_port
+        ports.mixed_port,
+        DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS,
+        CONTROLLER_LOOPBACK_HOST,
+        ports.controller_port
     )
 }
 

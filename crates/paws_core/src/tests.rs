@@ -767,6 +767,30 @@ proxies:
     server: 127.0.0.1
     port: 443
     uuid: 00000000-0000-0000-0000-000000000001
+  - name: VLESS H2Mux
+    type: vless
+    server: 127.0.0.1
+    port: 443
+    uuid: 00000000-0000-0000-0000-000000000002
+    smux:
+      enabled: true
+      protocol: h2mux
+  - name: VLESS Yamux
+    type: vless
+    server: 127.0.0.1
+    port: 443
+    uuid: 00000000-0000-0000-0000-000000000003
+    smux:
+      enabled: true
+      protocol: yamux
+  - name: VLESS MuxCool
+    type: vless
+    server: 127.0.0.1
+    port: 443
+    uuid: 00000000-0000-0000-0000-000000000004
+    smux:
+      enabled: true
+      protocol: muxcool
   - name: AnyTLS
     type: anytls
     server: 127.0.0.1
@@ -802,7 +826,7 @@ proxies:
 proxy-groups:
   - name: Proxy
     type: select
-    proxies: [SS, Trojan, VLESS, AnyTLS, VMess, Snell, Hysteria2, HTTP, SOCKS5, DIRECT]
+    proxies: [SS, Trojan, VLESS, VLESS H2Mux, VLESS Yamux, VLESS MuxCool, AnyTLS, VMess, Snell, Hysteria2, HTTP, SOCKS5, DIRECT]
 rules:
   - MATCH,Proxy
 "#;
@@ -811,6 +835,9 @@ rules:
         "SS",
         "Trojan",
         "VLESS",
+        "VLESS H2Mux",
+        "VLESS Yamux",
+        "VLESS MuxCool",
         "AnyTLS",
         "VMess",
         "Snell",

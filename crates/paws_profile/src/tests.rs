@@ -63,6 +63,48 @@ fn runtime_yaml_merges_rules_and_options() {
 }
 
 #[test]
+fn runtime_yaml_defaults_tcp_connect_timeout_and_preserves_user_value() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-profile-test-{}",
+        next_id("tcp-connect-timeout")
+    ));
+    let mut store = ProfileStore::open(root).unwrap();
+    let default_id = store
+        .import_profile_content(
+            "Default timeout",
+            "local",
+            "proxies: []\nproxy-groups: []\nrules: []\n",
+            None,
+        )
+        .unwrap();
+    let explicit_id = store
+        .import_profile_content(
+            "Explicit timeout",
+            "local",
+            "tcp-connect-timeout: 42\nproxies: []\nproxy-groups: []\nrules: []\n",
+            None,
+        )
+        .unwrap();
+
+    for (profile_id, expected) in [
+        (default_id, DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS),
+        (explicit_id, 42),
+    ] {
+        let yaml = store
+            .render_runtime_yaml(&profile_id, RuntimeMode::Rule, &VpnOptions::default())
+            .unwrap();
+        let value: Value = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(
+            get_i64(
+                value.as_mapping().expect("runtime root"),
+                "tcp-connect-timeout"
+            ),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
 fn imports_custom_rules_from_text_and_clash_yaml() {
     let root = std::env::temp_dir().join(format!(
         "paws-profile-test-{}",

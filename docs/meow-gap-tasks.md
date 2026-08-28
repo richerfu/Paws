@@ -1,14 +1,14 @@
 # Paws 与 Meow 差异任务清单
 
-更新时间：2026-07-16
+更新时间：2026-08-28
 
 对照基线：
 
-- 本项目：`/Volumes/PSSD/code/harmony/paws`
-- Meow Android：`madeye/meow`，`main` = `df7ab80ca3f5e8c57bb9992da85ed308a7b4a230`
-- Meow 官网说明：Flutter UI + Kotlin `VpnService` + Rust FFI + `meow-rs` + `netstack-smoltcp`
+- 本项目：`/Volumes/PSSD/code/southorange/Paws`
+- Meow Android/iOS：`madeye/meow` 当前移动端 tun2socks 实现
+- Meow 官网说明：Flutter UI + Android `VpnService` / iOS Network Extension + Rust FFI + `meow-rs` + lwIP
 
-本文只记录功能和实现差异，并拆成本地可执行任务。Meow iOS 不作为主基线，只在 Meow Android 注释中出现时作为参考。
+本文只记录功能和实现差异，并拆成本地可执行任务。Android 和 iOS 的 meow-rs 升级适配都作为移动端基线。
 
 ## 当前项目概况
 
@@ -17,7 +17,7 @@ Paws 当前已经具备一条可运行的最小闭环：
 - HarmonyOS `VpnExtensionAbility` 创建 TUN，并把 fd 传给 Rust。
 - Rust `paws_core` 负责配置导入、配置 reload、代理选择、延迟测试和运行时 snapshot；导入/刷新会先将 Clash YAML、base64 订阅和常见分享链接归一为 meow-rs YAML，再进入 crates.io `meow-* 0.21.2` 校验。默认协议 feature 与额外 AnyTLS 已启用，覆盖 SS、Trojan、VLESS/Vision/Encryption、VMess、Snell、Hysteria2、ECH tunnel 和 AnyTLS。
 - Rust `paws_profile` 负责 profile/rule 本地文件存储、运行时 YAML 合成、VPN 参数推导。
-- Rust `paws_vpn` 使用 `netstack-smoltcp` 将 TUN TCP/UDP 流量转发到 `meow_tunnel`。
+- Rust `paws_vpn` 可选 `netstack-smoltcp` 与 crates.io `meow-lwip 0.21.2`，将 TUN TCP/UDP 流量转发到 `meow_tunnel`；当前默认仍为 smoltcp，便于灰度对照。
 - Rust `paws_ui` 使用 arkit 构建原生 UI，并通过 NAPI 暴露 start/stop/reload/import/select 等能力。
 - `local-protocol-tests` 已提供本地 echo/mock server 和 Clash YAML profile，用于手工验证 Direct/HTTP/SOCKS5/Trojan/VLESS 等协议路径。
 
@@ -264,12 +264,12 @@ Meow 更像一个完整客户端产品，Paws 当前更像一个核心链路已�
 差异：
 
 - Meow 有 GitHub Actions lint/tests/release、Fastlane、Android E2E。
-- Paws 当前已提供本地 `scripts/verify.sh` 串联 Rust fmt/test、local-protocol profile 生成回归与 `ohrs build --arch aarch`；`scripts/package-hap.sh` 会在 `ohrs build --arch aarch` 后复制最新 `libpaws_ui.so` 并通过 DevEco/hvigor 无签名打出 `entry-default-unsigned.hap`，默认传 `--no-daemon` 避免 Hvigor daemon 锁影响本地验证；GitHub Actions 已拆分 Rust hosted job 与 HarmonyOS self-hosted job，Rust job 覆盖本地协议 profile 生成。
+- Paws 当前已提供本地 `scripts/verify.sh` 串联 Rust fmt/test、local-protocol profile 生成回归与 `scripts/ohrs-build.sh --arch aarch`；该包装脚本兼容 `ohrs 1.4.2` 与 `boring-sys 5.1` 在干净 target 下的空 native 搜索目录问题；`scripts/package-hap.sh` 会在 native build 后复制最新 `libpaws_ui.so` 并通过 DevEco/hvigor 无签名打出 `entry-default-unsigned.hap`，默认传 `--no-daemon` 避免 Hvigor daemon 锁影响本地验证；GitHub Actions 已拆分 Rust hosted job 与 HarmonyOS self-hosted job，Rust job 覆盖本地协议 profile 生成。
 
 落地任务：
 
 - 增加 Rust test/check/fmt CI。（已完成，见 `.github/workflows/ci.yml`）
-- 增加 HarmonyOS hvigor build CI，至少产出 debug HAP。（已完成，self-hosted runner 上运行 `ohrs build --arch aarch` 并上传 HAP artifact）
+- 增加 HarmonyOS hvigor build CI，至少产出 debug HAP。（已完成，self-hosted runner 上运行 `scripts/ohrs-build.sh --arch aarch` 并上传 HAP artifact）
 - 整理签名失败场景和本地签名文档。（已完成，见 `docs/ci-and-release.md`）
 
 验收：
@@ -325,7 +325,7 @@ Meow 更像一个完整客户端产品，Paws 当前更像一个核心链路已�
 ## 当前已接近 Meow 的部分
 
 - VPN 私有地址段已经沿用 Meow：`172.19.0.1/30`、`172.19.0.2`、`fdfe:dcba:9876::1/126`。
-- TUN 到 `meow_tunnel` 的核心 TCP 路径已经存在，并使用 `netstack-smoltcp`。
+- TUN 到 `meow_tunnel` 的核心 TCP 路径已经存在，可选 `netstack-smoltcp` 或 `meow-lwip 0.21.2`；lwIP 路径会在重连前等待 `core_done()`，避免上一代 C 核心尚未释放就创建下一代。
 - UDP session 保活/idle 清理、响应读端异常清理、DNS 响应回写、TUN stats 已有基础实现和基础单测。
 - profile 导入、刷新、激活、provider path rewrite、rules 管理已有基础实现；订阅解析已覆盖 Clash YAML、base64 文本订阅、VLESS/Trojan/SS/VMess 分享链接归一化，其中 VLESS WS/h2/httpupgrade/Vision、Trojan gRPC、HTTP/SOCKS5 有 core reload 测试覆盖。
 - 本地协议 mock 测试目录已经覆盖 Meow/meow-rs 当前主要 embedded protocol test 风格。

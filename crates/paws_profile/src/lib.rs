@@ -1017,6 +1017,13 @@ impl ProfileStore {
         put_string(root, "mode", mode.as_str());
         put_bool(root, "ipv6", vpn_options.ipv6);
         put_string(root, "log-level", "info");
+        if !root.contains_key(value_key("tcp-connect-timeout")) {
+            put_i64(
+                root,
+                "tcp-connect-timeout",
+                DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS,
+            );
+        }
         put_i64(root, "mixed-port", i64::from(network_ports.mixed_port));
         patch_controller_access(root, &controller_access, network_ports.controller_port)?;
         patch_geox_url(root);

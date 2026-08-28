@@ -190,8 +190,10 @@ fn duplicate_fd_rejects_invalid_fd() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn lwip_stack_accepts_and_replies_to_tun_udp_packets() {
-    let (mut stack, _tcp_listener, udp_socket) =
+    let _guard = LWIP_RUNTIME_LOCK.lock().await;
+    let (mut stack, tcp_listener, udp_socket) =
         lwip::NetStack::with_buffer_size(16, 16).expect("lwip stack");
+    let mut core_done = stack.core_done();
     let (udp_write, mut udp_read) = udp_socket.split();
     let local = SocketAddr::new(Ipv4Addr::new(172, 19, 0, 1).into(), 40123);
     let remote = SocketAddr::new(Ipv4Addr::new(203, 0, 113, 42).into(), 443);
@@ -224,6 +226,33 @@ async fn lwip_stack_accepts_and_replies_to_tun_udp_packets() {
     assert_eq!(parsed.1, remote.port());
     assert_eq!(parsed.3, local.port());
     assert_eq!(parsed.4, b"response");
+
+    drop(udp_write);
+    drop(udp_read);
+    drop(tcp_listener);
+    drop(stack);
+    core_done
+        .wait_for(|done| *done)
+        .await
+        .expect("lwip core teardown");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn lwip_stack_can_restart_after_core_teardown() {
+    let _guard = LWIP_RUNTIME_LOCK.lock().await;
+
+    for _ in 0..2 {
+        let (stack, tcp_listener, udp_socket) =
+            lwip::NetStack::with_buffer_size(16, 16).expect("lwip stack generation");
+        let mut core_done = stack.core_done();
+        drop(udp_socket);
+        drop(tcp_listener);
+        drop(stack);
+        core_done
+            .wait_for(|done| *done)
+            .await
+            .expect("lwip generation teardown");
+    }
 }
 
 #[test]

@@ -13,7 +13,7 @@ The script runs:
 - `cargo fmt --check`
 - `cargo test --workspace`
 - `scripts/verify-local-protocols.sh`
-- `ohrs build --arch aarch`
+- `scripts/ohrs-build.sh --arch aarch`
 
 For local simulator/device packages that do not need signing, run:
 
@@ -21,7 +21,7 @@ For local simulator/device packages that do not need signing, run:
 scripts/package-hap.sh
 ```
 
-The package script runs `ohrs build --arch aarch`, copies the freshly built
+The package script runs `scripts/ohrs-build.sh --arch aarch`, copies the freshly built
 `libpaws_ui.so` into `entry/libs/arm64-v8a/`, then calls
 `hvigorw default@PackageHap --mode module -p module=entry@default`. It
 auto-detects DevEco Studio's bundled `hvigorw` and SDK paths when the command
@@ -51,7 +51,7 @@ whose icon resources are compressed. Its default output is
 `.github/workflows/ci.yml` defines two jobs:
 
 - `rust`: runs on GitHub-hosted macOS and checks Rust formatting, workspace tests, and generated local protocol profiles.
-- `harmony`: runs on a self-hosted macOS runner labelled `harmonyos`, builds the aarch debug HAP with `ohrs build --arch aarch`, and uploads any generated `.hap` files.
+- `harmony`: runs on a self-hosted macOS runner labelled `harmonyos`, builds the aarch debug HAP with `scripts/ohrs-build.sh --arch aarch`, and uploads any generated `.hap` files.
 
 The workspace resolves `meow-*` 0.21.2 from crates.io and pins arkit to a reviewed upstream commit. CI calls `scripts/prepare-ci-cargo.sh` to report that reproducible dependency policy; no machine-local path patches are used.
 
@@ -64,7 +64,7 @@ The HarmonyOS build runner must provide:
 - DevEco/HarmonyOS SDK and native toolchain required by `ohrs`.
 - Debug signing materials referenced by `build-profile.json5`, or an equivalent runner-local signing configuration.
 
-If signing material is missing, `ohrs build --arch aarch` can fail after Rust compilation succeeds. Keep signing files outside the repository and provision them through runner setup or CI secrets.
+If signing material is missing, `scripts/ohrs-build.sh --arch aarch` can fail after Rust compilation succeeds. Keep signing files outside the repository and provision them through runner setup or CI secrets.
 
 Simulator-style local packaging does not require signing; use
 `scripts/package-hap.sh` and install the generated unsigned HAP.

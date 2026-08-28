@@ -58,6 +58,7 @@ pub(super) async fn run_netstack_vpn(
         egress_tx,
         mut egress_rx,
         handles,
+        mut lwip_core_done,
     } = match runtime {
         Ok(runtime) => runtime,
         Err(error) => {
@@ -208,6 +209,16 @@ pub(super) async fn run_netstack_vpn(
     // The AsyncFd owns the duplicated TUN descriptor and closes it when the
     // final Arc clone (reader, writer, this scope) drops.
     drop(tun);
+
+    // meow-lwip owns a process-global C core. Dropping the Rust handles starts
+    // teardown, but the next generation must not be created until the core
+    // confirms every PCB and callback has been released.
+    if let Some(core_done) = lwip_core_done.as_mut() {
+        core_done
+            .wait_for(|done| *done)
+            .await
+            .map_err(|_| io::Error::other("lwIP core exited before teardown completed"))?;
+    }
     Ok(())
 }
 
@@ -216,6 +227,7 @@ pub(super) struct NetstackRuntime {
     egress_tx: mpsc::UnboundedSender<Vec<u8>>,
     egress_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     handles: Vec<JoinHandle<()>>,
+    lwip_core_done: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 pub(super) fn spawn_smoltcp_backend(
@@ -343,6 +355,7 @@ pub(super) fn spawn_smoltcp_backend(
             udp_handle,
             udp_reply_handle,
         ],
+        lwip_core_done: None,
     })
 }
 
@@ -356,6 +369,7 @@ pub(super) fn spawn_lwip_backend(
 ) -> io::Result<NetstackRuntime> {
     let (mut stack, mut tcp_listener, udp_socket) = lwip::NetStack::with_buffer_size(1024, 256)
         .map_err(|error| io::Error::other(error.to_string()))?;
+    let core_done = stack.core_done();
     let (udp_write, mut udp_read) = udp_socket.split();
     let (ingress_tx, mut ingress_rx) = mpsc::channel::<Vec<u8>>(256);
     let (egress_tx, egress_rx) = mpsc::unbounded_channel::<Vec<u8>>();
@@ -440,6 +454,7 @@ pub(super) fn spawn_lwip_backend(
         egress_tx,
         egress_rx,
         handles: vec![driver_handle],
+        lwip_core_done: Some(core_done),
     })
 }
 
