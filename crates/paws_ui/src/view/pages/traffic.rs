@@ -76,30 +76,16 @@ pub(crate) fn traffic_page(state: Signal<State>) -> Element {
         column {
             width: "100%",
             align_items: "start",
-            row {
-                width: "100%",
-                align_items: "center",
-                row {
-                    width: 8.0,
-                    height: 8.0,
-                    border_radius: 4.0,
-                    background_color: if connected { success() } else { subtle() },
-                }
-                text {
-                    content: if connected {
-                        translate_ui(current.locale, tr::page_tr_125())
-                    } else {
-                        translate_ui(current.locale, tr::page_tr_126())
-                    },
-                    margin_left: 8.0,
-                    font_size: typography::SM,
-                    font_weight: 650,
-                    font_color: if connected { success() } else { subtle() },
-                }
-            }
-            row { height: 18.0 }
-            text { content: translate_ui(current.locale, tr::page_tr_129()), font_size: 17.0, font_weight: 700, font_color: text_color() }
-            row { height: 8.0 }
+            {status_chip(
+                if connected {
+                    translate_ui(current.locale, tr::page_tr_125())
+                } else {
+                    translate_ui(current.locale, tr::page_tr_126())
+                },
+                if connected { success() } else { subtle() },
+            )}
+            row { height: spacing::LG }
+            {section_label(translate_ui(current.locale, tr::page_tr_129()))}
             row {
                 width: "100%",
                 row {
@@ -120,9 +106,8 @@ pub(crate) fn traffic_page(state: Signal<State>) -> Element {
                     )}
                 }
             }
-            row { height: 18.0 }
-            text { content: translate_ui(current.locale, tr::page_tr_132()), font_size: 17.0, font_weight: 700, font_color: text_color() }
-            row { height: 8.0 }
+            row { height: spacing::LG }
+            {section_label(translate_ui(current.locale, tr::page_tr_132()))}
             {traffic_metrics(
                 translate_ui(current.locale, tr::traffic_download()),
                 format_speed(snapshot.traffic.download_speed),

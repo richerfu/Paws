@@ -9,9 +9,9 @@ use arkit::router::{
 };
 use arkit::shadcn::components::{
     Badge, BadgeVariant, BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant,
-    Card, CardContent, CardHeader, CardTitle, DialogFooter, DialogHeader, Field, FieldContent,
-    FieldDescription, FieldLabel, FieldOrientation, FieldTitle, Form, FormItem, Input, RadioGroup,
-    Select, Separator, Spinner, Switch, Textarea,
+    Card, DialogFooter, DialogHeader, Field, FieldContent, FieldDescription, FieldLabel,
+    FieldOrientation, FieldTitle, Form, FormItem, Input, RadioGroup, Select, Separator, Spinner,
+    Switch, Textarea,
 };
 use arkit::shadcn::theme::{
     spacing, typography, use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider,
@@ -163,12 +163,12 @@ fn FlatSegmented(props: FlatSegmentedProps) -> Element {
                     button {
                         button_type: "normal",
                         width: "100%",
-                        height: 32.0,
+                        height: 30.0,
                         padding: 0.0,
                         background_color: if active { theme.colors.background } else { 0x00000000 },
                         foreground_color: theme.colors.foreground,
-                        border_width: if active { 1.0 } else { 0.0 },
-                        border_color: if active { theme.colors.border } else { 0x00000000 },
+                        border_width: 1.0,
+                        border_color: 0x00000000,
                         border_radius: theme.radii.md,
                         onclick: move |_| {
                             let next = next.clone();
@@ -189,9 +189,8 @@ fn FlatSegmented(props: FlatSegmentedProps) -> Element {
     rsx! {
         row {
             width: "100%",
-            height: 40.0,
-            padding_left: spacing::XXS,
-            padding_right: spacing::XXS,
+            height: 36.0,
+            padding: 3.0,
             align_items: "center",
             border_width: 0.0,
             border_radius: theme.radii.lg,
@@ -548,10 +547,10 @@ fn scaffold_layout(
             row {
                 height: 56.0,
                 width: "100%",
-                padding_left: spacing::MD,
-                padding_right: spacing::MD,
+                padding_left: spacing::LG,
+                padding_right: spacing::LG,
                 align_items: "center",
-                background_color: theme.colors.card,
+                background_color: theme.colors.background,
                 row {
                     align_items: "center",
                     if let Some(parent) = parent {
@@ -642,26 +641,36 @@ fn use_parent_back_handler(parent: Option<Route>) {
 
 fn card(title: impl Into<String>, subtitle: Option<String>, body: Element) -> Element {
     let title = title.into();
+    let theme = use_theme();
     rsx! {
         Card {
             shadow: Some(false),
-            if let Some(subtitle) = subtitle {
-                CardHeader {
-                    title: title,
-                    description: subtitle,
+            column {
+                width: "100%",
+                padding: spacing::LG,
+                align_items: "start",
+                text {
+                    content: title,
+                    font_size: typography::SM,
+                    line_height: 20.0,
+                    font_weight: 600,
+                    font_color: theme.colors.card_foreground,
+                    text_letter_spacing: -0.2,
                 }
-            } else {
-                row {
+                if let Some(subtitle) = subtitle {
+                    text {
+                        content: subtitle,
+                        margin_top: spacing::XXS,
+                        font_size: typography::XS,
+                        line_height: 18.0,
+                        font_color: theme.colors.muted_foreground,
+                    }
+                }
+                column {
                     width: "100%",
-                    padding_top: spacing::XXL,
-                    padding_right: spacing::XXL,
-                    padding_bottom: spacing::LG,
-                    padding_left: spacing::XXL,
-                    CardTitle { content: title }
+                    margin_top: spacing::MD,
+                    {body}
                 }
-            }
-            CardContent {
-                {body}
             }
         }
     }
@@ -699,7 +708,7 @@ fn traffic_metrics(
                     column {
                         margin_left: spacing::MD,
                         text { content: download_label, font_size: typography::XS, line_height: 18.0, font_color: theme.colors.muted_foreground }
-                        text { content: download_value, margin_top: 2.0, font_size: typography::LG, line_height: 24.0, font_weight: 700, font_color: theme.colors.foreground }
+                        text { content: download_value, margin_top: 2.0, font_size: typography::LG, line_height: 24.0, font_weight: 600, font_color: theme.colors.foreground }
                     }
                 }
                 row { width: 1.0, height: 48.0, margin_left: spacing::MD, margin_right: spacing::LG, background_color: theme.colors.border }
@@ -716,7 +725,7 @@ fn traffic_metrics(
                     column {
                         margin_left: spacing::MD,
                         text { content: upload_label, font_size: typography::XS, line_height: 18.0, font_color: theme.colors.muted_foreground }
-                        text { content: upload_value, margin_top: 2.0, font_size: typography::LG, line_height: 24.0, font_weight: 700, font_color: theme.colors.foreground }
+                        text { content: upload_value, margin_top: 2.0, font_size: typography::LG, line_height: 24.0, font_weight: 600, font_color: theme.colors.foreground }
                     }
                 }
             }
@@ -778,23 +787,29 @@ fn usage_summary_card(title: impl Into<String>, upload: u64, download: u64) -> E
 fn info_row(label: impl Into<String>, value: impl Into<String>) -> Element {
     let label = label.into();
     let value = value.into();
+    let theme = use_theme();
     rsx! {
         row {
             width: "100%",
-            height: 36.0,
+            height: 32.0,
             align_items: "center",
-            text { content: label, font_size: 13.0, font_color: subtle() }
+            text {
+                content: label,
+                font_size: typography::XS,
+                line_height: 18.0,
+                font_color: theme.colors.muted_foreground,
+            }
             row {
                 layout_weight: 1.0,
-                margin_left: 16.0,
+                margin_left: spacing::MD,
                 justify_content: "end",
                 text {
                     width: "100%",
                     content: value,
-                    font_size: 13.0,
-                    line_height: 19.0,
-                    font_weight: 600,
-                    font_color: text_color(),
+                    font_size: typography::SM,
+                    line_height: 20.0,
+                    font_weight: 500,
+                    font_color: theme.colors.foreground,
                     max_lines: 1,
                     text_align: "end",
                 }
@@ -823,9 +838,53 @@ fn section_label(label: impl Into<String>) -> Element {
             margin_bottom: spacing::SM,
             text {
                 content: label,
-                font_size: typography::MD,
-                font_weight: 600,
-                font_color: theme.colors.foreground,
+                font_size: typography::SM,
+                line_height: 20.0,
+                font_weight: 500,
+                font_color: theme.colors.muted_foreground,
+            }
+        }
+    }
+}
+
+fn field_label(label: impl Into<String>) -> Element {
+    let label = label.into();
+    let theme = use_theme();
+    rsx! {
+        text {
+            content: label,
+            font_size: typography::XS,
+            line_height: 16.0,
+            font_weight: 500,
+            font_color: theme.colors.muted_foreground,
+        }
+    }
+}
+
+fn status_chip(label: impl Into<String>, color: u32) -> Element {
+    let label = label.into();
+    let theme = use_theme();
+    rsx! {
+        row {
+            height: 24.0,
+            padding_left: spacing::SM,
+            padding_right: spacing::SM,
+            align_items: "center",
+            background_color: theme.colors.muted,
+            border_radius: theme.radii.full,
+            row {
+                width: 6.0,
+                height: 6.0,
+                border_radius: 3.0,
+                background_color: color,
+            }
+            text {
+                content: label,
+                margin_left: spacing::XS,
+                font_size: typography::XS,
+                line_height: 16.0,
+                font_weight: 500,
+                font_color: color,
             }
         }
     }
@@ -855,13 +914,13 @@ fn empty_state(
                     justify_content: "center",
                     background_color: theme.colors.muted,
                     border_radius: theme.radii.xl,
-                    {arkit::icon(icon, 22.0, theme.colors.muted_foreground)}
+                    {arkit::icon(icon, 20.0, theme.colors.muted_foreground)}
                 }
                 text {
                     content: title,
                     margin_top: spacing::MD,
-                    font_size: typography::MD,
-                    line_height: 22.0,
+                    font_size: typography::SM,
+                    line_height: 20.0,
                     font_weight: 600,
                     font_color: theme.colors.foreground,
                 }
@@ -883,7 +942,7 @@ fn spaced(items: Vec<Element>) -> Element {
     let nodes = items.into_iter().enumerate().map(|(index, item)| {
         rsx! {
             {item}
-            if index + 1 < len { row { height: 10.0 } }
+            if index + 1 < len { row { height: spacing::MD } }
         }
     });
     rsx! { column { width: "100%", {nodes} } }
@@ -912,6 +971,7 @@ fn destructive_icon_action(icon: &'static str, action: Action, state: Signal<Sta
 }
 
 fn speed_bars(history: &[TrafficHistoryPoint]) -> Element {
+    let theme = use_theme();
     let max = history
         .iter()
         .map(|point| point.download_speed.max(point.upload_speed))
@@ -939,11 +999,11 @@ fn speed_bars(history: &[TrafficHistoryPoint]) -> Element {
         row {
             width: "100%",
             height: 62.0,
-            margin_top: 10.0,
-            padding: 4.0,
+            margin_top: spacing::SM,
+            padding: spacing::XXS,
             align_items: "end",
             background_color: muted(),
-            border_radius: 8.0,
+            border_radius: theme.radii.lg,
             {bars}
         }
     }

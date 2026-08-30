@@ -102,6 +102,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
         "power"
     };
 
+    let theme = use_theme();
     let body = rsx! {
         column {
             width: "100%",
@@ -122,27 +123,27 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                         height: 52.0,
                         align_items: "center",
                         row {
-                            width: 42.0,
-                            height: 42.0,
+                            width: 40.0,
+                            height: 40.0,
                             align_items: "center",
                             justify_content: "center",
                             background_color: muted(),
-                            border_radius: 10.0,
+                            border_radius: theme.radii.lg,
                             if transitioning {
-                                Spinner { size: 20.0, color: Some(status_color) }
+                                Spinner { size: 18.0, color: Some(status_color) }
                             } else {
-                                {arkit::icon(status_icon, 20.0, status_color)}
+                                {arkit::icon(status_icon, 18.0, status_color)}
                             }
                         }
                         column {
                             layout_weight: 1.0,
-                            margin_left: 12.0,
+                            margin_left: spacing::MD,
                             align_items: "start",
                             text {
                                 content: status_label,
-                                font_size: 19.0,
+                                font_size: typography::XL,
                                 line_height: 24.0,
-                                font_weight: 700,
+                                font_weight: 600,
                                 font_color: status_color,
                             }
                             text {
@@ -163,20 +164,27 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                 row { height: 14.0 }
                 column {
                     width: "100%",
-                    height: 89.0,
-                    padding_left: 4.0,
-                    padding_right: 4.0,
-                    {dashboard_connection_row(
-                        "git-branch",
-                        translate_ui(current.locale, tr::page_tr_252()),
-                        current_node,
-                    )}
-                    Separator {}
-                    {dashboard_connection_row(
-                        "network",
-                        translate_ui(current.locale, tr::page_tr_253()),
-                        exit_location,
-                    )}
+                    padding_left: spacing::MD,
+                    padding_right: spacing::MD,
+                    border_width: 1.0,
+                    border_color: line(),
+                    border_radius: theme.radii.lg,
+                    background_color: surface(),
+                    column {
+                        width: "100%",
+                        height: 89.0,
+                        {dashboard_connection_row(
+                            "git-branch",
+                            translate_ui(current.locale, tr::page_tr_252()),
+                            current_node,
+                        )}
+                        Separator {}
+                        {dashboard_connection_row(
+                            "network",
+                            translate_ui(current.locale, tr::page_tr_253()),
+                            exit_location,
+                        )}
+                    }
                 }
             }
             row { height: 14.0 }
@@ -188,9 +196,9 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                     align_items: "start",
                     text {
                         content: translate_ui(current.locale, tr::page_tr_254()),
-                        font_size: 17.0,
-                        line_height: 22.0,
-                        font_weight: 700,
+                        font_size: typography::SM,
+                        line_height: 20.0,
+                        font_weight: 600,
                         font_color: text_color(),
                     }
                     text { content: proxy_group_context, margin_top: 1.0, font_size: typography::XS, line_height: 16.0, font_color: subtle(), max_lines: 1 }
@@ -203,7 +211,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                         onclick: move |_| {
                             all_nodes_navigator.push(Route::Proxies {});
                         },
-                        text { content: translate_ui(current.locale, tr::page_tr_273()), font_size: typography::XS, font_weight: 600, font_color: text_color() }
+                        text { content: translate_ui(current.locale, tr::page_tr_273()), font_size: typography::XS, font_weight: 500, font_color: subtle() }
                         {arkit::icon("chevron-right", 14.0, subtle())}
                     }
                 }
@@ -216,8 +224,16 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                     padding_top: 36.0,
                     align_items: "center",
                     justify_content: "start",
-                    {arkit::icon("rss", 22.0, subtle())}
-                    text { content: translate_ui(current.locale, tr::page_tr_256()), margin_top: 12.0, font_size: typography::SM, font_weight: 700, font_color: text_color() }
+                    row {
+                        width: 48.0,
+                        height: 48.0,
+                        align_items: "center",
+                        justify_content: "center",
+                        background_color: muted(),
+                        border_radius: theme.radii.xl,
+                        {arkit::icon("rss", 20.0, subtle())}
+                    }
+                    text { content: translate_ui(current.locale, tr::page_tr_256()), margin_top: 12.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
                     text { content: translate_ui(current.locale, tr::page_tr_257()), margin_top: 6.0, font_size: typography::XS, line_height: 18.0, font_color: subtle(), text_align: "center" }
                     row { height: 16.0 }
                     FlatButton {
@@ -267,7 +283,7 @@ fn dashboard_connection_row(icon_name: &'static str, label: String, value: Strin
             height: 44.0,
             align_items: "center",
             clip: true,
-            {arkit::icon(icon_name, 15.0, text_color())}
+            {arkit::icon(icon_name, 15.0, subtle())}
             text {
                 width: 68.0,
                 content: label,
@@ -284,9 +300,9 @@ fn dashboard_connection_row(icon_name: &'static str, label: String, value: Strin
                 text {
                     width: "100%",
                     content: value,
-                    font_size: 13.0,
-                    line_height: 18.0,
-                    font_weight: 650,
+                    font_size: typography::SM,
+                    line_height: 20.0,
+                    font_weight: 500,
                     font_color: text_color(),
                     max_lines: 1,
                     text_overflow: "ellipsis",

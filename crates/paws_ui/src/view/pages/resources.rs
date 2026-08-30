@@ -155,15 +155,15 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                             align_items: "center",
                             justify_content: "center",
                             background_color: muted(),
-                            border_radius: 9.0,
+                            border_radius: 8.0,
                             {arkit::icon("file-text", 17.0, if file.exists { success() } else { danger() })}
                         }
                         column {
                             layout_weight: 1.0,
                             margin_left: 11.0,
                             align_items: "start",
-                            text { content: file.name, width: "100%", font_size: 13.0, font_weight: 650, font_color: text_color(), max_lines: 1 }
-                            text { content: metadata, width: "100%", margin_top: 3.0, font_size: 11.0, font_color: if file.exists { success() } else { danger() }, max_lines: 1 }
+                            text { content: file.name, width: "100%", font_size: typography::SM, font_weight: 600, font_color: text_color(), max_lines: 1 }
+                            text { content: metadata, width: "100%", margin_top: 3.0, font_size: typography::XS, font_color: if file.exists { success() } else { danger() }, max_lines: 1 }
                         }
                         {arkit::icon("chevron-right", 15.0, subtle())}
                     }
@@ -210,20 +210,20 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                 background_color: surface(),
                 border_width: 1.0,
                 border_color: line(),
-                border_radius: 10.0,
+                border_radius: 8.0,
                 clip: true,
                 row {
                     width: "100%",
-                    height: 56.0,
-                    padding_left: 14.0,
-                    padding_right: 14.0,
+                    height: 52.0,
+                    padding_left: spacing::LG,
+                    padding_right: spacing::LG,
                     align_items: "center",
-                    text { content: "GeoData", font_size: 14.0, font_weight: 700, font_color: text_color() }
+                    text { content: "GeoData", font_size: typography::SM, font_weight: 600, font_color: text_color() }
                     row { layout_weight: 1.0 }
                     text {
                         content: format!("{ready_geodata_count}/{total_geodata_count} {}", translate_ui(current.locale, tr::page_tr_187())),
-                        font_size: 11.0,
-                        font_weight: 600,
+                        font_size: typography::XS,
+                        font_weight: 500,
                         font_color: if ready_geodata_count == total_geodata_count && total_geodata_count > 0 { success() } else { warning() },
                     }
                 }
@@ -252,9 +252,9 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
             row {
                 width: "100%",
                 height: 34.0,
-                margin_bottom: 8.0,
+                margin_bottom: spacing::SM,
                 align_items: "center",
-                text { content: translate_ui(current.locale, tr::resources_rules_title()), font_size: 15.0, font_weight: 750, font_color: text_color() }
+                text { content: translate_ui(current.locale, tr::resources_rules_title()), font_size: typography::SM, font_weight: 600, font_color: text_color() }
                 row { layout_weight: 1.0 }
                 FlatButton {
                     variant: FlatButtonVariant::Ghost,
@@ -274,7 +274,7 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                         content: translate_ui(current.locale, tr::resources_import_rules()),
                         margin_left: 5.0,
                         font_size: 12.0,
-                        font_weight: 650,
+                        font_weight: 600,
                         font_color: text_color(),
                     }
                 }
@@ -288,7 +288,7 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                         destination_ip: String::new(),
                     }),
                     {arkit::icon("plus", 14.0, text_color())}
-                    text { content: translate_ui(current.locale, tr::page_tr_192()), margin_left: 5.0, font_size: 12.0, font_weight: 650, font_color: text_color() }
+                    text { content: translate_ui(current.locale, tr::page_tr_192()), margin_left: 5.0, font_size: typography::XS, font_weight: 600, font_color: text_color() }
                 }
             }
             if rules.is_empty() {
@@ -420,8 +420,8 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
                     text {
                         content: if result.matched { translate_ui(locale, tr::page_tr_199()) } else { translate_ui(locale, tr::page_tr_200()) },
                         margin_left: 7.0,
-                        font_size: 13.0,
-                        font_weight: 700,
+                        font_size: typography::SM,
+                        font_weight: 600,
                         font_color: if result.matched { success() } else { text_color() },
                     }
                 }
@@ -472,7 +472,7 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
                         content: translate_ui(locale, tr::page_tr_207()),
                         margin_left: 7.0,
                         font_size: 12.0,
-                        font_weight: 650,
+                        font_weight: 600,
                         font_color: text_color(),
                     }
                 }
@@ -493,7 +493,7 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
                     content: if lookup.submitting { translate_ui(locale, tr::page_tr_208()) } else { translate_ui(locale, tr::page_tr_209()) },
                     margin_left: 8.0,
                     font_size: 13.0,
-                    font_weight: 650,
+                    font_weight: 600,
                     font_color: primary_text(),
                 }
             }
@@ -538,7 +538,7 @@ fn provider_detail_dialog(
                 column {
                     layout_weight: 1.0,
                     align_items: "start",
-                    text { content: truncate_text(&member.name, 34), width: "100%", font_size: 12.0, font_weight: 650, font_color: text_color(), max_lines: 1 }
+                    text { content: truncate_text(&member.name, 34), width: "100%", font_size: typography::XS, font_weight: 600, font_color: text_color(), max_lines: 1 }
                     text { content: format!("{} · {} · {}", member.proxy_type, status, delay), margin_top: 3.0, width: "100%", font_size: 10.0, font_color: if member.alive { success() } else { danger() }, max_lines: 1 }
                 }
                 FlatButton {
@@ -573,7 +573,7 @@ fn provider_detail_dialog(
                     width: "100%",
                     border_width: 1.0,
                     border_color: line(),
-                    border_radius: 9.0,
+                    border_radius: 8.0,
                     clip: true,
                     {members.into_iter()}
                 }
@@ -615,9 +615,9 @@ fn geodata_detail_dialog(
                 width: "100%",
                 border_width: 1.0,
                 border_color: line(),
-                border_radius: 9.0,
-                padding_left: 12.0,
-                padding_right: 12.0,
+                border_radius: 8.0,
+                padding_left: spacing::MD,
+                padding_right: spacing::MD,
                 {info_row(translate_ui(locale, tr::page_tr_171()), availability)}
                 Separator {}
                 {info_row(translate_ui(locale, tr::page_tr_217()), size)}
@@ -625,7 +625,7 @@ fn geodata_detail_dialog(
                 {info_row(translate_ui(locale, tr::page_tr_218()), updated_at)}
             }
             row { height: 14.0 }
-            text { content: translate_ui(locale, tr::page_tr_219()), font_size: 11.0, font_weight: 650, font_color: subtle() }
+            text { content: translate_ui(locale, tr::page_tr_219()), font_size: typography::XS, font_weight: 500, font_color: subtle() }
             row { height: 6.0 }
             row {
                 width: "100%",
@@ -687,8 +687,8 @@ fn rule_view(state: Signal<State>, current: &State, rule: paws_model::RuleSummar
                 align_items: "center",
                 text {
                     content: format!("#{}", rule.order + 1),
-                    font_size: 11.0,
-                    font_weight: 700,
+                    font_size: typography::XS,
+                    font_weight: 600,
                     font_color: if enabled { success() } else { subtle() },
                     max_lines: 1,
                 }
@@ -743,7 +743,7 @@ fn compact_rule_action(
             padding: 0.0,
             background_color: surface(),
             border_width: 0.0,
-            border_radius: 7.0,
+            border_radius: 6.0,
             onclick: move |_| dispatch(state, action.clone()),
             row {
                 width: "100%",
