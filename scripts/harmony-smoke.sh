@@ -538,7 +538,7 @@ if [ -n "$PROFILE_PATH" ]; then
 fi
 
 if [ "$RUN_BUILD" -eq 1 ]; then
-  (cd "$ROOT_DIR" && "$OHRS" build --arch aarch)
+  (cd "$ROOT_DIR" && OHRS="$OHRS" scripts/ohrs-build.sh --arch aarch)
 fi
 
 if [ ! -f "$HAP_PATH" ]; then

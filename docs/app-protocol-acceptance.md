@@ -10,7 +10,7 @@ integration.
 Run the app build first:
 
 ```bash
-ohrs build --arch aarch
+scripts/ohrs-build.sh --arch aarch
 ```
 
 For a quick device launch smoke before the manual protocol matrix, run:

@@ -100,6 +100,19 @@ pub(super) async fn load_meow_config(raw_yaml: &str) -> Result<Config, PawsError
     .map_err(|err| PawsError::Core(format!("meow config load failed: {err}")))
 }
 
+pub(super) async fn load_meow_config_from_path(
+    raw_yaml: &str,
+    path: &Path,
+) -> Result<Config, PawsError> {
+    validate_transport_contract(raw_yaml)?;
+    let path = path.to_string_lossy().into_owned();
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || runtime.block_on(meow_config::load_config(&path)))
+        .await
+        .map_err(|err| PawsError::Core(format!("meow config worker failed: {err}")))?
+        .map_err(|err| PawsError::Core(format!("meow config load failed: {err}")))
+}
+
 fn validate_transport_contract(raw_yaml: &str) -> Result<(), PawsError> {
     let document = serde_yaml::from_str::<serde_yaml::Value>(raw_yaml)
         .map_err(|error| PawsError::Core(format!("profile YAML parse failed: {error}")))?;

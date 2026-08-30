@@ -61,9 +61,9 @@ fi
 
 cd "$ROOT_DIR"
 if [ "$NATIVE_PROFILE" = "release" ]; then
-  "$OHRS" build --arch "$ARCH" --release
+  OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH" --release
 else
-  "$OHRS" build --arch "$ARCH"
+  OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH"
 fi
 cp "$SO_SRC" "$SO_DST"
 "$HVIGORW_BIN" default@PackageHap --mode module -p module=entry@default \

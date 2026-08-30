@@ -42,7 +42,7 @@ The script writes logs to `smoke-logs/`. When it fails, inspect the generated
 or `meow-rs` markers after a successful launch.
 
 The current default package for simulator/local validation is unsigned. Use
-`scripts/package-hap.sh` to run `ohrs build --arch aarch`, copy the latest
+`scripts/package-hap.sh` to run `scripts/ohrs-build.sh --arch aarch`, copy the latest
 native library into the entry module, and package
 `entry-default-unsigned.hap` through hvigor without signing.
 

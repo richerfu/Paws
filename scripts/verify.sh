@@ -4,4 +4,4 @@ set -eu
 cargo fmt --check
 cargo test --workspace
 scripts/verify-local-protocols.sh
-ohrs build --arch aarch
+scripts/ohrs-build.sh --arch aarch

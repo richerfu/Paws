@@ -206,12 +206,15 @@ pub fn vpn_options_from_yaml(raw_yaml: &str) -> Result<VpnOptions, PawsError> {
     Ok(options)
 }
 
+pub const DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS: i64 = 10;
+
 pub fn default_runtime_yaml() -> String {
     let ports = NetworkPortConfig::default();
     format!(
         r#"mixed-port: {}
 mode: rule
 log-level: info
+tcp-connect-timeout: {}
 external-controller: {}:{}
 dns:
   enable: true
@@ -241,7 +244,10 @@ proxy-groups:
 rules:
   - MATCH,DIRECT
 "#,
-        ports.mixed_port, CONTROLLER_LOOPBACK_HOST, ports.controller_port
+        ports.mixed_port,
+        DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS,
+        CONTROLLER_LOOPBACK_HOST,
+        ports.controller_port
     )
 }
 
@@ -543,16 +549,21 @@ pub(super) fn rewrite_provider_paths(
     store_root: &Path,
     profile_id: &str,
 ) -> Result<(), PawsError> {
+    // meow-rs 0.21 contains provider paths beneath the runtime config's
+    // parent directory. Keep the security check enabled and migrate Paws'
+    // older profile-scoped caches into that trusted root on first render.
     rewrite_provider_kind(
         root,
         "proxy-providers",
-        store_root.join("providers/proxy").join(profile_id),
+        store_root.join("runtime/providers/proxy").join(profile_id),
+        Some(store_root.join("providers/proxy").join(profile_id)),
         false,
     )?;
     rewrite_provider_kind(
         root,
         "rule-providers",
-        store_root.join("providers/rule").join(profile_id),
+        store_root.join("runtime/providers/rule").join(profile_id),
+        Some(store_root.join("providers/rule").join(profile_id)),
         true,
     )
 }
@@ -561,6 +572,7 @@ pub(super) fn rewrite_provider_kind(
     root: &mut Mapping,
     key: &str,
     cache_dir: PathBuf,
+    legacy_cache_dir: Option<PathBuf>,
     trim_inline_rule_provider_fields: bool,
 ) -> Result<(), PawsError> {
     let Some(Value::Mapping(providers)) = root.get_mut(&value_key(key)) else {
@@ -579,7 +591,17 @@ pub(super) fn rewrite_provider_kind(
             provider.remove(&value_key("interval"));
             continue;
         }
-        let path = cache_dir.join(provider_cache_file_name(name));
+        let file_name = provider_cache_file_name(name);
+        let path = cache_dir.join(&file_name);
+        if !path.exists() {
+            if let Some(legacy_path) = legacy_cache_dir
+                .as_ref()
+                .map(|legacy_dir| legacy_dir.join(&file_name))
+                .filter(|legacy_path| legacy_path.is_file())
+            {
+                fs::copy(&legacy_path, &path).map_err(io_error)?;
+            }
+        }
         provider.insert(
             value_key("path"),
             Value::String(path.to_string_lossy().into_owned()),

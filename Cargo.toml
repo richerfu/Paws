@@ -24,14 +24,14 @@ ohos-ashmem-binding = "0.1.0"
 openharmony-ability-plugin-files = "1.0.0-beta.1"
 openharmony-ability-plugin-url = "1.0.0-beta.1"
 
-meow-api = "0.19.0"
-meow-common = "0.19.0"
-meow-config = { version = "0.19.0", features = ["anytls", "boring-tls"] }
-meow-dns = "0.19.0"
-meow-listener = "0.19.0"
-meow-proxy = { version = "0.19.0", features = ["anytls"] }
-meow-trie = "0.19.0"
-meow-tunnel = "0.19.0"
+meow-api = "0.21.2"
+meow-common = "0.21.2"
+meow-config = { version = "0.21.2", features = ["anytls", "boring-tls"] }
+meow-dns = "0.21.2"
+meow-listener = "0.21.2"
+meow-proxy = { version = "0.21.2", features = ["anytls"] }
+meow-trie = "0.21.2"
+meow-tunnel = "0.21.2"
 
 anyhow = "1"
 async-trait = "0.1"
@@ -43,7 +43,7 @@ futures = "0.3"
 getrandom = "0.2"
 ipnet = "2"
 libc = "0.2"
-lwip = "0.3.15"
+lwip = { package = "meow-lwip", version = "0.21.2" }
 netstack-smoltcp = "0.2"
 napi-build-ohos = "1.1"
 napi-derive-ohos = "1.1"
@@ -63,15 +63,7 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
 tracing = "0.1"
 tracing-appender = "0.2.5"
 tracing-subscriber = "0.3"
-tun-rs = { version = "2", features = ["async_tokio"] }
 url = "2"
-
-# The released lwip 0.3.15 wrappers can race with C callbacks on a
-# multi-thread runtime and leak half-closed TCP PCBs. This pinned upstream
-# revision contains the synchronization and close fixes already exercised by
-# Meow's Android/iOS tun2socks implementations.
-[patch.crates-io]
-lwip = { git = "https://github.com/madeye/lwip", rev = "dab00c540cf0606fee14ddd99cfa6ec79d33681d" }
 
 [workspace.lints.clippy]
 dbg_macro = "warn"

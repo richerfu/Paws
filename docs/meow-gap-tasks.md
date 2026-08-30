@@ -1,23 +1,23 @@
 # Paws 与 Meow 差异任务清单
 
-更新时间：2026-07-16
+更新时间：2026-08-28
 
 对照基线：
 
-- 本项目：`/Volumes/PSSD/code/harmony/paws`
-- Meow Android：`madeye/meow`，`main` = `df7ab80ca3f5e8c57bb9992da85ed308a7b4a230`
-- Meow 官网说明：Flutter UI + Kotlin `VpnService` + Rust FFI + `meow-rs` + `netstack-smoltcp`
+- 本项目：`/Volumes/PSSD/code/southorange/Paws`
+- Meow Android/iOS：`madeye/meow` 当前移动端 tun2socks 实现
+- Meow 官网说明：Flutter UI + Android `VpnService` / iOS Network Extension + Rust FFI + `meow-rs` + lwIP
 
-本文只记录功能和实现差异，并拆成本地可执行任务。Meow iOS 不作为主基线，只在 Meow Android 注释中出现时作为参考。
+本文只记录功能和实现差异，并拆成本地可执行任务。Android 和 iOS 的 meow-rs 升级适配都作为移动端基线。
 
 ## 当前项目概况
 
 Paws 当前已经具备一条可运行的最小闭环：
 
 - HarmonyOS `VpnExtensionAbility` 创建 TUN，并把 fd 传给 Rust。
-- Rust `paws_core` 负责配置导入、配置 reload、代理选择、延迟测试和运行时 snapshot；导入/刷新会先将 Clash YAML、base64 订阅和常见分享链接归一为 meow-rs YAML，再进入 crates.io `meow-* 0.19.0` 校验。默认协议 feature 与额外 AnyTLS 已启用，覆盖 SS、Trojan、VLESS/Vision/Encryption、VMess、Snell、Hysteria2、ECH tunnel 和 AnyTLS。
+- Rust `paws_core` 负责配置导入、配置 reload、代理选择、延迟测试和运行时 snapshot；导入/刷新会先将 Clash YAML、base64 订阅和常见分享链接归一为 meow-rs YAML，再进入 crates.io `meow-* 0.21.2` 校验。默认协议 feature 与额外 AnyTLS 已启用，覆盖 SS、Trojan、VLESS/Vision/Encryption、VMess、Snell、Hysteria2、ECH tunnel 和 AnyTLS。
 - Rust `paws_profile` 负责 profile/rule 本地文件存储、运行时 YAML 合成、VPN 参数推导。
-- Rust `paws_vpn` 使用 `netstack-smoltcp` 将 TUN TCP/UDP 流量转发到 `meow_tunnel`。
+- Rust `paws_vpn` 可选 `netstack-smoltcp` 与 crates.io `meow-lwip 0.21.2`，将 TUN TCP/UDP 流量转发到 `meow_tunnel`；当前默认仍为 smoltcp，便于灰度对照。
 - Rust `paws_ui` 使用 arkit 构建原生 UI，并通过 NAPI 暴露 start/stop/reload/import/select 等能力。
 - `local-protocol-tests` 已提供本地 echo/mock server 和 Clash YAML profile，用于手工验证 Direct/HTTP/SOCKS5/Trojan/VLESS 等协议路径。
 
@@ -118,6 +118,7 @@ Meow 更像一个完整客户端产品，Paws 当前更像一个核心链路已�
 
 - Meow 启动前会清洗 YAML：移除 `subscriptions`，替换/禁用 DNS，移除端口配置，强制 `mixed-port`，注入 `geox-url`，并拷贝 `geoip.metadb`、`geosite.dat`、`Country.mmdb`、`GeoLite2-ASN.mmdb`。
 - Paws 当前 patch `mixed-port`、`external-controller`、`dns`、`tun`，会移除用户配置里的 listener/controller/auth/routing 等 App 管理字段（包括端口、`listeners`、`authentication`、`skip-auth-prefixes`、`routing-mark`、`interface-name`、`allow-lan` / `lan-allowed-ips` / `lan-disallowed-ips`、`external-controller*`、`external-ui*`、`tproxy-sni`），导入/刷新/编辑保存前的 meow-rs 校验也会先按同一 App-managed 语义清洗这些字段，避免最终不会生效的原始 listener、端口或 DNS bootstrap 残留阻断导入；并 rewrite provider path 到 profile 私有缓存目录，对 provider 名称生成安全文件名，避免用户配置中的 path 或 provider 名称逃逸 App 管理目录；rule-provider `inline` 会保留 `payload`，但不会注入/保留仅用于文件缓存或远程刷新的 `path` / `interval`，也不会参与“一键刷新全部 provider”；已创建 App 私有 `geodata` 目录、在 runtime YAML 注入 meow-rs 实际读取的 `geodata.mmdb-path` / `asn-path` / `geosite-path`，并丢弃订阅自带的 `geodata.auto-update`、`auto-update-interval`、`url` 和上游兼容字段，避免订阅触发 meow-rs 后台 GeoData 下载或用非法更新间隔阻断 reload；启动期已通过 `ohos-resource-manager-binding` 从 `rawfile/geodata` seed 缺失的 `Country.mmdb`、`GeoLite2-ASN.mmdb`、`geosite.dat`，并提供 `scripts/fetch-geodata.sh` / `docs/geodata.md` 用于 release 构建前拉取真实资源；RuntimeSnapshot 与 Resources 页面已展示 GeoData 三个文件的存在状态、路径、大小、人类可读更新时间和离线资源就绪/缺失摘要；Profile snapshot/Profiles 页面已展示原始 YAML 与 runtime YAML 路径，便于排查清洗后的实际配置；provider 刷新已走 meow external-controller，Resources 页面支持按资源名、类型、URL/path、刷新错误、provider interval/filter/exclude-filter/behavior/format/health-check 元数据和规则内容搜索筛选，支持单个刷新和一键刷新全部 provider，批量刷新会同步本轮成功/失败数量，刷新请求按 proxy/rule provider 类型路由，避免同名 provider 刷错 controller 集合，并在 `ProviderSummary` 展示成功/失败状态、刷新时间、错误摘要、实际缓存路径是否存在、缓存大小、更新时间、provider 更新间隔/filter/exclude-filter/behavior/format/health-check 设置，以及刷新失败时是否保留可用旧缓存。
+- meow-rs 0.21 的 provider 路径安全检查保持启用；Paws 从可信 runtime YAML 文件加载内核，并将 profile 级 proxy/rule provider 缓存收口到 `runtime/providers` 内。旧版 `providers` 目录中的缓存会在首次生成 runtime 配置时自动复制迁移，不需要关闭上游的路径检查。
 
 落地任务：
 
@@ -232,7 +233,7 @@ Meow 更像一个完整客户端产品，Paws 当前更像一个核心链路已�
 - 增加订阅更新间隔的到期判断。（已完成，`ProfileSummary` 暴露 `nextRefreshAt` / `refreshDue`，core/NAPI 提供 `refreshDueProfiles`，Profiles 顶部提供到期刷新入口，App 启动时会静默刷新到期订阅）
 - 多订阅列表增加搜索筛选。（已完成，Profiles 页面支持按名称、来源、订阅地址、元数据、状态和错误摘要筛选）
 - 刷新 active profile 后自动 reload，并保持 selector 选择。（已完成，复用单 profile refresh/reload 路径）
-- 订阅内容解析对齐 Meow/FlClash 常见输入：Clash YAML、base64 多行分享链接、单条分享链接。（已完成基础归一化，VLESS/Trojan/SS/SSR/VMess/Hysteria/Hysteria2/TUIC/HTTP/SOCKS5 分享链接协议头和 query 参数名均已大小写不敏感，VMess JSON 字段名也会按大小写不敏感读取；多行分享链接订阅会跳过注释、未知行和坏节点，只要仍有有效节点就继续导入，单条坏链接仍会返回解析错误；VLESS/Trojan/SS/Hysteria/Hysteria2/TUIC/HTTP/SOCKS5 在缺少 fragment 时会兼容 `remarks` / `remark` / `name` / `ps` / `alias` / `node-name` 等 query 节点名别名，fragment 仍优先；VLESS/Trojan/SS/SSR/VMess/Hysteria/Hysteria2/TUIC 分享链接已支持常见 WS/gRPC/h2/httpupgrade/TLS/Reality 参数，并兼容常见别名如 `serverName` / `servername`、`wsPath` / `wsHost`、WS early-data `ed` / `eh`、`client-fingerprint` / `clientFingerprint`、`grpc-service-name` / `grpc-mode`、`allow-insecure=allow` / `allow_insecure=true`；VLESS `security=TLS` / `security=Reality`、`tls=true` / `enable-tls=1` 大小写兼容并会写出 `tls: true`，`encryption=none` 会归一化保留；VLESS/Trojan/SS/SSR 会保留 `udp=false` / `udp=0` / `udp=off` 等显式 UDP 关闭语义；Reality 会保留 `public-key`、`short-id` 和 `spider-x`；VMess 归一化会保留 skip-cert-verify、`allow_insecure` / `insecure`、gRPC service/mode、UDP/TFO 开关，并兼容 `name` / `remarks`、`server` / `address`、`uuid`、`network`、数字形态的 `port` / `aid`，且 `security=tls` 会作为 TLS 开关而不是 cipher 写出；SS 已支持 SIP002 userinfo 形态、旧式整段 `method:password@host:port` base64 形态，并保留 simple-obfs/v2ray-plugin 内联参数、显式 `plugin-opts` / `pluginOpts` 和 TFO 开关，且插件名和参数名大小写不敏感；SSR URI 已保留 cipher、password、protocol、protocol-param、obfs、obfs-param 和 group，并兼容 `Remark`/`ProtocolParam`/`ObfsParam`/`GroupName` 等常见 query 别名；Hysteria URI 已保留 auth-str、protocol、SNI/peer、ALPN、skip-cert-verify、obfs、up/down、端口跳跃、窗口和 MTU/FastOpen 参数；Hysteria2 URI 已保留 SNI/peer、ALPN、skip-cert-verify、混淆、up/down、端口跳跃、窗口、MTU 和 FastOpen 参数，并兼容 query 中的 `password` / `auth` / `auth-str` 密码别名；TUIC URI 已保留 SNI、ALPN、skip-cert-verify、拥塞、UDP relay、disable-sni、reduce-rtt、timeout、heartbeat、UDP packet size 和 FastOpen 参数；HTTP/SOCKS5 分享链接已支持认证、TLS 和 skip-cert-verify，HTTP 会保留 `headers` / `header` 查询里的 CONNECT header map，SOCKS5 还会保留 UDP/TFO 开关，其中 VLESS 的 WS/h2/httpupgrade/Vision/encryption/udp-off 与 TFO、Trojan gRPC 与 TFO、SS simple-obfs/v2ray-plugin 与 TFO、HTTP/SOCKS5 已经 meow-rs reload 验证；当前 `meow-* 0.19.0` 已完成 VMess、Hysteria2、Snell、AnyTLS 等配置 reload 覆盖，SSR、Hysteria v1 与 TUIC 不在当前 meow-config feature 集内，归一化后的此类输入会返回明确的内核不支持错误而不会伪装导入成功）
+- 订阅内容解析对齐 Meow/FlClash 常见输入：Clash YAML、base64 多行分享链接、单条分享链接。（已完成基础归一化，VLESS/Trojan/SS/SSR/VMess/Hysteria/Hysteria2/TUIC/HTTP/SOCKS5 分享链接协议头和 query 参数名均已大小写不敏感，VMess JSON 字段名也会按大小写不敏感读取；多行分享链接订阅会跳过注释、未知行和坏节点，只要仍有有效节点就继续导入，单条坏链接仍会返回解析错误；VLESS/Trojan/SS/Hysteria/Hysteria2/TUIC/HTTP/SOCKS5 在缺少 fragment 时会兼容 `remarks` / `remark` / `name` / `ps` / `alias` / `node-name` 等 query 节点名别名，fragment 仍优先；VLESS/Trojan/SS/SSR/VMess/Hysteria/Hysteria2/TUIC 分享链接已支持常见 WS/gRPC/h2/httpupgrade/TLS/Reality 参数，并兼容常见别名如 `serverName` / `servername`、`wsPath` / `wsHost`、WS early-data `ed` / `eh`、`client-fingerprint` / `clientFingerprint`、`grpc-service-name` / `grpc-mode`、`allow-insecure=allow` / `allow_insecure=true`；VLESS `security=TLS` / `security=Reality`、`tls=true` / `enable-tls=1` 大小写兼容并会写出 `tls: true`，`encryption=none` 会归一化保留；VLESS/Trojan/SS/SSR 会保留 `udp=false` / `udp=0` / `udp=off` 等显式 UDP 关闭语义；Reality 会保留 `public-key`、`short-id` 和 `spider-x`；VMess 归一化会保留 skip-cert-verify、`allow_insecure` / `insecure`、gRPC service/mode、UDP/TFO 开关，并兼容 `name` / `remarks`、`server` / `address`、`uuid`、`network`、数字形态的 `port` / `aid`，且 `security=tls` 会作为 TLS 开关而不是 cipher 写出；SS 已支持 SIP002 userinfo 形态、旧式整段 `method:password@host:port` base64 形态，并保留 simple-obfs/v2ray-plugin 内联参数、显式 `plugin-opts` / `pluginOpts` 和 TFO 开关，且插件名和参数名大小写不敏感；SSR URI 已保留 cipher、password、protocol、protocol-param、obfs、obfs-param 和 group，并兼容 `Remark`/`ProtocolParam`/`ObfsParam`/`GroupName` 等常见 query 别名；Hysteria URI 已保留 auth-str、protocol、SNI/peer、ALPN、skip-cert-verify、obfs、up/down、端口跳跃、窗口和 MTU/FastOpen 参数；Hysteria2 URI 已保留 SNI/peer、ALPN、skip-cert-verify、混淆、up/down、端口跳跃、窗口、MTU 和 FastOpen 参数，并兼容 query 中的 `password` / `auth` / `auth-str` 密码别名；TUIC URI 已保留 SNI、ALPN、skip-cert-verify、拥塞、UDP relay、disable-sni、reduce-rtt、timeout、heartbeat、UDP packet size 和 FastOpen 参数；HTTP/SOCKS5 分享链接已支持认证、TLS 和 skip-cert-verify，HTTP 会保留 `headers` / `header` 查询里的 CONNECT header map，SOCKS5 还会保留 UDP/TFO 开关，其中 VLESS 的 WS/h2/httpupgrade/Vision/encryption/udp-off 与 TFO、Trojan gRPC 与 TFO、SS simple-obfs/v2ray-plugin 与 TFO、HTTP/SOCKS5 已经 meow-rs reload 验证；当前 `meow-* 0.21.2` 已完成 VMess、Hysteria2、Snell、AnyTLS 等配置 reload 覆盖，SSR、Hysteria v1 与 TUIC 不在当前 meow-config feature 集内，归一化后的此类输入会返回明确的内核不支持错误而不会伪装导入成功）
 
 验收：
 
@@ -263,12 +264,12 @@ Meow 更像一个完整客户端产品，Paws 当前更像一个核心链路已�
 差异：
 
 - Meow 有 GitHub Actions lint/tests/release、Fastlane、Android E2E。
-- Paws 当前已提供本地 `scripts/verify.sh` 串联 Rust fmt/test、local-protocol profile 生成回归与 `ohrs build --arch aarch`；`scripts/package-hap.sh` 会在 `ohrs build --arch aarch` 后复制最新 `libpaws_ui.so` 并通过 DevEco/hvigor 无签名打出 `entry-default-unsigned.hap`，默认传 `--no-daemon` 避免 Hvigor daemon 锁影响本地验证；GitHub Actions 已拆分 Rust hosted job 与 HarmonyOS self-hosted job，Rust job 覆盖本地协议 profile 生成。
+- Paws 当前已提供本地 `scripts/verify.sh` 串联 Rust fmt/test、local-protocol profile 生成回归与 `scripts/ohrs-build.sh --arch aarch`；该包装脚本兼容 `ohrs 1.4.2` 与 `boring-sys 5.1` 在干净 target 下的空 native 搜索目录问题；`scripts/package-hap.sh` 会在 native build 后复制最新 `libpaws_ui.so` 并通过 DevEco/hvigor 无签名打出 `entry-default-unsigned.hap`，默认传 `--no-daemon` 避免 Hvigor daemon 锁影响本地验证；GitHub Actions 已拆分 Rust hosted job 与 HarmonyOS self-hosted job，Rust job 覆盖本地协议 profile 生成。
 
 落地任务：
 
 - 增加 Rust test/check/fmt CI。（已完成，见 `.github/workflows/ci.yml`）
-- 增加 HarmonyOS hvigor build CI，至少产出 debug HAP。（已完成，self-hosted runner 上运行 `ohrs build --arch aarch` 并上传 HAP artifact）
+- 增加 HarmonyOS hvigor build CI，至少产出 debug HAP。（已完成，self-hosted runner 上运行 `scripts/ohrs-build.sh --arch aarch` 并上传 HAP artifact）
 - 整理签名失败场景和本地签名文档。（已完成，见 `docs/ci-and-release.md`）
 
 验收：
@@ -324,7 +325,7 @@ Meow 更像一个完整客户端产品，Paws 当前更像一个核心链路已�
 ## 当前已接近 Meow 的部分
 
 - VPN 私有地址段已经沿用 Meow：`172.19.0.1/30`、`172.19.0.2`、`fdfe:dcba:9876::1/126`。
-- TUN 到 `meow_tunnel` 的核心 TCP 路径已经存在，并使用 `netstack-smoltcp`。
+- TUN 到 `meow_tunnel` 的核心 TCP 路径已经存在，可选 `netstack-smoltcp` 或 `meow-lwip 0.21.2`；lwIP 路径会在重连前等待 `core_done()`，避免上一代 C 核心尚未释放就创建下一代。
 - UDP session 保活/idle 清理、响应读端异常清理、DNS 响应回写、TUN stats 已有基础实现和基础单测。
 - profile 导入、刷新、激活、provider path rewrite、rules 管理已有基础实现；订阅解析已覆盖 Clash YAML、base64 文本订阅、VLESS/Trojan/SS/VMess 分享链接归一化，其中 VLESS WS/h2/httpupgrade/Vision、Trojan gRPC、HTTP/SOCKS5 有 core reload 测试覆盖。
 - 本地协议 mock 测试目录已经覆盖 Meow/meow-rs 当前主要 embedded protocol test 风格。
