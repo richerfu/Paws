@@ -103,7 +103,7 @@ dependencies = [
 [[package]]
 name = "arkit"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "arkit_animation",
  "arkit_arkui",
@@ -124,7 +124,7 @@ dependencies = [
 [[package]]
 name = "arkit_animation"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "arkit_animation_core",
  "arkit_arkui",
@@ -140,7 +140,7 @@ dependencies = [
 [[package]]
 name = "arkit_animation_core"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "oxc_index",
  "rustc-hash",
@@ -150,7 +150,7 @@ dependencies = [
 [[package]]
 name = "arkit_arkui"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "arkit_dom",
  "arkit_elements",
@@ -164,18 +164,18 @@ dependencies = [
 [[package]]
 name = "arkit_derive"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.4",
 ]
 
 [[package]]
 name = "arkit_dom"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "oxc_index",
 ]
@@ -183,7 +183,7 @@ dependencies = [
 [[package]]
 name = "arkit_elements"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "dioxus-core",
 ]
@@ -191,7 +191,7 @@ dependencies = [
 [[package]]
 name = "arkit_hooks"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "arkit_arkui",
  "arkit_prelude",
@@ -203,7 +203,7 @@ dependencies = [
 [[package]]
 name = "arkit_i18n"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "arkit_i18n_macros",
  "dioxus-core",
@@ -218,20 +218,20 @@ dependencies = [
 [[package]]
 name = "arkit_i18n_macros"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "fluent-syntax",
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.4",
  "unic-langid",
 ]
 
 [[package]]
 name = "arkit_icon"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "arkit_arkui",
  "arkit_prelude",
@@ -243,7 +243,7 @@ dependencies = [
 [[package]]
 name = "arkit_prelude"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "arkit_elements",
  "dioxus-core",
@@ -255,11 +255,12 @@ dependencies = [
 [[package]]
 name = "arkit_router"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "arkit_animation",
  "arkit_prelude",
  "arkit_runtime",
+ "dioxus-history",
  "dioxus-router",
  "rustc-hash",
 ]
@@ -267,7 +268,7 @@ dependencies = [
 [[package]]
 name = "arkit_runtime"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "arkit_arkui",
  "arkit_elements",
@@ -282,7 +283,7 @@ dependencies = [
 [[package]]
 name = "arkit_shadcn"
 version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd#d8eb33ca4b26c1fad1f4ccb332b433cc756e9dfd"
+source = "git+https://github.com/richerfu/arkit.git?rev=5eac4cccc1b86e409d57c09bc8cbaeec5391798e#5eac4cccc1b86e409d57c09bc8cbaeec5391798e"
 dependencies = [
  "arkit_animation",
  "arkit_arkui",
@@ -291,7 +292,7 @@ dependencies = [
  "arkit_icon",
  "arkit_prelude",
  "arkit_runtime",
- "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "ohos-arkui-binding",
  "ohos-display-binding",
  "ohos-drawing-binding",
@@ -371,7 +372,7 @@ checksum = "ae36dc4177970ef04fde5178d3e2429882def40e57a451f919c098f72baa6cec"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -1420,7 +1421,7 @@ checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -1526,7 +1527,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1640,7 +1641,7 @@ checksum = "ea5190182e6915eb873ddbc16e23b711b6eb1f9c00a0d0a3a91b5f6228475225"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -2100,7 +2101,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -3196,7 +3197,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3235,18 +3236,18 @@ dependencies = [
 
 [[package]]
 name = "ohos-accessibility-sys"
-version = "0.0.3"
+version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "328ddd8c050829f583bdcde996e9cc0217d15a744aa57c2a00118c00afff1562"
+checksum = "e49b0e83fb2b9ea8d1d079e5c73920f2e30743922091b095ed2cfdf2953fc602"
 dependencies = [
  "ohos-arkui-input-sys",
 ]
 
 [[package]]
 name = "ohos-arkui-binding"
-version = "0.2.5"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97c3e8aef542bff511eac2faa06c3d7c0c37fe18e19e866fca337c2e351867e2"
+checksum = "233d3535e593f71ae40b5ae4385119899dfd9a2f0e87d9a1ebfe8d1155795d8d"
 dependencies = [
  "bitflags 2.13.1",
  "napi-ohos",
@@ -3264,9 +3265,9 @@ dependencies = [
 
 [[package]]
 name = "ohos-arkui-input-binding"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99cef7adee31f6fdac89222a69e94df5236cf4ca049a23e380a1065f9141acb6"
+checksum = "58f579f3995334ad449a6fa53d6775cc443a40f58a0dddb3646b412eb49bcab9"
 dependencies = [
  "ohos-arkui-input-sys",
  "ohos-enum-derive",
@@ -3274,15 +3275,15 @@ dependencies = [
 
 [[package]]
 name = "ohos-arkui-input-sys"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9befe0e30b764a29e2d43aeeb5fad7c53c2a1aa61763b6533ac3f52799caa38"
+checksum = "8363f015a1ad653f01c620f43b166577ede75cb5eb8b8cd7bc7622480287ffe2"
 
 [[package]]
 name = "ohos-arkui-sys"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d32365469264d0e2f6e35d9b8a509f0eeb83eb639208e134d561c591878d387"
+checksum = "c981acbf0ced5aae4712e04bd5f320aaec27f498a2a763b5a9b6a6e023b20c6f"
 dependencies = [
  "napi-sys-ohos",
  "ohos-arkui-input-sys",
@@ -3303,9 +3304,9 @@ dependencies = [
 
 [[package]]
 name = "ohos-display-binding"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2e0f8b8d610915ec01a7857d27f6d2a0498e3fdf7488f3bbd602db00e929adc"
+checksum = "9deac94b3c79d95bb000544a7a254df77d519a139fb1f1b255cb6177ab8234d4"
 dependencies = [
  "ohos-display-sys",
  "ohos-enum-derive",
@@ -3313,15 +3314,15 @@ dependencies = [
 
 [[package]]
 name = "ohos-display-sys"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cf471a32cef6236982949b33a3bc01d5a15e30e5b9d267988e92d94cd89ef67"
+checksum = "65ddb93bf0499a9bd15a445100e82e9a82a54dc493e07f2228b09b6b63fb920e"
 
 [[package]]
 name = "ohos-drawing-binding"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f35fe3103e7ff9cdbfe3f3067988032c3df7516fa678ca985567c79f03ab84b1"
+checksum = "8a293687d2c33da3cb1f7ee44b557bb7bee498cd807ae5f96b3aa531409a2ce5"
 dependencies = [
  "ohos-enum-derive",
  "ohos-native-drawing-sys",
@@ -3365,9 +3366,9 @@ version = "0.2.2"
 
 [[package]]
 name = "ohos-hilog-binding"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53b6acde069ee755d81ec9d30dcd8b65909a7ee941f9fe8893f7f12855848a1f"
+checksum = "46dcea2d0b79ab8bde89addd3bec3efed9be3e1f3837d3d715a10cc800b36f60"
 dependencies = [
  "ohos-enum-derive",
  "ohos-hilogs-sys",
@@ -3375,28 +3376,28 @@ dependencies = [
 
 [[package]]
 name = "ohos-hilogs-sys"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7142aca637eb32977214bb4ec9e6e9e7653ece93aee372a5905af3d21a3d578"
+checksum = "fec24149e03adc316b7aaca40aca577ce05a0db31793bd3ed585bea5fba8382a"
 
 [[package]]
 name = "ohos-image-binding"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8231d0d990f18eb9a0bd74936f961e8bd66cd9ac384d95e40020ac999e22ad5a"
+checksum = "b3246a0d29fd7e8f278875d9f394ee951c01b8815429034f7e4340790d152537"
 dependencies = [
  "napi-ohos",
  "napi-sys-ohos",
  "ohos-enum-derive",
  "ohos-image-sys",
- "ohos-resource-manager-sys 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ohos-resource-manager-sys 0.3.3",
 ]
 
 [[package]]
 name = "ohos-image-native-binding"
-version = "0.0.5"
+version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c7dfe4ed7d71441c408ac5453176b448ddb673567a1f01508ac168a600a7f38"
+checksum = "0de7506ff6218182c1f97b3900831358051dded225909b50a61cf862cebd262b"
 dependencies = [
  "libc",
  "napi-sys-ohos",
@@ -3404,51 +3405,52 @@ dependencies = [
  "ohos-image-native-sys",
  "ohos-native-buffer-binding",
  "ohos-native-buffer-sys",
- "ohos-resource-manager-sys 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ohos-resource-manager-sys 0.3.3",
 ]
 
 [[package]]
 name = "ohos-image-native-sys"
-version = "0.0.3"
+version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "331baf1db1c885dcbcdb81dce0563fa9f9fd3a27802ddcbf1726eb6784bd020e"
+checksum = "c7871ff5d1c1c406bd9cfdbeff71f7f78a80fb37a0792d126506d879531968a9"
 dependencies = [
  "napi-sys-ohos",
  "ohos-native-buffer-sys",
- "ohos-resource-manager-sys 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ohos-resource-manager-sys 0.3.3",
 ]
 
 [[package]]
 name = "ohos-image-sys"
-version = "0.0.3"
+version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e367c84b78af5ae77d5335601396c1d0af89543becca08f75aedf4ba5258d74c"
+checksum = "7fb4d2615c0eebe3d76c4aab402ea8b7733ab2a00dbab88e06d9d9e20d2d79d7"
 dependencies = [
  "napi-sys-ohos",
- "ohos-resource-manager-sys 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ohos-resource-manager-sys 0.3.3",
 ]
 
 [[package]]
 name = "ohos-ime-binding"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a09e0a0b3844744535309aaf246df1e8c52fb1107631b3f7ddbfc275a0314bd3"
+checksum = "a9f89f50a5eae10e13de666bbc6b48d69039089058a5af56c2d4b5052c89fb7a"
 dependencies = [
  "ohos-enum-derive",
  "ohos-input-method-sys",
+ "rustc-hash",
 ]
 
 [[package]]
 name = "ohos-input-method-sys"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8686bdd6249bc09b0789e09d35886563811d9a8dce9d05361d33122648eeb3e"
+checksum = "97c6c1bbab01c0d6ba34d865568342808f12f187f2aa9c906ccb1dc72aeba69f"
 
 [[package]]
 name = "ohos-native-buffer-binding"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4a89ed541cc93d59c31b2ad73e9bdb1efe0f38c6ee538581517bbbe32bc47d2"
+checksum = "ce5cdb283c6dad8483eee311d258c88fbda091d601b1a0ca9f84e6e01e795f16"
 dependencies = [
  "ohos-native-buffer-sys",
  "ohos-native-window-sys",
@@ -3456,15 +3458,15 @@ dependencies = [
 
 [[package]]
 name = "ohos-native-buffer-sys"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1b754679463a2af38c3381936eec015bab187963bd97a6802e5a61ce362573f"
+checksum = "97e8d70293b1c92109a4016fba5ce7b18ad5d9b80550897f9218a40fa3431f71"
 
 [[package]]
 name = "ohos-native-drawing-sys"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8d58d6a1f1d65d0597c56f1920d86028241ac9cc91c56c9dac41a680f68ac6e"
+checksum = "147856c7a508af8c775b7679eb0effd500521204943e7f26846f18f10c20bf99"
 dependencies = [
  "ohos-image-native-sys",
  "ohos-image-sys",
@@ -3472,9 +3474,9 @@ dependencies = [
 
 [[package]]
 name = "ohos-native-window-sys"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c63464c0eb8cfb9ad1eb9d12531acea37f5b3280f40bb902f861e2108155d140"
+checksum = "1118984263856b11ebd9fbfb35911c10d74ef55778a67be06f1bce09fb5325da"
 dependencies = [
  "ohos-native-buffer-sys",
 ]
@@ -3496,18 +3498,18 @@ dependencies = [
 
 [[package]]
 name = "ohos-resource-manager-sys"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86fbffb79d6e26b845e77653590e6d8951baeaa6c1a307417e917f37dcf3843a"
+checksum = "a255c1b63db82ccf61a256f6ef03210d3ffdceb7e5c64d563613b266dc255d4f"
 dependencies = [
  "napi-sys-ohos",
 ]
 
 [[package]]
 name = "ohos-udmf-binding"
-version = "0.0.5"
+version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1069ca8d1dcfc992fd66d4ec8bd1471d2daf40d34ec227c880ea92ab390e875d"
+checksum = "5b185bd17c1bdb74f370ba30176ea937c12e8e3dcd32223a6c8362397f8751ee"
 dependencies = [
  "ohos-enum-derive",
  "ohos-image-native-binding",
@@ -3516,18 +3518,18 @@ dependencies = [
 
 [[package]]
 name = "ohos-udmf-sys"
-version = "0.0.3"
+version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "389517bf06530019a0fb90b34c5a408bda45f6584b3487621afd82d524d873ab"
+checksum = "dc817f2833bd8ff7f6598fc22794e045a58b643f08d33b0a8549daa517912fae"
 dependencies = [
  "ohos-image-native-sys",
 ]
 
 [[package]]
 name = "ohos-xcomponent-binding"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90274819d67adc39bde757ddee3ad0b6d3e68efd2ebe9cbc258b56e6146e1ab3"
+checksum = "1ab4ad6a89cf56a1f29522822fa7830dafcba8d041f662de5874908ab553823a"
 dependencies = [
  "napi-derive-ohos",
  "napi-ohos",
@@ -3540,9 +3542,9 @@ dependencies = [
 
 [[package]]
 name = "ohos-xcomponent-sys"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77edaa30b47dd58f2285dda8cef56a6817cf76fa193f537c10bb8ebc6a4f88c7"
+checksum = "2957141513d5ac9d61c3d46259c1aff42dbb484a760bce488ab35c80f87e93d1"
 dependencies = [
  "ohos-accessibility-sys",
  "ohos-arkui-input-sys",
@@ -3576,9 +3578,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openharmony-ability"
-version = "1.0.0-beta.1"
+version = "1.0.0-beta.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77ae98a8153699a376662976b17ae9c14df7325739c4dd58ec08c21ef0191a16"
+checksum = "6fa54305105683c0fb7986ab22f935f007066bf7c69b46b55913cac055e2e522"
 dependencies = [
  "futures-channel",
  "napi-derive-ohos",
@@ -3981,7 +3983,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -4019,9 +4021,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4349,7 +4351,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4486,7 +4488,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -4765,7 +4767,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4871,9 +4873,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.3"
+version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53e9bae58849f64dfa4f5d5ae372c8341f7305f82a3868709269343628b659a3"
+checksum = "e6275cddf4610d1775e6d1fe9469b2e77d0f39fd98fb7450901b821e0c53649f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4951,7 +4953,7 @@ checksum = "43cbfe0cf76104d42a574802844187e84a305e531ed54455f11fbde0f10541cd"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -5055,7 +5057,7 @@ checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -5728,7 +5730,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
