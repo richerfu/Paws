@@ -1,9 +1,75 @@
 use super::super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VirtualResourcePalette {
+    surface: u32,
+    foreground: u32,
+    muted: u32,
+    muted_foreground: u32,
+    border: u32,
+    success: u32,
+    warning: u32,
+    danger: u32,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum VirtualResourceRow {
+    Summary {
+        active_profile_name: String,
+        engine_loaded: bool,
+        mode_label: String,
+        enabled_rule_count: usize,
+        total_rule_count: usize,
+        total_provider_count: usize,
+        ready_geodata_count: usize,
+        total_geodata_count: usize,
+    },
+    GeodataHeader {
+        ready_count: usize,
+        total_count: usize,
+    },
+    Geodata(paws_model::GeodataFileSummary),
+    GeodataEmpty,
+    ProvidersHeader,
+    Provider(paws_model::ProviderSummary),
+    ProvidersEmpty,
+    RulesHeader {
+        import_loading: bool,
+        has_active_profile: bool,
+    },
+    Rule(paws_model::RuleSummary),
+    RulesEmpty,
+    Footer,
+}
+
+#[derive(Clone, PartialEq)]
+struct VirtualResourceListState {
+    rows: Rc<Vec<VirtualResourceRow>>,
+    all_rules: Rc<Vec<paws_model::RuleSummary>>,
+    locale: UiLocale,
+    palette: VirtualResourcePalette,
+    diagnostic_pending: bool,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum VirtualResourceRowKey {
+    Summary,
+    GeodataHeader,
+    Geodata { name: String, path: String },
+    GeodataEmpty,
+    ProvidersHeader,
+    Provider { provider_type: String, name: String },
+    ProvidersEmpty,
+    RulesHeader,
+    Rule { profile_id: String, id: String },
+    RulesEmpty,
+    Footer,
+}
+
 pub(crate) fn resources_page(state: Signal<State>) -> Element {
     let mut query = use_signal(String::new);
-    let mut geodata_detail = use_signal(|| None::<paws_model::GeodataFileSummary>);
-    let mut provider_detail = use_signal(|| None::<String>);
+    let geodata_detail = use_signal(|| None::<paws_model::GeodataFileSummary>);
+    let provider_detail = use_signal(|| None::<String>);
     let current = state.read().clone();
     let query_value = query();
     let active_profile_name = current
@@ -33,144 +99,27 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
         RuntimeMode::Global => translate_ui(current.locale, tr::page_tr_165()),
         RuntimeMode::Direct => translate_ui(current.locale, tr::page_tr_166()),
     };
-    let providers = current.snapshot.providers.iter()
+    let providers = current
+        .snapshot
+        .providers
+        .iter()
         .filter(|provider| matches_provider_query(provider, &query_value))
         .cloned()
-        .map(|provider| {
-            let refresh_provider_type = provider.provider_type.clone();
-            let refresh_provider_name = provider.name.clone();
-            let health_provider_name = provider.name.clone();
-            let detail_provider_name = provider.name.clone();
-            let member_count = provider.members.len();
-            let alive_count = provider.members.iter().filter(|member| member.alive).count();
-            let can_healthcheck = provider.provider_type == "proxy"
-                && provider.health_check_enabled;
-            let provider_status = if provider.last_refresh_error.is_some() {
-                translate_ui(current.locale, tr::page_tr_167())
-            } else if provider.vehicle_type.as_deref().is_some_and(|kind| kind.eq_ignore_ascii_case("inline")) {
-                translate_ui(current.locale, tr::page_tr_168())
-            } else if provider.cache_exists {
-                translate_ui(current.locale, tr::page_tr_169())
-            } else {
-                translate_ui(current.locale, tr::page_tr_170())
-            };
-            rsx! {
-                {card(
-                    truncate_text(&provider.name, 38),
-                    Some(format!("{} · {}", provider.provider_type, provider.vehicle_type.clone().unwrap_or_default())),
-                    rsx! {
-                        column {
-                            width: "100%",
-                            {info_row(translate_ui(current.locale, tr::page_tr_171()), provider_status)}
-                            {info_row(translate_ui(current.locale, tr::page_tr_172()), if provider.cache_exists { format_total(provider.cache_bytes.unwrap_or(0)) } else { translate_ui(current.locale, tr::page_tr_173()) })}
-                            {info_row(translate_ui(current.locale, tr::page_tr_174()), provider.interval_seconds.map(|value| format!("{value}s")).unwrap_or_else(|| "-".to_owned()))}
-                            if provider.provider_type == "proxy" {
-                                {info_row(translate_ui(current.locale, tr::page_tr_175()), format!("{alive_count}/{member_count}"))}
-                            }
-                            if let Some(error) = provider.last_refresh_error.clone() {
-                                text { content: compact(&error), margin_top: 6.0, font_size: 12.0, font_color: danger(), max_lines: 2 }
-                            }
-                            row { height: 4.0 }
-                            row {
-                                width: "100%",
-                                justify_content: "end",
-                                FlatButton {
-                                    variant: FlatButtonVariant::Ghost,
-                                    size: ButtonSize::Sm,
-                                    onclick: move |_| provider_detail.set(Some(detail_provider_name.clone())),
-                                    {arkit::icon("list", 14.0, text_color())}
-                                    text { content: translate_ui(current.locale, tr::page_tr_176()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
-                                }
-                                if can_healthcheck {
-                                    FlatButton {
-                                        variant: FlatButtonVariant::Ghost,
-                                        size: ButtonSize::Sm,
-                                        disabled: Some(current.controller_diagnostic_pending.is_some()),
-                                        onclick: move |_| dispatch(state, Action::HealthcheckProxyProvider {
-                                            provider_name: health_provider_name.clone(),
-                                        }),
-                                        {arkit::icon("heart-pulse", 14.0, text_color())}
-                                        text { content: translate_ui(current.locale, tr::page_tr_177()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
-                                    }
-                                }
-                                FlatButton {
-                                    variant: FlatButtonVariant::Ghost,
-                                    size: ButtonSize::Sm,
-                                    onclick: move |_| dispatch(state, Action::RefreshProvider {
-                                        provider_type: refresh_provider_type.clone(),
-                                        provider_name: refresh_provider_name.clone(),
-                                    }),
-                                    {arkit::icon("refresh-cw", 14.0, text_color())}
-                                    text { content: translate_ui(current.locale, tr::page_tr_178()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
-                                }
-                            }
-                        }
-                    }
-                )}
-            }
-        }).collect::<Vec<_>>();
+        .collect::<Vec<_>>();
     let rules = current
         .snapshot
         .rules
         .iter()
         .filter(|rule| matches_rule_query(rule, &query_value))
         .cloned()
-        .map(|rule| rule_view(state, &current, rule))
         .collect::<Vec<_>>();
-    let geodata = current.snapshot.geodata.iter()
+    let geodata = current
+        .snapshot
+        .geodata
+        .iter()
         .filter(|file| matches_geodata_query(file, &query_value))
         .cloned()
-        .enumerate()
-        .map(|(index, file)| {
-            let detail = file.clone();
-            let status = if file.exists {
-                translate_ui(current.locale, tr::page_tr_179())
-            } else {
-                translate_ui(current.locale, tr::page_tr_180())
-            };
-            let metadata = if file.exists {
-                format!("{status} · {}", format_total(file.bytes.unwrap_or(0)))
-            } else {
-                status.to_owned()
-            };
-            rsx! {
-                if index > 0 {
-                    Separator {}
-                }
-                button {
-                    width: "100%",
-                    height: 68.0,
-                    padding_left: 14.0,
-                    padding_right: 12.0,
-                    background_color: surface(),
-                    border_width: 0.0,
-                    border_radius: 0.0,
-                    onclick: move |_| geodata_detail.set(Some(detail.clone())),
-                    row {
-                        width: "100%",
-                        align_items: "center",
-                        row {
-                            width: 36.0,
-                            height: 36.0,
-                            align_items: "center",
-                            justify_content: "center",
-                            background_color: muted(),
-                            border_radius: 8.0,
-                            {arkit::icon("file-text", 17.0, if file.exists { success() } else { danger() })}
-                        }
-                        column {
-                            layout_weight: 1.0,
-                            margin_left: 11.0,
-                            align_items: "start",
-                            text { content: file.name, width: "100%", font_size: typography::SM, font_weight: 600, font_color: text_color(), max_lines: 1 }
-                            text { content: metadata, width: "100%", margin_top: 3.0, font_size: typography::XS, font_color: if file.exists { success() } else { danger() }, max_lines: 1 }
-                        }
-                        {arkit::icon("chevron-right", 15.0, subtle())}
-                    }
-                }
-            }
-        }).collect::<Vec<_>>();
-    let visible_geodata_count = geodata.len();
+        .collect::<Vec<_>>();
     let selected_geodata = geodata_detail();
     let selected_provider = provider_detail().and_then(|name| {
         current
@@ -180,9 +129,59 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
             .find(|provider| provider.name == name)
             .cloned()
     });
+    let mut rows = Vec::with_capacity(8 + geodata.len() + providers.len() + rules.len());
+    rows.push(VirtualResourceRow::Summary {
+        active_profile_name,
+        engine_loaded: current.snapshot.engine_loaded,
+        mode_label,
+        enabled_rule_count,
+        total_rule_count,
+        total_provider_count,
+        ready_geodata_count,
+        total_geodata_count,
+    });
+    rows.push(VirtualResourceRow::GeodataHeader {
+        ready_count: ready_geodata_count,
+        total_count: total_geodata_count,
+    });
+    if geodata.is_empty() {
+        rows.push(VirtualResourceRow::GeodataEmpty);
+    } else {
+        rows.extend(geodata.into_iter().map(VirtualResourceRow::Geodata));
+    }
+    rows.push(VirtualResourceRow::ProvidersHeader);
+    if providers.is_empty() {
+        rows.push(VirtualResourceRow::ProvidersEmpty);
+    } else {
+        rows.extend(providers.into_iter().map(VirtualResourceRow::Provider));
+    }
+    rows.push(VirtualResourceRow::RulesHeader {
+        import_loading: current.rule_import_loading,
+        has_active_profile: current.snapshot.active_profile.is_some(),
+    });
+    if rules.is_empty() {
+        rows.push(VirtualResourceRow::RulesEmpty);
+    } else {
+        rows.extend(rules.into_iter().map(VirtualResourceRow::Rule));
+    }
+    rows.push(VirtualResourceRow::Footer);
+    let theme = use_theme();
+    let palette = VirtualResourcePalette {
+        surface: theme.colors.card,
+        foreground: theme.colors.foreground,
+        muted: theme.colors.muted,
+        muted_foreground: theme.colors.muted_foreground,
+        border: theme.colors.border,
+        success: success(),
+        warning: warning(),
+        danger: theme.colors.destructive,
+    };
+    let rows = Rc::new(rows);
+    let all_rules = Rc::new(current.snapshot.rules.clone());
     let body = rsx! {
         column {
             width: "100%",
+            height: "100%",
             Input {
                 value: Some(query_value),
                 placeholder: Some(translate_ui(current.locale, tr::resources_search_placeholder())),
@@ -190,111 +189,19 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                 on_change: move |value| query.set(value),
             }
             row { height: 12.0 }
-            {card(
-                translate_ui(current.locale, tr::page_tr_181()),
-                Some(active_profile_name),
-                rsx! {
-                    column {
-                        width: "100%",
-                        {info_row(translate_ui(current.locale, tr::page_tr_182()), if current.snapshot.engine_loaded { translate_ui(current.locale, tr::page_tr_183()) } else { translate_ui(current.locale, tr::page_tr_184()) })}
-                        {info_row(translate_ui(current.locale, tr::page_tr_185()), mode_label)}
-                        {info_row(translate_ui(current.locale, tr::page_tr_186()), format!("{enabled_rule_count}/{total_rule_count}"))}
-                        {info_row("Provider", total_provider_count.to_string())}
-                        {info_row("GeoData", format!("{ready_geodata_count}/{total_geodata_count}"))}
-                    }
-                }
-            )}
-            row { height: 12.0 }
-            column {
-                width: "100%",
-                background_color: surface(),
-                border_width: 1.0,
-                border_color: line(),
-                border_radius: 8.0,
-                clip: true,
-                row {
-                    width: "100%",
-                    height: 52.0,
-                    padding_left: spacing::LG,
-                    padding_right: spacing::LG,
-                    align_items: "center",
-                    text { content: "GeoData", font_size: typography::SM, font_weight: 600, font_color: text_color() }
-                    row { layout_weight: 1.0 }
-                    text {
-                        content: format!("{ready_geodata_count}/{total_geodata_count} {}", translate_ui(current.locale, tr::page_tr_187())),
-                        font_size: typography::XS,
-                        font_weight: 500,
-                        font_color: if ready_geodata_count == total_geodata_count && total_geodata_count > 0 { success() } else { warning() },
-                    }
-                }
-                Separator {}
-                if visible_geodata_count == 0 {
-                    row {
-                        width: "100%",
-                        height: 66.0,
-                        padding_left: 14.0,
-                        padding_right: 14.0,
-                        align_items: "center",
-                        text { content: translate_ui(current.locale, tr::page_tr_188()), font_size: 12.0, font_color: subtle() }
-                    }
-                } else {
-                    {geodata.into_iter()}
-                }
-            }
-            row { height: 12.0 }
-            {section_label(translate_ui(current.locale, tr::page_tr_189()))}
-            if providers.is_empty() {
-                {empty_state("database", translate_ui(current.locale, tr::page_tr_190()), translate_ui(current.locale, tr::page_tr_191()))}
-            } else {
-                {spaced(providers)}
-            }
-            row { height: 14.0 }
             row {
+                layout_weight: 1.0,
                 width: "100%",
-                height: 34.0,
-                margin_bottom: spacing::SM,
-                align_items: "center",
-                text { content: translate_ui(current.locale, tr::resources_rules_title()), font_size: typography::SM, font_weight: 600, font_color: text_color() }
-                row { layout_weight: 1.0 }
-                FlatButton {
-                    variant: FlatButtonVariant::Ghost,
-                    size: ButtonSize::Sm,
-                    disabled: Some(current.rule_import_loading || current.snapshot.active_profile.is_none()),
-                    onclick: move |_| {
-                        if !state.read().rule_import_loading {
-                            dispatch(state, Action::ImportRules);
-                        }
-                    },
-                    if current.rule_import_loading {
-                        Spinner { size: 14.0, color: Some(text_color()) }
-                    } else {
-                        {arkit::icon("file-up", 14.0, text_color())}
-                    }
-                    text {
-                        content: translate_ui(current.locale, tr::resources_import_rules()),
-                        margin_left: 5.0,
-                        font_size: 12.0,
-                        font_weight: 600,
-                        font_color: text_color(),
-                    }
+                VirtualResourceList {
+                    rows,
+                    all_rules,
+                    locale: current.locale,
+                    palette,
+                    diagnostic_pending: current.controller_diagnostic_pending.is_some(),
+                    state,
+                    geodata_detail,
+                    provider_detail,
                 }
-                FlatButton {
-                    variant: FlatButtonVariant::Ghost,
-                    size: ButtonSize::Sm,
-                    disabled: Some(current.snapshot.active_profile.is_none()),
-                    onclick: move |_| dispatch(state, Action::OpenManualRuleEditor {
-                        connection_id: None,
-                        domain: String::new(),
-                        destination_ip: String::new(),
-                    }),
-                    {arkit::icon("plus", 14.0, text_color())}
-                    text { content: translate_ui(current.locale, tr::page_tr_192()), margin_left: 5.0, font_size: typography::XS, font_weight: 600, font_color: text_color() }
-                }
-            }
-            if rules.is_empty() {
-                {empty_state("list-checks", translate_ui(current.locale, tr::page_tr_193()), translate_ui(current.locale, tr::page_tr_194()))}
-            } else {
-                {compact_rule_list(rules)}
             }
         }
     };
@@ -304,7 +211,7 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
             {icon_action("refresh-cw", Action::RefreshAllProviders, state)}
         }
     };
-    let page = scaffold(state, Route::Resources {}, actions, body);
+    let page = fixed_scaffold(state, Route::Resources {}, actions, body);
     rsx! {
         {page}
         if let Some(file) = selected_geodata {
@@ -324,6 +231,514 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
         }
         if current.rule_lookup.is_some() {
             {rule_lookup_dialog(state, &current)}
+        }
+    }
+}
+
+#[component]
+fn VirtualResourceList(
+    rows: Rc<Vec<VirtualResourceRow>>,
+    all_rules: Rc<Vec<paws_model::RuleSummary>>,
+    locale: UiLocale,
+    palette: VirtualResourcePalette,
+    diagnostic_pending: bool,
+    state: Signal<State>,
+    geodata_detail: Signal<Option<paws_model::GeodataFileSummary>>,
+    provider_detail: Signal<Option<String>>,
+) -> Element {
+    let item_keys = rows
+        .iter()
+        .map(|row| match row {
+            VirtualResourceRow::Summary { .. } => VirtualResourceRowKey::Summary,
+            VirtualResourceRow::GeodataHeader { .. } => VirtualResourceRowKey::GeodataHeader,
+            VirtualResourceRow::Geodata(file) => VirtualResourceRowKey::Geodata {
+                name: file.name.clone(),
+                path: file.path.clone(),
+            },
+            VirtualResourceRow::GeodataEmpty => VirtualResourceRowKey::GeodataEmpty,
+            VirtualResourceRow::ProvidersHeader => VirtualResourceRowKey::ProvidersHeader,
+            VirtualResourceRow::Provider(provider) => VirtualResourceRowKey::Provider {
+                provider_type: provider.provider_type.clone(),
+                name: provider.name.clone(),
+            },
+            VirtualResourceRow::ProvidersEmpty => VirtualResourceRowKey::ProvidersEmpty,
+            VirtualResourceRow::RulesHeader { .. } => VirtualResourceRowKey::RulesHeader,
+            VirtualResourceRow::Rule(rule) => VirtualResourceRowKey::Rule {
+                profile_id: rule.profile_id.clone(),
+                id: rule.id.clone(),
+            },
+            VirtualResourceRow::RulesEmpty => VirtualResourceRowKey::RulesEmpty,
+            VirtualResourceRow::Footer => VirtualResourceRowKey::Footer,
+        })
+        .collect::<Vec<_>>();
+    let next_list_state = VirtualResourceListState {
+        rows,
+        all_rules,
+        locale,
+        palette,
+        diagnostic_pending,
+    };
+    let mut list_state = use_signal(|| next_list_state.clone());
+    use_effect(use_reactive(
+        (&next_list_state,),
+        move |(next_list_state,)| {
+            if *list_state.peek() != next_list_state {
+                list_state.set(next_list_state);
+            }
+        },
+    ));
+
+    let source = use_virtual_source_items_keyed(VirtualKind::List, item_keys, move |index| {
+        rsx! {
+            VirtualResourceRowView {
+                index,
+                list_state,
+                state,
+                geodata_detail,
+                provider_detail,
+            }
+        }
+    });
+
+    rsx! {
+        list {
+            virtual_source: source,
+            width: "100%",
+            height: "100%",
+            scroll_bar: "off",
+            list_cached_count: 18_i32,
+        }
+    }
+}
+
+#[component]
+fn VirtualResourceRowView(
+    index: u32,
+    list_state: Signal<VirtualResourceListState>,
+    state: Signal<State>,
+    mut geodata_detail: Signal<Option<paws_model::GeodataFileSummary>>,
+    mut provider_detail: Signal<Option<String>>,
+) -> Element {
+    let current = list_state.read();
+    let Some(row) = current.rows.get(index as usize).cloned() else {
+        return rsx! {};
+    };
+    let locale = current.locale;
+    let palette = current.palette;
+    let diagnostic_pending = current.diagnostic_pending;
+    let all_rules = current.all_rules.clone();
+    drop(current);
+
+    match row {
+        VirtualResourceRow::Summary {
+            active_profile_name,
+            engine_loaded,
+            mode_label,
+            enabled_rule_count,
+            total_rule_count,
+            total_provider_count,
+            ready_geodata_count,
+            total_geodata_count,
+        } => virtual_resource_card(
+            translate_ui(locale, tr::page_tr_181()),
+            Some(active_profile_name),
+            rsx! {
+                column {
+                    width: "100%",
+                    {virtual_resource_info_row(
+                        translate_ui(locale, tr::page_tr_182()),
+                        if engine_loaded { translate_ui(locale, tr::page_tr_183()) } else { translate_ui(locale, tr::page_tr_184()) },
+                        palette,
+                    )}
+                    {virtual_resource_info_row(translate_ui(locale, tr::page_tr_185()), mode_label, palette)}
+                    {virtual_resource_info_row(translate_ui(locale, tr::page_tr_186()), format!("{enabled_rule_count}/{total_rule_count}"), palette)}
+                    {virtual_resource_info_row("Provider", total_provider_count.to_string(), palette)}
+                    {virtual_resource_info_row("GeoData", format!("{ready_geodata_count}/{total_geodata_count}"), palette)}
+                }
+            },
+            palette,
+        ),
+        VirtualResourceRow::GeodataHeader {
+            ready_count,
+            total_count,
+        } => {
+            let status_color = if ready_count == total_count && total_count > 0 {
+                palette.success
+            } else {
+                palette.warning
+            };
+            rsx! {
+                row {
+                    width: "100%",
+                    height: 64.0,
+                    margin_top: 12.0,
+                    padding_left: spacing::LG,
+                    padding_right: spacing::LG,
+                    align_items: "center",
+                    background_color: palette.surface,
+                    border_width: 1.0,
+                    border_color: palette.border,
+                    border_radius: 8.0,
+                    text { content: "GeoData", font_size: typography::SM, font_weight: 600, font_color: palette.foreground }
+                    row { layout_weight: 1.0 }
+                    text {
+                        content: format!("{ready_count}/{total_count} {}", translate_ui(locale, tr::page_tr_187())),
+                        font_size: typography::XS,
+                        font_weight: 500,
+                        font_color: status_color,
+                    }
+                }
+            }
+        }
+        VirtualResourceRow::Geodata(file) => {
+            let detail = file.clone();
+            let status = if file.exists {
+                translate_ui(locale, tr::page_tr_179())
+            } else {
+                translate_ui(locale, tr::page_tr_180())
+            };
+            let metadata = if file.exists {
+                format!("{status} · {}", format_total(file.bytes.unwrap_or(0)))
+            } else {
+                status.to_owned()
+            };
+            let status_color = if file.exists {
+                palette.success
+            } else {
+                palette.danger
+            };
+            rsx! {
+                button {
+                    width: "100%",
+                    height: 76.0,
+                    margin_top: 6.0,
+                    padding_left: 14.0,
+                    padding_right: 12.0,
+                    background_color: palette.surface,
+                    border_width: 1.0,
+                    border_color: palette.border,
+                    border_radius: 8.0,
+                    onclick: move |_| geodata_detail.set(Some(detail.clone())),
+                    row {
+                        width: "100%",
+                        align_items: "center",
+                        row {
+                            width: 36.0,
+                            height: 36.0,
+                            align_items: "center",
+                            justify_content: "center",
+                            background_color: palette.muted,
+                            border_radius: 8.0,
+                            {arkit::icon("file-text", 17.0, status_color)}
+                        }
+                        column {
+                            layout_weight: 1.0,
+                            margin_left: 11.0,
+                            align_items: "start",
+                            text { content: file.name, width: "100%", font_size: typography::SM, font_weight: 600, font_color: palette.foreground, max_lines: 1 }
+                            text { content: metadata, width: "100%", margin_top: 3.0, font_size: typography::XS, font_color: status_color, max_lines: 1 }
+                        }
+                        {arkit::icon("chevron-right", 15.0, palette.muted_foreground)}
+                    }
+                }
+            }
+        }
+        VirtualResourceRow::GeodataEmpty => {
+            virtual_resource_empty("file-x", translate_ui(locale, tr::page_tr_188()), palette)
+        }
+        VirtualResourceRow::ProvidersHeader => {
+            virtual_resource_section_label(translate_ui(locale, tr::page_tr_189()), palette)
+        }
+        VirtualResourceRow::Provider(provider) => virtual_provider_row(
+            state,
+            locale,
+            palette,
+            diagnostic_pending,
+            provider,
+            provider_detail,
+        ),
+        VirtualResourceRow::ProvidersEmpty => {
+            virtual_resource_empty("database", translate_ui(locale, tr::page_tr_190()), palette)
+        }
+        VirtualResourceRow::RulesHeader {
+            import_loading,
+            has_active_profile,
+        } => {
+            let import_disabled = import_loading || !has_active_profile;
+            rsx! {
+                row {
+                    width: "100%",
+                    height: 52.0,
+                    margin_top: 10.0,
+                    align_items: "center",
+                    text { content: translate_ui(locale, tr::resources_rules_title()), font_size: typography::SM, font_weight: 600, font_color: palette.foreground }
+                    row { layout_weight: 1.0 }
+                    button {
+                        height: 36.0,
+                        padding_left: 8.0,
+                        padding_right: 8.0,
+                        background_color: palette.surface,
+                        border_width: 0.0,
+                        border_radius: 6.0,
+                        enabled: !import_disabled,
+                        opacity: if import_disabled { 0.5 } else { 1.0 },
+                        onclick: move |_| {
+                            if !state.read().rule_import_loading {
+                                dispatch(state, Action::ImportRules);
+                            }
+                        },
+                        row {
+                            align_items: "center",
+                            {arkit::icon(if import_loading { "loader-circle" } else { "file-up" }, 14.0, palette.foreground)}
+                            text { content: translate_ui(locale, tr::resources_import_rules()), margin_left: 5.0, font_size: 12.0, font_weight: 600, font_color: palette.foreground }
+                        }
+                    }
+                    button {
+                        height: 36.0,
+                        padding_left: 8.0,
+                        padding_right: 8.0,
+                        background_color: palette.surface,
+                        border_width: 0.0,
+                        border_radius: 6.0,
+                        enabled: has_active_profile,
+                        opacity: if has_active_profile { 1.0 } else { 0.5 },
+                        onclick: move |_| dispatch(state, Action::OpenManualRuleEditor {
+                            connection_id: None,
+                            domain: String::new(),
+                            destination_ip: String::new(),
+                        }),
+                        row {
+                            align_items: "center",
+                            {arkit::icon("plus", 14.0, palette.foreground)}
+                            text { content: translate_ui(locale, tr::page_tr_192()), margin_left: 5.0, font_size: typography::XS, font_weight: 600, font_color: palette.foreground }
+                        }
+                    }
+                }
+            }
+        }
+        VirtualResourceRow::Rule(rule) => rsx! {
+            column {
+                width: "100%",
+                {rule_view(state, locale, palette, &all_rules, rule)}
+                row { height: 6.0 }
+            }
+        },
+        VirtualResourceRow::RulesEmpty => virtual_resource_empty(
+            "list-checks",
+            translate_ui(locale, tr::page_tr_193()),
+            palette,
+        ),
+        VirtualResourceRow::Footer => rsx! { row { height: spacing::MD } },
+    }
+}
+
+fn virtual_resource_card(
+    title: impl Into<String>,
+    subtitle: Option<String>,
+    body: Element,
+    palette: VirtualResourcePalette,
+) -> Element {
+    rsx! {
+        column {
+            width: "100%",
+            padding: spacing::LG,
+            align_items: "start",
+            background_color: palette.surface,
+            border_width: 1.0,
+            border_color: palette.border,
+            border_radius: 8.0,
+            text { content: title.into(), font_size: typography::SM, line_height: 20.0, font_weight: 600, font_color: palette.foreground }
+            if let Some(subtitle) = subtitle {
+                text { content: subtitle, margin_top: spacing::XXS, font_size: typography::XS, line_height: 18.0, font_color: palette.muted_foreground }
+            }
+            column { width: "100%", margin_top: spacing::MD, {body} }
+        }
+    }
+}
+
+fn virtual_resource_info_row(
+    label: impl Into<String>,
+    value: impl Into<String>,
+    palette: VirtualResourcePalette,
+) -> Element {
+    rsx! {
+        row {
+            width: "100%",
+            min_height: 34.0,
+            align_items: "center",
+            text { content: label.into(), font_size: typography::XS, font_color: palette.muted_foreground }
+            row { layout_weight: 1.0 }
+            text { content: value.into(), font_size: typography::XS, font_weight: 500, font_color: palette.foreground, max_lines: 2, text_align: "end" }
+        }
+    }
+}
+
+fn virtual_resource_section_label(
+    label: impl Into<String>,
+    palette: VirtualResourcePalette,
+) -> Element {
+    rsx! {
+        row {
+            width: "100%",
+            height: 48.0,
+            margin_top: 10.0,
+            align_items: "center",
+            text { content: label.into(), font_size: typography::SM, font_weight: 600, font_color: palette.foreground }
+        }
+    }
+}
+
+fn virtual_resource_empty(
+    icon: &'static str,
+    message: impl Into<String>,
+    palette: VirtualResourcePalette,
+) -> Element {
+    rsx! {
+        row {
+            width: "100%",
+            height: 72.0,
+            padding_left: spacing::LG,
+            padding_right: spacing::LG,
+            align_items: "center",
+            justify_content: "center",
+            background_color: palette.surface,
+            border_width: 1.0,
+            border_color: palette.border,
+            border_radius: 8.0,
+            {arkit::icon(icon, 16.0, palette.muted_foreground)}
+            text { content: message.into(), margin_left: 8.0, font_size: typography::XS, font_color: palette.muted_foreground, max_lines: 2 }
+        }
+    }
+}
+
+fn virtual_provider_row(
+    state: Signal<State>,
+    locale: UiLocale,
+    palette: VirtualResourcePalette,
+    diagnostic_pending: bool,
+    provider: paws_model::ProviderSummary,
+    mut provider_detail: Signal<Option<String>>,
+) -> Element {
+    let refresh_provider_type = provider.provider_type.clone();
+    let refresh_provider_name = provider.name.clone();
+    let health_provider_name = provider.name.clone();
+    let detail_provider_name = provider.name.clone();
+    let member_count = provider.members.len();
+    let alive_count = provider
+        .members
+        .iter()
+        .filter(|member| member.alive)
+        .count();
+    let can_healthcheck = provider.provider_type == "proxy" && provider.health_check_enabled;
+    let provider_status = if provider.last_refresh_error.is_some() {
+        translate_ui(locale, tr::page_tr_167())
+    } else if provider
+        .vehicle_type
+        .as_deref()
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("inline"))
+    {
+        translate_ui(locale, tr::page_tr_168())
+    } else if provider.cache_exists {
+        translate_ui(locale, tr::page_tr_169())
+    } else {
+        translate_ui(locale, tr::page_tr_170())
+    };
+    let cache_status = if provider.cache_exists {
+        format_total(provider.cache_bytes.unwrap_or(0))
+    } else {
+        translate_ui(locale, tr::page_tr_173())
+    };
+    let interval = provider
+        .interval_seconds
+        .map(|value| format!("{value}s"))
+        .unwrap_or_else(|| "-".to_owned());
+    let title = truncate_text(&provider.name, 38);
+    let subtitle = format!(
+        "{} · {}",
+        provider.provider_type,
+        provider.vehicle_type.clone().unwrap_or_default()
+    );
+    rsx! {
+        column {
+            width: "100%",
+            margin_bottom: 8.0,
+            padding: spacing::LG,
+            align_items: "start",
+            background_color: palette.surface,
+            border_width: 1.0,
+            border_color: palette.border,
+            border_radius: 8.0,
+            text { content: title, font_size: typography::SM, line_height: 20.0, font_weight: 600, font_color: palette.foreground }
+            text { content: subtitle, margin_top: spacing::XXS, font_size: typography::XS, line_height: 18.0, font_color: palette.muted_foreground }
+            column {
+                width: "100%",
+                margin_top: spacing::MD,
+                {virtual_resource_info_row(translate_ui(locale, tr::page_tr_171()), provider_status, palette)}
+                {virtual_resource_info_row(translate_ui(locale, tr::page_tr_172()), cache_status, palette)}
+                {virtual_resource_info_row(translate_ui(locale, tr::page_tr_174()), interval, palette)}
+                if provider.provider_type == "proxy" {
+                    {virtual_resource_info_row(translate_ui(locale, tr::page_tr_175()), format!("{alive_count}/{member_count}"), palette)}
+                }
+                if let Some(error) = provider.last_refresh_error.clone() {
+                    text { content: compact(&error), margin_top: 6.0, font_size: 12.0, font_color: palette.danger, max_lines: 2 }
+                }
+                row { height: 4.0 }
+                row {
+                    width: "100%",
+                    justify_content: "end",
+                    button {
+                        height: 36.0,
+                        padding_left: 8.0,
+                        padding_right: 8.0,
+                        background_color: palette.surface,
+                        border_width: 0.0,
+                        border_radius: 6.0,
+                        onclick: move |_| provider_detail.set(Some(detail_provider_name.clone())),
+                        row {
+                            align_items: "center",
+                            {arkit::icon("list", 14.0, palette.foreground)}
+                            text { content: translate_ui(locale, tr::page_tr_176()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: palette.foreground }
+                        }
+                    }
+                    if can_healthcheck {
+                        button {
+                            height: 36.0,
+                            padding_left: 8.0,
+                            padding_right: 8.0,
+                            background_color: palette.surface,
+                            border_width: 0.0,
+                            border_radius: 6.0,
+                            enabled: !diagnostic_pending,
+                            opacity: if diagnostic_pending { 0.5 } else { 1.0 },
+                            onclick: move |_| dispatch(state, Action::HealthcheckProxyProvider {
+                                provider_name: health_provider_name.clone(),
+                            }),
+                            row {
+                                align_items: "center",
+                                {arkit::icon("heart-pulse", 14.0, palette.foreground)}
+                                text { content: translate_ui(locale, tr::page_tr_177()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: palette.foreground }
+                            }
+                        }
+                    }
+                    button {
+                        height: 36.0,
+                        padding_left: 8.0,
+                        padding_right: 8.0,
+                        background_color: palette.surface,
+                        border_width: 0.0,
+                        border_radius: 6.0,
+                        onclick: move |_| dispatch(state, Action::RefreshProvider {
+                            provider_type: refresh_provider_type.clone(),
+                            provider_name: refresh_provider_name.clone(),
+                        }),
+                        row {
+                            align_items: "center",
+                            {arkit::icon("refresh-cw", 14.0, palette.foreground)}
+                            text { content: translate_ui(locale, tr::page_tr_178()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: palette.foreground }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -645,20 +1060,35 @@ fn geodata_detail_dialog(
     }
 }
 
-fn rule_view(state: Signal<State>, current: &State, rule: paws_model::RuleSummary) -> Element {
+fn rule_view(
+    state: Signal<State>,
+    locale: UiLocale,
+    palette: VirtualResourcePalette,
+    all_rules: &[paws_model::RuleSummary],
+    rule: paws_model::RuleSummary,
+) -> Element {
     let editable = rule.source != "profile-yaml";
     let rule_source = if editable {
         rule.source.clone()
     } else {
-        translate_ui(current.locale, tr::hard_zh_022())
+        translate_ui(locale, tr::hard_zh_022())
     };
     let toggle_profile = rule.profile_id.clone();
     let toggle_id = rule.id.clone();
     let delete_profile = rule.profile_id.clone();
     let delete_id = rule.id.clone();
     let enabled = rule.enabled;
-    let up = reordered_rule_ids(&current.snapshot.rules, &rule.profile_id, &rule.id, -1);
-    let down = reordered_rule_ids(&current.snapshot.rules, &rule.profile_id, &rule.id, 1);
+    // Subscription YAML rules are immutable and can number in the tens of
+    // thousands. Reorder lookup is meaningful only for manual rules; doing it
+    // for every YAML row turns page construction into O(n²) work.
+    let (up, down) = if editable {
+        (
+            reordered_rule_ids(all_rules, &rule.profile_id, &rule.id, -1),
+            reordered_rule_ids(all_rules, &rule.profile_id, &rule.id, 1),
+        )
+    } else {
+        (None, None)
+    };
     let toggle_action = Action::SetRuleEnabled {
         profile_id: toggle_profile,
         rule_id: toggle_id,
@@ -676,9 +1106,9 @@ fn rule_view(state: Signal<State>, current: &State, rule: paws_model::RuleSummar
             padding_right: 8.0,
             padding_bottom: 8.0,
             padding_left: 10.0,
-            background_color: surface(),
+            background_color: palette.surface,
             border_width: 1.0,
-            border_color: line(),
+            border_color: palette.border,
             border_radius: 8.0,
             clip: true,
             row {
@@ -689,7 +1119,7 @@ fn rule_view(state: Signal<State>, current: &State, rule: paws_model::RuleSummar
                     content: format!("#{}", rule.order + 1),
                     font_size: typography::XS,
                     font_weight: 600,
-                    font_color: if enabled { success() } else { subtle() },
+                    font_color: if enabled { palette.success } else { palette.muted_foreground },
                     max_lines: 1,
                 }
                 row {
@@ -700,21 +1130,21 @@ fn rule_view(state: Signal<State>, current: &State, rule: paws_model::RuleSummar
                         content: rule_source,
                         width: "100%",
                         font_size: 10.0,
-                        font_color: subtle(),
+                        font_color: palette.muted_foreground,
                         max_lines: 1,
                     }
                 }
                 if editable {
-                    {compact_rule_action(if enabled { "toggle-right" } else { "toggle-left" }, if enabled { success() } else { subtle() }, toggle_action, state)}
+                    {compact_rule_action(if enabled { "toggle-right" } else { "toggle-left" }, if enabled { palette.success } else { palette.muted_foreground }, toggle_action, state, palette)}
                     if let Some(ids) = up {
-                        {compact_rule_action("arrow-up", subtle(), Action::ReorderRules { profile_id: rule.profile_id.clone(), ordered_rule_ids: ids }, state)}
+                        {compact_rule_action("arrow-up", palette.muted_foreground, Action::ReorderRules { profile_id: rule.profile_id.clone(), ordered_rule_ids: ids }, state, palette)}
                     }
                     if let Some(ids) = down {
-                        {compact_rule_action("arrow-down", subtle(), Action::ReorderRules { profile_id: rule.profile_id.clone(), ordered_rule_ids: ids }, state)}
+                        {compact_rule_action("arrow-down", palette.muted_foreground, Action::ReorderRules { profile_id: rule.profile_id.clone(), ordered_rule_ids: ids }, state, palette)}
                     }
-                    {compact_rule_action("trash-2", danger(), delete_action, state)}
+                    {compact_rule_action("trash-2", palette.danger, delete_action, state, palette)}
                 } else {
-                    {pill(translate_ui(current.locale, tr::page_tr_220()), success())}
+                    {virtual_resource_pill(translate_ui(locale, tr::page_tr_220()), palette.success, palette)}
                 }
             }
             text {
@@ -723,7 +1153,7 @@ fn rule_view(state: Signal<State>, current: &State, rule: paws_model::RuleSummar
                 margin_top: 5.0,
                 font_size: 11.0,
                 line_height: 16.0,
-                font_color: text_color(),
+                font_color: palette.foreground,
                 max_lines: 2,
             }
         }
@@ -735,13 +1165,14 @@ fn compact_rule_action(
     color: u32,
     action: Action,
     state: Signal<State>,
+    palette: VirtualResourcePalette,
 ) -> Element {
     rsx! {
         button {
             width: 32.0,
             height: 32.0,
             padding: 0.0,
-            background_color: surface(),
+            background_color: palette.surface,
             border_width: 0.0,
             border_radius: 6.0,
             onclick: move |_| dispatch(state, action.clone()),
@@ -756,15 +1187,23 @@ fn compact_rule_action(
     }
 }
 
-fn compact_rule_list(items: Vec<Element>) -> Element {
-    let len = items.len();
-    let nodes = items.into_iter().enumerate().map(|(index, item)| {
-        rsx! {
-            {item}
-            if index + 1 < len { row { height: 6.0 } }
+fn virtual_resource_pill(
+    label: impl Into<String>,
+    color: u32,
+    palette: VirtualResourcePalette,
+) -> Element {
+    rsx! {
+        row {
+            height: 24.0,
+            padding_left: 8.0,
+            padding_right: 8.0,
+            align_items: "center",
+            justify_content: "center",
+            background_color: palette.muted,
+            border_radius: 999.0,
+            text { content: label.into(), font_size: 10.0, font_weight: 600, font_color: color, max_lines: 1 }
         }
-    });
-    rsx! { column { width: "100%", {nodes} } }
+    }
 }
 
 fn reordered_rule_ids(

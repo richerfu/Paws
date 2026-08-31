@@ -359,7 +359,7 @@ pub struct SubscriptionMetadata {
     pub support_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuleSummary {
     pub id: String,
@@ -416,7 +416,7 @@ pub struct ManualRuleMutation {
     pub removed_duplicates: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSummary {
     pub name: String,
@@ -458,7 +458,7 @@ pub struct ProviderSummary {
     pub last_refresh_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderProxySummary {
     pub name: String,
@@ -483,7 +483,7 @@ pub struct ControllerDiagnostics {
     pub last_config_sync_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GeodataFileSummary {
     pub name: String,
