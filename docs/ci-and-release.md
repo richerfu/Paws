@@ -22,10 +22,13 @@ scripts/package-hap.sh
 ```
 
 The package script runs `scripts/ohrs-build.sh --arch aarch`, copies the freshly built
-`libpaws_ui.so` into `entry/libs/arm64-v8a/`, then calls
+`libpaws_ui.so` and the active HarmonyOS NDK's arm64 `libc++_shared.so` into
+`entry/libs/arm64-v8a/`, then calls
 `hvigorw default@PackageHap --mode module -p module=entry@default`. It
 auto-detects DevEco Studio's bundled `hvigorw` and SDK paths when the command
 line tools in `PATH` do not match the current HarmonyOS 6.1 project model. It
+fails before packaging if the C++ runtime cannot be resolved; `CXX_SHARED_SRC`
+can select an explicit runtime from the active SDK. It
 passes `--no-daemon` by default so local packaging is not blocked by stale
 Hvigor daemon registry locks; set `HVIGOR_ARGS` to override that behavior. The
 expected output is

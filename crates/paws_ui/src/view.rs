@@ -8,10 +8,9 @@ use arkit::router::{
     use_back_handler, use_navigator, use_route, AnimatedOutlet, RouteProvider, Router,
 };
 use arkit::shadcn::components::{
-    Badge, BadgeVariant, BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant,
-    Card, DialogFooter, DialogHeader, Field, FieldContent, FieldDescription, FieldLabel,
-    FieldOrientation, FieldTitle, Form, FormItem, Input, RadioGroup, Select, Separator, Spinner,
-    Switch, Textarea,
+    BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant, Card, DialogFooter,
+    DialogHeader, Field, FieldContent, FieldDescription, FieldLabel, FieldOrientation, FieldTitle,
+    Form, FormItem, Input, RadioGroup, Select, Separator, Spinner, Switch, Textarea,
 };
 use arkit::shadcn::theme::{
     spacing, typography, use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider,
@@ -814,17 +813,6 @@ fn info_row(label: impl Into<String>, value: impl Into<String>) -> Element {
                     text_align: "end",
                 }
             }
-        }
-    }
-}
-
-fn pill(label: String, color: u32) -> Element {
-    rsx! {
-        Badge {
-            content: label,
-            variant: BadgeVariant::Secondary,
-            icon_colors: Some((muted(), color)),
-            pill: Some(true),
         }
     }
 }
