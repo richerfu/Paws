@@ -16,7 +16,7 @@ paws_vpn = { path = "crates/paws_vpn" }
 
 # arkit mainline; declarative `#[entry(plugins = [...])]` bridge-plugin
 # registration (no hand-written init/render needed).
-arkit = { git = "https://github.com/richerfu/arkit.git", rev = "5eac4cccc1b86e409d57c09bc8cbaeec5391798e", features = ["router", "shadcn"] }
+arkit = { git = "https://github.com/richerfu/arkit.git", rev = "7ede4e04620a1bbf9a91cd29d99fc35904dc442a", features = ["router", "shadcn"] }
 ohos-ashmem-binding = "0.1.0"
 
 # Pluginized platform capabilities from openharmony-ability. These published
