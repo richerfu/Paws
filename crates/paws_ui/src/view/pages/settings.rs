@@ -1,78 +1,63 @@
 use super::super::*;
+use crate::settings_draft::{
+    DnsDraft, NetworkDraft, SettingsBaseline, SettingsDraft, SettingsSection, SettingsValues,
+    VpnDraft,
+};
+use std::cell::Cell;
 
-pub(crate) fn settings_page(state: Signal<State>) -> Element {
-    let current = state.read().clone();
-    let (initial_dns_servers, initial_dns_fallbacks, initial_dns_policy) =
-        dns_draft_from_snapshot(&current.snapshot);
-    let (initial_system_proxy, initial_dns_hijacking, initial_allow_bypass, initial_stack) =
-        vpn_draft_from_snapshot(&current.snapshot);
-    // arkit Select shows the option string itself; map display labels ↔ stack values.
-    let stack_label_smoltcp = "smoltcp".to_owned();
-    let stack_label_lwip = "lwIP".to_owned();
-    let stack_options = vec![stack_label_smoltcp.clone(), stack_label_lwip.clone()];
-    let stack_selected_label =
-        match paws_model::VpnStack::try_from(initial_stack.as_str()).unwrap_or_default() {
-            paws_model::VpnStack::Lwip => stack_label_lwip.clone(),
-            paws_model::VpnStack::Smoltcp => stack_label_smoltcp.clone(),
+pub(crate) fn settings_page() -> Element {
+    let stores = use_context::<UiStores>();
+    let services = use_context::<UiServices>();
+    let notifications = use_context::<NotificationCenter>();
+    let runtime = arkit::use_runtime_handle();
+    let current = stores.preferences.read().clone();
+    let settings = stores.settings.read().clone();
+    let initial = settings_baseline(&settings);
+    let mut form = use_signal(move || SettingsDraft::new(initial));
+    let alive = use_hook(|| Rc::new(Cell::new(true)));
+    let drop_alive = alive.clone();
+    use_drop(move || drop_alive.set(false));
+    use_effect(move || {
+        let next = settings_baseline(&stores.settings.read());
+        let mut updated = form.peek().clone();
+        updated.observe(next);
+        if *form.peek() != updated {
+            form.set(updated);
+        }
+    });
+    let draft = form.read().clone();
+    let busy = draft.pending.is_some();
+    let blocked = busy || draft.incoming.is_some() || draft.baseline.profile_id.is_none();
+    let dns_servers_value = draft.values.dns.servers.clone();
+    let dns_fallbacks_value = draft.values.dns.fallbacks.clone();
+    let dns_policy_value = draft.values.dns.policy.clone();
+    let system_proxy_value = draft.values.vpn.system_proxy;
+    let dns_hijacking_value = draft.values.vpn.dns_hijacking;
+    let allow_bypass_value = draft.values.vpn.allow_bypass;
+    let controller_allow_lan_value = draft.values.network.allow_lan;
+    let mixed_port_value = draft.values.network.mixed_port.clone();
+    let controller_port_value = draft.values.network.controller_port.clone();
+    let vpn_stack_label_value =
+        match paws_model::VpnStack::try_from(draft.values.vpn.stack.as_str()) {
+            Ok(paws_model::VpnStack::Smoltcp) => "smoltcp".to_owned(),
+            Ok(paws_model::VpnStack::Lwip) => "lwIP".to_owned(),
+            Err(_) => draft.values.vpn.stack.clone(),
         };
-
-    let mut dns_servers = use_signal({
-        let value = initial_dns_servers.clone();
-        move || value
-    });
-    let mut dns_fallbacks = use_signal({
-        let value = initial_dns_fallbacks.clone();
-        move || value
-    });
-    let mut dns_policy = use_signal({
-        let value = initial_dns_policy.clone();
-        move || value
-    });
-    let mut system_proxy = use_signal(move || initial_system_proxy);
-    let mut dns_hijacking = use_signal(move || initial_dns_hijacking);
-    let mut allow_bypass = use_signal(move || initial_allow_bypass);
-    let initial_controller_allow_lan = current.snapshot.controller_access.allow_lan;
-    let mut controller_allow_lan = use_signal(move || initial_controller_allow_lan);
-    let initial_mixed_port = current.snapshot.network_ports.mixed_port.to_string();
-    let initial_controller_port = current.snapshot.network_ports.controller_port.to_string();
-    let mut mixed_port = use_signal({
-        let value = initial_mixed_port.clone();
-        move || value
-    });
-    let mut controller_port = use_signal({
-        let value = initial_controller_port.clone();
-        move || value
-    });
-    let mut vpn_stack = use_signal({
-        let value = initial_stack.clone();
-        move || value
-    });
-    let mut vpn_stack_label = use_signal({
-        let value = stack_selected_label.clone();
-        move || value
-    });
-
-    let dns_servers_value = dns_servers();
-    let dns_fallbacks_value = dns_fallbacks();
-    let dns_policy_value = dns_policy();
-    let system_proxy_value = system_proxy();
-    let dns_hijacking_value = dns_hijacking();
-    let allow_bypass_value = allow_bypass();
-    let controller_allow_lan_value = controller_allow_lan();
-    let mixed_port_value = mixed_port();
-    let controller_port_value = controller_port();
-    let vpn_stack_value = vpn_stack();
-    let vpn_stack_label_value = vpn_stack_label();
-    let vpn_dirty = system_proxy_value != initial_system_proxy
-        || dns_hijacking_value != initial_dns_hijacking
-        || allow_bypass_value != initial_allow_bypass
-        || vpn_stack_value != initial_stack;
-    let dns_dirty = dns_servers_value != initial_dns_servers
-        || dns_fallbacks_value != initial_dns_fallbacks
-        || dns_policy_value != initial_dns_policy;
-    let network_dirty = controller_allow_lan_value != initial_controller_allow_lan
-        || mixed_port_value != initial_mixed_port
-        || controller_port_value != initial_controller_port;
+    let stack_options = vec!["smoltcp".to_owned(), "lwIP".to_owned()];
+    let stack_selected_label = vpn_stack_label_value.clone();
+    let vpn_dirty = draft.dirty(SettingsSection::Vpn);
+    let dns_dirty = draft.dirty(SettingsSection::Dns);
+    let network_dirty = draft.dirty(SettingsSection::Network);
+    let vpn_runtime = runtime.clone();
+    let dns_runtime = runtime.clone();
+    let network_runtime = runtime.clone();
+    let vpn_alive = alive.clone();
+    let dns_alive = alive.clone();
+    let network_alive = alive.clone();
+    let vpn_services = services.clone();
+    let dns_services = services.clone();
+    let network_services = services.clone();
+    let copy_alive = alive.clone();
     let controller_loopback_addr = format!("127.0.0.1:{controller_port_value}");
     let controller_lan_description = format!(
         "{}:{controller_port_value}",
@@ -82,7 +67,7 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
         "{} 0.0.0.0:{controller_port_value}",
         translate_ui(current.locale, tr::page_tr_222())
     );
-    let controller_secret = current.snapshot.controller_access.secret.clone();
+    let controller_secret = settings.controller_access.secret.clone();
     let controller_secret_label = controller_secret
         .as_deref()
         .map(mask_controller_secret)
@@ -91,6 +76,23 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
     let body = rsx! {
         column {
             width: "100%",
+            if draft.baseline.profile_id.is_none() {
+                text { content: translate_ui(current.locale, tr::feedback_active_profile_required()), font_color: danger() }
+            }
+            if draft.incoming.is_some() {
+                text { content: translate_ui(current.locale, tr::settings_draft_conflict()), font_color: warning() }
+                FlatButton {
+                    disabled: Some(busy),
+                    onclick: move |_| form.write().reload(),
+                    text { content: translate_ui(current.locale, tr::settings_reload_current()) }
+                }
+            }
+            if let Some(error) = draft.error.clone() {
+                text { content: error, font_color: danger() }
+            }
+            if busy {
+                Spinner { size: 18.0 }
+            }
             {card(
                 translate_ui(current.locale, tr::page_tr_223()),
                 Some(translate_ui(current.locale, tr::page_tr_224())),
@@ -102,9 +104,16 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                             orientation: FieldOrientation::Horizontal,
                             FieldContent {
                                 FieldTitle { content: translate_ui(current.locale, tr::page_tr_225()) }
-                                FieldDescription { content: translate_ui(current.locale, tr::page_tr_226()), inset: true }
+                                FieldDescription { content: translate_ui(current.locale, tr::settings_system_proxy_unsupported()), inset: true }
                             }
-                            Switch { checked: Some(system_proxy_value), on_change: move |value| system_proxy.set(value) }
+                            text { content: if system_proxy_value { "⚠" } else { "—" }, font_color: subtle() }
+                        }
+                        if system_proxy_value {
+                            FlatButton {
+                                disabled: Some(busy),
+                                onclick: move |_| form.write().values.vpn.system_proxy = false,
+                                text { content: translate_ui(current.locale, tr::settings_remove_unsupported_system_proxy()) }
+                            }
                         }
                         Field {
                             orientation: FieldOrientation::Horizontal,
@@ -112,15 +121,22 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 FieldTitle { content: translate_ui(current.locale, tr::page_tr_227()) }
                                 FieldDescription { content: translate_ui(current.locale, tr::page_tr_228()), inset: true }
                             }
-                            Switch { checked: Some(dns_hijacking_value), on_change: move |value| dns_hijacking.set(value) }
+                            Switch { checked: Some(dns_hijacking_value), on_change: move |value| if !busy { form.write().values.vpn.dns_hijacking = value } }
                         }
                         Field {
                             orientation: FieldOrientation::Horizontal,
                             FieldContent {
                                 FieldTitle { content: translate_ui(current.locale, tr::page_tr_229()) }
-                                FieldDescription { content: translate_ui(current.locale, tr::page_tr_230()), inset: true }
+                                FieldDescription { content: translate_ui(current.locale, tr::settings_bypass_unsupported()), inset: true }
                             }
-                            Switch { checked: Some(allow_bypass_value), on_change: move |value| allow_bypass.set(value) }
+                            text { content: if allow_bypass_value { "⚠" } else { "—" }, font_color: subtle() }
+                        }
+                        if allow_bypass_value {
+                            FlatButton {
+                                disabled: Some(busy),
+                                onclick: move |_| form.write().values.vpn.allow_bypass = false,
+                                text { content: translate_ui(current.locale, tr::settings_remove_unsupported_bypass()) }
+                            }
                         }
                         row { height: 12.0 }
                         FormItem {
@@ -131,14 +147,11 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 default_selected: stack_selected_label.clone(),
                                 default_open: false,
                                 on_select: move |label: String| {
-                                    let value = match label.as_str() {
-                                        "lwIP" | "lwip" => {
-                                            paws_model::VpnStack::Lwip.as_str().to_owned()
+                                    if !busy {
+                                        if let Ok(stack) = paws_model::VpnStack::try_from(label.as_str()) {
+                                            form.write().values.vpn.stack = stack.as_str().to_owned();
                                         }
-                                        _ => paws_model::VpnStack::Smoltcp.as_str().to_owned(),
-                                    };
-                                    vpn_stack_label.set(label);
-                                    vpn_stack.set(value);
+                                    }
                                 },
                             }
                         }
@@ -146,13 +159,8 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                         FlatButton {
                             variant: FlatButtonVariant::Primary,
                             width: Some("100%".into()),
-                            disabled: Some(!vpn_dirty),
-                            onclick: move |_| dispatch(state, Action::SaveVpnSettings {
-                                system_proxy: system_proxy_value,
-                                dns_hijacking: dns_hijacking_value,
-                                allow_bypass: allow_bypass_value,
-                                stack: vpn_stack_value.clone(),
-                            }),
+                            disabled: Some(blocked || !vpn_dirty),
+                            onclick: move |_| save_settings(form, SettingsSection::Vpn, vpn_runtime.clone(), vpn_alive.clone(), notifications, vpn_services.clone(), current.locale),
                             {arkit::icon("save", 16.0, primary_text())}
                             text { content: translate_ui(current.locale, tr::page_tr_232()), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
                         }
@@ -173,7 +181,8 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 value: Some(mixed_port_value.clone()),
                                 placeholder: Some("7890".to_owned()),
                                 width: Some("100%".into()),
-                                on_change: move |value| mixed_port.set(value),
+                                disabled: busy,
+                                on_change: move |value| form.write().values.network.mixed_port = value,
                             }
                         }
                         FieldDescription {
@@ -186,7 +195,8 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 value: Some(controller_port_value.clone()),
                                 placeholder: Some("9090".to_owned()),
                                 width: Some("100%".into()),
-                                on_change: move |value| controller_port.set(value),
+                                disabled: busy,
+                                on_change: move |value| form.write().values.network.controller_port = value,
                             }
                         }
                         Field {
@@ -195,7 +205,7 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 FieldTitle { content: translate_ui(current.locale, tr::page_tr_238()) }
                                 FieldDescription { content: controller_listen_description.clone(), inset: true }
                             }
-                            Switch { checked: Some(controller_allow_lan_value), on_change: move |value| controller_allow_lan.set(value) }
+                            Switch { checked: Some(controller_allow_lan_value), on_change: move |value| if !busy { form.write().values.network.allow_lan = value } }
                         }
                         row { height: 12.0 }
                         column {
@@ -224,7 +234,7 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                     FlatButton {
                                         variant: FlatButtonVariant::Outline,
                                         size: ButtonSize::Sm,
-                                        onclick: move |_| copy_controller_secret(state, secret.clone()),
+                                        onclick: move |_| copy_controller_secret(runtime.clone(), copy_alive.clone(), notifications, current.locale, secret.clone()),
                                         {arkit::icon("copy", 14.0, text_color())}
                                         text { content: translate_ui(current.locale, tr::page_tr_242()), margin_left: 6.0, font_size: typography::XS, font_weight: 600, font_color: text_color() }
                                     }
@@ -235,12 +245,8 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                         FlatButton {
                             variant: FlatButtonVariant::Primary,
                             width: Some("100%".into()),
-                            disabled: Some(!network_dirty),
-                            onclick: move |_| dispatch(state, Action::SaveNetworkSettings {
-                                mixed_port: mixed_port_value.clone(),
-                                controller_port: controller_port_value.clone(),
-                                allow_lan: controller_allow_lan_value,
-                            }),
+                            disabled: Some(blocked || !network_dirty),
+                            onclick: move |_| save_settings(form, SettingsSection::Network, network_runtime.clone(), network_alive.clone(), notifications, network_services.clone(), current.locale),
                             {arkit::icon("save", 16.0, primary_text())}
                             text { content: translate_ui(current.locale, tr::page_tr_243()), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
                         }
@@ -261,7 +267,8 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 value: Some(dns_servers_value.clone()),
                                 height: Some(92.0),
                                 width: Some("100%".into()),
-                                on_change: move |value| dns_servers.set(value),
+                                disabled: busy,
+                                on_change: move |value| form.write().values.dns.servers = value,
                             }
                         }
                         FormItem {
@@ -270,7 +277,8 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 value: Some(dns_fallbacks_value.clone()),
                                 height: Some(76.0),
                                 width: Some("100%".into()),
-                                on_change: move |value| dns_fallbacks.set(value),
+                                disabled: busy,
+                                on_change: move |value| form.write().values.dns.fallbacks = value,
                             }
                         }
                         FormItem {
@@ -279,19 +287,16 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
                                 value: Some(dns_policy_value.clone()),
                                 height: Some(104.0),
                                 width: Some("100%".into()),
-                                on_change: move |value| dns_policy.set(value),
+                                disabled: busy,
+                                on_change: move |value| form.write().values.dns.policy = value,
                             }
                         }
                         row { height: 12.0 }
                         FlatButton {
                             variant: FlatButtonVariant::Primary,
                             width: Some("100%".into()),
-                            disabled: Some(!dns_dirty),
-                            onclick: move |_| dispatch(state, Action::SaveDnsSettings {
-                                servers_text: dns_servers_value.clone(),
-                                fallbacks_text: dns_fallbacks_value.clone(),
-                                policy_text: dns_policy_value.clone(),
-                            }),
+                            disabled: Some(blocked || !dns_dirty),
+                            onclick: move |_| save_settings(form, SettingsSection::Dns, dns_runtime.clone(), dns_alive.clone(), notifications, dns_services.clone(), current.locale),
                             {arkit::icon("save", 16.0, primary_text())}
                             text { content: translate_ui(current.locale, tr::page_tr_247()), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
                         }
@@ -300,36 +305,239 @@ pub(crate) fn settings_page(state: Signal<State>) -> Element {
             )}
         }
     };
-    scaffold(state, Route::Settings {}, rsx! {}, body)
+    scaffold(Route::Settings {}, rsx! {}, body)
 }
 
 fn mask_controller_secret(secret: &str) -> String {
-    if secret.len() <= 16 {
-        return secret.to_owned();
+    let characters = secret.chars().collect::<Vec<_>>();
+    if characters.len() <= 16 {
+        return "•".repeat(characters.len());
     }
-    format!("{}…{}", &secret[..8], &secret[secret.len() - 8..])
+    format!(
+        "{}…{}",
+        characters[..4].iter().collect::<String>(),
+        characters[characters.len() - 4..]
+            .iter()
+            .collect::<String>(),
+    )
 }
 
-fn copy_controller_secret(state: Signal<State>, secret: String) {
-    let task = state
-        .read()
-        .runtime
+fn settings_values(
+    vpn: &paws_model::VpnOptions,
+    ports: paws_model::NetworkPortConfig,
+    allow_lan: bool,
+) -> SettingsValues {
+    SettingsValues {
+        dns: DnsDraft {
+            servers: vpn.dns_servers.join(", "),
+            fallbacks: vpn.dns_fallbacks.join(", "),
+            policy: vpn
+                .dns_nameserver_policy
+                .iter()
+                .map(|(matcher, servers)| format!("{matcher} = {}", servers.join(", ")))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        },
+        vpn: VpnDraft {
+            system_proxy: vpn.system_proxy,
+            dns_hijacking: vpn.dns_hijacking,
+            allow_bypass: vpn.allow_bypass,
+            stack: vpn.stack.clone(),
+        },
+        network: NetworkDraft {
+            mixed_port: ports.mixed_port.to_string(),
+            controller_port: ports.controller_port.to_string(),
+            allow_lan,
+        },
+    }
+}
+
+fn settings_baseline(settings: &SettingsProjection) -> SettingsBaseline {
+    SettingsBaseline {
+        profile_id: settings.active_profile.clone(),
+        revision: settings.config_revision,
+        values: settings_values(
+            &settings.vpn,
+            settings.network_ports,
+            settings.controller_access.allow_lan,
+        ),
+    }
+}
+
+fn save_settings(
+    mut form: Signal<SettingsDraft>,
+    section: SettingsSection,
+    runtime: arkit::RuntimeHandle,
+    alive: Rc<Cell<bool>>,
+    notifications: NotificationCenter,
+    services: UiServices,
+    locale: UiLocale,
+) {
+    let Some((profile_id, revision, values)) = form.write().begin(section) else {
+        return;
+    };
+    let core = paws_core::shared_core();
+    // Capture the actual owner before work starts, never a historical running boolean.
+    let expected_session = match core.runtime_status_projection() {
+        Ok(snapshot) => snapshot.vpn_session_id.filter(|_| snapshot.vpn_running),
+        Err(error) => {
+            form.write().fail(error.to_string());
+            return;
+        }
+    };
+    let (expected_session, vpn_operation_id) =
+        services.begin_owned_vpn_operation(expected_session, VpnCommandAction::Restart);
+    let task = runtime.tokio().spawn(async move {
+        let result = match section {
+            SettingsSection::Dns => {
+                let servers = parse_dns_servers_text(&values.dns.servers);
+                if servers.is_empty() {
+                    return Err(translate_ui(locale, tr::feedback_dns_upstream_required()));
+                }
+                let fallbacks = parse_dns_servers_text(&values.dns.fallbacks);
+                let policy = parse_dns_policy_text(&values.dns.policy, locale)?;
+                core.set_profile_dns_config_checked(
+                    &profile_id,
+                    revision,
+                    servers,
+                    fallbacks,
+                    policy,
+                )
+                .await
+            }
+            SettingsSection::Vpn => {
+                core.set_profile_vpn_config_checked(
+                    &profile_id,
+                    revision,
+                    values.vpn.system_proxy,
+                    values.vpn.dns_hijacking,
+                    values.vpn.allow_bypass,
+                    values.vpn.stack,
+                )
+                .await
+            }
+            SettingsSection::Network => {
+                let parse_port = |value: &str, label: String| {
+                    value.trim().parse::<u16>().map_err(|_| {
+                        format!(
+                            "{label}{}",
+                            translate_ui(locale, tr::network_port_invalid_suffix())
+                        )
+                    })
+                };
+                let ports = paws_model::NetworkPortConfig {
+                    mixed_port: parse_port(
+                        &values.network.mixed_port,
+                        translate_ui(locale, tr::mixed_proxy_port()),
+                    )?,
+                    controller_port: parse_port(
+                        &values.network.controller_port,
+                        translate_ui(locale, tr::controller_port()),
+                    )?,
+                };
+                ports.validate().map_err(|error| error.to_string())?;
+                core.set_profile_network_config_checked(
+                    &profile_id,
+                    revision,
+                    ports,
+                    values.network.allow_lan,
+                )
+                .await
+            }
+        };
+        let saved = result.map_err(|error| error.to_string())?;
+        let options_json =
+            serde_json::to_string(&saved.vpn_options).map_err(|error| error.to_string());
+        let baseline = SettingsBaseline {
+            profile_id: saved.active_profile,
+            revision: saved.revisions.config_revision,
+            values: settings_values(
+                &saved.vpn_options,
+                saved.network_ports,
+                saved.controller_access.allow_lan,
+            ),
+        };
+        let restart = if let Some(owner) = expected_session {
+            match options_json {
+                Ok(options) => {
+                    crate::bridge::request_restart_vpn(
+                        owner,
+                        saved.revisions.config_revision,
+                        options,
+                    )
+                    .await
+                }
+                Err(error) => Err(error.to_string()),
+            }
+        } else {
+            Ok(crate::bridge::VpnOperationOutcome::Completed(false))
+        };
+        Ok::<_, String>((baseline, restart))
+    });
+    // The core owns a started disk transaction through completion. Only its UI
+    // acknowledgement is page-owned; never cancel a transaction midway on pop.
+    arkit::dioxus_core::spawn_forever(async move {
+        let result = task
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result);
+        runtime.queue_ui(move || match result {
+            Ok((baseline, restart)) => {
+                let (requested, error, unconfirmed) =
+                    services.finish_vpn_followup(vpn_operation_id, restart);
+                if !alive.get() {
+                    return;
+                }
+                let message = if let Some(message) = unconfirmed {
+                    format!(
+                        "{} {message}",
+                        translate_ui(locale, tr::settings_saved_restart_unconfirmed())
+                    )
+                } else if let Some(error) = error {
+                    format!(
+                        "{} {error}",
+                        translate_ui(locale, tr::settings_saved_restart_failed())
+                    )
+                } else if requested {
+                    translate_ui(locale, tr::settings_saved_restarted())
+                } else {
+                    translate_ui(locale, tr::settings_saved_next_connection())
+                };
+                form.write().finish(section, baseline);
+                notifications.publish(message);
+            }
+            Err(error) => {
+                if let Some(operation_id) = vpn_operation_id {
+                    services.finish_vpn_failure(operation_id);
+                }
+                if alive.get() {
+                    form.write().fail(error);
+                }
+            }
+        });
+    });
+}
+
+fn copy_controller_secret(
+    runtime: arkit::RuntimeHandle,
+    alive: Rc<Cell<bool>>,
+    notifications: NotificationCenter,
+    locale: UiLocale,
+    secret: String,
+) {
+    let task = runtime
         .tokio()
         .spawn(async move { crate::bridge::copy_text(secret).await });
     arkit::dioxus_core::spawn_forever(async move {
         let message = match task.await {
-            Ok(Ok(())) => translate_ui(state.read().locale, tr::hard_zh_028()),
-            Ok(Err(error)) => format!(
-                "{}{}",
-                translate_ui(state.read().locale, tr::hard_zh_029()),
-                error
-            ),
-            Err(error) => format!(
-                "{}{}",
-                translate_ui(state.read().locale, tr::hard_zh_030()),
-                error
-            ),
+            Ok(Ok(())) => translate_ui(locale, tr::hard_zh_028()),
+            Ok(Err(error)) => format!("{}{}", translate_ui(locale, tr::hard_zh_029()), error),
+            Err(error) => format!("{}{}", translate_ui(locale, tr::hard_zh_030()), error),
         };
-        state.read().notifications.publish(message);
+        runtime.queue_ui(move || {
+            if alive.get() {
+                notifications.publish(message);
+            }
+        });
     });
 }

@@ -1,54 +1,55 @@
 use super::super::*;
 
-pub(crate) fn tools_page(state: Signal<State>) -> Element {
-    let current = state.read().clone();
-    let about = current.snapshot.about.clone();
+pub(crate) fn tools_page() -> Element {
+    let stores = use_context::<UiStores>();
+    let locale = stores.preferences.read().locale;
+    let about = stores.about.read().about.clone();
     let body = rsx! {
         column {
             width: "100%",
             {settings_section(
-                translate_ui(current.locale, tr::page_tr_022()),
+                translate_ui(locale, tr::page_tr_022()),
                 vec![settings_route_row(
                     Route::Appearance {},
-                    current.locale,
-                    translate_ui(current.locale, tr::page_tr_023()),
+                    locale,
+                    translate_ui(locale, tr::page_tr_023()),
                 )],
             )}
             row { height: spacing::LG }
             {settings_section(
-                translate_ui(current.locale, tr::page_tr_024()),
+                translate_ui(locale, tr::page_tr_024()),
                 vec![settings_route_row(
                     Route::Settings {},
-                    current.locale,
-                    translate_ui(current.locale, tr::page_tr_025()),
+                    locale,
+                    translate_ui(locale, tr::page_tr_025()),
                 )],
             )}
             row { height: spacing::LG }
             {settings_section(
-                translate_ui(current.locale, tr::page_tr_272()),
+                translate_ui(locale, tr::page_tr_272()),
                 vec![settings_route_row(
                     Route::SubscriptionConverter {},
-                    current.locale,
-                    translate_ui(current.locale, tr::hard_zh_023()),
+                    locale,
+                    translate_ui(locale, tr::hard_zh_023()),
                 )],
             )}
             row { height: spacing::LG }
             {settings_section(
-                translate_ui(current.locale, tr::page_tr_026()),
+                translate_ui(locale, tr::page_tr_026()),
                 vec![
-                    settings_route_row(Route::Requests {}, current.locale, translate_ui(current.locale, tr::page_tr_027())),
-                    settings_route_row(Route::Connections { query: String::new() }, current.locale, translate_ui(current.locale, tr::page_tr_028())),
-                    settings_route_row(Route::Resources {}, current.locale, translate_ui(current.locale, tr::page_tr_029())),
-                    settings_route_row(Route::Logs {}, current.locale, translate_ui(current.locale, tr::page_tr_030())),
+                    settings_route_row(Route::Requests {}, locale, translate_ui(locale, tr::page_tr_027())),
+                    settings_route_row(Route::Connections { query: String::new() }, locale, translate_ui(locale, tr::page_tr_028())),
+                    settings_route_row(Route::Resources {}, locale, translate_ui(locale, tr::page_tr_029())),
+                    settings_route_row(Route::Logs {}, locale, translate_ui(locale, tr::page_tr_030())),
                 ],
             )}
             row { height: spacing::LG }
             {settings_section(
-                translate_ui(current.locale, tr::page_tr_031()),
+                translate_ui(locale, tr::page_tr_031()),
                 vec![settings_route_row(
                     Route::About {},
-                    current.locale,
-                    translate_ui(current.locale, tr::page_tr_032()),
+                    locale,
+                    translate_ui(locale, tr::page_tr_032()),
                 )],
             )}
             row { height: spacing::XXL }
@@ -67,7 +68,7 @@ pub(crate) fn tools_page(state: Signal<State>) -> Element {
             }
         }
     };
-    scaffold(state, Route::Tools {}, rsx! {}, body)
+    scaffold(Route::Tools {}, rsx! {}, body)
 }
 
 fn settings_section(title: impl Into<String>, rows: Vec<Element>) -> Element {
@@ -203,9 +204,12 @@ fn settings_value_row(
     }
 }
 
-pub(crate) fn about_page(state: Signal<State>) -> Element {
-    let current = state.read().clone();
-    let about = current.snapshot.about;
+pub(crate) fn about_page() -> Element {
+    let services = use_context::<UiServices>();
+    let meow_services = services.clone();
+    let stores = use_context::<UiStores>();
+    let locale = stores.preferences.read().locale;
+    let about = stores.about.read().about.clone();
     let arkit_revision = middle_truncate_text(&about.arkit_rev, 18);
     let body = rsx! {
         column {
@@ -233,7 +237,7 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
                     font_color: text_color(),
                 }
                 text {
-                    content: translate_ui(current.locale, tr::page_tr_033()),
+                    content: translate_ui(locale, tr::page_tr_033()),
                     margin_top: spacing::XXS,
                     font_size: typography::SM,
                     line_height: 20.0,
@@ -242,13 +246,13 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
                 }
             }
             {card(
-                translate_ui(current.locale, tr::page_tr_020()),
+                translate_ui(locale, tr::page_tr_020()),
                 None,
                 rsx! {
                     column {
                         width: "100%",
-                        {info_row(translate_ui(current.locale, tr::page_tr_034()), about.app_version)}
-                        {info_row(translate_ui(current.locale, tr::page_tr_035()), about.core_version)}
+                        {info_row(translate_ui(locale, tr::page_tr_034()), about.app_version)}
+                        {info_row(translate_ui(locale, tr::page_tr_035()), about.core_version)}
                         {info_row("meow-rs", about.meow_rs_version)}
                         {info_row("arkit", arkit_revision)}
                         {info_row("Rust", about.rust_version)}
@@ -257,11 +261,11 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
             )}
             row { height: 12.0 }
             {settings_section(
-                translate_ui(current.locale, tr::page_tr_036()),
+                translate_ui(locale, tr::page_tr_036()),
                 vec![settings_route_row(
                     Route::Privacy {},
-                    current.locale,
-                    translate_ui(current.locale, tr::hard_zh_024()),
+                    locale,
+                    translate_ui(locale, tr::hard_zh_024()),
                 )],
             )}
             row { height: 10.0 }
@@ -272,7 +276,7 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
                     variant: FlatButtonVariant::Link,
                     size: ButtonSize::Sm,
                     width: Some("46%".into()),
-                    onclick: move |_| dispatch(state, Action::OpenExternalUrl("https://github.com/madeye/meow-rs".to_owned())),
+                    onclick: move |_| meow_services.open_external_url("https://github.com/madeye/meow-rs".to_owned()),
                     row {
                         width: 18.0,
                         height: 20.0,
@@ -287,7 +291,7 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
                     variant: FlatButtonVariant::Link,
                     size: ButtonSize::Sm,
                     width: Some("46%".into()),
-                    onclick: move |_| dispatch(state, Action::OpenExternalUrl("https://github.com/richerfu/arkit".to_owned())),
+                    onclick: move |_| services.open_external_url("https://github.com/richerfu/arkit".to_owned()),
                     row {
                         width: 18.0,
                         height: 20.0,
@@ -300,12 +304,14 @@ pub(crate) fn about_page(state: Signal<State>) -> Element {
             }
         }
     };
-    scaffold(state, Route::About {}, rsx! {}, body)
+    scaffold(Route::About {}, rsx! {}, body)
 }
 
-pub(crate) fn privacy_page(state: Signal<State>) -> Element {
-    let current = state.read().clone();
-    let about = current.snapshot.about;
+pub(crate) fn privacy_page() -> Element {
+    let services = use_context::<UiServices>();
+    let stores = use_context::<UiStores>();
+    let locale = stores.preferences.read().locale;
+    let about = stores.about.read().about.clone();
     let disclosures = about
         .privacy_summary
         .into_iter()
@@ -342,13 +348,14 @@ pub(crate) fn privacy_page(state: Signal<State>) -> Element {
         .exit_ip_services
         .into_iter()
         .map(|service| {
+            let services = services.clone();
             let documentation_url = service.documentation_url;
             rsx! {
                 FlatButton {
                     variant: FlatButtonVariant::Link,
                     size: ButtonSize::Sm,
                     width: Some("100%".into()),
-                    onclick: move |_| dispatch(state, Action::OpenExternalUrl(documentation_url.clone())),
+                    onclick: move |_| services.open_external_url(documentation_url.clone()),
                     row {
                         width: 18.0,
                         height: 20.0,
@@ -372,17 +379,17 @@ pub(crate) fn privacy_page(state: Signal<State>) -> Element {
         column {
             width: "100%",
             {card(
-                translate_ui(current.locale, tr::page_tr_037()),
-                Some(translate_ui(current.locale, tr::hard_zh_025())),
+                translate_ui(locale, tr::page_tr_037()),
+                Some(translate_ui(locale, tr::hard_zh_025())),
                 rsx! { column { width: "100%", {disclosures.into_iter()} } },
             )}
             row { height: 12.0 }
             {card(
-                translate_ui(current.locale, tr::page_tr_038()),
-                Some(translate_ui(current.locale, tr::hard_zh_026())),
+                translate_ui(locale, tr::page_tr_038()),
+                Some(translate_ui(locale, tr::hard_zh_026())),
                 rsx! { column { width: "100%", {exit_ip_services.into_iter()} } },
             )}
         }
     };
-    scaffold(state, Route::Privacy {}, rsx! {}, body)
+    scaffold(Route::Privacy {}, rsx! {}, body)
 }

@@ -1,4 +1,4 @@
-use futures::{SinkExt, StreamExt};
+use futures::{FutureExt, SinkExt, StreamExt};
 use meow_common::sniffer::{sniff_http, sniff_tls, SnifferConfig};
 use meow_common::{ConnType, Metadata, Network, ProxyConn, ProxyPacketConn};
 use meow_listener::SnifferRuntime;
@@ -9,8 +9,9 @@ use paws_model::{DnsQuerySummary, PawsError, VpnOptions, VpnStack};
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::os::fd::RawFd;
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use std::os::raw::c_void;
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -45,7 +46,8 @@ type FlowTasks = Arc<Mutex<Vec<JoinHandle<()>>>>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VpnLifecycle {
     Stopped,
-    Running { fd: i32 },
+    Running { fd: i32, generation: u64 },
+    Failed { generation: u64, error: String },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -135,12 +137,15 @@ struct RunningTask {
 }
 
 impl RunningTask {
-    fn abort(self) {
+    async fn stop(self) -> Result<(), PawsError> {
         self.running.store(false, Ordering::SeqCst);
         // Wake the TUN reader parked in its readiness wait so the task can
-        // unwind promptly instead of waiting for the next packet.
-        self.shutdown.notify_waiters();
-        let _handle = self.handle;
+        // unwind promptly instead of waiting for the next packet. notify_one
+        // retains a permit if stop races the reader just before it registers.
+        self.shutdown.notify_one();
+        self.handle
+            .await
+            .map_err(|error| PawsError::Core(format!("vpn worker join failed: {error}")))
     }
 }
 
@@ -149,34 +154,50 @@ pub struct TunSession {
     state: Arc<Mutex<VpnLifecycle>>,
     options: Arc<Mutex<Option<VpnOptions>>>,
     task: Arc<Mutex<Option<RunningTask>>>,
+    generation: Arc<AtomicU64>,
+    operation_lock: Arc<tokio::sync::Mutex<()>>,
+    exit_tx: tokio::sync::watch::Sender<Option<VpnTaskExit>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VpnTaskExit {
+    pub generation: u64,
+    pub error: String,
 }
 
 impl Default for TunSession {
     fn default() -> Self {
+        let (exit_tx, _) = tokio::sync::watch::channel(None);
         Self {
             state: Arc::new(Mutex::new(VpnLifecycle::Stopped)),
             options: Arc::new(Mutex::new(None)),
             task: Arc::new(Mutex::new(None)),
+            generation: Arc::new(AtomicU64::new(0)),
+            operation_lock: Arc::new(tokio::sync::Mutex::new(())),
+            exit_tx,
         }
     }
 }
 
 impl TunSession {
-    pub fn start(
+    pub async fn start(
         &self,
         fd: i32,
         options: VpnOptions,
         tunnel: Tunnel,
         sniffer_config: SnifferConfig,
-    ) -> Result<(), PawsError> {
+    ) -> Result<u64, PawsError> {
         if fd < 0 {
             return Err(PawsError::Core(format!("invalid tun fd: {fd}")));
         }
         let stack = VpnStack::try_from(options.stack.as_str())?;
-        self.stop()?;
+        let _operation_guard = self.operation_lock.lock().await;
+        self.stop_locked().await?;
 
-        let duplicated_fd = duplicate_fd(fd)?;
-        set_nonblocking(duplicated_fd)?;
+        // Keep the duplicate RAII-owned until every fallible setup step has
+        // completed; run_netstack_vpn takes ownership immediately after spawn.
+        let duplicated_fd = unsafe { OwnedFd::from_raw_fd(duplicate_fd(fd)?) };
+        set_nonblocking(duplicated_fd.as_raw_fd())?;
 
         let stats = Arc::new(SharedStats::default());
         let task_stats = stats.clone();
@@ -189,8 +210,25 @@ impl TunSession {
         let dns_hijacking = options.dns_hijacking;
         let task_dns_table = dns_table.clone();
         let task_dns_cache = dns_cache.clone();
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        *self
+            .state
+            .lock()
+            .map_err(|_| PawsError::Core("vpn state lock poisoned".to_owned()))? =
+            VpnLifecycle::Running { fd, generation };
+        *self
+            .options
+            .lock()
+            .map_err(|_| PawsError::Core("vpn options lock poisoned".to_owned()))? =
+            Some(options.clone());
+        let task_state = Arc::clone(&self.state);
+        let task_options = Arc::clone(&self.options);
+        let task_generation = Arc::clone(&self.generation);
+        let exit_running = Arc::clone(&running);
+        let exit_tx = self.exit_tx.clone();
+        let duplicated_fd = duplicated_fd.into_raw_fd();
         let handle = tokio::spawn(async move {
-            if let Err(error) = run_netstack_vpn(
+            let result = AssertUnwindSafe(run_netstack_vpn(
                 stack,
                 duplicated_fd,
                 tunnel,
@@ -201,22 +239,24 @@ impl TunSession {
                 sniffer_config,
                 task_dns_table,
                 task_dns_cache,
-            )
-            .await
-            {
-                let _ = error;
-            }
+            ))
+            .catch_unwind()
+            .await;
+            exit_running.store(false, Ordering::SeqCst);
+            let error = match result {
+                Ok(Ok(())) => "VPN packet worker exited unexpectedly".to_owned(),
+                Ok(Err(error)) => format!("VPN packet worker failed: {error}"),
+                Err(_) => "VPN packet worker panicked".to_owned(),
+            };
+            publish_task_exit(
+                &task_state,
+                &task_options,
+                &task_generation,
+                generation,
+                error.clone(),
+            );
+            exit_tx.send_replace(Some(VpnTaskExit { generation, error }));
         });
-
-        *self
-            .state
-            .lock()
-            .map_err(|_| PawsError::Core("vpn state lock poisoned".to_owned()))? =
-            VpnLifecycle::Running { fd };
-        *self
-            .options
-            .lock()
-            .map_err(|_| PawsError::Core("vpn options lock poisoned".to_owned()))? = Some(options);
         *self
             .task
             .lock()
@@ -229,17 +269,37 @@ impl TunSession {
                 dns_table,
                 dns_cache,
             });
-        Ok(())
+        Ok(generation)
     }
 
-    pub fn stop(&self) -> Result<(), PawsError> {
-        if let Some(task) = self
+    pub async fn stop(&self) -> Result<(), PawsError> {
+        let _operation_guard = self.operation_lock.lock().await;
+        self.stop_locked().await
+    }
+
+    async fn stop_locked(&self) -> Result<(), PawsError> {
+        // Invalidate the generation before signalling the worker. Its late
+        // completion can no longer overwrite the lifecycle of a subsequent
+        // session, while awaiting the handle makes resource teardown a real
+        // barrier instead of a fire-and-forget hint.
+        {
+            // Serialize invalidation with publish_task_exit's final
+            // generation recheck. The exiting worker can either publish
+            // before stop begins or observe the invalidation, never commit a
+            // failure in the middle of an intentional stop transition.
+            let _lifecycle_guard = self
+                .state
+                .lock()
+                .map_err(|_| PawsError::Core("vpn state lock poisoned".to_owned()))?;
+            self.generation.fetch_add(1, Ordering::SeqCst);
+        }
+        let task = self
             .task
             .lock()
             .map_err(|_| PawsError::Core("vpn task lock poisoned".to_owned()))?
-            .take()
-        {
-            task.abort();
+            .take();
+        if let Some(task) = task {
+            task.stop().await?;
         }
         *self
             .state
@@ -256,14 +316,44 @@ impl TunSession {
     pub fn is_running(&self) -> bool {
         matches!(
             *self.state.lock().expect("vpn state lock"),
-            VpnLifecycle::Running { .. }
+            VpnLifecycle::Running { generation, .. }
+                if generation == self.generation.load(Ordering::SeqCst)
         )
     }
 
     pub fn fd(&self) -> Option<i32> {
         match *self.state.lock().expect("vpn state lock") {
             VpnLifecycle::Stopped => None,
-            VpnLifecycle::Running { fd } => Some(fd),
+            VpnLifecycle::Running { fd, generation }
+                if generation == self.generation.load(Ordering::SeqCst) =>
+            {
+                Some(fd)
+            }
+            VpnLifecycle::Running { .. } | VpnLifecycle::Failed { .. } => None,
+        }
+    }
+
+    pub fn lifecycle(&self) -> VpnLifecycle {
+        self.state.lock().expect("vpn state lock").clone()
+    }
+
+    pub async fn await_exit(&self, generation: u64) -> Result<VpnTaskExit, PawsError> {
+        let mut receiver = self.exit_tx.subscribe();
+        loop {
+            if let Some(exit) = receiver.borrow_and_update().clone() {
+                if exit.generation == generation {
+                    return Ok(exit);
+                }
+                if exit.generation > generation {
+                    return Err(PawsError::Core(format!(
+                        "VPN generation {generation} was superseded before its exit was observed"
+                    )));
+                }
+            }
+            receiver
+                .changed()
+                .await
+                .map_err(|_| PawsError::Core("VPN worker exit event stream closed".to_owned()))?;
         }
     }
 
@@ -289,6 +379,31 @@ impl TunSession {
             task.dns_cache.clear();
         }
         Ok(())
+    }
+}
+
+fn publish_task_exit(
+    state: &Mutex<VpnLifecycle>,
+    options: &Mutex<Option<VpnOptions>>,
+    current_generation: &AtomicU64,
+    generation: u64,
+    error: String,
+) {
+    if let Ok(mut lifecycle) = state.lock() {
+        if current_generation.load(Ordering::SeqCst) == generation
+            && matches!(
+                *lifecycle,
+                VpnLifecycle::Running {
+                    generation: active,
+                    ..
+                } if active == generation
+            )
+        {
+            *lifecycle = VpnLifecycle::Failed { generation, error };
+            if let Ok(mut active_options) = options.lock() {
+                *active_options = None;
+            }
+        }
     }
 }
 

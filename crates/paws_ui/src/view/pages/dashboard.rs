@@ -1,43 +1,94 @@
 use super::super::*;
 use super::{VirtualProxyGroupList, VirtualProxyPalette};
 
-pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
-    let current = state.read().clone();
-    let snapshot = current.snapshot;
-    let s = current.locale;
-    let navigator = use_navigator();
+pub(crate) fn dashboard_page() -> Element {
+    let services = use_context::<UiServices>();
+    let vpn_services = services.clone();
+    let proxy_services = services.clone();
+    let stores = use_context::<UiStores>();
+    let operations = use_context::<UiOperationStores>();
     let mut quick_expanded_group = use_signal(|| None::<String>);
-    let vpn_starting = current.vpn_command_pending == Some(VpnCommandAction::Start)
-        || matches!(snapshot.vpn_lifecycle, VpnLifecycle::Starting);
-    let vpn_stopping = current.vpn_command_pending == Some(VpnCommandAction::Stop);
+    let quick_proxy_projection = use_memo(move || {
+        let proxies = stores.proxies.read();
+        (
+            grouped_proxy_rows(&proxies.groups, "", quick_expanded_group().as_deref()),
+            proxy_group_summary(&proxies.groups),
+        )
+    });
+    let preferences = stores.preferences.read();
+    let session = stores.session.read();
+    let profiles = stores.profiles.read();
+    let proxies = stores.proxies.read();
+    let activity = stores.activity.read();
+    let telemetry = stores.telemetry.read();
+    let vpn_operation = operations.vpn.read().active.clone();
+    let s = preferences.locale;
+    let navigator = use_navigator();
+    let vpn_starting = vpn_operation.as_ref().map_or_else(
+        || matches!(session.lifecycle, VpnLifecycle::Starting),
+        |operation| {
+            operation.phase != VpnOperationPhase::Unconfirmed
+                && matches!(
+                    operation.action,
+                    VpnCommandAction::Start | VpnCommandAction::Restart
+                )
+        },
+    );
+    let vpn_stopping = vpn_operation.as_ref().is_some_and(|operation| {
+        operation.phase != VpnOperationPhase::Unconfirmed
+            && matches!(
+                operation.action,
+                VpnCommandAction::Stop | VpnCommandAction::OwnedStop
+            )
+    });
+    let vpn_unconfirmed = vpn_operation.as_ref().is_some_and(|operation| {
+        matches!(
+            operation.phase,
+            VpnOperationPhase::Unconfirmed | VpnOperationPhase::Confirming
+        )
+    });
+    let vpn_confirming = vpn_operation
+        .as_ref()
+        .is_some_and(|operation| operation.phase == VpnOperationPhase::Confirming);
     let transitioning = vpn_starting || vpn_stopping;
-    let disabled = current.vpn_command_pending.is_some()
-        || matches!(snapshot.vpn_lifecycle, VpnLifecycle::Starting);
-    let connected = snapshot.vpn_running && !transitioning;
-    let status_label = if vpn_starting {
-        translate_ui(current.locale, tr::page_tr_248())
+    let disabled = vpn_operation.is_some() || matches!(session.lifecycle, VpnLifecycle::Starting);
+    let connected = session.vpn_running && !transitioning;
+    let visible_error = session
+        .bootstrap_error
+        .as_deref()
+        .or(session.runtime_error.as_deref());
+    let status_label = if let Some(error) = visible_error {
+        compact(error)
+    } else if vpn_confirming {
+        translate_ui(s, tr::vpn_operation_confirming())
+    } else if vpn_unconfirmed {
+        translate_ui(s, tr::vpn_operation_unconfirmed())
+    } else if vpn_starting {
+        translate_ui(s, tr::page_tr_248())
     } else if vpn_stopping {
-        translate_ui(current.locale, tr::page_tr_249())
+        translate_ui(s, tr::page_tr_249())
     } else {
-        match snapshot.vpn_lifecycle {
+        match session.lifecycle {
             VpnLifecycle::Stopped => translate_ui(s, tr::dashboard_disconnected()),
-            VpnLifecycle::EngineLoaded => translate_ui(current.locale, tr::page_tr_250()),
+            VpnLifecycle::EngineLoaded => translate_ui(s, tr::page_tr_250()),
             VpnLifecycle::Starting => translate_ui(s, tr::lifecycle_starting()),
             VpnLifecycle::Connected => translate_ui(s, tr::dashboard_connected()),
             VpnLifecycle::ProtectFailed => translate_ui(s, tr::lifecycle_protect_failed()),
-            VpnLifecycle::Failed => translate_ui(current.locale, tr::page_tr_251()),
+            VpnLifecycle::Failed => translate_ui(s, tr::page_tr_251()),
         }
     };
-    let profile = snapshot
+    let profile = profiles
         .profiles
         .iter()
-        .find(|profile| snapshot.active_profile.as_deref() == Some(profile.id.as_str()))
+        .find(|profile| profiles.active_profile.as_deref() == Some(profile.id.as_str()))
         .map(|profile| profile.name.clone())
         .unwrap_or_else(|| translate_ui(s, tr::dashboard_profile_empty()));
-    let status_color = if transitioning {
+    let status_color = if visible_error.is_some() {
+        danger()
+    } else if transitioning {
         subtle()
     } else if matches!(
-        snapshot.vpn_lifecycle,
+        session.lifecycle,
         VpnLifecycle::Failed | VpnLifecycle::ProtectFailed
     ) {
         danger()
@@ -46,12 +97,10 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
     } else {
         subtle()
     };
-    let quick_rows = grouped_proxy_rows(
-        &snapshot.proxy_groups,
-        "",
-        quick_expanded_group().as_deref(),
-    );
-    let quick_summary = proxy_group_summary(&snapshot.proxy_groups);
+    let (quick_rows, quick_summary) = {
+        let projection = quick_proxy_projection.read();
+        (projection.0.clone(), projection.1)
+    };
     let global_node_count = quick_rows
         .iter()
         .find_map(|row| match row {
@@ -61,19 +110,19 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
             _ => None,
         })
         .unwrap_or(0);
-    let current_node = match snapshot.mode {
+    let current_node = match proxies.mode {
         RuntimeMode::Direct => translate_ui(s, tr::proxies_direct()),
-        RuntimeMode::Global => effective_group_leaf(&snapshot.proxy_groups, "GLOBAL")
-            .unwrap_or_else(|| translate_ui(current.locale, tr::page_tr_154())),
-        RuntimeMode::Rule => primary_selected_group_leaf(&snapshot.proxy_groups)
-            .or_else(|| latest_active_rule_node(&snapshot.connections))
-            .unwrap_or_else(|| translate_ui(current.locale, tr::page_tr_154())),
+        RuntimeMode::Global => effective_group_leaf(&proxies.groups, "GLOBAL")
+            .unwrap_or_else(|| translate_ui(s, tr::page_tr_154())),
+        RuntimeMode::Rule => primary_selected_group_leaf(&proxies.groups)
+            .or_else(|| latest_active_rule_node(&activity.connections))
+            .unwrap_or_else(|| translate_ui(s, tr::page_tr_154())),
     };
     let quick_count = quick_summary.members;
     let quick_group_count = quick_summary.groups;
-    let proxy_group_context = match current.locale {
+    let proxy_group_context = match s {
         UiLocale::ZhCn => translate_ui(
-            current.locale,
+            s,
             tr::hard_zh_012(global_node_count, quick_count, quick_group_count),
         ),
         UiLocale::En => format!(
@@ -88,13 +137,17 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
         border: line(),
         success: success(),
     };
-    let subscriptions_navigator = navigator.clone();
-    let all_nodes_navigator = navigator.clone();
-    let exit_location = exit_location_label(&snapshot.exit_location, connected, current.locale);
-    let status_icon = if connected {
+    let subscriptions_navigator = navigator;
+    let all_nodes_navigator = navigator;
+    let confirm_services = services.clone();
+    let recover_services = services.clone();
+    let exit_location = exit_location_label(&telemetry.exit_location, connected, s);
+    let status_icon = if vpn_unconfirmed {
+        "triangle-alert"
+    } else if connected {
         "shield-check"
     } else if matches!(
-        snapshot.vpn_lifecycle,
+        session.lifecycle,
         VpnLifecycle::Failed | VpnLifecycle::ProtectFailed
     ) {
         "triangle-alert"
@@ -117,7 +170,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                     background_color: 0x00000000,
                     border_width: 0.0,
                     enabled: !disabled,
-                    onclick: move |_| dispatch(state, Action::StartStopVpn),
+                    onclick: move |_| vpn_services.toggle_vpn(),
                     row {
                         width: "100%",
                         height: 52.0,
@@ -160,7 +213,28 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                     }
                 }
                 row { height: 14.0 }
-                {mode_picker(state, snapshot.mode, current.locale)}
+                if vpn_unconfirmed {
+                    row {
+                        width: "100%",
+                        justify_content: "end",
+                        Button {
+                            variant: ButtonVariant::Outline,
+                            size: ButtonSize::Sm,
+                            disabled: Some(vpn_confirming),
+                            onclick: move |_| confirm_services.confirm_vpn_operation(),
+                            {translate_ui(s, tr::vpn_operation_confirm())}
+                        }
+                        row { width: spacing::SM }
+                        Button {
+                            variant: ButtonVariant::Destructive,
+                            size: ButtonSize::Sm,
+                            onclick: move |_| recover_services.recover_vpn_operation(),
+                            {translate_ui(s, tr::vpn_operation_stop_resync())}
+                        }
+                    }
+                    row { height: 14.0 }
+                }
+                {mode_picker(proxies.mode, s)}
                 row { height: 14.0 }
                 column {
                     width: "100%",
@@ -175,13 +249,13 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                         height: 89.0,
                         {dashboard_connection_row(
                             "git-branch",
-                            translate_ui(current.locale, tr::page_tr_252()),
+                            translate_ui(s, tr::page_tr_252()),
                             current_node,
                         )}
                         Separator {}
                         {dashboard_connection_row(
                             "network",
-                            translate_ui(current.locale, tr::page_tr_253()),
+                            translate_ui(s, tr::page_tr_253()),
                             exit_location,
                         )}
                     }
@@ -195,7 +269,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                     layout_weight: 1.0,
                     align_items: "start",
                     text {
-                        content: translate_ui(current.locale, tr::page_tr_254()),
+                        content: translate_ui(s, tr::page_tr_254()),
                         font_size: typography::SM,
                         line_height: 20.0,
                         font_weight: 600,
@@ -211,7 +285,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                         onclick: move |_| {
                             all_nodes_navigator.push(Route::Proxies {});
                         },
-                        text { content: translate_ui(current.locale, tr::page_tr_273()), font_size: typography::XS, font_weight: 500, font_color: subtle() }
+                        text { content: translate_ui(s, tr::page_tr_273()), font_size: typography::XS, font_weight: 500, font_color: subtle() }
                         {arkit::icon("chevron-right", 14.0, subtle())}
                     }
                 }
@@ -233,8 +307,8 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                         border_radius: theme.radii.xl,
                         {arkit::icon("rss", 20.0, subtle())}
                     }
-                    text { content: translate_ui(current.locale, tr::page_tr_256()), margin_top: 12.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
-                    text { content: translate_ui(current.locale, tr::page_tr_257()), margin_top: 6.0, font_size: typography::XS, line_height: 18.0, font_color: subtle(), text_align: "center" }
+                    text { content: translate_ui(s, tr::page_tr_256()), margin_top: 12.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
+                    text { content: translate_ui(s, tr::page_tr_257()), margin_top: 6.0, font_size: typography::XS, line_height: 18.0, font_color: subtle(), text_align: "center" }
                     row { height: 16.0 }
                     FlatButton {
                         variant: FlatButtonVariant::Primary,
@@ -242,7 +316,7 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                             subscriptions_navigator.push(Route::Profiles {});
                         },
                         {arkit::icon("plus", 14.0, primary_text())}
-                        text { content: translate_ui(current.locale, tr::page_tr_098()), margin_left: 8.0, font_size: typography::SM, font_weight: 600, font_color: primary_text() }
+                        text { content: translate_ui(s, tr::page_tr_098()), margin_left: 8.0, font_size: typography::SM, font_weight: 600, font_color: primary_text() }
                     }
                 }
             } else {
@@ -253,27 +327,23 @@ pub(crate) fn dashboard_page(state: Signal<State>) -> Element {
                     VirtualProxyGroupList {
                         key: "dashboard-quick-proxy-list",
                         rows: quick_rows,
-                        locale: current.locale,
+                        locale: s,
                         palette: quick_palette,
-                        selection_pending: current.proxy_selection_pending.clone(),
                         on_toggle: move |group: String| {
                             let next = (quick_expanded_group().as_deref() != Some(group.as_str()))
                                 .then_some(group);
                             quick_expanded_group.set(next);
                         },
                         on_select: move |(group, proxy): (String, String)| {
-                            if proxy.is_empty() {
-                                dispatch(state, Action::UnfixProxy { group });
-                            } else {
-                                dispatch(state, Action::SelectProxy { group, proxy });
-                            }
+                            let proxy = (!proxy.is_empty()).then_some(proxy);
+                            proxy_services.select_proxy(group, proxy);
                         },
                     }
                 }
             }
         }
     };
-    fixed_scaffold_flush_bottom(state, Route::Dashboard {}, rsx! {}, body)
+    fixed_scaffold_flush_bottom(Route::Dashboard {}, rsx! {}, body)
 }
 
 fn dashboard_connection_row(icon_name: &'static str, label: String, value: String) -> Element {
@@ -389,7 +459,8 @@ mod exit_location_tests {
     }
 }
 
-fn mode_picker(state: Signal<State>, selected: RuntimeMode, locale: UiLocale) -> Element {
+fn mode_picker(selected: RuntimeMode, locale: UiLocale) -> Element {
+    let services = use_context::<UiServices>();
     let rule = translate_ui(locale, tr::page_tr_164());
     let global = translate_ui(locale, tr::page_tr_165());
     let direct = translate_ui(locale, tr::page_tr_166());
@@ -410,7 +481,7 @@ fn mode_picker(state: Signal<State>, selected: RuntimeMode, locale: UiLocale) ->
                 } else {
                     RuntimeMode::Rule
                 };
-                dispatch(state, Action::SetMode(mode));
+                services.set_mode(mode);
             },
         }
     }

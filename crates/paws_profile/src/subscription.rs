@@ -230,6 +230,7 @@ pub fn normalize_yaml(raw_yaml: &str) -> Result<String, PawsError> {
             "profile root must be a YAML map or supported proxy subscription".to_owned(),
         ));
     }
+    validate_profile_app_config(raw_yaml)?;
     serde_yaml::to_string(&value).map_err(|err| PawsError::Core(err.to_string()))
 }
 

@@ -100,16 +100,16 @@ dump_layout /data/local/tmp/paws-settings-home.json "$home_layout"
 click_text "$home_layout" "设置" last
 sleep 1
 dump_layout /data/local/tmp/paws-settings-alignment.json "$root_layout"
-for text in "常规" "版本" "引擎" "网络设置"; do
+for text in "界面" "网络" "工具" "界面设置" "网络设置"; do
   assert_text "$root_layout" "$text"
 done
 assert_no_text "$root_layout" "分应用 VPN"
 
-version_left="$(left_edge "$root_layout" "版本")"
-engine_left="$(left_edge "$root_layout" "引擎")"
-if [ "$version_left" != "$engine_left" ]; then
-  printf 'Settings labels are not aligned: version=%s engine=%s\n' \
-    "$version_left" "$engine_left" >&2
+appearance_left="$(left_edge "$root_layout" "界面设置")"
+network_left="$(left_edge "$root_layout" "网络设置")"
+if [ "$appearance_left" != "$network_left" ]; then
+  printf 'Settings route labels are not aligned: appearance=%s network=%s\n' \
+    "$appearance_left" "$network_left" >&2
   exit 1
 fi
 capture_screen /data/local/tmp/paws-settings-alignment.jpeg \
@@ -137,9 +137,17 @@ dump_layout /data/local/tmp/paws-settings-about-entry.json \
 click_text "$LOG_DIR/paws-settings-about-entry.json" "关于" last
 sleep 1
 dump_layout /data/local/tmp/paws-about-optimized.json "$about_layout"
-for text in "Paws" "隐私" "meow-rs" "arkit"; do
+for text in "Paws" "隐私与数据" "应用版本" "核心版本" "meow-rs" "arkit"; do
   assert_text "$about_layout" "$text"
 done
+
+version_left="$(left_edge "$about_layout" "应用版本")"
+engine_left="$(left_edge "$about_layout" "核心版本")"
+if [ "$version_left" != "$engine_left" ]; then
+  printf 'About labels are not aligned: version=%s engine=%s\n' \
+    "$version_left" "$engine_left" >&2
+  exit 1
+fi
 
 revision="$(jq -r '[.. | objects | .attributes?.text? | select(type == "string" and test("^[0-9a-f]{6,}…[0-9a-f]{4,}$"))] | first // empty' "$about_layout")"
 revision_length="$(jq -nr --arg revision "$revision" '$revision | length')"

@@ -11,6 +11,7 @@ pub(crate) enum LogLevelFilter {
 }
 
 impl LogLevelFilter {
+    #[cfg(test)]
     pub(crate) const ALL: [Self; 5] = [
         Self::All,
         Self::Info,
@@ -30,6 +31,7 @@ impl LogLevelFilter {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn matches_log_filter(log: &LogEntry, filter: LogLevelFilter, query: &str) -> bool {
     let query = normalize_log_query(query);
     matches_log_filter_normalized(log, filter, &query)

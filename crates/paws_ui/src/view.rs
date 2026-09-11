@@ -3,6 +3,7 @@ use crate::bridge;
 use crate::locale::UiLocale;
 use crate::manual_rule::{find_manual_rule_conflict, manual_rule_preview};
 use crate::notification::{use_notification_center, NotificationHost};
+use crate::reactive_signal::use_tokio_subscription;
 use arkit::prelude::*;
 use arkit::router::{
     use_back_handler, use_navigator, use_route, AnimatedOutlet, RouteProvider, Router,
@@ -15,8 +16,8 @@ use arkit::shadcn::components::{
 use arkit::shadcn::theme::{
     spacing, typography, use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider,
 };
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::cell::{Cell, RefCell};
+use std::future::Future;
 use std::rc::Rc;
 
 #[path = "view/pages/mod.rs"]
@@ -25,9 +26,9 @@ mod pages;
 mod route;
 
 use pages::{
-    about_page, appearance_page, connections_page, dashboard_page, logs_page, manual_rule_dialog,
-    privacy_page, profiles_page, proxies_page, requests_page, resources_page, settings_page,
-    subscription_converter_page, tools_page, traffic_page, yaml_editor_dialog,
+    about_page, appearance_page, connections_page, dashboard_page, logs_page, privacy_page,
+    profiles_page, proxies_page, requests_page, resources_page, settings_page,
+    subscription_converter_page, tools_page, traffic_page, ManualRuleDialog,
 };
 use route::Route;
 
@@ -79,6 +80,115 @@ fn warning() -> u32 {
 
 fn danger() -> u32 {
     use_theme().colors.destructive
+}
+
+/// Embedded virtual-list rows do not inherit the page's theme context. Callers
+/// therefore provide the resolved color instead of mounting shadcn's
+/// theme-aware `Spinner` in the detached row VirtualDom.
+fn virtual_loading_indicator(size: f32, color: u32) -> Element {
+    rsx! {
+        loadingprogress {
+            width: size,
+            height: size,
+            loading_progress_color: color,
+            loading_progress_enable_loading: true,
+            hit_test_behavior: "transparent",
+        }
+    }
+}
+
+/// Page-scoped query ownership. Read-only work is aborted when its route is
+/// disposed; committed mutations are allowed to finish, but their UI callback
+/// is discarded after disposal.
+#[derive(Clone)]
+pub(crate) struct PageTasks {
+    runtime: arkit::RuntimeHandle,
+    alive: Rc<Cell<bool>>,
+    queries: Rc<RefCell<Vec<tokio::task::AbortHandle>>>,
+}
+
+fn use_page_tasks() -> PageTasks {
+    let runtime = arkit::use_runtime_handle();
+    let owner = use_hook(move || PageTasks {
+        runtime,
+        alive: Rc::new(Cell::new(true)),
+        queries: Rc::new(RefCell::new(Vec::new())),
+    });
+    let disposed = owner.clone();
+    use_drop(move || {
+        disposed.alive.set(false);
+        for task in disposed.queries.borrow_mut().drain(..) {
+            task.abort();
+        }
+    });
+    owner.clone()
+}
+
+/// Editor state is owned by the route that opened it. Virtual-list callbacks
+/// and dialog portals receive it explicitly; disposing the route aborts its
+/// lookup query and prevents durable mutation callbacks from writing into a
+/// dead Signal.
+fn use_local_rule_editors() -> LocalRuleEditors {
+    let signal = use_signal(RuleEditorDrafts::default);
+    let local = use_hook(move || LocalRuleEditors::new(signal));
+    let disposed = local.clone();
+    use_drop(move || disposed.dispose());
+    local
+}
+
+impl PageTasks {
+    pub(crate) fn is_alive(&self) -> bool {
+        self.alive.get()
+    }
+
+    pub(crate) fn query<F, T, C>(&self, future: F, complete: C)
+    where
+        F: Future<Output = Result<T, String>> + Send + 'static,
+        T: Send + 'static,
+        C: FnOnce(Result<T, String>) + 'static,
+    {
+        let task = self.runtime.tokio().spawn(future);
+        let mut queries = self.queries.borrow_mut();
+        queries.retain(|task| !task.is_finished());
+        queries.push(task.abort_handle());
+        drop(queries);
+        let runtime = self.runtime.clone();
+        let alive = self.alive.clone();
+        arkit::dioxus_core::spawn_forever(async move {
+            let result = match task.await {
+                Ok(result) => result,
+                Err(error) if error.is_cancelled() => return,
+                Err(error) => Err(format!("Background task failed: {error}")),
+            };
+            runtime.queue_ui(move || {
+                if alive.get() {
+                    complete(result);
+                }
+            });
+        });
+    }
+
+    pub(crate) fn mutate<F, T, C>(&self, future: F, complete: C)
+    where
+        F: Future<Output = Result<T, String>> + Send + 'static,
+        T: Send + 'static,
+        C: FnOnce(Result<T, String>) + 'static,
+    {
+        let task = self.runtime.tokio().spawn(future);
+        let runtime = self.runtime.clone();
+        let alive = self.alive.clone();
+        arkit::dioxus_core::spawn_forever(async move {
+            let result = task
+                .await
+                .map_err(|error| format!("Background task failed: {error}"))
+                .and_then(|result| result);
+            runtime.queue_ui(move || {
+                if alive.get() {
+                    complete(result);
+                }
+            });
+        });
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -203,11 +313,6 @@ fn FlatSegmented(props: FlatSegmentedProps) -> Element {
 #[derive(Props, Clone, PartialEq)]
 struct FlatDialogProps {
     open: bool,
-    /// Retained for callers that use it to identify changing dialog content.
-    /// The portal is declarative, so its children now reconcile live without
-    /// requiring a snapshot refresh.
-    #[props(default)]
-    content_key: u64,
     on_close: EventHandler<()>,
     children: Element,
 }
@@ -218,7 +323,6 @@ fn FlatDialog(props: FlatDialogProps) -> Element {
     let theme = use_theme();
     let close = props.on_close;
     let panel_close = close;
-    let _ = props.content_key;
     let panel = rsx! {
         stack {
             width: "100%",
@@ -271,22 +375,25 @@ fn FlatDialog(props: FlatDialogProps) -> Element {
     }
 }
 
-fn dialog_content_key(parts: &[&str]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    for part in parts {
-        part.hash(&mut hasher);
-    }
-    hasher.finish()
-}
-
 #[allow(non_snake_case)]
 pub(crate) fn App(initial_safe_area: bridge::InitialSafeArea) -> Element {
     use_context_provider(move || initial_safe_area);
     let notifications = use_notification_center();
+    let _notifications = use_context_provider(move || notifications);
     let runtime = arkit::use_runtime_handle();
-    let initial_runtime = runtime.clone();
-    let state = use_signal(move || State::new(notifications, initial_runtime));
-    let _state = use_context_provider(move || state);
+    let stores = use_ui_stores(notifications);
+    let _stores = use_context_provider(move || stores);
+    let operations = use_ui_operation_stores();
+    let _operations = use_context_provider(move || operations);
+    let services_runtime = runtime.clone();
+    let services = use_hook(move || {
+        UiServices::new(services_runtime.clone(), stores, operations, notifications)
+    });
+    let cleanup_services = services.clone();
+    use_drop(move || cleanup_services.cancel_profile_import());
+    let context_services = services.clone();
+    let _services = use_context_provider(move || context_services);
+    let preferences = stores.preferences.read().clone();
     // Provide arkit's component i18n context from the app locale so shadcn
     // components (Select, DatePicker, …) translate instead of falling back
     // to English. The catalog is only read by app-level `t!` messages; shadcn
@@ -297,13 +404,14 @@ pub(crate) fn App(initial_safe_area: bridge::InitialSafeArea) -> Element {
     };
     let i18n_context = arkit::use_i18n_provider(
         &COMPONENT_I18N_CATALOG,
-        match state.read().locale {
+        match preferences.locale {
             UiLocale::ZhCn => "zh-CN",
             UiLocale::En => "en-US",
         },
     );
+    let color_mode_runtime = runtime.clone();
     use_effect(move || {
-        let locale_id = match state.read().locale {
+        let locale_id = match stores.preferences.read().locale {
             UiLocale::ZhCn => "zh-CN",
             UiLocale::En => "en-US",
         };
@@ -311,46 +419,86 @@ pub(crate) fn App(initial_safe_area: bridge::InitialSafeArea) -> Element {
             i18n_context.set_locale_id(locale_id);
         }
     });
-    let theme = if state.read().theme_dark() {
+    let theme = if preferences.dark {
         Theme::dark(ThemePreset::Zinc)
     } else {
         Theme::light(ThemePreset::Zinc)
     };
-    let mut applied_color_mode = use_signal(|| None::<i32>);
-
     use_effect(move || {
-        let color_mode = state.read().theme_preference().platform_color_mode();
-        if *applied_color_mode.peek() != Some(color_mode) {
-            let _ = bridge::set_color_mode(color_mode);
-            applied_color_mode.set(Some(color_mode));
-        }
-    });
-
-    let mut bootstrapped = use_signal(|| false);
-    use_effect(move || {
-        // One-shot startup dispatch. dioxus 0.7 effects re-run reactively
-        // whenever a signal they *read* changes; `run_command` reads `state`
-        // and the dispatched bootstrap completion then writes it back, which
-        // re-triggered the effect: an unbounded self-referential loop that
-        // pegged the UI thread (thousands of reloads per second) and ANR'd
-        // on device. The guard makes the effect a no-op after the first run.
-        if *bootstrapped.peek() {
+        let current = stores.preferences.read().clone();
+        let color_mode = current.theme.platform_color_mode();
+        if current.applied_color_mode == Some(color_mode)
+            || current.pending_color_mode == Some(color_mode)
+            || current.color_mode_error.is_some()
+        {
             return;
         }
-        bootstrapped.set(true);
-        let vpn_event_revision = state.peek().vpn_event_revision;
-        run_command(
-            state,
-            Command::batch([
-                Command::perform(bootstrap_active_profile(), Action::SnapshotLoaded),
-                Command::perform(delayed_snapshot(), Action::TickSnapshot),
-                Command::perform(
-                    await_vpn_state_event(vpn_event_revision),
-                    Action::VpnStateEvent,
-                ),
-            ]),
-        );
+        stores.set_preferences(PreferencesProjection {
+            pending_color_mode: Some(color_mode),
+            ..current
+        });
+        let runtime = color_mode_runtime.clone();
+        arkit::dioxus_core::spawn_forever(async move {
+            let result = bridge::set_color_mode(color_mode).await;
+            runtime.queue_ui(move || {
+                let current = stores.preferences.peek().clone();
+                if current.theme.platform_color_mode() != color_mode {
+                    if current.pending_color_mode == Some(color_mode) {
+                        stores.set_preferences(PreferencesProjection {
+                            pending_color_mode: None,
+                            ..current
+                        });
+                    }
+                    return;
+                }
+                match result {
+                    Ok(()) => stores.set_preferences(PreferencesProjection {
+                        applied_color_mode: Some(color_mode),
+                        pending_color_mode: None,
+                        color_mode_error: None,
+                        ..current
+                    }),
+                    Err(error) => {
+                        notifications.publish(format!(
+                            "{}: {error}",
+                            translate_ui(current.locale, tr::appearance_color_mode_failed())
+                        ));
+                        stores.set_preferences(PreferencesProjection {
+                            pending_color_mode: None,
+                            color_mode_error: Some(error),
+                            ..current
+                        });
+                    }
+                }
+            });
+        });
     });
+
+    let bootstrap_tokio = runtime.tokio().clone();
+    let _bootstrap = use_future(move || {
+        // Bootstrap can cross a configuration commit boundary. Spawn it on
+        // the application runtime and intentionally detach it if the UI root
+        // is disposed; only this local completion observer is scope-owned.
+        let task = bootstrap_tokio.spawn(bootstrap_active_profile());
+        async move {
+            let result = task
+                .await
+                .map_err(|error| format!("Background task failed: {error}"))
+                .and_then(|result| result);
+            match result {
+                Ok(()) => stores.set_bootstrap_error(None),
+                Err(error) => {
+                    let previous = stores.session.peek().bootstrap_error.clone();
+                    stores.set_bootstrap_error(Some(error.clone()));
+                    if previous.as_deref() != Some(error.as_str()) {
+                        notifications.publish(error);
+                    }
+                }
+            }
+        }
+    });
+    use_runtime_projection_provider(stores, notifications, runtime.tokio().clone());
+    use_system_preferences_provider(stores, runtime.tokio().clone());
 
     rsx! {
         // The full Arkit tree remains edge-to-edge. AppShell applies the safe
@@ -364,6 +512,282 @@ pub(crate) fn App(initial_safe_area: bridge::InitialSafeArea) -> Element {
     }
 }
 
+/// Messages cross the Tokio/UI boundary as owned data. Dioxus signals and the
+/// non-Send runtime handle stay on the UI executor.
+enum RuntimeProjectionUpdate {
+    Config(Result<paws_core::ConfigProjection, String>),
+    Telemetry(Result<paws_core::TelemetryProjection, String>),
+    Status(Result<paws_core::RuntimeStatusProjection, String>),
+    Resources(Result<paws_core::ResourceProjection, String>),
+    ClearError(String),
+}
+
+/// A root-owned subscription replaces the UI's one-second full-snapshot
+/// polling loop. Its Tokio task is aborted when this Dioxus scope disappears.
+fn use_runtime_projection_provider(
+    stores: UiStores,
+    notifications: NotificationCenter,
+    tokio: tokio::runtime::Handle,
+) {
+    let initial_revisions = stores.runtime_revisions();
+    use_tokio_subscription(
+        tokio,
+        move |updates| {
+            let mut applied = initial_revisions;
+            async move {
+                let core = paws_core::shared_core();
+                let mut revisions = core.subscribe_runtime_revisions();
+                let mut last_projection_error = None::<String>;
+                loop {
+                    let announced = *revisions.borrow_and_update();
+                    let mut attempted = false;
+                    let mut failed = false;
+
+                    if announced.config_revision != applied.config_revision {
+                        attempted = true;
+                        let result = core
+                            .config_projection()
+                            .map_err(|error| error.to_string())
+                            .and_then(|projection| {
+                                (projection.revisions.config_revision
+                                    >= announced.config_revision)
+                                    .then_some(projection)
+                                    .ok_or_else(|| {
+                                        "configuration projection is older than its announced revision"
+                                            .to_owned()
+                                    })
+                            });
+                        match &result {
+                            Ok(projection)
+                                if projection.revisions.config_revision
+                                    >= announced.config_revision =>
+                            {
+                                applied.config_revision = projection.revisions.config_revision;
+                            }
+                            Ok(_) => failed = true,
+                            Err(_) => failed = true,
+                        }
+                        if let Err(error) = &result {
+                            last_projection_error = Some(error.clone());
+                        }
+                        if updates
+                            .send(RuntimeProjectionUpdate::Config(result))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    if announced.telemetry_revision != applied.telemetry_revision {
+                        attempted = true;
+                        let result = core
+                            .telemetry_projection()
+                            .map_err(|error| error.to_string())
+                            .and_then(|projection| {
+                                (projection.revisions.telemetry_revision
+                                    >= announced.telemetry_revision)
+                                    .then_some(projection)
+                                    .ok_or_else(|| {
+                                        "telemetry projection is older than its announced revision"
+                                            .to_owned()
+                                    })
+                            });
+                        match &result {
+                            Ok(projection)
+                                if projection.revisions.telemetry_revision
+                                    >= announced.telemetry_revision =>
+                            {
+                                applied.telemetry_revision =
+                                    projection.revisions.telemetry_revision;
+                            }
+                            Ok(_) => failed = true,
+                            Err(_) => failed = true,
+                        }
+                        if let Err(error) = &result {
+                            last_projection_error = Some(error.clone());
+                        }
+                        if updates
+                            .send(RuntimeProjectionUpdate::Telemetry(result))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    if announced.status_revision != applied.status_revision {
+                        attempted = true;
+                        let result = core
+                            .runtime_status_projection()
+                            .map_err(|error| error.to_string())
+                            .and_then(|projection| {
+                                (projection.revisions.status_revision
+                                    >= announced.status_revision)
+                                    .then_some(projection)
+                                    .ok_or_else(|| {
+                                        "runtime status projection is older than its announced revision"
+                                            .to_owned()
+                                    })
+                            });
+                        match &result {
+                            Ok(projection)
+                                if projection.revisions.status_revision
+                                    >= announced.status_revision =>
+                            {
+                                applied.status_revision = projection.revisions.status_revision;
+                            }
+                            Ok(_) => failed = true,
+                            Err(_) => failed = true,
+                        }
+                        if let Err(error) = &result {
+                            last_projection_error = Some(error.clone());
+                        }
+                        if updates
+                            .send(RuntimeProjectionUpdate::Status(result))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    if announced.resource_revision != applied.resource_revision {
+                        attempted = true;
+                        let result = core
+                            .resource_projection()
+                            .map_err(|error| error.to_string())
+                            .and_then(|projection| {
+                                (projection.revisions.resource_revision
+                                    >= announced.resource_revision)
+                                    .then_some(projection)
+                                    .ok_or_else(|| {
+                                        "resource projection is older than its announced revision"
+                                            .to_owned()
+                                    })
+                            });
+                        match &result {
+                            Ok(projection)
+                                if projection.revisions.resource_revision
+                                    >= announced.resource_revision =>
+                            {
+                                applied.resource_revision = projection.revisions.resource_revision;
+                            }
+                            Ok(_) => failed = true,
+                            Err(_) => failed = true,
+                        }
+                        if let Err(error) = &result {
+                            last_projection_error = Some(error.clone());
+                        }
+                        if updates
+                            .send(RuntimeProjectionUpdate::Resources(result))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    if attempted && !failed {
+                        if let Some(error) = last_projection_error.take() {
+                            if updates
+                                .send(RuntimeProjectionUpdate::ClearError(error))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    if failed {
+                        tokio::select! {
+                            changed = revisions.changed() => {
+                                if changed.is_err() { break; }
+                            }
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
+                        }
+                    } else if revisions.changed().await.is_err() {
+                        break;
+                    }
+                }
+            }
+        },
+        move |update| match update {
+            RuntimeProjectionUpdate::Config(result) => apply_projection_result(
+                result,
+                stores,
+                notifications,
+                UiStores::apply_config_projection,
+            ),
+            RuntimeProjectionUpdate::Telemetry(result) => apply_projection_result(
+                result,
+                stores,
+                notifications,
+                UiStores::apply_telemetry_projection,
+            ),
+            RuntimeProjectionUpdate::Status(result) => apply_projection_result(
+                result,
+                stores,
+                notifications,
+                UiStores::apply_status_projection,
+            ),
+            RuntimeProjectionUpdate::Resources(result) => apply_projection_result(
+                result,
+                stores,
+                notifications,
+                UiStores::apply_resource_projection,
+            ),
+            RuntimeProjectionUpdate::ClearError(error) => {
+                if stores.session.peek().runtime_error.as_deref() == Some(error.as_str()) {
+                    stores.clear_runtime_error();
+                }
+            }
+        },
+    );
+}
+
+fn apply_projection_result<T>(
+    result: Result<T, String>,
+    stores: UiStores,
+    notifications: NotificationCenter,
+    apply: fn(UiStores, T) -> bool,
+) {
+    match result {
+        Ok(projection) => {
+            apply(stores, projection);
+        }
+        Err(error) => {
+            let previous = stores.session.peek().runtime_error.clone();
+            stores.set_runtime_error(error.clone());
+            if previous.as_deref() != Some(error.as_str()) {
+                notifications.publish(error);
+            }
+        }
+    }
+}
+
+fn use_system_preferences_provider(stores: UiStores, tokio: tokio::runtime::Handle) {
+    use_tokio_subscription(
+        tokio,
+        move |updates| async move {
+            let mut preferences = crate::system_preferences::subscribe();
+            loop {
+                let system = preferences.borrow_and_update().clone();
+                if updates.send(system).await.is_err() {
+                    break;
+                }
+                if preferences.changed().await.is_err() {
+                    break;
+                }
+            }
+        },
+        move |system| {
+            let current = stores.preferences.peek().clone();
+            stores.set_preferences(PreferencesProjection {
+                locale: current.language.resolve(&system.locale),
+                dark: current.theme.resolve_dark(system.color_mode),
+                ..current
+            });
+        },
+    );
+}
+
 #[component]
 fn AppShell() -> Element {
     let initial_safe_area = use_context::<bridge::InitialSafeArea>().0;
@@ -373,15 +797,7 @@ fn AppShell() -> Element {
     } else {
         window_metrics.safe_area
     };
-    let state = use_context::<Signal<State>>();
-    let current = state.read().clone();
-    let route = use_route::<Route>();
-    let navigator = use_navigator();
     let _back_handler = use_back_handler();
-    let nav_items = Route::bottom_routes()
-        .iter()
-        .map(|route| BottomNavigationItem::new(route.title(current.locale), route.icon()))
-        .collect::<Vec<_>>();
 
     rsx! {
         stack {
@@ -401,37 +817,72 @@ fn AppShell() -> Element {
                     width: "100%",
                     AnimatedOutlet::<Route> {}
                 }
-            if route.parent().is_none() {
-                BottomNavigation {
-                        items: nav_items,
-                        selected: Some(route.bottom_index()),
-                        on_select: move |index| {
-                            if let Some(route) = Route::bottom_routes().get(index).cloned() {
-                                navigator.replace(route);
-                            }
-                        }
-                    }
+                BottomBar {}
+            }
+            DashboardVpnFloatingAction {}
+        }
+    }
+}
+
+#[component]
+fn BottomBar() -> Element {
+    let locale = use_context::<UiStores>().preferences.read().locale;
+    let route = use_route::<Route>();
+    let navigator = use_navigator();
+    if route.parent().is_some() {
+        return rsx! {};
+    }
+    let nav_items = Route::bottom_routes()
+        .iter()
+        .map(|route| BottomNavigationItem::new(route.title(locale), route.icon()))
+        .collect::<Vec<_>>();
+    rsx! {
+        BottomNavigation {
+            items: nav_items,
+            selected: Some(route.bottom_index()),
+            on_select: move |index| {
+                if let Some(route) = Route::bottom_routes().get(index).cloned() {
+                    navigator.replace(route);
                 }
-            }
-            if matches!(route, Route::Dashboard {}) {
-                {vpn_floating_action(state, &current)}
-            }
-            if current.yaml_editor_open {
-                {yaml_editor_dialog(state, &current)}
             }
         }
     }
 }
 
-fn vpn_floating_action(state: Signal<State>, current: &State) -> Element {
+#[component]
+fn DashboardVpnFloatingAction() -> Element {
+    let route = use_route::<Route>();
+    let session = use_context::<UiStores>().session.read().clone();
+    if !matches!(route, Route::Dashboard {}) {
+        return rsx! {};
+    }
+    rsx! { VpnFloatingAction { session } }
+}
+
+#[component]
+fn VpnFloatingAction(session: SessionProjection) -> Element {
+    let services = use_context::<UiServices>();
     let theme = use_theme();
-    let pending = current.vpn_command_pending;
-    let starting = pending == Some(VpnCommandAction::Start)
-        || matches!(current.snapshot.vpn_lifecycle, VpnLifecycle::Starting);
-    let stopping = pending == Some(VpnCommandAction::Stop);
-    let active = current.snapshot.vpn_running && !stopping;
-    let disabled =
-        pending.is_some() || matches!(current.snapshot.vpn_lifecycle, VpnLifecycle::Starting);
+    let operation = use_context::<UiOperationStores>().vpn.read().active.clone();
+    let starting = operation.as_ref().map_or_else(
+        || matches!(session.lifecycle, VpnLifecycle::Starting),
+        |operation| {
+            operation.phase != VpnOperationPhase::Unconfirmed
+                && matches!(
+                    operation.action,
+                    VpnCommandAction::Start | VpnCommandAction::Restart
+                )
+        },
+    );
+    let stopping = operation.as_ref().is_some_and(|operation| {
+        operation.phase != VpnOperationPhase::Unconfirmed
+            && matches!(
+                operation.action,
+                VpnCommandAction::Stop | VpnCommandAction::OwnedStop
+            )
+    });
+    let active = session.vpn_running && !stopping;
+    let disabled = operation.is_some() || matches!(session.lifecycle, VpnLifecycle::Starting);
     let icon = if active { "square" } else { "power" };
     let background = if disabled {
         theme.colors.muted
@@ -465,7 +916,7 @@ fn vpn_floating_action(state: Signal<State>, current: &State) -> Element {
                 border_radius: theme.radii.full,
                 enabled: !disabled,
                 opacity: if disabled { 0.6 } else { 1.0 },
-                onclick: move |_| dispatch(state, Action::StartStopVpn),
+                onclick: move |_| services.toggle_vpn(),
                 row {
                     width: "100%",
                     height: "100%",
@@ -482,58 +933,26 @@ fn vpn_floating_action(state: Signal<State>, current: &State) -> Element {
     }
 }
 
-fn dispatch(mut state: Signal<State>, action: Action) {
-    let command = {
-        let mut current = state.write();
-        reduce(&mut current, action)
-    };
-    run_command(state, command);
+fn scaffold(page: Route, actions: Element, body: Element) -> Element {
+    scaffold_layout(page, actions, body, true, false)
 }
 
-fn run_command(state: Signal<State>, command: Command<Action>) {
-    // Runtime ownership is stable for the lifetime of this root. In
-    // particular, do not subscribe the caller's reactive effect to the entire
-    // application State merely to obtain its executor: doing so makes every
-    // snapshot update rerun the bootstrap effect and multiply polling tasks.
-    let runtime = state.peek().runtime.clone();
-    let async_runtime = runtime.tokio();
-    for future in command.into_futures() {
-        let task = async_runtime.spawn(future);
-        let ui_runtime = runtime.clone();
-        arkit::dioxus_core::spawn_forever(async move {
-            if let Ok(action) = task.await {
-                ui_runtime.queue_ui(move || dispatch(state, action));
-            }
-        });
-    }
+fn fixed_scaffold(page: Route, actions: Element, body: Element) -> Element {
+    scaffold_layout(page, actions, body, false, false)
 }
 
-fn scaffold(state: Signal<State>, page: Route, actions: Element, body: Element) -> Element {
-    scaffold_layout(state, page, actions, body, true, false)
-}
-
-fn fixed_scaffold(state: Signal<State>, page: Route, actions: Element, body: Element) -> Element {
-    scaffold_layout(state, page, actions, body, false, false)
-}
-
-fn fixed_scaffold_flush_bottom(
-    state: Signal<State>,
-    page: Route,
-    actions: Element,
-    body: Element,
-) -> Element {
-    scaffold_layout(state, page, actions, body, false, true)
+fn fixed_scaffold_flush_bottom(page: Route, actions: Element, body: Element) -> Element {
+    scaffold_layout(page, actions, body, false, true)
 }
 
 fn scaffold_layout(
-    state: Signal<State>,
     page: Route,
     actions: Element,
     body: Element,
     scrollable: bool,
     flush_fixed_bottom: bool,
 ) -> Element {
-    let current = state.read().clone();
+    let locale = use_context::<UiStores>().preferences.read().locale;
     let parent = page.parent();
     use_parent_back_handler(parent.clone());
     let navigator = use_navigator();
@@ -568,7 +987,7 @@ fn scaffold_layout(
                         row { width: spacing::XXS }
                     }
                     text {
-                        content: page.title(current.locale),
+                        content: page.title(locale),
                         font_size: typography::XL,
                         line_height: 28.0,
                         font_weight: 600,
@@ -936,28 +1355,6 @@ fn spaced(items: Vec<Element>) -> Element {
     rsx! { column { width: "100%", {nodes} } }
 }
 
-fn icon_action(icon: &'static str, action: Action, state: Signal<State>) -> Element {
-    rsx! {
-        FlatButton {
-            variant: FlatButtonVariant::Ghost,
-            size: ButtonSize::Icon,
-            onclick: move |_| dispatch(state, action.clone()),
-            {arkit::icon(icon, 17.0, text_color())}
-        }
-    }
-}
-
-fn destructive_icon_action(icon: &'static str, action: Action, state: Signal<State>) -> Element {
-    rsx! {
-        FlatButton {
-            variant: FlatButtonVariant::Ghost,
-            size: ButtonSize::Icon,
-            onclick: move |_| dispatch(state, action.clone()),
-            {arkit::icon(icon, 17.0, danger())}
-        }
-    }
-}
-
 fn speed_bars(history: &[TrafficHistoryPoint]) -> Element {
     let theme = use_theme();
     let max = history
@@ -997,13 +1394,6 @@ fn speed_bars(history: &[TrafficHistoryPoint]) -> Element {
     }
 }
 
-fn tr(locale: UiLocale, zh: &'static str, en: &'static str) -> &'static str {
-    match locale {
-        UiLocale::ZhCn => zh,
-        UiLocale::En => en,
-    }
-}
-
 fn compact(value: &str) -> String {
     let value = value.replace(['\n', '\r'], " ");
     truncate_text(&value, 120)
@@ -1025,7 +1415,7 @@ fn middle_truncate_text(value: &str, max_chars: usize) -> String {
         return value.to_owned();
     }
     let visible = max_chars - 1;
-    let prefix_len = (visible + 1) / 2;
+    let prefix_len = visible.div_ceil(2);
     let suffix_len = visible / 2;
     format!(
         "{}…{}",

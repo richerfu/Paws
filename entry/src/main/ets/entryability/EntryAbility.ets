@@ -78,12 +78,8 @@ export default class EntryAbility extends NativeAbility {
   }
 
   private configureNativeHome(): void {
-    try {
-      pawsUi.configureAppHome(`${this.context.filesDir}/paws`);
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'configured native home');
-    } catch (err) {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'configure native home failed %{public}s', describeError(err));
-    }
+    pawsUi.configureAppHome(`${this.context.filesDir}/paws`);
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'configured native home');
   }
 
   private configureNativeLocale(language?: string): void {
@@ -121,23 +117,40 @@ export default class EntryAbility extends NativeAbility {
     }
   }
 
+  private runOptionalDebugAutomation(want: Want): void {
+    runDebugAutomation(
+      want,
+      this.context.applicationInfo.debug === true,
+      (optionsJson: string) => this.requestStartVpn(optionsJson),
+    )
+      .catch((err: Error): void => {
+        // Debug automation is never part of critical Ability/UI startup, but
+        // its rejected promise must remain observable instead of becoming an
+        // unhandled rejection or a false-positive smoke result.
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'debug automation terminated %{public}s', describeError(err));
+      });
+  }
+
   public async onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): Promise<void> {
     try {
       setPawsBundleName(this.context.applicationInfo.name);
       this.configureNativeHome();
-      this.configureNativeLocale();
-      this.configureNativeAppearance();
-      this.seedGeodataFromRawfiles();
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'native initialization failed %{public}s', describeError(err));
+      throw new Error(describeError(err) || 'critical native initialization failed');
     }
+    // These enrich the initialized runtime but are independently optional;
+    // each helper records its own precise platform failure.
+    this.configureNativeLocale();
+    this.configureNativeAppearance();
+    this.seedGeodataFromRawfiles();
     await super.onCreate(want, launchParam);
-    runDebugAutomation(want, (optionsJson: string) => this.requestStartVpn(optionsJson));
+    this.runOptionalDebugAutomation(want);
   }
 
   public onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     super.onNewWant(want, launchParam);
-    runDebugAutomation(want, (optionsJson: string) => this.requestStartVpn(optionsJson));
+    this.runOptionalDebugAutomation(want);
   }
 
   public onConfigurationUpdate(newConfig: Configuration): void {
@@ -147,17 +160,23 @@ export default class EntryAbility extends NativeAbility {
   }
 
   protected async loadWindowStageContent(windowStage: window.WindowStage): Promise<void> {
+    const win = await windowStage.getMainWindow();
     try {
-      const win = await windowStage.getMainWindow();
       await win.setWindowLayoutFullScreen(true);
-      try {
-        await this.captureInitialSafeArea();
-      } catch (err) {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'initial safe area skipped %{public}s', describeError(err));
-      }
+    } catch (err) {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'full-screen layout skipped %{public}s', describeError(err));
+    }
+    try {
+      await this.captureInitialSafeArea();
+    } catch (err) {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'initial safe area skipped %{public}s', describeError(err));
+    }
+    try {
       await win.setUIContent('pages/Index');
     } catch (err) {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'set UI content failed %{public}s', JSON.stringify(err) ?? '');
+      const message = describeError(err) || 'set UI content failed';
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'set UI content failed %{public}s', message);
+      throw new Error(message);
     }
   }
 }

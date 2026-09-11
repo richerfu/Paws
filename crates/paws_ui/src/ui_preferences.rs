@@ -60,10 +60,10 @@ pub(crate) struct UiPreferences {
 }
 
 impl UiPreferences {
-    pub(crate) fn load() -> Self {
-        preferences_path()
-            .and_then(|path| Self::load_from(&path).ok())
-            .unwrap_or_default()
+    pub(crate) fn load() -> Result<Self, String> {
+        let path = preferences_path()
+            .ok_or_else(|| "PAWS_HOME is not configured for UI preferences".to_owned())?;
+        Self::load_from(&path)
     }
 
     pub(crate) fn save(&self) -> Result<(), String> {
@@ -73,8 +73,18 @@ impl UiPreferences {
     }
 
     pub(crate) fn load_from(path: &Path) -> Result<Self, String> {
-        let content = fs::read_to_string(path)
-            .map_err(|err| format!("read UI preferences {} failed: {err}", path.display()))?;
+        let content = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default());
+            }
+            Err(error) => {
+                return Err(format!(
+                    "read UI preferences {} failed: {error}",
+                    path.display()
+                ));
+            }
+        };
         serde_json::from_str(&content)
             .map_err(|err| format!("parse UI preferences {} failed: {err}", path.display()))
     }

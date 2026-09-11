@@ -46,7 +46,9 @@ hilog output for quick HarmonyOS device smoke validation.
 
 Options:
   --no-build             Skip ohrs build.
-  --hap PATH             Install this HAP instead of the default signed HAP.
+  --hap PATH             Install this HAP instead of the default release HAP.
+                         Debug Want automation options require a HAP whose
+                         module.json reports app.debug=true.
   --skip-hap-export-check
                          Skip package check that HAP libpaws_ui.so contains
                          NAPI functions declared in Index.d.ts.
@@ -238,6 +240,29 @@ require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "Missing required command: $1" >&2
     exit 127
+  fi
+}
+
+debug_automation_requested() {
+  [ -n "$PROFILE_PATH" ] ||
+    [ -n "$PROFILE_URL" ] ||
+    [ -n "$PROTOCOL_MODE" ] ||
+    [ "$AUTO_START_VPN" -eq 1 ] ||
+    [ -n "$DELAY_PROXY" ] ||
+    [ -n "$ECHO_PROXY" ]
+}
+
+require_debug_automation_hap() {
+  if ! debug_automation_requested; then
+    return
+  fi
+
+  if ! unzip -p "$HAP_PATH" module.json 2>/dev/null \
+    | jq -e '.app.debug == true' >/dev/null 2>&1; then
+    echo "Debug Want automation requires a debug HAP (module.json app.debug=true)." >&2
+    echo "The selected HAP is release or its manifest could not be read: $HAP_PATH" >&2
+    echo "Build or pass a debug HAP with --hap; release EntryAbility ignores these Want parameters." >&2
+    exit 1
   fi
 }
 
@@ -496,8 +521,13 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT TERM
 
 require_command "$HDC"
-if [ "$VERIFY_HAP_EXPORTS" -eq 1 ]; then
+if [ "$VERIFY_HAP_EXPORTS" -eq 1 ] || debug_automation_requested; then
   require_command unzip
+fi
+if debug_automation_requested; then
+  require_command jq
+fi
+if [ "$VERIFY_HAP_EXPORTS" -eq 1 ]; then
   require_command strings
 fi
 if [ "$RUN_BUILD" -eq 1 ]; then
@@ -522,8 +552,6 @@ if [ "$profile_source_count" -gt 1 ]; then
   exit 2
 fi
 
-require_device
-
 if [ -n "$PROTOCOL_MODE" ]; then
   start_protocol_lab
 fi
@@ -545,7 +573,9 @@ if [ ! -f "$HAP_PATH" ]; then
   echo "HAP not found: $HAP_PATH" >&2
   exit 1
 fi
+require_debug_automation_hap
 verify_hap_native_exports
+require_device
 
 start_hilog_capture
 

@@ -3,8 +3,8 @@ use ohos_ashmem_binding::Ashmem;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const REGION_SIZE: usize = 8 * 1024 * 1024;
@@ -65,6 +65,9 @@ struct SocketNotification {
     local: OwnedFd,
     transfer: Option<OwnedFd>,
     subscription: Mutex<()>,
+    cancel_read: OwnedFd,
+    cancel_write: OwnedFd,
+    cancel_pending: AtomicBool,
 }
 
 impl PlatformIpc {
@@ -84,11 +87,7 @@ impl PlatformIpc {
             role: PlatformRole::Ui,
             published: Mutex::new(PlatformEnvelope::default()),
             next_generation: AtomicU64::new(1),
-            notification: SocketNotification {
-                local,
-                transfer: Some(transfer),
-                subscription: Mutex::new(()),
-            },
+            notification: SocketNotification::new(local, Some(transfer))?,
         });
         ipc.initialize_region()?;
         Ok((ipc, fds))
@@ -118,11 +117,7 @@ impl PlatformIpc {
             role: PlatformRole::Vpn,
             published: Mutex::new(PlatformEnvelope::default()),
             next_generation: AtomicU64::new(1),
-            notification: SocketNotification {
-                local: notification_fd,
-                transfer: None,
-                subscription: Mutex::new(()),
-            },
+            notification: SocketNotification::new(notification_fd, None)?,
         });
         ipc.validate_region()?;
         ipc.seed_next_generation()?;
@@ -216,6 +211,10 @@ impl PlatformIpc {
 
     pub(crate) fn is_ui(&self) -> bool {
         self.role == PlatformRole::Ui
+    }
+
+    pub(crate) fn cancel_event_waits(&self) {
+        self.notification.cancel_waits();
     }
 
     fn publish(&self, envelope: &PlatformEnvelope) -> Result<()> {
@@ -349,6 +348,18 @@ impl PlatformIpc {
 }
 
 impl SocketNotification {
+    fn new(local: OwnedFd, transfer: Option<OwnedFd>) -> Result<Self> {
+        let (cancel_read, cancel_write) = create_notification_pair()?;
+        Ok(Self {
+            local,
+            transfer,
+            subscription: Mutex::new(()),
+            cancel_read,
+            cancel_write,
+            cancel_pending: AtomicBool::new(false),
+        })
+    }
+
     fn notify(&self) -> Result<()> {
         let value = [1_u8];
         loop {
@@ -412,10 +423,15 @@ impl SocketNotification {
             .lock()
             .map_err(|_| PlatformIpcError::LockPoisoned)?;
         let session_fd = self.local.as_raw_fd();
-        let cancel_fd = cancellation_fd();
-        // Drop stale cancellation bytes so a previous stop cannot make the
-        // next subscription iteration return immediately in a busy loop.
-        drain_cancel_fd(cancel_fd);
+        let cancel_fd = self.cancel_read.as_raw_fd();
+        // Cancellation is sticky for this exact IPC binding. If stop races the
+        // subscription before it reaches poll, the waiter still observes the
+        // pending cancellation instead of parking forever. A replacement IPC
+        // owns a different cancellation pair, so it cannot steal this wakeup.
+        if self.cancel_pending.swap(false, Ordering::AcqRel) {
+            drain_cancel_fd(cancel_fd);
+            return Ok(false);
+        }
         let mut descriptors = [
             libc::pollfd {
                 fd: session_fd,
@@ -439,6 +455,7 @@ impl SocketNotification {
             }
             if descriptors[1].revents != 0 {
                 drain_cancel_fd(cancel_fd);
+                self.cancel_pending.store(false, Ordering::Release);
                 return Ok(false);
             }
             if descriptors[0].revents != 0 {
@@ -450,44 +467,26 @@ impl SocketNotification {
             }
         }
     }
-}
 
-/// Process-local cancellation socketpair for waking blocked event waits.
-struct CancelPair {
-    read: OwnedFd,
-    write: OwnedFd,
-}
-
-fn cancel_pair() -> &'static CancelPair {
-    static PAIR: OnceLock<CancelPair> = OnceLock::new();
-    PAIR.get_or_init(|| {
-        let (read, write) = create_notification_pair().expect("create cancellation socketpair");
-        CancelPair { read, write }
-    })
-}
-
-fn cancellation_fd() -> RawFd {
-    cancel_pair().read.as_raw_fd()
-}
-
-/// Wake every in-process waiter parked in
-/// [`PlatformIpc::wait_for_change_event_cancellable`].
-///
-/// The wakeup rides a process-local socketpair that is independent from the
-/// session notification socket, so cancelling never pollutes or shuts down the
-/// cross-process notification fd that later Want rebinds rely on.
-pub(crate) fn cancel_event_waits() {
-    let write = cancel_pair().write.as_raw_fd();
-    let value = [1_u8];
-    let written = unsafe {
-        libc::send(
-            write,
-            value.as_ptr().cast(),
-            value.len(),
-            libc::MSG_NOSIGNAL,
-        )
-    };
-    let _ = written; // Best effort: a pending cancel byte already covers the wakeup.
+    fn cancel_waits(&self) {
+        if self.cancel_pending.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let value = [1_u8];
+        let written = unsafe {
+            libc::send(
+                self.cancel_write.as_raw_fd(),
+                value.as_ptr().cast(),
+                value.len(),
+                libc::MSG_NOSIGNAL,
+            )
+        };
+        if written != value.len() as isize {
+            // Keep cancel_pending set even if the socket buffer was already
+            // full: the waiter checks the flag before entering poll.
+            let _ = io::Error::last_os_error();
+        }
+    }
 }
 
 fn drain_cancel_fd(fd: RawFd) {
@@ -658,16 +657,8 @@ mod tests {
     #[test]
     fn blocking_event_subscription_wakes_for_peer_publication() {
         let (local, peer) = create_notification_pair().unwrap();
-        let subscription = Arc::new(SocketNotification {
-            local,
-            transfer: None,
-            subscription: Mutex::new(()),
-        });
-        let notifier = SocketNotification {
-            local: peer,
-            transfer: None,
-            subscription: Mutex::new(()),
-        };
+        let subscription = Arc::new(SocketNotification::new(local, None).unwrap());
+        let notifier = SocketNotification::new(peer, None).unwrap();
         let waiter = {
             let subscription = Arc::clone(&subscription);
             std::thread::spawn(move || subscription.wait(None))
@@ -676,5 +667,30 @@ mod tests {
         notifier.notify().unwrap();
 
         assert!(waiter.join().unwrap().unwrap());
+    }
+
+    #[test]
+    fn cancellable_wait_keeps_a_pre_registration_wakeup() {
+        let (local, _peer) = create_notification_pair().unwrap();
+        let subscription = SocketNotification::new(local, None).unwrap();
+
+        subscription.cancel_waits();
+
+        assert!(!subscription.wait_event_cancellable().unwrap());
+    }
+
+    #[test]
+    fn cancellation_is_scoped_to_one_ipc_binding() {
+        let (first_local, _first_peer) = create_notification_pair().unwrap();
+        let first = SocketNotification::new(first_local, None).unwrap();
+        let (second_local, second_peer) = create_notification_pair().unwrap();
+        let second = SocketNotification::new(second_local, None).unwrap();
+        let notifier = SocketNotification::new(second_peer, None).unwrap();
+
+        first.cancel_waits();
+        notifier.notify().unwrap();
+
+        assert!(!first.wait_event_cancellable().unwrap());
+        assert!(second.wait_event_cancellable().unwrap());
     }
 }

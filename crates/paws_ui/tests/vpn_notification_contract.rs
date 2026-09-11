@@ -28,7 +28,15 @@ fn vpn_notification_is_updated_in_place_and_removed_on_stop() {
     assert!(VPN_ABILITY.contains("notificationManager.publish(request)"));
     assert!(VPN_ABILITY.contains("notificationManager.cancel(VPN_SPEED_NOTIFICATION_ID)"));
     assert!(VPN_ABILITY.contains("this.stopSpeedNotification()"));
-    assert!(VPN_ABILITY.contains("this.persistTelemetry(false)"));
+    assert!(VPN_ABILITY.contains("this.stopTelemetry();\n    this.stopSpeedNotification();"));
+    assert!(VPN_ABILITY.contains("this.notificationGeneration += 1"));
+    assert!(
+        VPN_ABILITY
+            .matches("generation !== this.notificationGeneration")
+            .count()
+            >= 2,
+        "a late async notification publish must be rejected both before and after platform publish"
+    );
 }
 
 #[test]

@@ -10,11 +10,11 @@ use paws_model::{
 use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use serde_yaml::{Mapping, Value};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::IpAddr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::{Host, Url};
 
@@ -22,6 +22,7 @@ mod rules;
 mod runtime_config;
 mod subscription;
 
+pub use rules::parse_imported_rule_lines;
 use rules::*;
 pub use runtime_config::*;
 pub use subscription::*;
@@ -178,21 +179,74 @@ impl Default for StoreIndex {
 #[derive(Debug, Clone)]
 pub struct ProfileStore {
     root: PathBuf,
+    initialization_error: Option<String>,
     active_profile: Option<String>,
     profiles: BTreeMap<String, ProfileDocument>,
     rules: BTreeMap<String, RuleDocument>,
 }
 
+/// Exact persisted state needed to undo a profile mutation when runtime
+/// activation fails after the store transaction itself committed.
+#[derive(Debug, Clone)]
+pub struct ProfileCheckpoint {
+    profile: ProfileDocument,
+    raw_yaml: Vec<u8>,
+    backup_yaml: Option<Vec<u8>>,
+}
+
 impl ProfileStore {
     pub fn open_default() -> Result<Self, PawsError> {
-        let root = std::env::var("PAWS_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| default_store_root());
-        Self::open(root)
+        Self::open(default_store_root_from_environment()?)
+    }
+
+    /// Opens the configured store without disguising an existing damaged store
+    /// as an empty first-run installation. The returned unavailable handle is
+    /// only useful for retaining the configured root while the caller reports
+    /// `initialization_error`; data operations must not continue through it.
+    pub fn open_default_or_unavailable() -> Self {
+        let root = match default_store_root_from_environment() {
+            Ok(root) => root,
+            Err(error) => {
+                return Self {
+                    // This relative path is diagnostic only. The initialization
+                    // error keeps every store operation disabled, so a failure
+                    // to resolve the configured root cannot redirect writes to
+                    // an unrelated temporary directory.
+                    root: PathBuf::from(".paws"),
+                    initialization_error: Some(error.to_string()),
+                    active_profile: None,
+                    profiles: BTreeMap::new(),
+                    rules: BTreeMap::new(),
+                };
+            }
+        };
+        match Self::open(root.clone()) {
+            Ok(store) => store,
+            Err(error) => Self {
+                root,
+                initialization_error: Some(error.to_string()),
+                active_profile: None,
+                profiles: BTreeMap::new(),
+                rules: BTreeMap::new(),
+            },
+        }
     }
 
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, PawsError> {
         let root = root.into();
+        let has_profile_artifacts =
+            ["profiles", "backups"]
+                .into_iter()
+                .try_fold(false, |found, directory| {
+                    if found {
+                        return Ok(true);
+                    }
+                    match fs::read_dir(root.join(directory)) {
+                        Ok(mut entries) => Ok(entries.next().is_some()),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                        Err(error) => Err(io_error(error)),
+                    }
+                })?;
         fs::create_dir_all(root.join("profiles")).map_err(io_error)?;
         fs::create_dir_all(root.join("backups")).map_err(io_error)?;
         fs::create_dir_all(root.join("runtime")).map_err(io_error)?;
@@ -201,9 +255,21 @@ impl ProfileStore {
         fs::create_dir_all(root.join("geodata")).map_err(io_error)?;
 
         let index_path = root.join("profiles.json");
-        if !index_path.exists() {
+        let index_exists = match fs::symlink_metadata(&index_path) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(io_error(error)),
+        };
+        if !index_exists {
+            if has_profile_artifacts {
+                return Err(PawsError::Core(format!(
+                    "profile store is missing {} but already contains data; refusing to initialize over it",
+                    index_path.display()
+                )));
+            }
             let store = Self {
                 root,
+                initialization_error: None,
                 active_profile: None,
                 profiles: BTreeMap::new(),
                 rules: BTreeMap::new(),
@@ -212,11 +278,19 @@ impl ProfileStore {
             return Ok(store);
         }
 
-        let content = fs::read_to_string(&index_path).map_err(io_error)?;
-        let index: StoreIndex = serde_json::from_str(&content)
-            .map_err(|err| PawsError::InvalidJson(err.to_string()))?;
+        let content = fs::read_to_string(&index_path).map_err(|error| {
+            PawsError::Core(format!(
+                "cannot read profile store index {}: {error}",
+                index_path.display()
+            ))
+        })?;
+        let index: StoreIndex = serde_json::from_str(&content).map_err(|error| {
+            PawsError::InvalidJson(format!("{}: {error}", index_path.display()))
+        })?;
+        validate_store_index(&root, &index)?;
         Ok(Self {
             root,
+            initialization_error: None,
             active_profile: index.active_profile,
             profiles: index
                 .profiles
@@ -235,13 +309,173 @@ impl ProfileStore {
         &self.root
     }
 
-    pub fn seed_empty() -> Self {
-        Self::open_default().unwrap_or_else(|_| Self {
-            root: default_store_root(),
-            active_profile: None,
-            profiles: BTreeMap::new(),
-            rules: BTreeMap::new(),
+    pub fn initialization_error(&self) -> Option<&str> {
+        self.initialization_error.as_deref()
+    }
+
+    fn ensure_available(&self) -> Result<(), PawsError> {
+        if let Some(error) = self.initialization_error() {
+            return Err(PawsError::Core(format!(
+                "profile store is unavailable: {error}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn checkpoint_profile(&self, profile_id: &str) -> Result<ProfileCheckpoint, PawsError> {
+        self.ensure_available()?;
+        let profile = self.profile(profile_id)?.clone();
+        let raw_yaml = fs::read(self.root.join(&profile.raw_yaml_path)).map_err(io_error)?;
+        let backup_yaml = profile
+            .yaml_backup_path
+            .as_ref()
+            .map(|path| fs::read(self.root.join(path)).map_err(io_error))
+            .transpose()?;
+        Ok(ProfileCheckpoint {
+            profile,
+            raw_yaml,
+            backup_yaml,
         })
+    }
+
+    pub fn restore_profile_checkpoint(
+        &mut self,
+        checkpoint: ProfileCheckpoint,
+    ) -> Result<(), PawsError> {
+        self.ensure_available()?;
+        let mut staged = self.clone();
+        let profile_id = checkpoint.profile.id.clone();
+        let mut writes = vec![(
+            self.root.join(&checkpoint.profile.raw_yaml_path),
+            checkpoint.raw_yaml,
+        )];
+        if let (Some(path), Some(content)) = (
+            checkpoint.profile.yaml_backup_path.as_ref(),
+            checkpoint.backup_yaml,
+        ) {
+            writes.push((self.root.join(path), content));
+        }
+        staged.profiles.insert(profile_id, checkpoint.profile);
+        self.commit_staged_with_files(staged, writes)
+    }
+
+    /// Removes a profile created by a failed higher-level import/activation
+    /// transaction while restoring the exact pre-import index in one commit.
+    pub fn rollback_profile_import(
+        &mut self,
+        profile_id: &str,
+        previous: ProfileStore,
+    ) -> Result<(), PawsError> {
+        self.ensure_available()?;
+        previous.ensure_available()?;
+        if self.root != previous.root {
+            return Err(PawsError::Core(
+                "profile import rollback belongs to a different store root".to_owned(),
+            ));
+        }
+        if previous.profiles.contains_key(profile_id) {
+            return Err(PawsError::Core(format!(
+                "profile import rollback target already existed: {profile_id}"
+            )));
+        }
+        let profile = self
+            .profiles
+            .get(profile_id)
+            .ok_or_else(|| PawsError::ProfileNotFound(profile_id.to_owned()))?;
+        let mut paths = vec![self.root.join(&profile.raw_yaml_path)];
+        if let Some(backup_path) = profile.yaml_backup_path.as_ref() {
+            paths.push(self.root.join(backup_path));
+        }
+        paths.extend([
+            self.root.join("runtime").join(format!("{profile_id}.yaml")),
+            self.root.join("runtime/providers/proxy").join(profile_id),
+            self.root.join("runtime/providers/rule").join(profile_id),
+            self.root.join("providers/proxy").join(profile_id),
+            self.root.join("providers/rule").join(profile_id),
+        ]);
+        self.commit_staged_delete(previous, &paths)
+    }
+
+    fn commit_staged(&mut self, staged: Self) -> Result<(), PawsError> {
+        staged.save()?;
+        *self = staged;
+        Ok(())
+    }
+
+    fn commit_staged_with_files(
+        &mut self,
+        staged: Self,
+        writes: Vec<(PathBuf, Vec<u8>)>,
+    ) -> Result<(), PawsError> {
+        let originals = writes
+            .iter()
+            .map(|(path, _)| match fs::read(path) {
+                Ok(content) => Ok(Some(content)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(io_error(error)),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut applied = 0usize;
+        for (path, content) in &writes {
+            if let Err(primary) = atomic_write(path, content) {
+                return Err(rollback_file_writes(
+                    &writes[..applied],
+                    &originals[..applied],
+                    primary,
+                ));
+            }
+            applied += 1;
+        }
+        if let Err(primary) = staged.save() {
+            return Err(rollback_file_writes(&writes, &originals, primary));
+        }
+        *self = staged;
+        Ok(())
+    }
+
+    fn commit_staged_delete(&mut self, staged: Self, paths: &[PathBuf]) -> Result<(), PawsError> {
+        let transaction_root = self.root.join(format!(".profile-delete-{}", now_nanos()));
+        fs::create_dir(&transaction_root).map_err(io_error)?;
+        let mut moved = Vec::new();
+        for (index, path) in paths.iter().enumerate() {
+            match fs::symlink_metadata(path) {
+                Ok(_) => {
+                    let staged_path = transaction_root.join(index.to_string());
+                    if let Err(primary) = fs::rename(path, &staged_path).map_err(io_error) {
+                        let rollback = restore_moved_paths(&moved);
+                        let _ = fs::remove_dir(&transaction_root);
+                        return Err(combine_transaction_errors(
+                            "profile deletion staging failed",
+                            primary,
+                            rollback,
+                        ));
+                    }
+                    moved.push((path.clone(), staged_path));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    let rollback = restore_moved_paths(&moved);
+                    let _ = fs::remove_dir(&transaction_root);
+                    return Err(combine_transaction_errors(
+                        "profile deletion inspection failed",
+                        io_error(error),
+                        rollback,
+                    ));
+                }
+            }
+        }
+        if let Err(primary) = staged.save() {
+            let rollback = restore_moved_paths(&moved);
+            let _ = fs::remove_dir(&transaction_root);
+            return Err(combine_transaction_errors(
+                "profile deletion index commit failed",
+                primary,
+                rollback,
+            ));
+        }
+        *self = staged;
+        let _ = fs::remove_dir_all(transaction_root);
+        Ok(())
     }
 
     pub fn import_profile_content(
@@ -287,6 +521,7 @@ impl ProfileStore {
         subscription_user_info: Option<SubscriptionUserInfo>,
         subscription_metadata: Option<SubscriptionMetadata>,
     ) -> Result<String, PawsError> {
+        self.ensure_available()?;
         let raw_profile = raw_yaml.into();
         let subscription_user_info =
             subscription_user_info.or_else(|| parse_subscription_userinfo_comment(&raw_profile));
@@ -298,16 +533,15 @@ impl ProfileStore {
         let id = next_id("profile");
         let raw_yaml_path = format!("profiles/{id}.yaml");
         let yaml_backup_path = format!("backups/{id}.yaml");
-        fs::write(self.root.join(&raw_yaml_path), &raw_yaml).map_err(io_error)?;
-        fs::write(self.root.join(&yaml_backup_path), &raw_yaml).map_err(io_error)?;
-        self.profiles.insert(
+        let mut staged = self.clone();
+        staged.profiles.insert(
             id.clone(),
             ProfileDocument {
                 id: id.clone(),
                 name: name.into(),
                 source: source.into(),
-                raw_yaml_path,
-                yaml_backup_path: Some(yaml_backup_path),
+                raw_yaml_path: raw_yaml_path.clone(),
+                yaml_backup_path: Some(yaml_backup_path.clone()),
                 subscription_url,
                 updated_at: Some(now_string()),
                 last_refresh_at: None,
@@ -319,10 +553,19 @@ impl ProfileStore {
                 subscription_metadata,
             },
         );
-        if self.active_profile.is_none() {
-            self.active_profile = Some(id.clone());
+        if staged.active_profile.is_none() {
+            staged.active_profile = Some(id.clone());
         }
-        self.save()?;
+        self.commit_staged_with_files(
+            staged,
+            vec![
+                (self.root.join(&raw_yaml_path), raw_yaml.as_bytes().to_vec()),
+                (
+                    self.root.join(&yaml_backup_path),
+                    raw_yaml.as_bytes().to_vec(),
+                ),
+            ],
+        )?;
         Ok(id)
     }
 
@@ -355,6 +598,42 @@ impl ProfileStore {
         subscription_user_info: Option<SubscriptionUserInfo>,
         subscription_metadata: Option<SubscriptionMetadata>,
     ) -> Result<(), PawsError> {
+        self.replace_profile_content_and_subscription_metadata(
+            profile_id,
+            raw_yaml,
+            subscription_user_info,
+            subscription_metadata,
+            None,
+        )
+    }
+
+    pub fn replace_profile_content_and_subscription_metadata(
+        &mut self,
+        profile_id: &str,
+        raw_yaml: impl Into<String>,
+        subscription_user_info: Option<SubscriptionUserInfo>,
+        subscription_metadata: Option<SubscriptionMetadata>,
+        subscription_identity: Option<(String, String)>,
+    ) -> Result<(), PawsError> {
+        self.ensure_available()?;
+        let subscription_identity = subscription_identity
+            .map(|(name, subscription_url)| {
+                let name = name.trim().to_owned();
+                if name.is_empty() {
+                    return Err(PawsError::Core("profile name cannot be empty".to_owned()));
+                }
+                let subscription_url = subscription_url.trim().to_owned();
+                let parsed = Url::parse(&subscription_url).map_err(|error| {
+                    PawsError::Core(format!("invalid subscription URL: {error}"))
+                })?;
+                if !matches!(parsed.scheme(), "http" | "https") {
+                    return Err(PawsError::Core(
+                        "subscription URL must use http or https".to_owned(),
+                    ));
+                }
+                Ok((name, subscription_url))
+            })
+            .transpose()?;
         let raw_profile = raw_yaml.into();
         let subscription_user_info =
             subscription_user_info.or_else(|| parse_subscription_userinfo_comment(&raw_profile));
@@ -363,15 +642,21 @@ impl ProfileStore {
             parse_subscription_metadata_comment(&raw_profile),
         );
         let raw_yaml = normalize_profile_content(&raw_profile)?;
+        let mut staged = self.clone();
         let (raw_path, backup_path) = {
             let refreshed_at = now_string();
-            let profile = self
+            let profile = staged
                 .profiles
                 .get_mut(profile_id)
                 .ok_or_else(|| PawsError::ProfileNotFound(profile_id.to_owned()))?;
             profile.updated_at = Some(refreshed_at.clone());
             profile.last_refresh_at = Some(refreshed_at);
             profile.last_refresh_error = None;
+            if let Some((name, subscription_url)) = subscription_identity {
+                profile.name = name;
+                profile.source = subscription_url.clone();
+                profile.subscription_url = Some(subscription_url);
+            }
             if subscription_user_info.is_some() {
                 profile.subscription_user_info = subscription_user_info;
             }
@@ -386,11 +671,11 @@ impl ProfileStore {
                 profile.yaml_backup_path.clone(),
             )
         };
-        fs::write(self.root.join(raw_path), &raw_yaml).map_err(io_error)?;
+        let mut writes = vec![(self.root.join(raw_path), raw_yaml.as_bytes().to_vec())];
         if let Some(backup_path) = backup_path {
-            fs::write(self.root.join(backup_path), &raw_yaml).map_err(io_error)?;
+            writes.push((self.root.join(backup_path), raw_yaml.as_bytes().to_vec()));
         }
-        self.save()
+        self.commit_staged_with_files(staged, writes)
     }
 
     pub fn mark_profile_refresh_failed(
@@ -398,13 +683,15 @@ impl ProfileStore {
         profile_id: &str,
         error: impl Into<String>,
     ) -> Result<(), PawsError> {
-        let profile = self
+        self.ensure_available()?;
+        let mut staged = self.clone();
+        let profile = staged
             .profiles
             .get_mut(profile_id)
             .ok_or_else(|| PawsError::ProfileNotFound(profile_id.to_owned()))?;
         profile.last_refresh_at = Some(now_string());
         profile.last_refresh_error = Some(error.into());
-        self.save()
+        self.commit_staged(staged)
     }
 
     pub fn update_profile_content(
@@ -412,17 +699,21 @@ impl ProfileStore {
         profile_id: &str,
         raw_yaml: impl Into<String>,
     ) -> Result<(), PawsError> {
+        self.ensure_available()?;
         let raw_yaml = normalize_profile_content(&raw_yaml.into())?;
+        let mut staged = self.clone();
         let raw_path = {
-            let profile = self
+            let profile = staged
                 .profiles
                 .get_mut(profile_id)
                 .ok_or_else(|| PawsError::ProfileNotFound(profile_id.to_owned()))?;
             profile.updated_at = Some(now_string());
             profile.raw_yaml_path.clone()
         };
-        fs::write(self.root.join(raw_path), raw_yaml).map_err(io_error)?;
-        self.save()
+        self.commit_staged_with_files(
+            staged,
+            vec![(self.root.join(raw_path), raw_yaml.into_bytes())],
+        )
     }
 
     pub fn update_profile_subscription(
@@ -431,6 +722,7 @@ impl ProfileStore {
         name: impl Into<String>,
         subscription_url: impl Into<String>,
     ) -> Result<(), PawsError> {
+        self.ensure_available()?;
         let name = name.into().trim().to_owned();
         if name.is_empty() {
             return Err(PawsError::Core("profile name cannot be empty".to_owned()));
@@ -442,19 +734,22 @@ impl ProfileStore {
                 "subscription URL must use http or https".to_owned(),
             ));
         }
-        let profile = self
+        let mut staged = self.clone();
+        let profile = staged
             .profiles
             .get_mut(profile_id)
             .ok_or_else(|| PawsError::ProfileNotFound(profile_id.to_owned()))?;
         profile.name = name;
         profile.source = subscription_url.clone();
         profile.subscription_url = Some(subscription_url);
-        self.save()
+        self.commit_staged(staged)
     }
 
     pub fn restore_profile_backup(&mut self, profile_id: &str) -> Result<(), PawsError> {
+        self.ensure_available()?;
+        let mut staged = self.clone();
         let (raw_path, backup_path) = {
-            let profile = self
+            let profile = staged
                 .profiles
                 .get_mut(profile_id)
                 .ok_or_else(|| PawsError::ProfileNotFound(profile_id.to_owned()))?;
@@ -466,29 +761,35 @@ impl ProfileStore {
             (profile.raw_yaml_path.clone(), backup_path)
         };
         let backup = fs::read_to_string(self.root.join(backup_path)).map_err(io_error)?;
-        fs::write(self.root.join(raw_path), backup).map_err(io_error)?;
-        self.save()
+        self.commit_staged_with_files(
+            staged,
+            vec![(self.root.join(raw_path), backup.into_bytes())],
+        )
     }
 
     pub fn delete_profile(&mut self, profile_id: &str) -> Result<(), PawsError> {
-        let profile = self
+        self.ensure_available()?;
+        let mut staged = self.clone();
+        let profile = staged
             .profiles
             .remove(profile_id)
             .ok_or_else(|| PawsError::ProfileNotFound(profile_id.to_owned()))?;
-        let _ = fs::remove_file(self.root.join(profile.raw_yaml_path));
+        let mut paths = vec![self.root.join(profile.raw_yaml_path)];
         if let Some(backup_path) = profile.yaml_backup_path {
-            let _ = fs::remove_file(self.root.join(backup_path));
+            paths.push(self.root.join(backup_path));
         }
-        let _ = fs::remove_file(self.root.join("runtime").join(format!("{profile_id}.yaml")));
-        let _ = fs::remove_dir_all(self.root.join("runtime/providers/proxy").join(profile_id));
-        let _ = fs::remove_dir_all(self.root.join("runtime/providers/rule").join(profile_id));
-        let _ = fs::remove_dir_all(self.root.join("providers/proxy").join(profile_id));
-        let _ = fs::remove_dir_all(self.root.join("providers/rule").join(profile_id));
-        self.rules.retain(|_, rule| rule.profile_id != profile_id);
-        if self.active_profile.as_deref() == Some(profile_id) {
-            self.active_profile = self.profiles.keys().next().cloned();
+        paths.extend([
+            self.root.join("runtime").join(format!("{profile_id}.yaml")),
+            self.root.join("runtime/providers/proxy").join(profile_id),
+            self.root.join("runtime/providers/rule").join(profile_id),
+            self.root.join("providers/proxy").join(profile_id),
+            self.root.join("providers/rule").join(profile_id),
+        ]);
+        staged.rules.retain(|_, rule| rule.profile_id != profile_id);
+        if staged.active_profile.as_deref() == Some(profile_id) {
+            staged.active_profile = staged.profiles.keys().next().cloned();
         }
-        self.save()
+        self.commit_staged_delete(staged, &paths)
     }
 
     pub fn add_profile_traffic(
@@ -497,16 +798,18 @@ impl ProfileStore {
         upload_delta: u64,
         download_delta: u64,
     ) -> Result<(), PawsError> {
+        self.ensure_available()?;
         if upload_delta == 0 && download_delta == 0 {
             return Ok(());
         }
-        let profile = self
+        let mut staged = self.clone();
+        let profile = staged
             .profiles
             .get_mut(profile_id)
             .ok_or_else(|| PawsError::ProfileNotFound(profile_id.to_owned()))?;
         profile.upload_bytes = profile.upload_bytes.saturating_add(upload_delta);
         profile.download_bytes = profile.download_bytes.saturating_add(download_delta);
-        self.save()
+        self.commit_staged(staged)
     }
 
     pub fn set_profile_dns_servers(
@@ -683,14 +986,16 @@ impl ProfileStore {
     }
 
     pub fn set_active(&mut self, id: &str) -> Result<(), PawsError> {
+        self.ensure_available()?;
         if !self.profiles.contains_key(id) {
             return Err(PawsError::ProfileNotFound(id.to_owned()));
         }
         if self.active_profile.as_deref() == Some(id) {
             return Ok(());
         }
-        self.active_profile = Some(id.to_owned());
-        self.save()
+        let mut staged = self.clone();
+        staged.active_profile = Some(id.to_owned());
+        self.commit_staged(staged)
     }
 
     pub fn active_profile(&self) -> Option<&str> {
@@ -698,6 +1003,7 @@ impl ProfileStore {
     }
 
     pub fn profile(&self, profile_id: &str) -> Result<&ProfileDocument, PawsError> {
+        self.ensure_available()?;
         self.profiles
             .get(profile_id)
             .ok_or_else(|| PawsError::ProfileNotFound(profile_id.to_owned()))
@@ -716,14 +1022,16 @@ impl ProfileStore {
         group_name: impl Into<String>,
         proxy_name: impl Into<String>,
     ) -> Result<(), PawsError> {
-        let profile = self
+        self.ensure_available()?;
+        let mut staged = self.clone();
+        let profile = staged
             .profiles
             .get_mut(profile_id)
             .ok_or_else(|| PawsError::ProfileNotFound(profile_id.to_owned()))?;
         profile
             .selected_proxies
             .insert(group_name.into(), proxy_name.into());
-        self.save()
+        self.commit_staged(staged)
     }
 
     pub fn raw_yaml(&self, profile_id: &str) -> Result<String, PawsError> {
@@ -818,9 +1126,10 @@ impl ProfileStore {
         rules_text: &str,
     ) -> Result<Vec<String>, PawsError> {
         self.profile(profile_id)?;
+        let mut staged = self.clone();
         let source = source.into();
         let imported_rules = parse_imported_rule_lines(rules_text)?;
-        let mut next_order = self
+        let mut next_order = staged
             .rules
             .values()
             .filter(|rule| rule.profile_id == profile_id)
@@ -831,7 +1140,7 @@ impl ProfileStore {
         let mut ids = Vec::new();
         for line in imported_rules {
             let id = next_id("rule");
-            self.rules.insert(
+            staged.rules.insert(
                 id.clone(),
                 RuleDocument {
                     id: id.clone(),
@@ -845,7 +1154,7 @@ impl ProfileStore {
             next_order = next_order.saturating_add(1);
             ids.push(id);
         }
-        self.save()?;
+        self.commit_staged(staged)?;
         Ok(ids)
     }
 
@@ -949,7 +1258,9 @@ impl ProfileStore {
         rule_id: &str,
         enabled: bool,
     ) -> Result<(), PawsError> {
-        let rule = self
+        self.ensure_available()?;
+        let mut staged = self.clone();
+        let rule = staged
             .rules
             .get_mut(rule_id)
             .ok_or_else(|| PawsError::RuleNotFound(rule_id.to_owned()))?;
@@ -957,7 +1268,7 @@ impl ProfileStore {
             return Err(PawsError::RuleNotFound(rule_id.to_owned()));
         }
         rule.enabled = enabled;
-        self.save()
+        self.commit_staged(staged)
     }
 
     pub fn reorder_rules(
@@ -965,8 +1276,10 @@ impl ProfileStore {
         profile_id: &str,
         ordered_rule_ids: &[String],
     ) -> Result<(), PawsError> {
+        self.ensure_available()?;
+        let mut staged = self.clone();
         for (index, rule_id) in ordered_rule_ids.iter().enumerate() {
-            let rule = self
+            let rule = staged
                 .rules
                 .get_mut(rule_id)
                 .ok_or_else(|| PawsError::RuleNotFound(rule_id.clone()))?;
@@ -975,14 +1288,17 @@ impl ProfileStore {
             }
             rule.order = index as u32;
         }
-        self.save()
+        self.commit_staged(staged)
     }
 
     pub fn delete_rule(&mut self, rule_id: &str) -> Result<(), PawsError> {
-        self.rules
+        self.ensure_available()?;
+        let mut staged = self.clone();
+        staged
+            .rules
             .remove(rule_id)
             .ok_or_else(|| PawsError::RuleNotFound(rule_id.to_owned()))?;
-        self.save()
+        self.commit_staged(staged)
     }
 
     pub fn build_runtime_yaml(
@@ -1011,8 +1327,8 @@ impl ProfileStore {
             ));
         };
 
-        let controller_access = controller_access_from_mapping(root);
-        let network_ports = network_ports_from_mapping(root);
+        let controller_access = controller_access_from_mapping(root)?;
+        let network_ports = network_ports_from_mapping(root)?;
         sanitize_app_managed_config(root);
         put_string(root, "mode", mode.as_str());
         put_bool(root, "ipv6", vpn_options.ipv6);
@@ -1039,11 +1355,11 @@ impl ProfileStore {
     }
 
     pub fn write_runtime_yaml(&self, profile_id: &str, yaml: &str) -> Result<(), PawsError> {
-        fs::write(
+        self.ensure_available()?;
+        atomic_write(
             self.root.join("runtime").join(format!("{profile_id}.yaml")),
-            yaml,
+            yaml.as_bytes(),
         )
-        .map_err(io_error)
     }
 
     pub fn persist(&self) -> Result<(), PawsError> {
@@ -1087,6 +1403,7 @@ impl ProfileStore {
     }
 
     fn save(&self) -> Result<(), PawsError> {
+        self.ensure_available()?;
         let index = StoreIndex {
             version: STORE_VERSION,
             active_profile: self.active_profile.clone(),
@@ -1095,7 +1412,7 @@ impl ProfileStore {
         };
         let json = serde_json::to_string_pretty(&index)
             .map_err(|err| PawsError::InvalidJson(err.to_string()))?;
-        fs::write(self.root.join("profiles.json"), json).map_err(io_error)
+        atomic_write(self.root.join("profiles.json"), json.as_bytes())
     }
 
     #[cfg(test)]
@@ -1138,10 +1455,16 @@ impl ProfileStore {
     }
 }
 
-fn default_store_root() -> PathBuf {
+fn default_store_root_from_environment() -> Result<PathBuf, PawsError> {
+    if let Some(value) = std::env::var_os("PAWS_HOME") {
+        if value.is_empty() {
+            return Err(PawsError::Core("PAWS_HOME must not be empty".to_owned()));
+        }
+        return Ok(PathBuf::from(value));
+    }
     std::env::current_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join(".paws")
+        .map(|current_dir| current_dir.join(".paws"))
+        .map_err(io_error)
 }
 
 fn next_id(prefix: &str) -> String {
@@ -1161,6 +1484,137 @@ fn now_nanos() -> u128 {
 
 fn io_error(error: std::io::Error) -> PawsError {
     PawsError::Io(error.to_string())
+}
+
+fn validate_store_index(root: &Path, index: &StoreIndex) -> Result<(), PawsError> {
+    if index.version != STORE_VERSION {
+        return Err(PawsError::Core(format!(
+            "unsupported profile store version {}; expected {STORE_VERSION}",
+            index.version
+        )));
+    }
+    let mut profile_ids = HashSet::new();
+    for profile in &index.profiles {
+        if profile.id.trim().is_empty() || !profile_ids.insert(profile.id.as_str()) {
+            return Err(PawsError::Core(format!(
+                "profile store contains an empty or duplicate profile id: {}",
+                profile.id
+            )));
+        }
+        validate_index_file(root, &profile.raw_yaml_path, "profile YAML")?;
+        if let Some(backup_path) = profile.yaml_backup_path.as_deref() {
+            validate_index_file(root, backup_path, "profile backup")?;
+        }
+    }
+    if let Some(active_profile) = index.active_profile.as_deref() {
+        if !profile_ids.contains(active_profile) {
+            return Err(PawsError::Core(format!(
+                "profile store active profile does not exist: {active_profile}"
+            )));
+        }
+    }
+    let mut rule_ids = HashSet::new();
+    for rule in &index.rules {
+        if rule.id.trim().is_empty() || !rule_ids.insert(rule.id.as_str()) {
+            return Err(PawsError::Core(format!(
+                "profile store contains an empty or duplicate rule id: {}",
+                rule.id
+            )));
+        }
+        if !profile_ids.contains(rule.profile_id.as_str()) {
+            return Err(PawsError::Core(format!(
+                "profile store rule {} references missing profile {}",
+                rule.id, rule.profile_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_index_file(root: &Path, relative: &str, label: &str) -> Result<(), PawsError> {
+    let path = Path::new(relative);
+    if path.as_os_str().is_empty()
+        || !path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(PawsError::Core(format!(
+            "profile store {label} path is unsafe: {relative}"
+        )));
+    }
+    let resolved = root.join(path);
+    fs::read(&resolved).map_err(|error| {
+        PawsError::Core(format!(
+            "profile store cannot read {label} {}: {}",
+            resolved.display(),
+            io_error(error)
+        ))
+    })?;
+    Ok(())
+}
+
+fn atomic_write(path: impl AsRef<Path>, content: &[u8]) -> Result<(), PawsError> {
+    let path = path.as_ref();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("paws-data");
+    let temporary_path = path.with_file_name(format!(".{file_name}.tmp-{}", now_nanos()));
+    if let Err(error) = fs::write(&temporary_path, content) {
+        return Err(io_error(error));
+    }
+    if let Err(error) = fs::rename(&temporary_path, path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(io_error(error));
+    }
+    Ok(())
+}
+
+fn rollback_file_writes(
+    writes: &[(PathBuf, Vec<u8>)],
+    originals: &[Option<Vec<u8>>],
+    primary: PawsError,
+) -> PawsError {
+    let mut rollback_errors = Vec::new();
+    for ((path, _), original) in writes.iter().zip(originals).rev() {
+        let result = match original {
+            Some(content) => atomic_write(path, content),
+            None => match fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(io_error(error)),
+            },
+        };
+        if let Err(error) = result {
+            rollback_errors.push(format!("{}: {error}", path.display()));
+        }
+    }
+    combine_transaction_errors("profile store transaction failed", primary, rollback_errors)
+}
+
+fn restore_moved_paths(moved: &[(PathBuf, PathBuf)]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (original, staged) in moved.iter().rev() {
+        if let Err(error) = fs::rename(staged, original) {
+            errors.push(format!("{}: {}", original.display(), io_error(error)));
+        }
+    }
+    errors
+}
+
+fn combine_transaction_errors(
+    context: &str,
+    primary: PawsError,
+    rollback_errors: Vec<String>,
+) -> PawsError {
+    if rollback_errors.is_empty() {
+        PawsError::Core(format!("{context}: {primary}; prior data was restored"))
+    } else {
+        PawsError::Core(format!(
+            "{context}: {primary}; rollback also failed: {}",
+            rollback_errors.join("; ")
+        ))
+    }
 }
 
 #[cfg(test)]

@@ -1,17 +1,21 @@
 use super::super::*;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
-pub(crate) fn logs_page(state: Signal<State>) -> Element {
+pub(crate) fn logs_page() -> Element {
+    let services = use_context::<UiServices>();
+    let export_services = services.clone();
     let mut log_query = use_signal(String::new);
     let mut log_filter = use_signal(|| LogLevelFilter::All);
     let mut history_open = use_signal(|| false);
     let mut selected_log = use_signal(|| None::<VirtualLogRow>);
     let mut delete_archive = use_signal(|| None::<String>);
-    let current = state.read().clone();
-    let locale = current.locale;
-    let recording_enabled = current.log_recording.enabled;
-    let recording_pending = current.log_recording_pending;
-    let export_pending = current.log_archive_export_pending.clone();
-    let delete_pending = current.log_archive_delete_pending.clone();
+    let stores = use_context::<UiStores>();
+    let operations = use_context::<UiOperationStores>();
+    let locale = stores.preferences.read().locale;
+    let current = stores.logs.read();
+    let recording_enabled = current.recording.enabled;
+    let recording_error = current.recording_error.clone();
     let current_tab = translate_ui(locale, tr::page_tr_260());
     let history_tab = translate_ui(locale, tr::page_tr_261());
     let tab_options = vec![current_tab.clone(), history_tab.clone()];
@@ -23,7 +27,7 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
     let query_value = log_query();
     let normalized_query = normalize_log_query(&query_value);
     let filter_value = log_filter();
-    let all_label = translate_ui(current.locale, tr::logs_level_all());
+    let all_label = translate_ui(locale, tr::logs_level_all());
     let info_label = "Info".to_owned();
     let warn_label = "Warn".to_owned();
     let error_label = "Error".to_owned();
@@ -42,9 +46,8 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
         LogLevelFilter::Error => error_label.clone(),
         LogLevelFilter::Debug => debug_label.clone(),
     };
-    let total_log_count = current.snapshot.logs.len();
+    let total_log_count = current.logs.len();
     let logs = current
-        .snapshot
         .logs
         .iter()
         .filter(|log| matches_log_filter_normalized(log, filter_value, &normalized_query))
@@ -80,9 +83,9 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
     };
     let selected_log_value = selected_log();
     let delete_archive_value = delete_archive();
-    let archives_empty = current.log_recording.archives.is_empty();
+    let archives_empty = current.recording.archives.is_empty();
     let archives = current
-        .log_recording
+        .recording
         .archives
         .iter()
         .cloned()
@@ -94,12 +97,7 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                 .unwrap_or_else(|| archive.date.clone());
             let detail = format!("{} · {}", format_total(archive.bytes), updated_at);
             VirtualLogArchiveRow {
-                exporting: export_pending.as_deref() == Some(archive.file_name.as_str()),
-                deleting: delete_pending.as_deref() == Some(archive.file_name.as_str()),
-                export_disabled: export_pending.is_some() || delete_pending.is_some(),
-                delete_disabled: archive.active
-                    || export_pending.is_some()
-                    || delete_pending.is_some(),
+                active: archive.active,
                 detail: if archive.active {
                     format!("{detail} · {}", translate_ui(locale, tr::hard_zh_017()))
                 } else {
@@ -129,7 +127,7 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                 text {
                     content: format!(
                         "{} {}",
-                        current.log_recording.archives.len(),
+                        current.recording.archives.len(),
                         translate_ui(locale, tr::page_tr_264())
                     ),
                     font_size: typography::XS,
@@ -137,6 +135,17 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                 }
             }
             row { height: 6.0 }
+            if let Some(error) = recording_error {
+                text {
+                    width: "100%",
+                    content: error,
+                    font_size: typography::XS,
+                    line_height: 16.0,
+                    font_color: danger(),
+                    max_lines: 3,
+                }
+                row { height: 6.0 }
+            }
             row {
                 width: "100%",
                 justify_content: "center",
@@ -163,8 +172,9 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
                         VirtualLogArchiveList {
                             items: archives,
                             palette,
+                            log_operations: operations.logs,
                             on_export: move |file_name: String| {
-                                dispatch(state, Action::ExportLogArchive(file_name));
+                                export_services.export_log_archive(file_name);
                             },
                             on_delete: move |file_name: String| {
                                 delete_archive.set(Some(file_name));
@@ -241,38 +251,48 @@ pub(crate) fn logs_page(state: Signal<State>) -> Element {
         }
     };
     let action = rsx! {
-        FlatButton {
-            variant: FlatButtonVariant::Ghost,
-            size: ButtonSize::Icon,
-            disabled: Some(recording_pending),
-            onclick: move |_| dispatch(state, Action::ToggleLogRecording),
-            if recording_pending {
-                Spinner { size: 17.0, color: Some(text_color()) }
-            } else if recording_enabled {
-                {arkit::icon("square", 17.0, danger())}
-            } else {
-                {arkit::icon("play", 17.0, success())}
-            }
-        }
+        LogRecordingAction { enabled: recording_enabled }
     };
-    let page = fixed_scaffold(state, Route::Logs {}, action, body);
+    let page = fixed_scaffold(Route::Logs {}, action, body);
     rsx! {
         {page}
         if let Some(log) = selected_log_value {
             {log_detail_dialog(locale, log, selected_log)}
         }
         if let Some(file_name) = delete_archive_value {
-            {log_archive_delete_dialog(state, locale, file_name, delete_archive)}
+            {log_archive_delete_dialog(locale, file_name, delete_archive)}
+        }
+    }
+}
+
+#[component]
+fn LogRecordingAction(enabled: bool) -> Element {
+    let services = use_context::<UiServices>();
+    let operations = use_context::<UiOperationStores>();
+    let pending = operations.logs.read().recording_pending;
+    rsx! {
+        FlatButton {
+            variant: FlatButtonVariant::Ghost,
+            size: ButtonSize::Icon,
+            disabled: Some(pending),
+            onclick: move |_| services.toggle_log_recording(),
+            if pending {
+                Spinner { size: 17.0, color: Some(text_color()) }
+            } else if enabled {
+                {arkit::icon("square", 17.0, danger())}
+            } else {
+                {arkit::icon("play", 17.0, success())}
+            }
         }
     }
 }
 
 fn log_archive_delete_dialog(
-    state: Signal<State>,
     locale: UiLocale,
     file_name: String,
     mut selected: Signal<Option<String>>,
 ) -> Element {
+    let services = use_context::<UiServices>();
     let delete_file_name = file_name.clone();
     rsx! {
         FlatDialog {
@@ -300,7 +320,7 @@ fn log_archive_delete_dialog(
                         variant: FlatButtonVariant::Destructive,
                         onclick: move |_| {
                             selected.set(None);
-                            dispatch(state, Action::DeleteLogArchive(delete_file_name.clone()));
+                            services.delete_log_archive(delete_file_name.clone());
                         },
                         text { content: translate_ui(locale, tr::page_tr_115()), font_size: 13.0, font_weight: 600, font_color: destructive_text() }
                     }
@@ -331,16 +351,14 @@ struct VirtualLogPalette {
 struct VirtualLogArchiveRow {
     file_name: String,
     detail: String,
-    exporting: bool,
-    deleting: bool,
-    export_disabled: bool,
-    delete_disabled: bool,
+    active: bool,
 }
 
 #[component]
 fn VirtualLogArchiveList(
     items: Vec<VirtualLogArchiveRow>,
     palette: VirtualLogPalette,
+    log_operations: Signal<LogOperationState>,
     on_export: EventHandler<String>,
     on_delete: EventHandler<String>,
 ) -> Element {
@@ -359,7 +377,13 @@ fn VirtualLogArchiveList(
             return rsx! {};
         };
         rsx! {
-            VirtualLogArchiveRowView { item, palette, on_export, on_delete }
+            VirtualLogArchiveRowView {
+                item,
+                palette,
+                log_operations,
+                on_export,
+                on_delete,
+            }
         }
     });
 
@@ -412,16 +436,23 @@ fn VirtualLogList(
 fn VirtualLogArchiveRowView(
     item: VirtualLogArchiveRow,
     palette: VirtualLogPalette,
+    log_operations: Signal<LogOperationState>,
     on_export: EventHandler<String>,
     on_delete: EventHandler<String>,
 ) -> Element {
-    let export_color = if item.export_disabled && !item.exporting {
+    let pending = log_operations.read();
+    let exporting = pending.archive_export_pending.as_deref() == Some(item.file_name.as_str());
+    let deleting = pending.archive_delete_pending.as_deref() == Some(item.file_name.as_str());
+    let export_disabled =
+        pending.archive_export_pending.is_some() || pending.archive_delete_pending.is_some();
+    let delete_disabled = item.active || export_disabled;
+    let export_color = if export_disabled && !exporting {
         palette.muted_foreground
     } else {
         palette.foreground
     };
     let export_file_name = item.file_name.clone();
-    let delete_color = if item.delete_disabled && !item.deleting {
+    let delete_color = if delete_disabled && !deleting {
         palette.muted_foreground
     } else {
         palette.danger
@@ -472,24 +503,24 @@ fn VirtualLogArchiveRowView(
             }
             VirtualLogArchiveAction {
                 icon: "download",
-                pending: item.exporting,
+                pending: exporting,
                 color: export_color,
-                accessibility: if item.exporting { "exporting log".to_owned() } else { "export log".to_owned() },
-                disabled: item.export_disabled,
+                accessibility: if exporting { "exporting log".to_owned() } else { "export log".to_owned() },
+                disabled: export_disabled,
                 on_click: move |_| on_export.call(export_file_name.clone()),
             }
             VirtualLogArchiveAction {
                 icon: "x",
-                pending: item.deleting,
+                pending: deleting,
                 color: delete_color,
-                accessibility: if item.deleting {
+                accessibility: if deleting {
                     "deleting log".to_owned()
-                } else if item.delete_disabled {
+                } else if delete_disabled {
                     "stop recording before deleting this log".to_owned()
                 } else {
                     "delete log".to_owned()
                 },
-                disabled: item.delete_disabled,
+                disabled: delete_disabled,
                 on_click: move |_| on_delete.call(delete_file_name.clone()),
             }
         }
@@ -519,7 +550,7 @@ fn VirtualLogArchiveAction(
                 }
             },
             if pending {
-                Spinner { size: 16.0, color: Some(color) }
+                {virtual_loading_indicator(16.0, color)}
             } else {
                 {arkit::icon(icon, 16.0, color)}
             }

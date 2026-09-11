@@ -9,6 +9,7 @@ pub(crate) enum RequestStatusFilter {
 }
 
 impl RequestStatusFilter {
+    #[cfg(test)]
     pub(crate) const ALL: [Self; 3] = [Self::All, Self::Active, Self::Ended];
 }
 

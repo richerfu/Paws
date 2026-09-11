@@ -169,6 +169,7 @@ pub(super) fn baseline_meow_traffic_sample(state: &mut CoreState) {
     state.last_meow_traffic_sample = Some((Instant::now(), upload_total, download_total));
 }
 
+#[cfg(test)]
 pub(super) fn settle_traffic_before_platform_stop(
     state: &mut CoreState,
     tun_stats: Option<&TunStats>,
@@ -335,7 +336,12 @@ pub(super) fn platform_vpn_state(state: &CoreState) -> PlatformVpnState {
     PlatformVpnState {
         start_attempt_id: state.platform_start_attempt_id.clone(),
         start_outcome: state.platform_start_outcome,
+        delivery_observed: state.platform_start_delivery_observed,
         extension_attached: state.platform_extension_attached,
+        stop_requested: state.platform_stop_requested,
+        extension_owner_pid: state.platform_extension_owner_pid,
+        extension_owner_start_time: state.platform_extension_owner_start_time,
+        cleanup_complete: state.platform_vpn_cleanup_complete,
         starting: state.platform_vpn_starting,
         running: state.platform_vpn_running,
         network_protected: state.platform_network_protected,

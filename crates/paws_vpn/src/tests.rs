@@ -188,6 +188,126 @@ fn duplicate_fd_rejects_invalid_fd() {
     assert!(duplicate_fd(-1).is_err());
 }
 
+#[test]
+fn worker_exit_publishes_failure_only_for_its_own_generation() {
+    let state = Mutex::new(VpnLifecycle::Running {
+        fd: 7,
+        generation: 3,
+    });
+    let options = Mutex::new(Some(VpnOptions::default()));
+    let generation = AtomicU64::new(3);
+
+    publish_task_exit(&state, &options, &generation, 2, "stale".to_owned());
+    assert!(matches!(
+        *state.lock().unwrap(),
+        VpnLifecycle::Running { generation: 3, .. }
+    ));
+
+    publish_task_exit(&state, &options, &generation, 3, "worker failed".to_owned());
+    assert_eq!(
+        *state.lock().unwrap(),
+        VpnLifecycle::Failed {
+            generation: 3,
+            error: "worker failed".to_owned(),
+        }
+    );
+    assert!(options.lock().unwrap().is_none());
+}
+
+#[tokio::test]
+async fn stop_waits_for_idle_worker_teardown() {
+    let session = TunSession::default();
+    let mut fds = [0_i32; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+
+    session
+        .start(
+            fds[0],
+            VpnOptions::default(),
+            direct_mode_tunnel(),
+            SnifferConfig::default(),
+        )
+        .await
+        .unwrap();
+    assert!(session.is_running());
+
+    tokio::time::timeout(Duration::from_secs(2), session.stop())
+        .await
+        .expect("idle VPN worker did not tear down")
+        .unwrap();
+    assert_eq!(session.lifecycle(), VpnLifecycle::Stopped);
+    unsafe {
+        libc::close(fds[0]);
+        libc::close(fds[1]);
+    }
+}
+
+#[tokio::test]
+async fn rapid_stop_cannot_lose_the_worker_shutdown_wakeup() {
+    let session = TunSession::default();
+    for _ in 0..32 {
+        let mut fds = [0_i32; 2];
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        session
+            .start(
+                fds[0],
+                VpnOptions::default(),
+                direct_mode_tunnel(),
+                SnifferConfig::default(),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), session.stop())
+            .await
+            .expect("rapid stop lost its shutdown wakeup")
+            .unwrap();
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn tun_eof_publishes_an_observable_terminal_failure() {
+    let session = TunSession::default();
+    let mut fds = [0_i32; 2];
+    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+
+    let generation = session
+        .start(
+            fds[0],
+            VpnOptions::default(),
+            direct_mode_tunnel(),
+            SnifferConfig::default(),
+        )
+        .await
+        .unwrap();
+    unsafe {
+        libc::close(fds[1]);
+    }
+
+    let exit = tokio::time::timeout(Duration::from_secs(2), session.await_exit(generation))
+        .await
+        .expect("TUN EOF was not published")
+        .unwrap();
+    assert_eq!(exit.generation, generation);
+    assert!(exit.error.contains("exited unexpectedly"));
+    assert_eq!(
+        session.lifecycle(),
+        VpnLifecycle::Failed {
+            generation,
+            error: exit.error,
+        }
+    );
+    assert!(!session.is_running());
+
+    session.stop().await.unwrap();
+    unsafe {
+        libc::close(fds[0]);
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn lwip_stack_accepts_and_replies_to_tun_udp_packets() {
     let _guard = LWIP_RUNTIME_LOCK.lock().await;

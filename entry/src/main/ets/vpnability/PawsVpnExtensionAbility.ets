@@ -19,6 +19,32 @@ const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'PawsVpn';
 const VPN_SPEED_NOTIFICATION_ID: number = 1001;
 const NOTIFICATION_RETRY_DELAY_MS: number = 30000;
+const PLATFORM_OPERATION_TIMEOUT_MS: number = 30000;
+
+function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve: (value: T) => void, reject: (reason?: Object | string) => void): void => {
+    let settled = false;
+    const timer = setTimeout((): void => {
+      if (!settled) {
+        settled = true;
+        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      }
+    }, timeoutMs);
+    operation.then((value: T): void => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(value);
+      }
+    }).catch((err: Error): void => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      }
+    });
+  });
+}
 
 interface PawsTrafficSnapshot {
   downloadSpeed?: number;
@@ -89,6 +115,18 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   private notificationWantAgent?: WantAgent;
   private notificationWantAgentRequest?: Promise<WantAgent>;
   private platformSubscriptionActive: boolean = false;
+  private platformSubscriptionGeneration: number = 0;
+  private requestGeneration: number = 0;
+  private inFlightAttemptId: string = '';
+  private activeAttemptId: string = '';
+  private heartbeatTimer: number = -1;
+  private requestChain: Promise<void> = Promise.resolve();
+  private pendingPlatformOperation?: Promise<void>;
+  private pendingPlatformOperationConnection?: vpnExtension.VpnConnection;
+  private pendingNativePrepare?: Promise<void>;
+  private pendingNativePrepareAttemptId: string = '';
+  private pendingCleanup?: Promise<string>;
+  private pendingCleanupConnection?: vpnExtension.VpnConnection;
 
   public onCreate(want: Want): void {
     super.onCreate(want);
@@ -103,175 +141,436 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
 
   public onDestroy(): void {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'onDestroy');
-    pawsUi.setPlatformVpnRunning(false);
-    this.destroyVpn();
+    this.requestGeneration += 1;
+    this.stopHeartbeat();
+    this.stopPlatformSubscription();
+    this.destroyVpn().catch((err: Error): void => {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'onDestroy cleanup failed %{public}s', describeError(err));
+    });
   }
 
-  private configureNativeHome(): void {
+  private configureNativeHome(): boolean {
     try {
       setPawsBundleName(this.context.applicationInfo.name);
       pawsUi.configureAppHome(`${this.context.filesDir}/paws`);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'configured native home');
+      return true;
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'configure native home failed %{public}s', describeError(err));
+      return false;
     }
   }
 
   private startFromWant(want: Want): void {
-    this.configureNativeHome();
-    const sharedMemory = readPlatformSharedMemoryFds(want);
-    if (!sharedMemory) {
-      // The first-authorization system dialog may bootstrap the Extension with
-      // a replacement Want that contains no application parameters. Keep the
-      // Extension idle until EntryAbility redispatches the original Want via
-      // onRequest; it owns the bounded failure if that rebound never arrives.
-      hilog.warn(
-        LOG_DOMAIN,
-        LOG_TAG,
-        'VPN authorization bootstrap has no shared-memory descriptors; waiting for rebound request',
-      );
+    this.enqueueStartFromWant(want);
+  }
+
+  private enqueueStartFromWant(want: Want): void {
+    if (!this.configureNativeHome()) {
       return;
     }
-    try {
-      pawsUi.attachPlatformSharedMemory(sharedMemory.ashmemFd, sharedMemory.notificationFd);
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'attached platform shared memory');
-      this.startPlatformSubscription();
-    } catch (err) {
-      this.starting = false;
-      this.recordVpnFailure(`attach platform shared memory failed: ${describeError(err)}`);
+    const sharedMemory = readPlatformSharedMemoryFds(want);
+    if (!sharedMemory) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG,
+        'VPN authorization bootstrap has no shared-memory descriptors; waiting for rebound request');
       return;
     }
     let attemptId: string;
+    let optionsJson: string;
     try {
       attemptId = readPlatformStartAttemptId(want);
-      pawsUi.bindPlatformVpnStart(attemptId);
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'bound VPN start attempt %{public}s', attemptId);
+      optionsJson = readOptionsJson(want);
     } catch (err) {
-      const message = describeError(err) || 'VPN request has no valid start attempt';
-      this.recordVpnFailure(message);
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN request rejected %{public}s', message);
-      this.starting = false;
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN request rejected %{public}s', describeError(err));
       return;
     }
-    if (this.tunFd >= 0) {
-      this.starting = false;
-      try {
-        pawsUi.setPlatformVpnRunning(true);
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'reported existing VPN to rebound platform shared memory');
-      } catch (err) {
-        this.recordVpnFailure(`report existing VPN state failed: ${describeError(err)}`);
+    if (!this.isLatestWant(sharedMemory.ashmemFd, sharedMemory.notificationFd, attemptId)) {
+      return;
+    }
+    // The authorization workaround intentionally redispatches the same Want.
+    // Validate its descriptors first, then keep an already queued, starting,
+    // or connected owner intact instead of superseding it with itself.
+    if (attemptId === this.inFlightAttemptId || attemptId === this.activeAttemptId) {
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'ignored duplicate VPN request %{public}s', attemptId);
+      return;
+    }
+    const generation = ++this.requestGeneration;
+    this.inFlightAttemptId = attemptId;
+    this.requestChain = this.requestChain.then(async (): Promise<void> => {
+      await this.handleRequest(
+        sharedMemory.ashmemFd,
+        sharedMemory.notificationFd,
+        attemptId,
+        optionsJson,
+        generation,
+      );
+    }).catch(async (err: Error): Promise<void> => {
+      if (generation !== this.requestGeneration || this.inFlightAttemptId !== attemptId) {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'ignored stale VPN request completion');
+        return;
       }
-      return;
-    }
-    if (this.starting) {
-      try {
-        pawsUi.setPlatformVpnStarting(true);
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'reported pending VPN to rebound platform shared memory');
-      } catch (err) {
-        this.recordVpnFailure(`report pending VPN state failed: ${describeError(err)}`);
+      const message = describeError(err) || 'VPN startup pipeline failed';
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN startup pipeline failed %{public}s', message);
+      if (this.activeAttemptId === attemptId) {
+        this.recordVpnFailureForAttempt(attemptId, message);
+        await this.destroyVpn();
+      } else {
+        // Validation/attach/bind can fail before this process adopts the
+        // owner. Settle only the matching still-unattached UI transaction;
+        // the exact core callback rejects a terminal or replaced attempt.
+        try {
+          pawsUi.failUnattachedPlatformVpnStart(attemptId, message);
+        } catch (innerErr) {
+          hilog.error(LOG_DOMAIN, LOG_TAG, 'publish unattached VPN failure failed %{public}s',
+            describeError(innerErr));
+        }
       }
+    }).finally((): void => {
+      if (generation === this.requestGeneration && this.inFlightAttemptId === attemptId) {
+        this.inFlightAttemptId = '';
+      }
+    });
+  }
+
+  private async handleRequest(
+    ashmemFd: number,
+    notificationFd: number,
+    attemptId: string,
+    optionsJson: string,
+    generation: number,
+  ): Promise<void> {
+    if (generation !== this.requestGeneration) {
       return;
     }
+    await this.waitForPendingCleanup();
+    if (generation !== this.requestGeneration ||
+      !this.isLatestWant(ashmemFd, notificationFd, attemptId)) {
+      return;
+    }
+    if (this.activeAttemptId.length > 0 && this.activeAttemptId !== attemptId) {
+      await this.destroyVpn();
+      // destroyVpn retains a timed-out or failed platform teardown as a
+      // barrier. Do not replace IPC ownership until that exact cleanup has
+      // completed successfully.
+      await this.waitForPendingCleanup();
+      if (generation !== this.requestGeneration) {
+        return;
+      }
+    }
+
+    this.stopPlatformSubscription();
+    pawsUi.attachPlatformSharedMemory(ashmemFd, notificationFd);
+    const ownerIdentity = pawsUi.bindPlatformVpnStart(attemptId);
+    hilog.info(
+      LOG_DOMAIN,
+      LOG_TAG,
+      'bound VPN owner attempt %{public}s process %{public}s',
+      attemptId,
+      ownerIdentity,
+    );
+    this.startPlatformSubscription();
+    this.activeAttemptId = attemptId;
+
+    // Stop publishes its terminal lane state before racing the journal
+    // Pending-to-Stopping CAS. If this Extension won Pending-to-Attached,
+    // bind re-synchronizes that lane; consume the terminal state before
+    // creating native or VpnConnection resources and acknowledge cleanup.
+    const boundLifecycle = pawsUi.extensionTick(attemptId);
+    if (boundLifecycle === 'failed' || boundLifecycle === 'disconnected' ||
+      boundLifecycle === 'stopping') {
+      await this.destroyVpn();
+      return;
+    }
+
+    if (this.tunFd >= 0 && this.vpnConnection) {
+      if (boundLifecycle === 'connected') {
+        this.startTelemetry();
+        this.startHeartbeat(generation, attemptId);
+        return;
+      }
+      await this.destroyVpn();
+      throw new Error('existing native VPN owner is no longer connected');
+    }
+
     this.starting = true;
     try {
-      pawsUi.setPlatformVpnStarting(true);
-    } catch (err) {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'record VPN starting failed %{public}s', describeError(err));
-    }
-    const optionsJson = readOptionsJson(want);
-    const options = parseOptions(optionsJson);
-    const config = new PawsVpnConfig(options);
-    const startedAt = Date.now();
-
-    try {
-      this.vpnConnection = vpnExtension.createVpnConnection(this.context);
-      const nativePrepare: Promise<string> = pawsUi.prepareVpn()
-        .then((_loaded: boolean) => '')
-        .catch((err: Error) => describeError(err) || 'prepare native vpn failed');
-      this.vpnConnection
-        .create(config)
-        .then(async (fd: number) => {
-          this.tunFd = fd;
-          hilog.info(
-            LOG_DOMAIN,
-            LOG_TAG,
-            'created tun fd %{public}d in %{public}d ms',
-            fd,
-            Date.now() - startedAt,
-          );
-          try {
-            await this.vpnConnection?.protectProcessNet();
-            try {
-              pawsUi.setPlatformNetworkProtected(true);
-            } catch (stateErr) {
-              hilog.error(LOG_DOMAIN, LOG_TAG, 'record protect success failed %{public}s', describeError(stateErr));
-            }
-            hilog.info(LOG_DOMAIN, LOG_TAG, 'protected process network');
-          } catch (err) {
-            const message = describeError(err) || 'protect process network failed';
-            try {
-              pawsUi.setPlatformNetworkProtected(false, message);
-            } catch (stateErr) {
-              hilog.error(LOG_DOMAIN, LOG_TAG, 'record protect failure failed %{public}s', describeError(stateErr));
-            }
-            hilog.error(LOG_DOMAIN, LOG_TAG, 'protect process network failed %{public}s', message);
-          }
-          const prepareError = await nativePrepare;
-          if (prepareError.length > 0) {
-            throw new Error(prepareError);
-          }
-          hilog.info(LOG_DOMAIN, LOG_TAG, 'native profile ready in %{public}d ms', Date.now() - startedAt);
-          await pawsUi.startVpn(fd, optionsJson);
-          this.startTelemetry();
-          this.starting = false;
-          hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN started in %{public}d ms', Date.now() - startedAt);
-        })
-        .catch(async (err: Error) => {
-          const message = describeError(err) || 'VPN startup pipeline failed';
-          hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN startup pipeline failed %{public}s', message);
-          await this.destroyVpnConnection();
-          this.vpnConnection = undefined;
-          this.tunFd = -1;
-          this.starting = false;
-          this.recordVpnFailure(message);
-        });
-    } catch (err) {
-      const message = describeError(err) || 'start vpn failed';
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'start vpn failed %{public}s', message);
-      this.vpnConnection = undefined;
-      this.tunFd = -1;
-      this.starting = false;
-      this.recordVpnFailure(message);
+      await this.performStart(optionsJson, attemptId, generation);
+    } finally {
+      if (this.isCurrentRequest(generation, attemptId)) {
+        this.starting = false;
+      }
     }
   }
 
-  private recordVpnFailure(message: string): void {
+  private isLatestWant(ashmemFd: number, notificationFd: number, attemptId: string): boolean {
+    try {
+      pawsUi.validatePlatformVpnStartRequest(ashmemFd, notificationFd, attemptId);
+      return true;
+    } catch (err) {
+      try {
+        if (pawsUi.acknowledgeTerminalPlatformVpnStartDelivery(
+          ashmemFd,
+          notificationFd,
+          attemptId,
+        )) {
+          hilog.info(
+            LOG_DOMAIN,
+            LOG_TAG,
+            'acknowledged delivery of terminal VPN request %{public}s',
+            attemptId,
+          );
+        }
+      } catch (ackErr) {
+        hilog.warn(
+          LOG_DOMAIN,
+          LOG_TAG,
+          'terminal VPN delivery acknowledgement failed %{public}s',
+          describeError(ackErr),
+        );
+      }
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'ignored stale VPN request %{public}s %{public}s',
+        attemptId, describeError(err));
+      return false;
+    }
+  }
+
+  private isCurrentRequest(generation: number, attemptId: string): boolean {
+    return generation === this.requestGeneration && attemptId === this.activeAttemptId;
+  }
+
+  private requireCurrentRequest(
+    generation: number,
+    attemptId: string,
+    connection?: vpnExtension.VpnConnection,
+  ): void {
+    if (!this.isCurrentRequest(generation, attemptId) ||
+      (connection !== undefined && this.vpnConnection !== connection)) {
+      throw new Error('stale VPN request generation');
+    }
+  }
+
+  private async awaitPlatformOperation<T>(
+    connection: vpnExtension.VpnConnection,
+    operation: Promise<T>,
+    label: string,
+  ): Promise<T> {
+    let settled = false;
+    const barrier: Promise<void> = operation.then((_value: T): void => {
+      settled = true;
+    }).catch((_err: Error): void => {
+      settled = true;
+    });
+    this.pendingPlatformOperation = barrier;
+    this.pendingPlatformOperationConnection = connection;
+    try {
+      return await withTimeout(operation, PLATFORM_OPERATION_TIMEOUT_MS, label);
+    } finally {
+      if (settled && this.pendingPlatformOperation === barrier) {
+        this.pendingPlatformOperation = undefined;
+        this.pendingPlatformOperationConnection = undefined;
+      }
+    }
+  }
+
+  private async performStart(
+    optionsJson: string,
+    attemptId: string,
+    generation: number,
+  ): Promise<void> {
+    this.requireCurrentRequest(generation, attemptId);
+    await this.waitForPendingCleanup();
+    this.requireCurrentRequest(generation, attemptId);
+    if (!pawsUi.setPlatformVpnStarting(attemptId, true)) {
+      throw new Error('platform VPN start attempt is no longer active');
+    }
+
+    const options = parseOptions(optionsJson);
+    const config = new PawsVpnConfig(options);
+    const connection = vpnExtension.createVpnConnection(this.context);
+    this.vpnConnection = connection;
+    const startedAt = Date.now();
+    const nativePrepare: Promise<string> = pawsUi.prepareVpn(attemptId)
+      .then((_loaded: boolean): string => '')
+      .catch((err: Error): string => describeError(err) || 'prepare native VPN failed');
+    const nativePrepareBarrier: Promise<void> = nativePrepare.then((_error: string): void => {});
+    this.pendingNativePrepare = nativePrepareBarrier;
+    this.pendingNativePrepareAttemptId = attemptId;
+    nativePrepareBarrier.finally((): void => {
+      if (this.pendingNativePrepare === nativePrepareBarrier) {
+        this.pendingNativePrepare = undefined;
+        this.pendingNativePrepareAttemptId = '';
+      }
+    });
+
+    let createOperation: Promise<number>;
+    try {
+      createOperation = connection.create(config);
+    } catch (err) {
+      throw new Error(`VpnConnection.create rejected synchronously: ${describeError(err)}`);
+    }
+    const fd = await this.awaitPlatformOperation(connection, createOperation, 'VpnConnection.create');
+    if (!this.isCurrentRequest(generation, attemptId) || this.vpnConnection !== connection) {
+      await this.destroyVpn();
+      throw new Error('stale VPN request generation after TUN create');
+    }
+    this.tunFd = fd;
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'created tun fd %{public}d in %{public}d ms',
+      fd, Date.now() - startedAt);
+
+    try {
+      await this.awaitPlatformOperation(connection, connection.protectProcessNet(),
+        'VpnConnection.protectProcessNet');
+      this.requireCurrentRequest(generation, attemptId, connection);
+      if (!pawsUi.setPlatformNetworkProtected(attemptId, true)) {
+        throw new Error('platform VPN protection result belongs to a stale attempt');
+      }
+    } catch (err) {
+      const message = describeError(err) || 'protect process network failed';
+      pawsUi.setPlatformNetworkProtected(attemptId, false, message);
+      throw new Error(message);
+    }
+
+    const prepareError = await this.awaitPlatformOperation(connection, nativePrepare, 'native VPN prepare');
+    if (prepareError.length > 0) {
+      throw new Error(prepareError);
+    }
+    this.requireCurrentRequest(generation, attemptId, connection);
+    await this.awaitPlatformOperation(
+      connection,
+      pawsUi.startVpn(fd, optionsJson, attemptId),
+      'native VPN start',
+    );
+    this.requireCurrentRequest(generation, attemptId, connection);
+    const lifecycle = pawsUi.extensionTick(attemptId);
+    if (lifecycle !== 'connected') {
+      throw new Error(`native VPN worker entered ${lifecycle}`);
+    }
+    this.startTelemetry();
+    this.startHeartbeat(generation, attemptId);
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN started in %{public}d ms', Date.now() - startedAt);
+  }
+
+  private recordVpnFailureForAttempt(attemptId: string, message: string): void {
     this.stopSpeedNotification();
     try {
-      pawsUi.setPlatformVpnFailed(message);
+      pawsUi.setPlatformVpnFailed(attemptId, message);
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'record VPN failure failed %{public}s', describeError(err));
     }
   }
 
-  private destroyVpn(): void {
+  private beginVpnCleanup(
+    connection: vpnExtension.VpnConnection | undefined,
+    attemptId: string,
+  ): Promise<string> {
+    if (this.pendingCleanup) {
+      if (connection === undefined || connection === this.pendingCleanupConnection) {
+        return this.pendingCleanup;
+      }
+      return Promise.resolve('a previous VpnConnection cleanup is still pending');
+    }
+    const pendingOperation = connection !== undefined &&
+      this.pendingPlatformOperationConnection === connection ? this.pendingPlatformOperation : undefined;
+    if (pendingOperation) {
+      this.pendingPlatformOperation = undefined;
+      this.pendingPlatformOperationConnection = undefined;
+    }
+    const pendingNativePrepare = attemptId.length > 0 &&
+      this.pendingNativePrepareAttemptId === attemptId ? this.pendingNativePrepare : undefined;
+    if (pendingNativePrepare) {
+      this.pendingNativePrepare = undefined;
+      this.pendingNativePrepareAttemptId = '';
+    }
+    const cleanup: Promise<string> = (async (): Promise<string> => {
+      const errors: string[] = [];
+      if (attemptId.length > 0) {
+        try {
+          await pawsUi.stopVpn(attemptId);
+        } catch (err) {
+          errors.push(`native VPN stop: ${describeError(err)}`);
+        }
+      }
+      if (pendingOperation) {
+        // Promise timeouts do not cancel create/protect/start. Preserve this
+        // exact operation as a barrier before destroying its connection.
+        await pendingOperation;
+      }
+      if (pendingNativePrepare) {
+        // Native prepare is not cancelled by an ArkTS timeout. Keep it inside
+        // the same cleanup barrier as create/protect before releasing owner.
+        await pendingNativePrepare;
+      }
+      if (connection) {
+        try {
+          await connection.destroy();
+        } catch (err) {
+          errors.push(`VpnConnection.destroy: ${describeError(err)}`);
+        }
+      }
+      if (errors.length === 0 && attemptId.length > 0) {
+        try {
+          if (!pawsUi.completePlatformVpnCleanup(attemptId)) {
+            errors.push('platform VPN cleanup acknowledgement rejected');
+          } else {
+            hilog.info(
+              LOG_DOMAIN,
+              LOG_TAG,
+              'VPN cleanup acknowledged after native join and connection destroy attempt %{public}s',
+              attemptId,
+            );
+          }
+        } catch (err) {
+          errors.push(`platform VPN cleanup acknowledgement: ${describeError(err)}`);
+        }
+      }
+      return errors.join('; ');
+    })();
+    this.pendingCleanup = cleanup;
+    this.pendingCleanupConnection = connection;
+    return cleanup;
+  }
+
+  private async waitForPendingCleanup(): Promise<void> {
+    const cleanup = this.pendingCleanup;
+    if (!cleanup) {
+      return;
+    }
+    const error = await cleanup;
+    if (this.pendingCleanup === cleanup && error.length === 0) {
+      this.pendingCleanup = undefined;
+      this.pendingCleanupConnection = undefined;
+    }
+    if (error.length > 0) {
+      throw new Error(`previous VPN cleanup failed: ${error}`);
+    }
+  }
+
+  private async destroyVpn(): Promise<void> {
+    this.stopHeartbeat();
     this.stopPlatformSubscription();
     this.stopTelemetry();
     this.stopSpeedNotification();
-    pawsUi.stopVpn()
-      .then(() => this.persistTelemetry(false))
-      .catch((err: Error) => {
-        hilog.error(LOG_DOMAIN, LOG_TAG, 'stop native vpn failed %{public}s', describeError(err));
-      });
-    if (!this.vpnConnection) {
-      this.tunFd = -1;
-      this.starting = false;
-      return;
-    }
-    this.destroyVpnConnection();
+    const connection = this.vpnConnection;
+    const attemptId = this.activeAttemptId;
     this.vpnConnection = undefined;
     this.tunFd = -1;
     this.starting = false;
+    this.activeAttemptId = '';
+    const cleanup = this.beginVpnCleanup(connection, attemptId);
+    try {
+      const error = await withTimeout(cleanup, PLATFORM_OPERATION_TIMEOUT_MS, 'VPN cleanup');
+      if (error.length > 0) {
+        throw new Error(error);
+      }
+      if (this.pendingCleanup === cleanup) {
+        this.pendingCleanup = undefined;
+        this.pendingCleanupConnection = undefined;
+      }
+    } catch (err) {
+      // Keep pendingCleanup installed. A later request awaits the same Promise
+      // and cannot create a classic VPN that a late destroy could tear down.
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN cleanup pending %{public}s', describeError(err));
+    }
   }
 
   private startPlatformSubscription(): void {
@@ -279,11 +578,13 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       return;
     }
     this.platformSubscriptionActive = true;
-    this.runPlatformSubscription();
+    const generation = ++this.platformSubscriptionGeneration;
+    this.runPlatformSubscription(generation);
   }
 
   private stopPlatformSubscription(): void {
     this.platformSubscriptionActive = false;
+    this.platformSubscriptionGeneration += 1;
     // Wake the waiter parked in waitForPlatformChangeEvent so the loop can
     // observe the flag and unwind without waiting for the next peer frame.
     try {
@@ -293,21 +594,77 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     }
   }
 
-  private async runPlatformSubscription(): Promise<void> {
-    while (this.platformSubscriptionActive) {
+  private async runPlatformSubscription(generation: number): Promise<void> {
+    while (this.platformSubscriptionActive && generation === this.platformSubscriptionGeneration) {
       try {
         // Fully event driven: the native wait parks on the shared-memory
         // notification socket until the UI publishes a control frame (or the
         // wait is cancelled by stopPlatformSubscription). No polling.
-        await pawsUi.waitForPlatformChangeEvent();
-        if (this.platformSubscriptionActive) {
+        const changed = await pawsUi.waitForPlatformChangeEvent();
+        if (this.platformSubscriptionActive && generation === this.platformSubscriptionGeneration) {
           pawsUi.syncPlatformChanges();
+          this.reconcileExtensionTerminal();
+          if (!changed) {
+            await new Promise<void>((resolve: () => void): void => {
+              setTimeout(resolve, 250);
+            });
+          }
         }
       } catch (err) {
         hilog.error(LOG_DOMAIN, LOG_TAG, 'platform subscription failed %{public}s', describeError(err));
-        this.platformSubscriptionActive = false;
+        if (generation === this.platformSubscriptionGeneration) {
+          this.platformSubscriptionActive = false;
+        }
       }
     }
+  }
+
+  private startHeartbeat(generation: number, attemptId: string): void {
+    this.stopHeartbeat();
+    this.reconcileExtensionTerminal();
+    if (!this.isCurrentRequest(generation, attemptId) || this.tunFd < 0) {
+      return;
+    }
+    this.heartbeatTimer = setInterval((): void => {
+      if (!this.isCurrentRequest(generation, attemptId)) {
+        this.stopHeartbeat();
+        return;
+      }
+      this.reconcileExtensionTerminal();
+    }, 3000);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer >= 0) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = -1;
+    }
+  }
+
+  private reconcileExtensionTerminal(): void {
+    if (this.tunFd < 0 || this.activeAttemptId.length === 0) {
+      return;
+    }
+    const generation = this.requestGeneration;
+    const attemptId = this.activeAttemptId;
+    let lifecycle: string;
+    try {
+      lifecycle = pawsUi.extensionTick(attemptId);
+    } catch (err) {
+      const message = describeError(err) || 'extension heartbeat failed';
+      this.recordVpnFailureForAttempt(attemptId, message);
+      lifecycle = 'failed';
+    }
+    if (lifecycle !== 'failed' && lifecycle !== 'disconnected' && lifecycle !== 'stopping') {
+      return;
+    }
+    this.stopHeartbeat();
+    this.stopPlatformSubscription();
+    this.requestChain = this.requestChain.then(async (): Promise<void> => {
+      if (this.isCurrentRequest(generation, attemptId)) {
+        await this.destroyVpn();
+      }
+    });
   }
 
   private startTelemetry(): void {
@@ -444,17 +801,4 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     notificationManager.cancel(VPN_SPEED_NOTIFICATION_ID).catch(() => {});
   }
 
-  private async destroyVpnConnection(): Promise<void> {
-    const connection = this.vpnConnection;
-    if (!connection) {
-      return;
-    }
-    try {
-      await connection.destroy();
-      pawsUi.setPlatformNetworkProtected(false);
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'destroy vpn success');
-    } catch (err) {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'destroy vpn failed %{public}s', describeError(err));
-    }
-  }
 }

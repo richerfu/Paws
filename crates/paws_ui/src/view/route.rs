@@ -119,76 +119,72 @@ impl Route {
     }
 }
 
-fn state() -> Signal<State> {
-    use_context::<Signal<State>>()
-}
-
 #[component]
 fn Dashboard() -> Element {
-    dashboard_page(state())
+    dashboard_page()
 }
 
 #[component]
 fn Proxies() -> Element {
-    proxies_page(state())
+    proxies_page()
 }
 
 #[component]
 fn Profiles() -> Element {
-    profiles_page(state())
+    profiles_page()
 }
 
 #[component]
 fn Requests() -> Element {
-    requests_page(state())
+    requests_page()
 }
 
 #[component]
 fn Connections(query: String) -> Element {
-    connections_page(state(), query)
+    connections_page(query)
 }
 
 #[component]
 fn Traffic() -> Element {
-    traffic_page(state())
+    traffic_page()
 }
 
 #[component]
 fn Resources() -> Element {
-    resources_page(state())
+    resources_page()
 }
 
 #[component]
 fn Logs() -> Element {
-    logs_page(state())
+    logs_page()
 }
 
 #[component]
 fn Tools() -> Element {
-    tools_page(state())
+    tools_page()
 }
 
 #[component]
 fn Settings() -> Element {
-    settings_page(state())
+    settings_page()
 }
 
 #[component]
 fn SubscriptionConverter() -> Element {
-    subscription_converter_page(state())
+    subscription_converter_page()
 }
 
 #[component]
 fn Appearance() -> Element {
-    appearance_page(state())
+    appearance_page()
 }
 
 #[component]
 fn About() -> Element {
-    about_page(state())
+    about_page()
 }
 
 #[component]
 fn Privacy() -> Element {
-    privacy_page(state())
+    privacy_page()
 }

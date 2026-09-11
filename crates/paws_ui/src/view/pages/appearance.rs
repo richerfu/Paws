@@ -1,14 +1,18 @@
 use super::super::*;
 use crate::ui_preferences::{LanguagePreference, ThemePreference};
 
-pub(crate) fn appearance_page(state: Signal<State>) -> Element {
-    let current = state.read().clone();
+pub(crate) fn appearance_page() -> Element {
+    let services = use_context::<UiServices>();
+    let language_services = services.clone();
+    let theme_services = services.clone();
+    let retry_services = services;
+    let current = use_context::<UiStores>().preferences.read().clone();
     let locale = current.locale;
 
     let system_language = translate_ui(locale, tr::page_tr_117());
     let simplified_chinese = translate_ui(locale, tr::hard_zh_031()).to_owned();
     let english = "English".to_owned();
-    let selected_language = match current.language_preference() {
+    let selected_language = match current.language {
         LanguagePreference::System => system_language.clone(),
         LanguagePreference::ZhCn => simplified_chinese.clone(),
         LanguagePreference::En => english.clone(),
@@ -19,7 +23,7 @@ pub(crate) fn appearance_page(state: Signal<State>) -> Element {
     let system_theme = translate_ui(locale, tr::page_tr_117());
     let light_theme = translate_ui(locale, tr::page_tr_118());
     let dark_theme = translate_ui(locale, tr::page_tr_119());
-    let selected_theme = match current.theme_preference() {
+    let selected_theme = match current.theme {
         ThemePreference::System => system_theme.clone(),
         ThemePreference::Light => light_theme.clone(),
         ThemePreference::Dark => dark_theme.clone(),
@@ -45,7 +49,7 @@ pub(crate) fn appearance_page(state: Signal<State>) -> Element {
                             } else {
                                 LanguagePreference::En
                             };
-                            dispatch(state, Action::SetLanguagePreference(preference));
+                            language_services.set_language(preference);
                         }
                     }
                 }
@@ -66,13 +70,42 @@ pub(crate) fn appearance_page(state: Signal<State>) -> Element {
                             } else {
                                 ThemePreference::Dark
                             };
-                            dispatch(state, Action::SetThemePreference(preference));
+                            theme_services.set_theme(preference);
                         }
                     }
                 }
             )}
+            if let Some(error) = current.preferences_error.clone() {
+                row { height: 12.0 }
+                {card(
+                    translate_ui(locale, tr::appearance_preferences_unavailable()),
+                    Some(error),
+                    rsx! {
+                        text {
+                            content: translate_ui(locale, tr::appearance_preferences_unavailable_detail()),
+                            font_size: typography::XS,
+                            line_height: 18.0,
+                            font_color: warning(),
+                        }
+                    }
+                )}
+            }
+            if let Some(error) = current.color_mode_error.clone() {
+                row { height: 12.0 }
+                {card(
+                    translate_ui(locale, tr::appearance_color_mode_failed()),
+                    Some(format!("{}: {error}", translate_ui(locale, tr::appearance_color_mode_failed_detail()))),
+                    rsx! {
+                        FlatButton {
+                            variant: FlatButtonVariant::Outline,
+                            onclick: move |_| retry_services.retry_color_mode(),
+                            {translate_ui(locale, tr::appearance_retry_color_mode())}
+                        }
+                    }
+                )}
+            }
         }
     };
 
-    scaffold(state, Route::Appearance {}, rsx! {}, body)
+    scaffold(Route::Appearance {}, rsx! {}, body)
 }

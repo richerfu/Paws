@@ -27,15 +27,14 @@ fn dashboard_stays_flat_and_decision_focused() {
     assert!(page.contains("key: \"dashboard-quick-proxy-list\""));
     assert!(!page.contains("preview_proxies.truncate(3)"));
     assert!(!page.contains("row { height: 72.0 }"));
-    assert!(page.contains("translate_ui(current.locale, tr::page_tr_"));
+    assert!(page.contains("translate_ui(s, tr::page_tr_"));
     assert!(page.contains("global_node_count"));
-    assert!(page.contains("snapshot.exit_location"));
-    assert!(page.contains("snapshot.exit_location"));
+    assert!(page.contains("telemetry.exit_location"));
     assert!(page.contains("height: 89.0"));
     assert_eq!(page.matches("dashboard_connection_row(").count(), 3);
     assert!(page.contains("height: 44.0"));
     assert!(page.contains("width: 68.0"));
-    assert_eq!(page.matches("row { height: 14.0 }").count(), 3);
+    assert_eq!(page.matches("row { height: 14.0 }").count(), 4);
     assert_eq!(page.matches("Separator {}").count(), 1);
     assert!(!page.contains("VPN IP"));
     assert!(!page.contains("vpn_options.addresses"));
@@ -54,13 +53,22 @@ fn dashboard_stays_flat_and_decision_focused() {
 }
 
 #[test]
+fn unconfirmed_vpn_operation_has_only_safe_resolution_actions() {
+    assert!(DASHBOARD.contains("operation.phase != VpnOperationPhase::Unconfirmed"));
+    assert!(DASHBOARD.contains("vpn_operation_confirm"));
+    assert!(DASHBOARD.contains("confirm_vpn_operation()"));
+    assert!(DASHBOARD.contains("vpn_operation_stop_resync"));
+    assert!(DASHBOARD.contains("recover_vpn_operation()"));
+}
+
+#[test]
 fn dashboard_mode_selector_dispatches_every_runtime_mode() {
     let picker = section_to_end(DASHBOARD, "fn mode_picker");
 
     assert!(picker.contains("RuntimeMode::Rule"));
     assert!(picker.contains("RuntimeMode::Global"));
     assert!(picker.contains("RuntimeMode::Direct"));
-    assert!(picker.contains("dispatch(state, Action::SetMode(mode))"));
+    assert!(picker.contains("services.set_mode(mode)"));
 }
 
 #[test]
@@ -78,7 +86,7 @@ fn dashboard_long_values_are_width_constrained() {
     assert!(
         page.find("primary_selected_group_leaf").unwrap()
             < page
-                .find("latest_active_rule_node(&snapshot.connections)")
+                .find("latest_active_rule_node(&activity.connections)")
                 .unwrap()
     );
     assert!(!page.contains("由命中规则的策略分组决定"));

@@ -3,6 +3,7 @@ use base64::Engine;
 use futures::StreamExt;
 
 static TEST_LOG_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+const PLATFORM_RECOVERY_OWNER_CHILD_MARKER: &str = "PAWS_PLATFORM_RECOVERY_OWNER_CHILD_MARKER";
 
 fn track_test_connection(tunnel: &Tunnel, host: &str) -> String {
     tunnel
@@ -137,11 +138,667 @@ fn traffic_history_is_bounded_and_exposed_in_snapshot() {
     let snapshot = core.snapshot().unwrap();
 
     assert_eq!(snapshot.traffic_history.len(), MAX_TRAFFIC_HISTORY);
-    assert_eq!(snapshot.traffic_history[0].download_speed, 9);
-    assert_eq!(snapshot.traffic_history[30].download_speed, 39);
+    assert_eq!(snapshot.traffic_history[0].download_speed, 8);
+    assert_eq!(snapshot.traffic_history[30].download_speed, 38);
     let latest = snapshot.traffic_history.last().unwrap();
-    assert_eq!(latest.download_speed, 0);
-    assert_eq!(latest.upload_speed, 0);
+    assert_eq!(latest.download_speed, 39);
+    assert_eq!(latest.upload_speed, 78);
+}
+
+#[test]
+fn snapshot_reads_are_pure_and_keep_the_same_revision() {
+    let root =
+        std::env::temp_dir().join(format!("paws-core-pure-snapshot-test-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+
+    let first = core.snapshot().unwrap();
+    let second = core.snapshot().unwrap();
+
+    assert_eq!(first.revision, second.revision);
+    assert_eq!(first.config_revision, second.config_revision);
+    assert_eq!(first.observed_at_unix_nanos, second.observed_at_unix_nanos);
+    assert_eq!(first.traffic_history, second.traffic_history);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn explicit_telemetry_refresh_publishes_a_new_telemetry_revision() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-telemetry-revision-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let receiver = core.subscribe_runtime_revisions();
+    let before = *receiver.borrow();
+
+    let refreshed = core.refresh_telemetry().unwrap();
+
+    assert!(refreshed.revision > before.revision);
+    assert!(refreshed.telemetry_revision > before.telemetry_revision);
+    assert_eq!(refreshed.config_revision, before.config_revision);
+    assert_eq!(refreshed.resource_revision, before.resource_revision);
+    assert_eq!(*receiver.borrow(), refreshed);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn runtime_services_guard_allows_restart_after_task_drop() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-runtime-service-guard-test-{}",
+        now_unix_nanos()
+    ));
+    let core = Arc::new(CoreHandle::new_with_profile_root(&root));
+    let first_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    first_runtime.block_on(async {
+        core.ensure_runtime_services();
+        tokio::task::yield_now().await;
+        assert!(core.runtime_services_task_started.load(Ordering::Acquire));
+    });
+    drop(first_runtime);
+
+    assert!(!core.runtime_services_task_started.load(Ordering::Acquire));
+
+    let before = core.telemetry_projection().unwrap().revisions;
+    let replacement_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    replacement_runtime.block_on(async {
+        core.ensure_runtime_services();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if core
+                    .telemetry_projection()
+                    .unwrap()
+                    .revisions
+                    .telemetry_revision
+                    > before.telemetry_revision
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("replacement runtime must restart telemetry services");
+    });
+    drop(replacement_runtime);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn a_blocked_runtime_service_does_not_stall_telemetry_sampling() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-independent-runtime-services-test-{}",
+        now_unix_nanos()
+    ));
+    let core = Arc::new(CoreHandle::new_with_profile_root(&root));
+    let config_guard = core.config_reload_lock.lock().await;
+    let before = core.telemetry_projection().unwrap().revisions;
+
+    core.ensure_runtime_services();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if core
+                .telemetry_projection()
+                .unwrap()
+                .revisions
+                .telemetry_revision
+                > before.telemetry_revision
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("telemetry loop must advance while config synchronization is blocked");
+
+    drop(config_guard);
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn disconnect_clears_exit_location_and_publishes_status_revision() {
+    let root =
+        std::env::temp_dir().join(format!("paws-core-exit-status-test-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let before = {
+        let mut state = core.lock_state().unwrap();
+        state.exit_location.ip = "203.0.113.7".to_owned();
+        state.last_exit_location_check = Some(Instant::now());
+        runtime_revisions(&state)
+    };
+
+    assert!(!core.refresh_exit_location_if_due().await.unwrap());
+
+    let status = core.runtime_status_projection().unwrap();
+    assert!(status.revisions.status_revision > before.status_revision);
+    assert!(status.exit_location.ip.is_empty());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn checked_provider_refresh_rejects_a_stale_resource_revision() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-stale-resource-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let expected = {
+        let mut state = core.lock_state().unwrap();
+        state.providers.push(ProviderSummary {
+            name: "Remote".to_owned(),
+            provider_type: "proxy".to_owned(),
+            path: None,
+            url: Some("https://example.test/provider.yaml".to_owned()),
+            vehicle_type: Some("http".to_owned()),
+            interval_seconds: None,
+            filter: None,
+            exclude_filter: None,
+            behavior: None,
+            format: None,
+            health_check_enabled: false,
+            health_check_url: None,
+            health_check_interval_seconds: None,
+            expected_status: None,
+            members: Vec::new(),
+            cache_exists: false,
+            cache_bytes: None,
+            cache_updated_at: None,
+            stale_cache_available: false,
+            last_refresh_at: None,
+            last_refresh_error: None,
+        });
+        let expected = state.resource_revision;
+        core.publish_resource_change_locked(&mut state);
+        expected
+    };
+
+    let error = core
+        .refresh_provider_checked("proxy", "Remote", expected)
+        .await
+        .expect_err("stale resource action must not start");
+
+    assert!(matches!(error, PawsError::StaleResourceRevision { .. }));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn newer_resource_operation_supersedes_an_older_completion() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-resource-operation-order-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let mut state = core.lock_state().unwrap();
+    let operation_key = "provider:proxy:Remote";
+
+    let (first_sequence, config_revision) =
+        CoreHandle::begin_resource_operation_locked(&mut state, operation_key, None).unwrap();
+    let (second_sequence, second_config_revision) =
+        CoreHandle::begin_resource_operation_locked(&mut state, operation_key, None).unwrap();
+
+    let stale_error = CoreHandle::ensure_resource_operation_current_locked(
+        &state,
+        operation_key,
+        first_sequence,
+        config_revision,
+    )
+    .expect_err("the older asynchronous completion must be rejected");
+    assert!(
+        matches!(stale_error, PawsError::Core(message) if message.contains("stale resource operation"))
+    );
+    CoreHandle::ensure_resource_operation_current_locked(
+        &state,
+        operation_key,
+        second_sequence,
+        second_config_revision,
+    )
+    .unwrap();
+
+    drop(state);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn stale_proxy_selection_completion_is_rejected_before_persistence() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-stale-proxy-selection-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let expected = {
+        let mut state = core.lock_state().unwrap();
+        let expected = state.config_revision;
+        core.publish_runtime_change_locked(&mut state, true, false);
+        expected
+    };
+
+    let error = core
+        .record_proxy_selection("GLOBAL", "DIRECT", false, expected)
+        .expect_err("an old selector completion must not target newer configuration");
+
+    assert!(matches!(error, PawsError::StaleConfigRevision { .. }));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn checked_profile_mutation_rejects_a_stale_revision_without_writing() {
+    let root =
+        std::env::temp_dir().join(format!("paws-core-stale-config-test-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let first_profile = core
+        .import_profile_from_content("First", "test", &paws_profile::default_runtime_yaml(), None)
+        .await
+        .unwrap();
+    let second_profile = core
+        .import_profile_from_content(
+            "Second",
+            "test",
+            &paws_profile::default_runtime_yaml(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_ne!(first_profile, second_profile);
+    let base_revision = core.snapshot().unwrap().config_revision;
+
+    let receipt = core
+        .set_profile_dns_config_checked(
+            &second_profile,
+            base_revision,
+            vec!["9.9.9.9".to_owned()],
+            Vec::new(),
+            BTreeMap::new(),
+        )
+        .await
+        .unwrap();
+    let current_revision = core.snapshot().unwrap().config_revision;
+    assert!(current_revision > base_revision);
+    assert_eq!(receipt.revisions.config_revision, current_revision);
+    assert_eq!(receipt, core.config_projection().unwrap());
+
+    let error = core
+        .set_profile_dns_config_checked(
+            &second_profile,
+            base_revision,
+            vec!["1.1.1.1".to_owned()],
+            Vec::new(),
+            BTreeMap::new(),
+        )
+        .await
+        .expect_err("old form completion must not overwrite newer data");
+    assert!(error.to_string().contains("stale configuration revision"));
+    let raw_yaml = core.profile_raw_yaml(&second_profile).unwrap();
+    assert!(raw_yaml.contains("9.9.9.9"));
+    assert!(!raw_yaml.contains("1.1.1.1"));
+    assert_eq!(core.snapshot().unwrap().config_revision, current_revision);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn failed_activation_keeps_the_previous_profile_active() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-activation-rollback-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let first_profile = core
+        .import_profile_from_content("First", "test", &paws_profile::default_runtime_yaml(), None)
+        .await
+        .unwrap();
+    let second_profile = core
+        .import_profile_from_content(
+            "Second",
+            "test",
+            &paws_profile::default_runtime_yaml(),
+            None,
+        )
+        .await
+        .unwrap();
+    let second_path = core
+        .config_projection()
+        .unwrap()
+        .profiles
+        .into_iter()
+        .find(|profile| profile.id == second_profile)
+        .unwrap()
+        .raw_yaml_path;
+    std::fs::write(second_path, "this: [is not valid YAML").unwrap();
+    let before = core.config_projection().unwrap();
+
+    core.activate_profile(&second_profile)
+        .await
+        .expect_err("invalid target must not become active");
+
+    let after = core.config_projection().unwrap();
+    assert_eq!(
+        after.active_profile.as_deref(),
+        Some(first_profile.as_str())
+    );
+    assert_eq!(
+        after.revisions.config_revision,
+        before.revisions.config_revision
+    );
+    let reopened = ProfileStore::open(root.clone()).unwrap();
+    assert_eq!(reopened.active_profile(), Some(first_profile.as_str()));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn checked_profile_activation_rejects_a_stale_page_revision() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-checked-activation-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let first_profile = core
+        .import_profile_from_content("First", "test", &paws_profile::default_runtime_yaml(), None)
+        .await
+        .unwrap();
+    let second_profile = core
+        .import_profile_from_content(
+            "Second",
+            "test",
+            &paws_profile::default_runtime_yaml(),
+            None,
+        )
+        .await
+        .unwrap();
+    let stale_revision = core.config_projection().unwrap().revisions.config_revision;
+    core.set_mode(RuntimeMode::Direct).unwrap();
+
+    let error = core
+        .activate_profile_checked(&second_profile, stale_revision)
+        .await
+        .expect_err("stale activation must not replace the current profile");
+
+    assert!(matches!(error, PawsError::StaleConfigRevision { .. }));
+    assert_eq!(
+        core.config_projection().unwrap().active_profile.as_deref(),
+        Some(first_profile.as_str())
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn checked_profile_import_is_one_revision_and_rejects_stale_reuse() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-checked-import-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let initial = core.config_projection().unwrap();
+
+    let receipt = core
+        .import_profile_from_content_and_activate_checked(
+            "Imported",
+            "test",
+            &paws_profile::default_runtime_yaml(),
+            None,
+            initial.revisions.config_revision,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        receipt.config.active_profile.as_deref(),
+        Some(receipt.profile_id.as_str())
+    );
+    assert_eq!(
+        receipt.config.revisions.config_revision,
+        initial.revisions.config_revision + 1
+    );
+    let error = core
+        .import_profile_from_content_and_activate_checked(
+            "Late",
+            "test",
+            &paws_profile::default_runtime_yaml(),
+            None,
+            initial.revisions.config_revision,
+        )
+        .await
+        .expect_err("an old async completion must not import or activate");
+    assert!(matches!(error, PawsError::StaleConfigRevision { .. }));
+    assert_eq!(core.config_projection().unwrap().profiles.len(), 1);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn profile_import_preparation_rejects_malformed_app_owned_fields_without_writing() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-invalid-app-profile-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let before = core.config_projection().unwrap();
+
+    let error = core
+        .prepare_profile_import_from_content(
+            "Invalid app config",
+            "test",
+            "paws:\n  mixed-port: '17890'\nproxies: []\nproxy-groups: []\nrules: []\n",
+            None,
+        )
+        .await
+        .expect_err("a typed string port must not be laundered into the default port");
+
+    assert!(error.to_string().contains("mixed-port"));
+    assert_eq!(core.config_projection().unwrap(), before);
+    assert_eq!(std::fs::read_dir(root.join("profiles")).unwrap().count(), 0);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn profile_update_reports_both_primary_and_secondary_rollback_failures() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-secondary-rollback-failure-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let profile_id = core
+        .import_profile_from_content(
+            "Profile",
+            "test",
+            &paws_profile::default_runtime_yaml(),
+            None,
+        )
+        .await
+        .unwrap();
+    core.reload_config(&profile_id).await.unwrap();
+    let expected_revision = core.config_projection().unwrap().revisions.config_revision;
+    core.fail_next_config_reload.store(true, Ordering::Release);
+    core.fail_next_profile_rollback
+        .store(true, Ordering::Release);
+
+    let error = core
+        .set_profile_dns_config_checked(
+            &profile_id,
+            expected_revision,
+            vec!["9.9.9.9".to_owned()],
+            Vec::new(),
+            BTreeMap::new(),
+        )
+        .await
+        .expect_err("an injected rollback failure must be reported alongside the primary error");
+
+    let message = error.to_string();
+    assert!(message.contains("injected configuration reload failure"));
+    assert!(message.contains("rollback also failed"));
+    assert!(message.contains("injected profile rollback failure"));
+    assert!(!message.contains("was rolled back"));
+    assert!(core.config_projection().unwrap().revisions.config_revision > expected_revision);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn log_recording_creation_failure_is_projected_until_control_retry_succeeds() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-log-recording-create-failure-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    core.set_log_recording_enabled(false).unwrap();
+    std::fs::remove_dir_all(root.join("logs")).unwrap();
+    std::fs::write(root.join("logs"), "not a directory").unwrap();
+
+    let error = core
+        .set_log_recording_enabled(true)
+        .expect_err("an unreadable log directory must fail explicitly");
+    assert!(error.to_string().contains("log storage operation failed"));
+    let projection = core.telemetry_projection().unwrap();
+    assert!(projection
+        .log_recording_error
+        .as_deref()
+        .is_some_and(|message| message.contains("log storage operation failed")));
+
+    core.clear_logs().unwrap();
+    assert!(core
+        .telemetry_projection()
+        .unwrap()
+        .log_recording_error
+        .is_some());
+
+    std::fs::remove_file(root.join("logs")).unwrap();
+    let status = core.set_log_recording_enabled(true).unwrap();
+    assert!(status.enabled);
+    assert_eq!(status.last_error, None);
+    assert_eq!(
+        core.telemetry_projection().unwrap().log_recording_error,
+        None
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn vpn_start_rejects_unsupported_legacy_capabilities() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-vpn-start-capability-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+
+    for (system_proxy, allow_bypass) in [(true, false), (false, true)] {
+        let options = VpnOptions {
+            system_proxy,
+            allow_bypass,
+            ..VpnOptions::default()
+        };
+        let error = core
+            .start_vpn(-1, &to_json(&options).unwrap())
+            .await
+            .expect_err("unsupported VPN capabilities must be rejected before startup");
+        assert!(error.to_string().contains("not supported"));
+        assert!(!core.vpn.is_running());
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn failed_checked_profile_activation_removes_the_imported_profile() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-import-activation-rollback-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let before = core.config_projection().unwrap();
+    core.fail_next_config_reload.store(true, Ordering::Release);
+
+    let error = core
+        .import_profile_from_content_and_activate_checked(
+            "Cannot activate",
+            "test",
+            &paws_profile::default_runtime_yaml(),
+            None,
+            before.revisions.config_revision,
+        )
+        .await
+        .expect_err("reload failure must roll back the imported profile");
+
+    assert!(error.to_string().contains("was rolled back"));
+    let after = core.config_projection().unwrap();
+    assert!(after.profiles.is_empty());
+    assert!(after.active_profile.is_none());
+    assert_eq!(
+        after.revisions.config_revision,
+        before.revisions.config_revision
+    );
+    assert_eq!(std::fs::read_dir(root.join("profiles")).unwrap().count(), 0);
+    let reopened = ProfileStore::open(root.clone()).unwrap();
+    assert!(reopened.summaries().is_empty());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn checked_rule_import_rolls_back_persisted_rules_when_reload_fails() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-rule-import-rollback-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let profile_id = core
+        .import_profile_from_content("Rules", "test", &paws_profile::default_runtime_yaml(), None)
+        .await
+        .unwrap();
+    core.reload_config(&profile_id).await.unwrap();
+    let before = core.config_projection().unwrap();
+    core.fail_next_config_reload.store(true, Ordering::Release);
+
+    let error = core
+        .import_rules_from_content_checked(
+            &profile_id,
+            before.revisions.config_revision,
+            "rules:injected-reload-failure",
+            "DOMAIN,rollback.invalid,DIRECT",
+        )
+        .await
+        .expect_err("reload failure must roll back imported rules");
+
+    assert!(error.to_string().contains("rolled back"));
+    let after = core.config_projection().unwrap();
+    assert_eq!(after.rules, before.rules);
+    assert_eq!(
+        after.revisions.config_revision,
+        before.revisions.config_revision
+    );
+    let reopened = ProfileStore::open(root.clone()).unwrap();
+    assert_eq!(reopened.active_rules(), before.rules);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn publishing_platform_telemetry_does_not_sample_or_append_history() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-telemetry-publish-purity-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let before = core.snapshot().unwrap();
+    let projected = {
+        let state = core.lock_state().unwrap();
+        platform_vpn_telemetry_projection(&state)
+    };
+
+    assert_eq!(projected.active_profile, before.active_profile);
+    assert_eq!(projected.traffic, before.traffic);
+    assert_eq!(projected.traffic_history, before.traffic_history);
+    assert_eq!(projected.connections, before.connections);
+    assert_eq!(projected.request_history, before.request_history);
+    assert_eq!(projected.logs, before.logs);
+
+    core.persist_vpn_telemetry().unwrap();
+
+    let after = core.snapshot().unwrap();
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(after.traffic_history, before.traffic_history);
+    assert_eq!(after.traffic, before.traffic);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -608,6 +1265,1185 @@ fn platform_vpn_state_accepts_legacy_frames_without_start_transaction() {
     assert!(state.starting);
 }
 
+#[test]
+fn app_home_requires_a_non_root_absolute_path() {
+    assert!(validate_app_home_path(Path::new("")).is_err());
+    assert!(validate_app_home_path(Path::new("relative/paws")).is_err());
+    assert!(validate_app_home_path(Path::new("/")).is_err());
+    assert!(
+        validate_app_home_path(Path::new("/data/storage/el2/base/haps/entry/files/paws")).is_ok()
+    );
+}
+
+#[test]
+fn heartbeat_watchdog_uses_monotonic_wake_grace_and_resets_on_progress() {
+    let root =
+        std::env::temp_dir().join(format!("paws-platform-vpn-watchdog-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let mut state = core.lock_state().unwrap();
+    state.platform_vpn_running = true;
+    let now = Instant::now();
+    state.platform_remote_state_seen_at =
+        Some(now - PLATFORM_HEARTBEAT_STALE_AFTER - PLATFORM_HEARTBEAT_WAKE_GRACE);
+
+    assert!(!platform_heartbeat_watchdog_expired(
+        &mut state, now, true, true, true, false,
+    ));
+    state.platform_remote_stale_since = Some(now - PLATFORM_HEARTBEAT_WAKE_GRACE);
+    assert!(platform_heartbeat_watchdog_expired(
+        &mut state, now, true, true, true, false,
+    ));
+    assert!(!platform_heartbeat_watchdog_expired(
+        &mut state, now, true, true, true, true,
+    ));
+    assert!(state.platform_remote_stale_since.is_none());
+    drop(state);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn remote_session_liveness_matches_watchdog_wake_grace() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-live-predicate-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let mut state = core.lock_state().unwrap();
+    state.platform_start_attempt_id = "live-owner".to_owned();
+    state.platform_start_outcome = PlatformStartOutcome::Connected;
+    state.platform_extension_attached = true;
+    state.platform_vpn_running = true;
+    state.platform_vpn_cleanup_complete = false;
+    let now = Instant::now();
+    state.platform_remote_state_seen_at = Some(now - Duration::from_secs(1));
+    assert!(platform_remote_session_is_live(&state, now));
+
+    state.platform_remote_state_seen_at = Some(now - PLATFORM_HEARTBEAT_STALE_AFTER);
+    state.platform_remote_stale_since = Some(now - Duration::from_secs(1));
+    assert!(platform_remote_session_is_live(&state, now));
+    state.platform_remote_stale_since = Some(now - PLATFORM_HEARTBEAT_WAKE_GRACE);
+    assert!(!platform_remote_session_is_live(&state, now));
+
+    state.platform_remote_state_seen_at = Some(now);
+    state.platform_vpn_running = false;
+    assert!(!platform_remote_session_is_live(&state, now));
+    drop(state);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn process_identity_requires_boot_and_process_filesystem_evidence() {
+    let identity = ProcessIdentity {
+        boot_id: "boot-a".to_owned(),
+        pid: 42,
+        start_time: 7,
+    };
+    assert_eq!(
+        classify_process_identity(&identity, "boot-a", ProcessStartObservation::Found(7)),
+        ProcessIdentityStatus::Alive
+    );
+    assert_eq!(
+        classify_process_identity(&identity, "boot-a", ProcessStartObservation::Found(8)),
+        ProcessIdentityStatus::Dead
+    );
+    assert_eq!(
+        classify_process_identity(
+            &identity,
+            "boot-a",
+            ProcessStartObservation::MissingWithProcessFsAvailable,
+        ),
+        ProcessIdentityStatus::Dead
+    );
+    assert_eq!(
+        classify_process_identity(&identity, "boot-a", ProcessStartObservation::Unknown),
+        ProcessIdentityStatus::Unknown
+    );
+    assert_eq!(
+        classify_process_identity(&identity, "boot-b", ProcessStartObservation::Found(7)),
+        ProcessIdentityStatus::Dead
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_process_identity_uses_the_stable_boot_session_uuid() {
+    let first = read_boot_id().unwrap();
+    let second = read_boot_id().unwrap();
+    assert_eq!(first, second);
+    assert_eq!(first.len(), 36);
+    assert!(first.bytes().enumerate().all(|(index, byte)| {
+        if matches!(index, 8 | 13 | 18 | 23) {
+            byte == b'-'
+        } else {
+            byte.is_ascii_hexdigit()
+        }
+    }));
+
+    let identity = current_process_identity().unwrap();
+    assert_eq!(identity.boot_id, first);
+    assert_eq!(
+        process_identity_status(&identity),
+        ProcessIdentityStatus::Alive
+    );
+}
+
+#[test]
+fn vpn_intent_epoch_fences_queued_work_across_plugin_instances() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-intent-epoch-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let stale_start = core.advance_platform_vpn_intent().unwrap();
+    let current_start = core.advance_platform_vpn_intent().unwrap();
+    assert!(core
+        .begin_platform_vpn_start_for_intent(stale_start)
+        .unwrap_err()
+        .to_string()
+        .contains("superseded"));
+    let attempt_id = core
+        .begin_platform_vpn_start_for_intent(current_start)
+        .unwrap();
+    let stop_intent = core.advance_platform_vpn_intent().unwrap();
+    assert!(core
+        .claim_current_platform_vpn_stop(current_start)
+        .unwrap_err()
+        .to_string()
+        .contains("superseded"));
+    assert_eq!(
+        core.claim_current_platform_vpn_stop(stop_intent).unwrap(),
+        attempt_id
+    );
+    let state = core.lock_state().unwrap();
+    assert_eq!(
+        state.platform_start_outcome,
+        PlatformStartOutcome::Cancelled
+    );
+    assert!(state.platform_stop_requested);
+    drop(state);
+    let journal_path = root.join("runtime/platform-vpn-owner.json");
+    assert!(matches!(
+        platform_owner::read(&journal_path).unwrap(),
+        JournalRead::Present(PlatformVpnOwnerJournal {
+            phase: PlatformVpnOwnerPhase::Stopping,
+            extension: None,
+            ..
+        })
+    ));
+    let late_want = core
+        .validate_platform_owner_journal_for_want(&attempt_id)
+        .unwrap_err()
+        .to_string();
+    assert!(late_want.contains("fenced by a stop intent"), "{late_want}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn os_stop_fence_survives_cleanup_ack_and_blocks_new_start_until_confirmation() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-os-stop-fence-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    core.bind_platform_vpn_start(&attempt_id).unwrap();
+
+    let first_stop = core.advance_platform_vpn_intent().unwrap();
+    assert_eq!(
+        core.claim_current_platform_vpn_stop(first_stop).unwrap(),
+        attempt_id
+    );
+    assert!(core.complete_platform_vpn_cleanup(&attempt_id).unwrap());
+    assert!(matches!(
+        platform_owner::read(&root.join("runtime/platform-vpn-owner.json")).unwrap(),
+        JournalRead::Missing
+    ));
+
+    let replacement = core.advance_platform_vpn_intent().unwrap();
+    let blocked = core
+        .begin_platform_vpn_start_for_intent(replacement)
+        .unwrap_err()
+        .to_string();
+    assert!(blocked.contains("OS stop"), "{blocked}");
+    assert_eq!(
+        core.claim_current_platform_vpn_stop(replacement).unwrap(),
+        attempt_id
+    );
+    assert!(core
+        .is_platform_vpn_stop_current(replacement, &attempt_id)
+        .unwrap());
+    assert!(core
+        .begin_platform_vpn_os_stop(replacement, &attempt_id)
+        .unwrap());
+
+    let later_intent = core.advance_platform_vpn_intent().unwrap();
+    assert!(core
+        .claim_current_platform_vpn_stop(later_intent)
+        .unwrap_err()
+        .to_string()
+        .contains("already in flight"));
+    assert!(core
+        .complete_platform_vpn_os_stop(replacement, &attempt_id)
+        .unwrap());
+    assert!(core
+        .begin_platform_vpn_start_for_intent(later_intent)
+        .is_ok());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+fn fail_next_platform_publish(core: &CoreHandle) {
+    core.fail_next_platform_vpn_publish
+        .store(true, Ordering::Release);
+}
+
+fn assert_replacement_start_rejects_late_want(core: &CoreHandle, old_attempt_id: &str) {
+    let replacement_attempt_id = core.begin_platform_vpn_start().unwrap();
+    assert_ne!(replacement_attempt_id, old_attempt_id);
+    let error = core
+        .validate_platform_owner_journal_for_want(old_attempt_id)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(&format!(
+            "owner journal belongs to {replacement_attempt_id}"
+        )),
+        "{error}"
+    );
+}
+
+#[test]
+fn exact_cleanup_publish_failure_releases_leases_before_returning_error() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-cleanup-publish-failure-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    core.bind_platform_vpn_start(&attempt_id).unwrap();
+    assert!(core
+        .fail_platform_vpn_start(&attempt_id, "terminal before cleanup".to_owned())
+        .unwrap());
+
+    fail_next_platform_publish(&core);
+    let error = core
+        .complete_platform_vpn_cleanup(&attempt_id)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("injected platform publish failure"),
+        "{error}"
+    );
+    let state = core.lock_state().unwrap();
+    assert!(state.platform_vpn_cleanup_complete);
+    assert!(state.platform_vpn_issuer_lease.is_none());
+    assert!(state.platform_vpn_extension_lease.is_none());
+    drop(state);
+    assert!(core
+        .validate_platform_owner_journal_for_want(&attempt_id)
+        .unwrap_err()
+        .to_string()
+        .contains("journal is missing"));
+    assert_replacement_start_rejects_late_want(&core, &attempt_id);
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn confirmed_recovery_publish_failure_releases_leases_before_returning_error() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-recovery-publish-failure-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    assert!(core.cancel_platform_vpn_start(&attempt_id).unwrap());
+    let stop_intent = core.advance_platform_vpn_intent().unwrap();
+    assert_eq!(
+        core.claim_current_platform_vpn_stop(stop_intent).unwrap(),
+        attempt_id
+    );
+    assert!(core
+        .begin_platform_vpn_os_stop(stop_intent, &attempt_id)
+        .unwrap());
+    assert!(core
+        .complete_platform_vpn_os_stop(stop_intent, &attempt_id)
+        .unwrap());
+
+    fail_next_platform_publish(&core);
+    let error = core
+        .recover_platform_vpn_cleanup_after_confirmed_stop(&attempt_id)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("injected platform publish failure"),
+        "{error}"
+    );
+    let state = core.lock_state().unwrap();
+    assert!(state.platform_vpn_cleanup_complete);
+    assert!(state.platform_vpn_issuer_lease.is_none());
+    assert!(state.platform_vpn_extension_lease.is_none());
+    drop(state);
+    assert!(core
+        .validate_platform_owner_journal_for_want(&attempt_id)
+        .unwrap_err()
+        .to_string()
+        .contains("journal is missing"));
+    assert_replacement_start_rejects_late_want(&core, &attempt_id);
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn unattached_failure_publish_error_releases_issuer_lease_and_fences_late_want() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-unattached-publish-failure-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+
+    fail_next_platform_publish(&core);
+    let error = core
+        .fail_unattached_platform_vpn_start(&attempt_id, "system rejected".to_owned())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("injected platform publish failure"),
+        "{error}"
+    );
+    let state = core.lock_state().unwrap();
+    assert!(state.platform_vpn_cleanup_complete);
+    assert!(state.platform_vpn_issuer_lease.is_none());
+    assert!(state.platform_vpn_extension_lease.is_none());
+    drop(state);
+    assert!(core
+        .validate_platform_owner_journal_for_want(&attempt_id)
+        .unwrap_err()
+        .to_string()
+        .contains("journal is missing"));
+    assert_replacement_start_rejects_late_want(&core, &attempt_id);
+    drop(core);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn attached_owner_winning_stop_fence_resyncs_terminal_before_binding_publish() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-attach-stop-race-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    let journal_path = root.join("runtime/platform-vpn-owner.json");
+    let JournalRead::Present(journal) = platform_owner::read(&journal_path).unwrap() else {
+        panic!("pending owner journal missing");
+    };
+    let owner = current_process_identity().unwrap();
+    let extension_lease = platform_owner::acquire_owner_lease_exact(
+        &root.join("runtime/platform-vpn-owner.extension.lease"),
+        platform_owner_lease_record(
+            &attempt_id,
+            owner.clone(),
+            PlatformVpnOwnerLeaseRole::Extension,
+        ),
+    )
+    .unwrap();
+    platform_owner::upgrade_attached_exact(
+        &journal_path,
+        &attempt_id,
+        journal.issuer,
+        owner.clone(),
+    )
+    .unwrap();
+
+    let stop_intent = core.advance_platform_vpn_intent().unwrap();
+    assert_eq!(
+        core.claim_current_platform_vpn_stop(stop_intent).unwrap(),
+        attempt_id
+    );
+
+    let mut state = core.lock_state().unwrap();
+    state.platform_vpn_extension_lease = Some(extension_lease);
+    core.publish_platform_vpn_binding_locked(&mut state, &attempt_id, &owner)
+        .unwrap();
+    assert_eq!(
+        state.platform_start_outcome,
+        PlatformStartOutcome::Cancelled
+    );
+    assert!(state.platform_stop_requested);
+    assert!(state.platform_extension_attached);
+    drop(state);
+    assert_eq!(core.extension_tick(&attempt_id).unwrap(), "stopping");
+    assert!(core.complete_platform_vpn_cleanup(&attempt_id).unwrap());
+
+    let source = include_str!("lib.rs");
+    let post_cas_publish = source
+        .split_once("fn publish_platform_vpn_binding_locked")
+        .unwrap()
+        .1
+        .split_once("pub async fn await_platform_vpn_start")
+        .unwrap()
+        .0;
+    assert!(
+        post_cas_publish
+            .find("sync_platform_vpn_state_locked(state)")
+            .unwrap()
+            < post_cas_publish
+                .find("state.platform_extension_owner_pid = owner_pid")
+                .unwrap(),
+        "the Attached winner must re-sync the Stop lane before publishing ownership"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn watchdog_orphan_cleanup_requires_confirmed_stop_and_dead_exact_owner() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-watchdog-recovery-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = "watchdog-owner".to_owned();
+    let issuer = current_process_identity().unwrap();
+    let dead_owner = ProcessIdentity {
+        boot_id: read_boot_id().unwrap(),
+        pid: u32::MAX,
+        start_time: 1,
+    };
+    let journal_path = root.join("runtime/platform-vpn-owner.json");
+    let issuer_lease = platform_owner::acquire_owner_lease_exact(
+        &root.join("runtime/platform-vpn-owner.issuer.lease"),
+        platform_owner_lease_record(
+            &attempt_id,
+            issuer.clone(),
+            PlatformVpnOwnerLeaseRole::Issuer,
+        ),
+    )
+    .unwrap();
+    platform_owner::create_pending_exact(
+        &journal_path,
+        PlatformVpnOwnerJournal {
+            attempt_id: attempt_id.clone(),
+            issuer: issuer.clone(),
+            extension: None,
+            phase: PlatformVpnOwnerPhase::Pending,
+        },
+    )
+    .unwrap();
+    let extension_lease = platform_owner::acquire_owner_lease_exact(
+        &root.join("runtime/platform-vpn-owner.extension.lease"),
+        platform_owner_lease_record(
+            &attempt_id,
+            dead_owner.clone(),
+            PlatformVpnOwnerLeaseRole::Extension,
+        ),
+    )
+    .unwrap();
+    platform_owner::upgrade_attached_exact(&journal_path, &attempt_id, issuer, dead_owner).unwrap();
+    drop(extension_lease);
+    drop(issuer_lease);
+    {
+        let mut state = core.lock_state().unwrap();
+        state.platform_start_attempt_id = attempt_id.clone();
+        state.platform_start_outcome = PlatformStartOutcome::Connected;
+        state.platform_extension_attached = true;
+        state.platform_extension_owner_pid = u32::MAX;
+        state.platform_extension_owner_start_time = 1;
+        state.platform_vpn_running = true;
+        state.platform_vpn_cleanup_complete = false;
+        state.platform_remote_state_updated_at = 7;
+        let now = Instant::now();
+        state.platform_remote_state_seen_at =
+            Some(now - PLATFORM_HEARTBEAT_STALE_AFTER - PLATFORM_HEARTBEAT_WAKE_GRACE);
+        state.platform_remote_stale_since = Some(now - PLATFORM_HEARTBEAT_WAKE_GRACE);
+        core.apply_platform_envelope_locked(
+            &mut state,
+            true,
+            None,
+            Some(PlatformVpnState {
+                start_attempt_id: attempt_id.clone(),
+                start_outcome: PlatformStartOutcome::Connected,
+                delivery_observed: true,
+                extension_attached: true,
+                stop_requested: false,
+                extension_owner_pid: u32::MAX,
+                extension_owner_start_time: 1,
+                cleanup_complete: false,
+                starting: false,
+                running: true,
+                network_protected: true,
+                network_protect_error: None,
+                updated_at: 7,
+            }),
+        );
+        assert_eq!(state.platform_start_outcome, PlatformStartOutcome::Failed);
+        assert!(state.platform_watchdog_cleanup_recoverable);
+    }
+
+    assert_eq!(
+        core.current_recoverable_platform_vpn_session_id().unwrap(),
+        attempt_id
+    );
+    assert!(core
+        .recover_platform_vpn_cleanup_after_confirmed_stop(&attempt_id)
+        .await
+        .unwrap());
+    let state = core.lock_state().unwrap();
+    assert!(state.platform_vpn_cleanup_complete);
+    assert!(!state.platform_extension_attached);
+    assert!(!state.platform_watchdog_cleanup_recoverable);
+    drop(state);
+    assert!(core.begin_platform_vpn_start().is_ok());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn confirmed_os_stop_waits_for_a_hung_exact_owner_to_really_exit() {
+    if let Some(marker) = std::env::var_os(PLATFORM_RECOVERY_OWNER_CHILD_MARKER) {
+        std::fs::write(marker, b"owner-alive").unwrap();
+        std::thread::sleep(Duration::from_secs(10));
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-live-owner-stop-{}",
+        now_unix_nanos()
+    ));
+    let marker = root.join("owner-alive");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("tests::confirmed_os_stop_waits_for_a_hung_exact_owner_to_really_exit")
+        .arg("--test-threads=1")
+        .env(PLATFORM_RECOVERY_OWNER_CHILD_MARKER, &marker)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    for _ in 0..200 {
+        if marker.exists() {
+            break;
+        }
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "owner child exited before reaching its hold point"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(marker.exists(), "owner child did not reach its hold point");
+
+    let owner = ProcessIdentity {
+        boot_id: read_boot_id().unwrap(),
+        pid: child.id(),
+        start_time: read_process_start_time(child.id()).unwrap(),
+    };
+    assert_eq!(
+        process_identity_status(&owner),
+        ProcessIdentityStatus::Alive
+    );
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGSTOP) }, 0);
+
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    let journal_path = root.join("runtime/platform-vpn-owner.json");
+    let JournalRead::Present(journal) = platform_owner::read(&journal_path).unwrap() else {
+        panic!("pending owner journal missing");
+    };
+    let extension_lease = platform_owner::acquire_owner_lease_exact(
+        &root.join("runtime/platform-vpn-owner.extension.lease"),
+        platform_owner_lease_record(
+            &attempt_id,
+            owner.clone(),
+            PlatformVpnOwnerLeaseRole::Extension,
+        ),
+    )
+    .unwrap();
+    platform_owner::upgrade_attached_exact(
+        &journal_path,
+        &attempt_id,
+        journal.issuer,
+        owner.clone(),
+    )
+    .unwrap();
+    {
+        let mut state = core.lock_state().unwrap();
+        state.platform_start_outcome = PlatformStartOutcome::Connected;
+        state.platform_vpn_starting = false;
+        state.platform_vpn_running = true;
+        state.platform_extension_attached = true;
+        state.platform_extension_owner_pid = owner.pid;
+        state.platform_extension_owner_start_time = owner.start_time;
+        state.platform_vpn_cleanup_complete = false;
+    }
+    let stop_intent = core.advance_platform_vpn_intent().unwrap();
+    assert_eq!(
+        core.claim_current_platform_vpn_stop(stop_intent).unwrap(),
+        attempt_id
+    );
+
+    let killer = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        child.kill().unwrap();
+        let status = child.wait().unwrap();
+        drop(extension_lease);
+        status
+    });
+    let started = Instant::now();
+    assert!(core
+        .recover_platform_vpn_cleanup_after_confirmed_stop(&attempt_id)
+        .await
+        .unwrap());
+    assert!(
+        started.elapsed() >= Duration::from_millis(100),
+        "recovery must observe exact ownership release, not treat OS stop acknowledgement as cleanup"
+    );
+    assert!(!killer.await.unwrap().success());
+    assert_eq!(
+        platform_owner::read(&journal_path).unwrap(),
+        JournalRead::Missing
+    );
+    let state = core.lock_state().unwrap();
+    assert!(state.platform_vpn_cleanup_complete);
+    assert!(!state.platform_vpn_running);
+    assert!(!state.platform_extension_attached);
+    drop(state);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn begin_persists_the_pending_issuer_before_returning() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-pending-journal-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    let JournalRead::Present(journal) =
+        platform_owner::read(&root.join("runtime/platform-vpn-owner.json")).unwrap()
+    else {
+        panic!("pending owner journal missing");
+    };
+    assert_eq!(journal.attempt_id, attempt_id);
+    assert_eq!(journal.phase, PlatformVpnOwnerPhase::Pending);
+    assert!(journal.extension.is_none());
+    assert_eq!(
+        platform_owner::observe_owner_lease_exact(
+            &root.join("runtime/platform-vpn-owner.issuer.lease"),
+            &platform_owner_lease_record(
+                &attempt_id,
+                journal.issuer,
+                PlatformVpnOwnerLeaseRole::Issuer,
+            ),
+        )
+        .unwrap(),
+        PlatformVpnOwnerLeaseObservation::HeldExact
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cold_begin_does_not_rewrite_a_released_issuer_lease_with_an_old_journal() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-cold-begin-owner-{}",
+        now_unix_nanos()
+    ));
+    let journal_path = root.join("runtime/platform-vpn-owner.json");
+    let issuer_lease_path = root.join("runtime/platform-vpn-owner.issuer.lease");
+    let attempt_id = "old-pending-owner";
+    let issuer = current_process_identity().unwrap();
+    let issuer_lease = platform_owner::acquire_owner_lease_exact(
+        &issuer_lease_path,
+        platform_owner_lease_record(
+            attempt_id,
+            issuer.clone(),
+            PlatformVpnOwnerLeaseRole::Issuer,
+        ),
+    )
+    .unwrap();
+    platform_owner::create_pending_exact(
+        &journal_path,
+        PlatformVpnOwnerJournal {
+            attempt_id: attempt_id.to_owned(),
+            issuer,
+            extension: None,
+            phase: PlatformVpnOwnerPhase::Pending,
+        },
+    )
+    .unwrap();
+    drop(issuer_lease);
+    let lease_header_before = std::fs::read(&issuer_lease_path).unwrap();
+
+    let cold = CoreHandle::new_with_profile_root(&root);
+    let error = cold.begin_platform_vpn_start().unwrap_err().to_string();
+    assert!(
+        error.contains("owner journal") && error.contains(attempt_id),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::read(&issuer_lease_path).unwrap(),
+        lease_header_before,
+        "a new issuer must not hold and rewrite the fixed lease inode while the old journal is observable"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn cold_ui_recovers_a_dead_pending_issuer_and_fences_its_late_want() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-cold-pending-{}",
+        now_unix_nanos()
+    ));
+    let original = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = original.begin_platform_vpn_start().unwrap();
+    let journal_path = root.join("runtime/platform-vpn-owner.json");
+    let JournalRead::Present(journal) = platform_owner::read(&journal_path).unwrap() else {
+        panic!("pending owner journal missing");
+    };
+    assert!(platform_owner::delete_exact(&journal_path, &attempt_id, None).unwrap());
+    drop(original);
+    let dead_issuer = ProcessIdentity {
+        boot_id: journal.issuer.boot_id,
+        pid: u32::MAX,
+        start_time: 1,
+    };
+    let dead_issuer_lease = platform_owner::acquire_owner_lease_exact(
+        &root.join("runtime/platform-vpn-owner.issuer.lease"),
+        platform_owner_lease_record(
+            &attempt_id,
+            dead_issuer.clone(),
+            PlatformVpnOwnerLeaseRole::Issuer,
+        ),
+    )
+    .unwrap();
+    platform_owner::create_pending_exact(
+        &journal_path,
+        PlatformVpnOwnerJournal {
+            attempt_id: attempt_id.clone(),
+            issuer: dead_issuer,
+            extension: None,
+            phase: PlatformVpnOwnerPhase::Pending,
+        },
+    )
+    .unwrap();
+    drop(dead_issuer_lease);
+    let cold = CoreHandle::new_with_profile_root(&root);
+    let rejected_before_bind = cold
+        .validate_platform_owner_journal_for_want(&attempt_id)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        rejected_before_bind.contains("issuer lease")
+            && rejected_before_bind.contains("was released"),
+        "{rejected_before_bind}"
+    );
+
+    let stop_intent = cold.advance_platform_vpn_intent().unwrap();
+    assert_eq!(
+        cold.claim_current_platform_vpn_stop(stop_intent).unwrap(),
+        attempt_id
+    );
+    assert!(cold
+        .recover_platform_vpn_cleanup_after_confirmed_stop(&attempt_id)
+        .await
+        .unwrap());
+    assert_eq!(
+        platform_owner::read(&journal_path).unwrap(),
+        JournalRead::Missing
+    );
+    let late_want = cold
+        .validate_platform_owner_journal_for_want(&attempt_id)
+        .unwrap_err()
+        .to_string();
+    assert!(late_want.contains("journal is missing"), "{late_want}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn cold_ui_recovers_only_the_exact_dead_attached_owner() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-cold-attached-{}",
+        now_unix_nanos()
+    ));
+    let journal_path = root.join("runtime/platform-vpn-owner.json");
+    let attempt_id = "cold-attached";
+    let issuer = current_process_identity().unwrap();
+    let dead_extension = ProcessIdentity {
+        boot_id: issuer.boot_id.clone(),
+        pid: u32::MAX,
+        start_time: 1,
+    };
+    let issuer_lease = platform_owner::acquire_owner_lease_exact(
+        &root.join("runtime/platform-vpn-owner.issuer.lease"),
+        platform_owner_lease_record(
+            attempt_id,
+            issuer.clone(),
+            PlatformVpnOwnerLeaseRole::Issuer,
+        ),
+    )
+    .unwrap();
+    platform_owner::create_pending_exact(
+        &journal_path,
+        PlatformVpnOwnerJournal {
+            attempt_id: attempt_id.to_owned(),
+            issuer: issuer.clone(),
+            extension: None,
+            phase: PlatformVpnOwnerPhase::Pending,
+        },
+    )
+    .unwrap();
+    let extension_lease = platform_owner::acquire_owner_lease_exact(
+        &root.join("runtime/platform-vpn-owner.extension.lease"),
+        platform_owner_lease_record(
+            attempt_id,
+            dead_extension.clone(),
+            PlatformVpnOwnerLeaseRole::Extension,
+        ),
+    )
+    .unwrap();
+    platform_owner::upgrade_attached_exact(&journal_path, attempt_id, issuer, dead_extension)
+        .unwrap();
+    drop(extension_lease);
+    drop(issuer_lease);
+
+    let cold = CoreHandle::new_with_profile_root(&root);
+    let stop_intent = cold.advance_platform_vpn_intent().unwrap();
+    assert_eq!(
+        cold.claim_current_platform_vpn_stop(stop_intent).unwrap(),
+        attempt_id
+    );
+    assert!(cold
+        .recover_platform_vpn_cleanup_after_confirmed_stop(attempt_id)
+        .await
+        .unwrap());
+    assert_eq!(
+        platform_owner::read(&journal_path).unwrap(),
+        JournalRead::Missing
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn ordinary_failure_keeps_cleanup_barrier_while_exact_owner_is_alive() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-no-watchdog-recovery-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    core.bind_platform_vpn_start(&attempt_id).unwrap();
+    assert!(core
+        .fail_platform_vpn_start(&attempt_id, "native failure".to_owned())
+        .unwrap());
+
+    assert_eq!(
+        core.current_recoverable_platform_vpn_session_id().unwrap(),
+        attempt_id
+    );
+    let journal_path = root.join("runtime/platform-vpn-owner.json");
+    let JournalRead::Present(journal) = platform_owner::read(&journal_path).unwrap() else {
+        panic!("attached owner journal missing");
+    };
+    assert_eq!(
+        platform_owner::observe_owner_lease_exact(
+            &root.join("runtime/platform-vpn-owner.extension.lease"),
+            &platform_owner_lease_record(
+                &attempt_id,
+                journal.extension.unwrap(),
+                PlatformVpnOwnerLeaseRole::Extension,
+            ),
+        )
+        .unwrap(),
+        PlatformVpnOwnerLeaseObservation::HeldExact
+    );
+    assert!(!core.lock_state().unwrap().platform_vpn_cleanup_complete);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn delivered_unattached_terminal_owner_recovers_only_after_confirmed_stop() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-delivered-recovery-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    assert!(core.cancel_platform_vpn_start(&attempt_id).unwrap());
+    {
+        let mut state = core.lock_state().unwrap();
+        state.platform_start_delivery_observed = true;
+        state.platform_extension_attached = false;
+        state.platform_remote_state_updated_at = 23;
+    }
+
+    assert_eq!(
+        core.current_recoverable_platform_vpn_session_id().unwrap(),
+        attempt_id
+    );
+    let intent_epoch = core.lock_state().unwrap().platform_vpn_intent_epoch;
+    assert_eq!(
+        core.claim_current_platform_vpn_stop(intent_epoch).unwrap(),
+        attempt_id
+    );
+    assert!(core
+        .begin_platform_vpn_os_stop(intent_epoch, &attempt_id)
+        .unwrap());
+    assert!(core.begin_platform_vpn_start().is_err());
+    assert!(core
+        .complete_platform_vpn_os_stop(intent_epoch, &attempt_id)
+        .unwrap());
+    assert!(core
+        .recover_platform_vpn_cleanup_after_confirmed_stop(&attempt_id)
+        .await
+        .unwrap());
+    let state = core.lock_state().unwrap();
+    assert!(state.platform_vpn_cleanup_complete);
+    assert_eq!(
+        state.platform_start_outcome,
+        PlatformStartOutcome::Cancelled
+    );
+    assert!(!state.platform_extension_attached);
+    drop(state);
+    assert!(core.begin_platform_vpn_start().is_ok());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn delivered_terminal_owner_that_attached_still_requires_extension_cleanup() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-delivered-attached-cleanup-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    core.bind_platform_vpn_start(&attempt_id).unwrap();
+    assert!(core.cancel_platform_vpn_start(&attempt_id).unwrap());
+
+    assert_eq!(
+        core.current_recoverable_platform_vpn_session_id().unwrap(),
+        attempt_id
+    );
+    let journal_path = root.join("runtime/platform-vpn-owner.json");
+    let JournalRead::Present(journal) = platform_owner::read(&journal_path).unwrap() else {
+        panic!("attached owner journal missing");
+    };
+    assert_eq!(
+        platform_owner::observe_owner_lease_exact(
+            &root.join("runtime/platform-vpn-owner.extension.lease"),
+            &platform_owner_lease_record(
+                &attempt_id,
+                journal.extension.unwrap(),
+                PlatformVpnOwnerLeaseRole::Extension,
+            ),
+        )
+        .unwrap(),
+        PlatformVpnOwnerLeaseObservation::HeldExact
+    );
+    assert!(!core.lock_state().unwrap().platform_vpn_cleanup_complete);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cleanup_recovery_requires_exact_owner_death_not_heartbeat_silence() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-recovery-progress-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = "watchdog-progress-owner".to_owned();
+    {
+        let mut state = core.lock_state().unwrap();
+        state.platform_start_attempt_id = attempt_id.clone();
+        state.platform_start_outcome = PlatformStartOutcome::Failed;
+        state.platform_extension_attached = true;
+        state.platform_vpn_cleanup_complete = false;
+        state.platform_stop_requested = true;
+        state.platform_extension_owner_pid = 42;
+        state.platform_extension_owner_start_time = 7;
+        state.platform_watchdog_cleanup_recoverable = true;
+        assert_eq!(
+            platform_cleanup_recovery_proof_with_owner_status(&state, ProcessIdentityStatus::Alive,),
+            CleanupRecoveryProof::OwnerAlive
+        );
+        assert_eq!(
+            platform_cleanup_recovery_proof_with_owner_status(
+                &state,
+                ProcessIdentityStatus::Unknown,
+            ),
+            CleanupRecoveryProof::OwnerLivenessUnknown
+        );
+        assert_eq!(
+            platform_cleanup_recovery_proof_with_owner_status(&state, ProcessIdentityStatus::Dead,),
+            CleanupRecoveryProof::Proven
+        );
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn older_platform_frame_does_not_refresh_remote_liveness() {
+    let root =
+        std::env::temp_dir().join(format!("paws-platform-vpn-old-frame-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let mut state = core.lock_state().unwrap();
+    state.platform_start_attempt_id = "attempt-current".to_owned();
+    state.platform_start_outcome = PlatformStartOutcome::Connected;
+    state.platform_vpn_running = true;
+    state.platform_remote_state_updated_at = 20;
+    let last_seen = Instant::now();
+    state.platform_remote_state_seen_at = Some(last_seen);
+
+    core.apply_platform_envelope_locked(
+        &mut state,
+        true,
+        None,
+        Some(PlatformVpnState {
+            start_attempt_id: "attempt-current".to_owned(),
+            start_outcome: PlatformStartOutcome::Connected,
+            delivery_observed: true,
+            extension_attached: true,
+            stop_requested: false,
+            extension_owner_pid: 0,
+            extension_owner_start_time: 0,
+            cleanup_complete: false,
+            starting: false,
+            running: true,
+            network_protected: false,
+            network_protect_error: None,
+            updated_at: 19,
+        }),
+    );
+
+    assert_eq!(state.platform_remote_state_updated_at, 20);
+    assert_eq!(state.platform_remote_state_seen_at, Some(last_seen));
+    assert!(state.platform_vpn_running);
+    drop(state);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn new_platform_attempt_resets_remote_liveness_revision() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-new-attempt-liveness-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    {
+        let mut state = core.lock_state().unwrap();
+        state.platform_start_attempt_id = "finished-attempt".to_owned();
+        state.platform_start_outcome = PlatformStartOutcome::Failed;
+        state.platform_vpn_cleanup_complete = true;
+        state.platform_remote_state_updated_at = u128::MAX;
+        state.platform_remote_state_seen_at = Some(Instant::now());
+        state.platform_remote_stale_since = Some(Instant::now());
+    }
+
+    core.begin_platform_vpn_start().unwrap();
+
+    let state = core.lock_state().unwrap();
+    assert_eq!(state.platform_remote_state_updated_at, 0);
+    assert!(state.platform_remote_state_seen_at.is_none());
+    assert!(state.platform_remote_stale_since.is_none());
+    drop(state);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn live_platform_frame_cannot_ack_connection_cleanup() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-live-cleanup-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let mut state = core.lock_state().unwrap();
+    state.platform_start_attempt_id = "attempt-live".to_owned();
+    state.platform_start_outcome = PlatformStartOutcome::Pending;
+    state.platform_extension_attached = true;
+
+    core.apply_platform_envelope_locked(
+        &mut state,
+        true,
+        None,
+        Some(PlatformVpnState {
+            start_attempt_id: "attempt-live".to_owned(),
+            start_outcome: PlatformStartOutcome::Connected,
+            delivery_observed: true,
+            extension_attached: true,
+            stop_requested: false,
+            extension_owner_pid: 0,
+            extension_owner_start_time: 0,
+            cleanup_complete: true,
+            starting: false,
+            running: true,
+            network_protected: true,
+            network_protect_error: None,
+            updated_at: 1,
+        }),
+    );
+
+    assert_eq!(
+        state.platform_start_outcome,
+        PlatformStartOutcome::Connected
+    );
+    assert!(state.platform_vpn_running);
+    assert!(!state.platform_vpn_cleanup_complete);
+    drop(state);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn platform_want_validation_rejects_idle_owner_frame() {
+    let envelope = platform_ipc::PlatformEnvelope {
+        state: Some(PlatformVpnState {
+            start_attempt_id: "attempt-idle".to_owned(),
+            start_outcome: PlatformStartOutcome::Idle,
+            ..PlatformVpnState::default()
+        }),
+        ..platform_ipc::PlatformEnvelope::default()
+    };
+
+    assert!(validate_platform_start_envelope(&envelope, "attempt-idle").is_err());
+    assert!(validate_platform_start_envelope(&envelope, "").is_err());
+}
+
+#[test]
+fn terminal_platform_attempt_cannot_be_revived_by_a_late_running_frame() {
+    let root =
+        std::env::temp_dir().join(format!("paws-platform-vpn-terminal-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    {
+        let mut state = core.lock_state().unwrap();
+        state.platform_start_attempt_id = "attempt-terminal".to_owned();
+        state.platform_start_outcome = PlatformStartOutcome::Failed;
+        state.platform_vpn_running = false;
+        core.apply_platform_envelope_locked(
+            &mut state,
+            true,
+            None,
+            Some(PlatformVpnState {
+                start_attempt_id: "attempt-terminal".to_owned(),
+                start_outcome: PlatformStartOutcome::Connected,
+                delivery_observed: true,
+                extension_attached: true,
+                stop_requested: false,
+                extension_owner_pid: 0,
+                extension_owner_start_time: 0,
+                cleanup_complete: false,
+                starting: false,
+                running: true,
+                network_protected: true,
+                network_protect_error: None,
+                updated_at: 1,
+            }),
+        );
+        assert_eq!(state.platform_start_outcome, PlatformStartOutcome::Failed);
+        assert!(!state.platform_vpn_running);
+        assert!(!state.platform_network_protected);
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[tokio::test]
 async fn platform_start_completes_only_on_matching_connected_terminal() {
     let root =
@@ -628,6 +2464,106 @@ async fn platform_start_completes_only_on_matching_connected_terminal() {
         .fail_platform_vpn_start(&attempt_id, "late rejection".to_owned())
         .unwrap());
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn platform_attach_wait_is_exact_and_wakes_before_start_dispatch_completion() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-attach-wait-{}",
+        now_unix_nanos()
+    ));
+    let core = Arc::new(CoreHandle::new_with_profile_root(&root));
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+
+    assert_eq!(
+        core.await_platform_vpn_attach("older-attempt")
+            .await
+            .unwrap(),
+        PlatformAttachOutcome::Superseded
+    );
+
+    let wait_core = Arc::clone(&core);
+    let wait_attempt = attempt_id.clone();
+    let waiter =
+        tokio::spawn(async move { wait_core.await_platform_vpn_attach(&wait_attempt).await });
+    tokio::task::yield_now().await;
+    assert!(!waiter.is_finished());
+
+    core.bind_platform_vpn_start(&attempt_id).unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_millis(100), waiter)
+            .await
+            .expect("extension attachment did not wake the waiter")
+            .unwrap()
+            .unwrap(),
+        PlatformAttachOutcome::Attached
+    );
+
+    let terminal_root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-attach-terminal-{}",
+        now_unix_nanos()
+    ));
+    let terminal_core = CoreHandle::new_with_profile_root(&terminal_root);
+    let terminal_attempt = terminal_core.begin_platform_vpn_start().unwrap();
+    assert!(terminal_core
+        .fail_unattached_platform_vpn_start(&terminal_attempt, "rejected".to_owned())
+        .unwrap());
+    assert_eq!(
+        terminal_core
+            .await_platform_vpn_attach(&terminal_attempt)
+            .await
+            .unwrap(),
+        PlatformAttachOutcome::Terminal
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(terminal_root);
+}
+
+#[test]
+fn terminal_delivery_acknowledges_only_the_exact_terminal_attempt() {
+    let mut cancelled = PlatformVpnState {
+        start_attempt_id: "attempt-a".to_owned(),
+        start_outcome: PlatformStartOutcome::Cancelled,
+        extension_attached: true,
+        cleanup_complete: false,
+        starting: true,
+        running: true,
+        network_protected: true,
+        updated_at: 1,
+        ..PlatformVpnState::default()
+    };
+
+    assert!(acknowledge_terminal_delivery_state(
+        &mut cancelled,
+        "attempt-a"
+    ));
+    assert_eq!(cancelled.start_attempt_id, "attempt-a");
+    assert_eq!(cancelled.start_outcome, PlatformStartOutcome::Cancelled);
+    assert!(cancelled.delivery_observed);
+    assert!(!cancelled.extension_attached);
+    assert!(!cancelled.cleanup_complete);
+    assert!(!cancelled.starting);
+    assert!(!cancelled.running);
+    assert!(!cancelled.network_protected);
+
+    let mut new_owner = PlatformVpnState {
+        start_attempt_id: "attempt-b".to_owned(),
+        start_outcome: PlatformStartOutcome::Pending,
+        starting: true,
+        updated_at: 9,
+        ..PlatformVpnState::default()
+    };
+    let before = new_owner.clone();
+    assert!(!acknowledge_terminal_delivery_state(
+        &mut new_owner,
+        "attempt-a"
+    ));
+    assert_eq!(new_owner.start_attempt_id, before.start_attempt_id);
+    assert_eq!(new_owner.start_outcome, before.start_outcome);
+    assert_eq!(new_owner.delivery_observed, before.delivery_observed);
+    assert_eq!(new_owner.starting, before.starting);
+    assert_eq!(new_owner.updated_at, before.updated_at);
 }
 
 #[tokio::test]
@@ -672,6 +2608,217 @@ async fn platform_start_failure_is_exactly_once() {
         .await
         .unwrap_err();
     assert!(error.to_string().contains("system rejected"));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn platform_stop_waits_for_exact_connection_cleanup_ack() {
+    let root = std::env::temp_dir().join(format!("paws-platform-vpn-cleanup-{}", now_unix_nanos()));
+    let core = Arc::new(CoreHandle::new_with_profile_root(&root));
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    core.bind_platform_vpn_start(&attempt_id).unwrap();
+    assert!(core.cancel_platform_vpn_start(&attempt_id).unwrap());
+
+    let journal_path = root.join("runtime/platform-vpn-owner.json");
+    let journal = match platform_owner::read(&journal_path).unwrap() {
+        JournalRead::Present(journal) => journal,
+        JournalRead::Missing => panic!("attached owner journal is missing"),
+    };
+    let current_owner = journal.extension.clone().unwrap();
+    let mut foreign_boot_owner = current_owner.clone();
+    foreign_boot_owner.boot_id.push_str("-foreign");
+    platform_owner::rebind_attached_exact(
+        &journal_path,
+        &attempt_id,
+        journal.issuer.clone(),
+        current_owner.clone(),
+        foreign_boot_owner.clone(),
+    )
+    .unwrap();
+    assert!(core
+        .complete_platform_vpn_cleanup(&attempt_id)
+        .unwrap_err()
+        .to_string()
+        .contains("does not match the Extension acknowledging cleanup"));
+    assert!(matches!(
+        platform_owner::read(&journal_path).unwrap(),
+        JournalRead::Present(PlatformVpnOwnerJournal {
+            extension: Some(extension),
+            ..
+        }) if extension == foreign_boot_owner
+    ));
+    platform_owner::rebind_attached_exact(
+        &journal_path,
+        &attempt_id,
+        journal.issuer,
+        foreign_boot_owner,
+        current_owner,
+    )
+    .unwrap();
+
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(20),
+            core.await_platform_vpn_stop(&attempt_id),
+        )
+        .await
+        .is_err(),
+        "native terminal state must not stand in for VpnConnection.destroy"
+    );
+    assert!(core
+        .begin_platform_vpn_start()
+        .unwrap_err()
+        .to_string()
+        .contains("cleanup is still pending"));
+
+    let wait_core = Arc::clone(&core);
+    let wait_attempt = attempt_id.clone();
+    let waiter =
+        tokio::spawn(async move { wait_core.await_platform_vpn_stop(&wait_attempt).await });
+    tokio::task::yield_now().await;
+    assert!(core.complete_platform_vpn_cleanup(&attempt_id).unwrap());
+    assert!(tokio::time::timeout(Duration::from_millis(100), waiter)
+        .await
+        .expect("cleanup acknowledgement did not wake the waiter")
+        .unwrap()
+        .unwrap());
+    assert_eq!(
+        platform_owner::read(&journal_path).unwrap(),
+        JournalRead::Missing
+    );
+    assert!(core.begin_platform_vpn_start().is_ok());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn attempt_scoped_callbacks_reject_stale_and_post_terminal_updates() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-attempt-callbacks-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+
+    assert!(!core
+        .set_platform_vpn_starting_for_attempt("stale-attempt", true)
+        .unwrap());
+    assert!(!core
+        .set_platform_vpn_starting_for_attempt(&attempt_id, true)
+        .unwrap());
+    core.bind_platform_vpn_start(&attempt_id).unwrap();
+    assert!(core
+        .set_platform_vpn_failed_for_attempt(&attempt_id, "native failed".to_owned())
+        .unwrap());
+    assert!(!core
+        .set_platform_vpn_starting_for_attempt(&attempt_id, true)
+        .unwrap());
+    assert!(!core
+        .set_platform_network_protected_for_attempt(&attempt_id, true, None)
+        .unwrap());
+
+    let state = core.lock_state().unwrap();
+    assert_eq!(state.platform_start_outcome, PlatformStartOutcome::Failed);
+    assert!(!state.platform_vpn_running);
+    assert_eq!(
+        state.platform_network_protect_error.as_deref(),
+        Some("native failed")
+    );
+    drop(state);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn connected_attempt_cannot_regress_to_starting() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-connected-callback-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    core.bind_platform_vpn_start(&attempt_id).unwrap();
+    core.set_platform_vpn_running(true).unwrap();
+
+    assert!(!core
+        .set_platform_vpn_starting_for_attempt(&attempt_id, true)
+        .unwrap());
+    let state = core.lock_state().unwrap();
+    assert_eq!(
+        state.platform_start_outcome,
+        PlatformStartOutcome::Connected
+    );
+    assert!(state.platform_vpn_running);
+    assert!(!state.platform_vpn_starting);
+    drop(state);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn bound_pending_attempt_reports_starting_before_the_native_worker_exists() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-bound-before-native-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    core.bind_platform_vpn_start(&attempt_id).unwrap();
+
+    assert_eq!(core.vpn.lifecycle(), NativeVpnLifecycle::Stopped);
+    assert_eq!(core.extension_tick(&attempt_id).unwrap(), "starting");
+    let state = core.lock_state().unwrap();
+    assert_eq!(state.platform_start_outcome, PlatformStartOutcome::Pending);
+    assert!(state.platform_vpn_starting);
+    assert!(!state.platform_vpn_running);
+    drop(state);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn fresh_extension_process_can_recover_the_same_connected_attempt() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-process-recovery-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    core.bind_platform_vpn_start(&attempt_id).unwrap();
+    core.set_platform_vpn_running(true).unwrap();
+    assert!(!core.vpn.is_running());
+
+    core.bind_platform_vpn_start(&attempt_id).unwrap();
+
+    let state = core.lock_state().unwrap();
+    assert_eq!(state.platform_start_outcome, PlatformStartOutcome::Pending);
+    assert!(state.platform_vpn_starting);
+    assert!(!state.platform_vpn_running);
+    assert!(!state.platform_vpn_cleanup_complete);
+    drop(state);
+    assert!(core
+        .set_platform_vpn_starting_for_attempt(&attempt_id, true)
+        .unwrap());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn heartbeat_does_not_observe_a_transient_native_restart_state() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-platform-vpn-heartbeat-operation-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    core.bind_platform_vpn_start(&attempt_id).unwrap();
+    core.set_platform_vpn_running(true).unwrap();
+
+    let _operation_guard = core.vpn_operation_lock.try_lock().unwrap();
+    assert_eq!(core.extension_tick(&attempt_id).unwrap(), "connected");
+    let state = core.lock_state().unwrap();
+    assert_eq!(
+        state.platform_start_outcome,
+        PlatformStartOutcome::Connected
+    );
+    assert!(state.platform_vpn_running);
+    drop(state);
+    drop(_operation_guard);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -867,6 +3014,7 @@ fn snapshot_includes_runtime_tracing_logs() {
 
     tracing::warn!(target: "paws_core_test", "{}", message);
 
+    core.refresh_telemetry().unwrap();
     let snapshot = core.snapshot().unwrap();
     assert!(snapshot
         .logs
@@ -906,11 +3054,14 @@ fn clear_logs_removes_state_and_runtime_logs() {
         state.logs.push(warning_log("state log to clear"));
     }
     tracing::warn!(target: "paws_core_test", "runtime log to clear");
-    assert!(!core.snapshot().unwrap().logs.is_empty());
+    let before = core.telemetry_projection().unwrap();
+    assert!(!before.logs.is_empty());
 
     core.clear_logs().unwrap();
 
-    assert!(core.snapshot().unwrap().logs.is_empty());
+    let after = core.telemetry_projection().unwrap();
+    assert!(after.logs.is_empty());
+    assert!(after.revisions.telemetry_revision > before.revisions.telemetry_revision);
     let _ = fs::remove_dir_all(root);
 }
 
@@ -945,6 +3096,33 @@ async fn reload_loads_engine_without_marking_vpn_connected() {
         .iter()
         .any(|rule| rule.source == "profile-yaml" && rule.enabled));
     assert_eq!(snapshot.profiles[0].rule_count, snapshot.rules.len());
+}
+
+#[tokio::test]
+async fn reloading_the_same_profile_does_not_advance_config_revision() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-reload-domain-revision-test-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let profile_id = core
+        .import_profile_from_content(
+            "Revision domains",
+            "test",
+            &paws_profile::default_runtime_yaml(),
+            None,
+        )
+        .await
+        .unwrap();
+    let before = core.runtime_status_projection().unwrap().revisions;
+
+    core.reload_config(&profile_id).await.unwrap();
+
+    let after = core.runtime_status_projection().unwrap().revisions;
+    assert_eq!(after.config_revision, before.config_revision);
+    assert!(after.status_revision > before.status_revision);
+    assert!(after.resource_revision > before.resource_revision);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1381,7 +3559,7 @@ async fn vpn_lifecycle_reloads_tunnel_starts_and_stops() {
     assert!(running.vpn_running);
     assert_eq!(running.vpn_options.mtu, VpnOptions::default().mtu);
 
-    core.stop_vpn().unwrap();
+    core.stop_vpn().await.unwrap();
     let stopped = core.snapshot().unwrap();
     assert!(stopped.engine_loaded);
     assert!(stopped.running);
@@ -1445,14 +3623,29 @@ async fn vpn_config_updates_reload_active_snapshot() {
         .unwrap();
     core.reload_config(&profile_id).await.unwrap();
 
-    core.set_profile_vpn_config(&profile_id, true, false, true, "lwip".to_owned())
+    let previous_revision = core.snapshot().unwrap().config_revision;
+    let error = core
+        .set_profile_vpn_config(&profile_id, true, false, true, "lwip".to_owned())
+        .await
+        .expect_err("unsupported application bypass must not be persisted");
+    assert!(error.to_string().contains("not supported"));
+    assert_eq!(core.snapshot().unwrap().config_revision, previous_revision);
+
+    let error = core
+        .set_profile_vpn_config(&profile_id, true, false, false, "lwip".to_owned())
+        .await
+        .expect_err("unsupported system proxy management must not be persisted");
+    assert!(error.to_string().contains("not supported"));
+    assert_eq!(core.snapshot().unwrap().config_revision, previous_revision);
+
+    core.set_profile_vpn_config(&profile_id, false, false, false, "lwip".to_owned())
         .await
         .unwrap();
 
     let snapshot = core.snapshot().unwrap();
-    assert!(snapshot.vpn_options.system_proxy);
+    assert!(!snapshot.vpn_options.system_proxy);
     assert!(!snapshot.vpn_options.dns_hijacking);
-    assert!(snapshot.vpn_options.allow_bypass);
+    assert!(!snapshot.vpn_options.allow_bypass);
     assert_eq!(snapshot.vpn_options.stack, "lwip");
     assert!(!snapshot.dns.hijacking);
 }
@@ -1592,6 +3785,7 @@ async fn snapshot_uses_meow_tunnel_statistics_for_connections_and_traffic() {
     tunnel.statistics().add_download(256);
     let connection_id = track_test_connection(&tunnel, "example.com");
 
+    core.refresh_telemetry().unwrap();
     let snapshot = core.snapshot().unwrap();
     assert_eq!(snapshot.traffic.meow_upload_bytes, 128);
     assert_eq!(snapshot.traffic.meow_download_bytes, 256);
@@ -1626,11 +3820,17 @@ async fn snapshot_uses_meow_tunnel_statistics_for_connections_and_traffic() {
     assert_eq!(snapshot.request_history[0].id, connection_id);
     assert!(!snapshot.request_history[0].active);
 
+    let before_clear_revision = snapshot.config_revision;
+    let before_clear_runtime_revision = snapshot.revision;
     core.clear_request_history().unwrap();
-    assert!(core.snapshot().unwrap().request_history.is_empty());
+    let cleared = core.snapshot().unwrap();
+    assert!(cleared.request_history.is_empty());
+    assert_eq!(cleared.config_revision, before_clear_revision);
+    assert!(cleared.revision > before_clear_runtime_revision);
 
     let first = track_test_connection(&tunnel, "one.example");
     let second = track_test_connection(&tunnel, "two.example");
+    core.refresh_telemetry().unwrap();
     let snapshot = core.snapshot().unwrap();
     assert_eq!(snapshot.connections.len(), 2);
     assert!(snapshot.request_history.iter().any(|item| item.id == first));
@@ -1715,6 +3915,7 @@ async fn profile_traffic_is_not_double_counted_after_vpn_stop_baseline() {
         baseline_meow_traffic_sample(&mut state);
     }
 
+    core.refresh_telemetry().unwrap();
     let snapshot = core.snapshot().unwrap();
     let profile = snapshot
         .profiles
@@ -2349,7 +4550,7 @@ rules:
     assert!(persisted.contains("paws:"));
     assert!(persisted.contains("mtu: 1410"));
     assert!(!persisted.contains("external-controller:"));
-    core.stop_vpn().unwrap();
+    core.stop_vpn().await.unwrap();
     unsafe {
         libc::close(fds[0]);
         libc::close(fds[1]);

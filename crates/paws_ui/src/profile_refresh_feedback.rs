@@ -34,12 +34,46 @@ pub(crate) fn profile_batch_refresh_message(
     }
 }
 
-#[cfg(test)]
-pub(crate) fn profile_backup_restore_message(profile_name: &str, error: Option<&str>) -> String {
-    if let Some(error) = error.filter(|error| !error.trim().is_empty()) {
-        translate_ui(locale, tr::hard_zh_007(profile_name, error))
+pub(crate) fn profile_backup_restore_message(
+    profile_name: &str,
+    restore_error: Option<&str>,
+    restart_requested: bool,
+    restart_error: Option<&str>,
+    locale: UiLocale,
+) -> String {
+    if let Some(error) = restore_error.filter(|error| !error.trim().is_empty()) {
+        return format!(
+            "{}{}{}{}",
+            translate_ui(locale, tr::feedback_profile_prefix()),
+            profile_name,
+            translate_ui(locale, tr::profiles_backup_restore_failed_suffix()),
+            error
+        );
+    }
+    let base = format!(
+        "{}{}{}",
+        translate_ui(locale, tr::feedback_profile_prefix()),
+        profile_name,
+        translate_ui(locale, tr::profiles_backup_restore_success_suffix())
+    );
+    let separator = if locale == UiLocale::ZhCn {
+        "；"
     } else {
-        translate_ui(locale, tr::hard_zh_008(profile_name))
+        "; "
+    };
+    if let Some(error) = restart_error.filter(|error| !error.trim().is_empty()) {
+        format!(
+            "{base}{separator}{}{}",
+            translate_ui(locale, tr::feedback_vpn_restart_failed_suffix()),
+            error
+        )
+    } else if restart_requested {
+        format!(
+            "{base}{separator}{}",
+            translate_ui(locale, tr::feedback_vpn_restart_requested_suffix())
+        )
+    } else {
+        base
     }
 }
 
@@ -117,6 +151,7 @@ pub(crate) fn profile_import_message(
     restart_requested: bool,
     restart_error: Option<&str>,
 ) -> String {
+    let locale = UiLocale::ZhCn;
     if let Some(error) = restart_error.filter(|error| !error.trim().is_empty()) {
         translate_ui(locale, tr::hard_zh_009(profile_name, error))
     } else if restart_requested {

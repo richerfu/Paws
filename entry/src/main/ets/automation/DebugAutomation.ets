@@ -35,8 +35,12 @@ interface PawsSnapshot {
  */
 export function runDebugAutomation(
   want: Want,
+  applicationDebug: boolean,
   startVpn: (optionsJson: string) => Promise<void>,
 ): Promise<void> {
+  if (!applicationDebug) {
+    return Promise.resolve();
+  }
   return run(want, startVpn).catch((err: Error) => {
     hilog.error(LOG_DOMAIN, LOG_TAG, 'debug automation failed %{public}s', describeError(err));
     throw new Error(describeError(err) || 'debug automation failed');
@@ -64,14 +68,13 @@ async function run(
 
   let profileId = '';
   if (profileContent.length > 0) {
-    profileId = await pawsUi.importProfileFromContent(profileName, 'harmony-smoke', profileContent);
+    profileId =
+      await pawsUi.importProfileFromContentAndActivate(profileName, 'harmony-smoke', profileContent);
   } else if (profileUrl.length > 0) {
-    profileId = await pawsUi.importProfileFromUrl(profileUrl, profileName);
+    profileId = await pawsUi.importProfileFromUrlAndActivate(profileUrl, profileName);
   }
 
   if (profileId.length > 0) {
-    await pawsUi.activateProfile(profileId);
-    await pawsUi.reloadConfig(profileId);
     hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation profile ready %{public}s', profileId);
   }
 
@@ -87,15 +90,11 @@ async function run(
 }
 
 function activeVpnOptionsJson(): string {
-  try {
-    const snapshot = JSON.parse(pawsUi.querySnapshot()) as PawsSnapshot;
-    if (snapshot.vpnOptions) {
-      return JSON.stringify(snapshot.vpnOptions);
-    }
-  } catch (err) {
-    hilog.error(LOG_DOMAIN, LOG_TAG, 'read active VPN options failed %{public}s', describeError(err));
+  const snapshot = JSON.parse(pawsUi.querySnapshot()) as PawsSnapshot;
+  if (!snapshot || !snapshot.vpnOptions) {
+    throw new Error('active VPN options are missing from the runtime snapshot');
   }
-  return pawsUi.defaultVpnOptions();
+  return JSON.stringify(snapshot.vpnOptions);
 }
 
 async function runDebugDelay(want: Want): Promise<void> {
@@ -106,12 +105,9 @@ async function runDebugDelay(want: Want): Promise<void> {
   const url = wantString(want, 'pawsDelayUrl');
   const timeoutMs = wantNumber(want, 'pawsDelayTimeoutMs') || 5000;
   const expectFailure = wantBool(want, 'pawsExpectDelayFailure');
+  let delay: number;
   try {
-    const delay = await pawsUi.testProxyDelay(proxy, url.length > 0 ? url : undefined, timeoutMs);
-    if (expectFailure) {
-      throw new Error(`delay unexpectedly succeeded in ${delay} ms`);
-    }
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation delay result %{public}s %{public}d', proxy, delay);
+    delay = await pawsUi.testProxyDelay(proxy, url.length > 0 ? url : undefined, timeoutMs);
   } catch (err) {
     if (expectFailure) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation delay failed as expected %{public}s',
@@ -121,6 +117,10 @@ async function runDebugDelay(want: Want): Promise<void> {
     hilog.error(LOG_DOMAIN, LOG_TAG, 'debug automation delay failed %{public}s', describeError(err));
     throw new Error(describeError(err) || 'debug automation delay failed');
   }
+  if (expectFailure) {
+    throw new Error(`delay unexpectedly succeeded in ${delay} ms`);
+  }
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation delay result %{public}s %{public}d', proxy, delay);
 }
 
 async function runDebugEcho(want: Want): Promise<void> {
@@ -135,16 +135,9 @@ async function runDebugEcho(want: Want): Promise<void> {
   const payload = wantString(want, 'pawsEchoPayload') || 'paws-echo-payload';
   const timeoutMs = wantNumber(want, 'pawsEchoTimeoutMs') || 5000;
   const expectFailure = wantBool(want, 'pawsExpectEchoFailure');
+  let echoed: string;
   try {
-    const echoed = await pawsUi.testProxyEcho(proxy, url, payload, timeoutMs);
-    if (expectFailure) {
-      throw new Error(`echo unexpectedly succeeded: ${echoed}`);
-    }
-    if (echoed !== payload) {
-      throw new Error('echo payload mismatch');
-    }
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation echo result %{public}s %{public}d',
-      proxy, echoed.length);
+    echoed = await pawsUi.testProxyEcho(proxy, url, payload, timeoutMs);
   } catch (err) {
     if (expectFailure) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation echo failed as expected %{public}s',
@@ -154,6 +147,14 @@ async function runDebugEcho(want: Want): Promise<void> {
     hilog.error(LOG_DOMAIN, LOG_TAG, 'debug automation echo failed %{public}s', describeError(err));
     throw new Error(describeError(err) || 'debug automation echo failed');
   }
+  if (expectFailure) {
+    throw new Error(`echo unexpectedly succeeded: ${echoed}`);
+  }
+  if (echoed !== payload) {
+    throw new Error('echo payload mismatch');
+  }
+  hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation echo result %{public}s %{public}d',
+    proxy, echoed.length);
 }
 
 function automationParam(want: Want, key: keyof PawsAutomationParams): string | number | boolean | undefined {

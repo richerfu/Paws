@@ -1,6 +1,12 @@
 use super::super::*;
+use super::yaml_editor::{load_yaml_editor_draft, YamlEditorDialog, YamlEditorDraft};
 
-pub(crate) fn profiles_page(state: Signal<State>) -> Element {
+pub(crate) fn profiles_page() -> Element {
+    let services = use_context::<UiServices>();
+    let feedback_services = services.clone();
+    let empty_import_services = services.clone();
+    let refresh_all_services = services.clone();
+    let add_import_services = services.clone();
     let mut query = use_signal(String::new);
     let mut import_open = use_signal(|| false);
     let mut import_url = use_signal(String::new);
@@ -11,22 +17,23 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
     let edit_name = use_signal(String::new);
     let edit_url = use_signal(String::new);
     let delete_profile_id = use_signal(|| None::<String>);
-    let current = state.read().clone();
+    let yaml_editor = use_signal(|| None::<YamlEditorDraft>);
+    let stores = use_context::<UiStores>();
+    let operations = use_context::<UiOperationStores>();
+    let locale = stores.preferences.read().locale;
+    let current = stores.profiles.read();
 
     use_effect(move || {
         let (succeeded, loading) = {
-            let feedback = state.read();
-            (
-                feedback.profile_import_succeeded,
-                feedback.profile_import_loading,
-            )
+            let feedback = operations.profile_import.read();
+            (feedback.succeeded, feedback.loading)
         };
         if import_submitted() && succeeded {
             import_open.set(false);
             import_url.set(String::new());
             import_name.set(String::new());
             import_submitted.set(false);
-            dispatch(state, Action::ResetProfileImportFeedback);
+            feedback_services.reset_profile_import_feedback();
         } else if import_submitted() && !loading && !succeeded {
             // Failure, validation error, or cancelled file picker.
             import_submitted.set(false);
@@ -35,12 +42,11 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
 
     let query_value = query();
     let profiles = current
-        .snapshot
         .profiles
         .iter()
         .filter(|profile| matches_profile_query(profile, &query_value))
-        .cloned()
         .map(|profile| {
+            let activate_services = services.clone();
             let activate_id = profile.id.clone();
             let menu_id = profile.id.clone();
             let source = profile
@@ -52,7 +58,7 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                 .as_deref()
                 .or(profile.updated_at.as_deref())
                 .and_then(time_format::format_unix_nanos)
-                .unwrap_or_else(|| translate_ui(current.locale, tr::page_tr_096()));
+                .unwrap_or_else(|| translate_ui(locale, tr::page_tr_096()));
             let usage = profile.subscription_user_info.as_ref().and_then(|info| {
                 info.total_bytes.map(|total| {
                     format!(
@@ -85,7 +91,7 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                             border_radius: 0.0,
                             onclick: move |_| {
                                 if !active {
-                                    dispatch(state, Action::ActivateProfile(activate_id.clone()));
+                                    activate_services.activate_profile(activate_id.clone());
                                 }
                             },
                             row {
@@ -163,11 +169,10 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
             }
         })
         .collect::<Vec<_>>();
-    let has_profiles = !current.snapshot.profiles.is_empty();
+    let has_profiles = !current.profiles.is_empty();
     let empty = profiles.is_empty();
     let action_profile = action_profile_id().and_then(|id| {
         current
-            .snapshot
             .profiles
             .iter()
             .find(|profile| profile.id == id)
@@ -175,7 +180,6 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
     });
     let delete_profile = delete_profile_id().and_then(|id| {
         current
-            .snapshot
             .profiles
             .iter()
             .find(|profile| profile.id == id)
@@ -188,28 +192,28 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
                 column {
                     width: "100%",
                     align_items: "center",
-                    {empty_state("rss", translate_ui(current.locale, tr::profiles_empty_title()), translate_ui(current.locale, tr::page_tr_097()))}
+                    {empty_state("rss", translate_ui(locale, tr::profiles_empty_title()), translate_ui(locale, tr::page_tr_097()))}
                     row { height: spacing::LG }
                     FlatButton {
                         variant: FlatButtonVariant::Primary,
                         onclick: move |_| {
-                            dispatch(state, Action::ResetProfileImportFeedback);
+                            empty_import_services.reset_profile_import_feedback();
                             import_open.set(true);
                         },
                         {arkit::icon("plus", 16.0, primary_text())}
-                        text { content: translate_ui(current.locale, tr::page_tr_098()), margin_left: 8.0, font_size: typography::SM, font_weight: 600, font_color: primary_text() }
+                        text { content: translate_ui(locale, tr::page_tr_098()), margin_left: 8.0, font_size: typography::SM, font_weight: 600, font_color: primary_text() }
                     }
                 }
             } else {
                 Input {
                     value: Some(query_value),
-                    placeholder: Some(translate_ui(current.locale, tr::profiles_search_placeholder())),
+                    placeholder: Some(translate_ui(locale, tr::profiles_search_placeholder())),
                     width: Some("100%".into()),
                     on_change: move |value| query.set(value),
                 }
                 row { height: 12.0 }
                 if empty {
-                    {empty_state("search", translate_ui(current.locale, tr::profiles_no_match_title()), translate_ui(current.locale, tr::profiles_no_match_subtitle()))}
+                    {empty_state("search", translate_ui(locale, tr::profiles_no_match_title()), translate_ui(locale, tr::profiles_no_match_subtitle()))}
                 } else {
                     {spaced(profiles)}
                 }
@@ -218,24 +222,22 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
     };
     let actions = rsx! {
         row {
-            {icon_action("refresh-cw", Action::RefreshAllProfiles, state)}
+            FlatButton { variant: FlatButtonVariant::Ghost, size: ButtonSize::Icon, onclick: move |_| refresh_all_services.refresh_all_profiles(), {arkit::icon("refresh-cw", 17.0, text_color())} }
             FlatButton {
                 variant: FlatButtonVariant::Ghost,
                 size: ButtonSize::Icon,
                 onclick: move |_| {
-                    dispatch(state, Action::ResetProfileImportFeedback);
+                    add_import_services.reset_profile_import_feedback();
                     import_open.set(true);
                 },
                 {arkit::icon("plus", 18.0, text_color())}
             }
         }
     };
-    let page = scaffold(state, Route::Profiles {}, actions, body);
+    let page = scaffold(Route::Profiles {}, actions, body);
     rsx! {
         {page}
         {profile_import_dialog(
-            state,
-            &current,
             import_open(),
             import_open,
             import_url,
@@ -243,34 +245,32 @@ pub(crate) fn profiles_page(state: Signal<State>) -> Element {
             import_submitted,
         )}
         {profile_action_dialog(
-            state,
-            current.locale,
+            locale,
             action_profile,
             action_profile_id,
             edit_profile_id,
             edit_name,
             edit_url,
             delete_profile_id,
+            yaml_editor,
         )}
-        {profile_edit_dialog(
-            state,
-            current.locale,
-            edit_profile_id,
-            edit_name,
-            edit_url,
-        )}
+        ProfileEditDialog {
+            locale,
+            profile_id: edit_profile_id,
+            name: edit_name,
+            url: edit_url,
+        }
         {profile_delete_dialog(
-            state,
-            current.locale,
+            locale,
             delete_profile,
             delete_profile_id,
         )}
+        YamlEditorDialog { editor: yaml_editor }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn profile_action_dialog(
-    state: Signal<State>,
     locale: UiLocale,
     profile: Option<paws_model::ProfileSummary>,
     mut action_profile_id: Signal<Option<String>>,
@@ -278,7 +278,15 @@ fn profile_action_dialog(
     mut edit_name: Signal<String>,
     mut edit_url: Signal<String>,
     mut delete_profile_id: Signal<Option<String>>,
+    mut yaml_editor: Signal<Option<YamlEditorDraft>>,
 ) -> Element {
+    let services = use_context::<UiServices>();
+    let stores = use_context::<UiStores>();
+    let activate_services = services.clone();
+    let yaml_services = services.clone();
+    let export_services = services.clone();
+    let refresh_services = services.clone();
+    let restore_services = services.clone();
     let Some(profile) = profile else {
         return rsx! {};
     };
@@ -287,6 +295,7 @@ fn profile_action_dialog(
     let edit_profile_name = profile.name.clone();
     let edit_profile_url = profile.subscription_url.clone().unwrap_or_default();
     let yaml_id = profile.id.clone();
+    let yaml_profile_name = profile.name.clone();
     let export_id = profile.id.clone();
     let refresh_id = profile.id.clone();
     let restore_id = profile.id.clone();
@@ -317,7 +326,7 @@ fn profile_action_dialog(
                         border_radius: 0.0,
                         onclick: move |_| {
                             action_profile_id.set(None);
-                            dispatch(state, Action::ActivateProfile(activate_id.clone()));
+                            activate_services.activate_profile(activate_id.clone());
                         },
                         row {
                             width: "100%",
@@ -364,7 +373,18 @@ fn profile_action_dialog(
                     border_radius: 0.0,
                     onclick: move |_| {
                         action_profile_id.set(None);
-                        dispatch(state, Action::OpenYamlEditor(yaml_id.clone()));
+                        match load_yaml_editor_draft(
+                            yaml_id.clone(),
+                            yaml_profile_name.clone(),
+                            stores.settings.peek().config_revision,
+                        ) {
+                            Ok(draft) => yaml_editor.set(Some(draft)),
+                            Err(error) => yaml_services.notify(format!(
+                                "{}{}",
+                                translate_ui(locale, tr::profiles_yaml_read_failed_prefix()),
+                                error,
+                            )),
+                        }
                     },
                     row {
                         width: "100%",
@@ -385,7 +405,7 @@ fn profile_action_dialog(
                     border_radius: 0.0,
                     onclick: move |_| {
                         action_profile_id.set(None);
-                        dispatch(state, Action::ExportProfile(export_id.clone()));
+                        export_services.export_profile(export_id.clone());
                     },
                     row {
                         width: "100%",
@@ -407,7 +427,7 @@ fn profile_action_dialog(
                         border_radius: 0.0,
                         onclick: move |_| {
                             action_profile_id.set(None);
-                            dispatch(state, Action::RefreshProfile(refresh_id.clone()));
+                            refresh_services.refresh_profile(refresh_id.clone());
                         },
                         row {
                             width: "100%",
@@ -430,7 +450,7 @@ fn profile_action_dialog(
                         border_radius: 0.0,
                         onclick: move |_| {
                             action_profile_id.set(None);
-                            dispatch(state, Action::RestoreProfileBackup(restore_id.clone()));
+                            restore_services.restore_profile_backup(restore_id.clone());
                         },
                         row {
                             width: "100%",
@@ -467,13 +487,14 @@ fn profile_action_dialog(
     }
 }
 
-fn profile_edit_dialog(
-    state: Signal<State>,
+#[component]
+fn ProfileEditDialog(
     locale: UiLocale,
     mut profile_id: Signal<Option<String>>,
     mut name: Signal<String>,
     mut url: Signal<String>,
 ) -> Element {
+    let services = use_context::<UiServices>();
     let open = profile_id().is_some();
     rsx! {
         FlatDialog {
@@ -507,11 +528,7 @@ fn profile_edit_dialog(
                     width: "100%",
                     onclick: move |_| {
                         if let Some(id) = profile_id() {
-                            dispatch(state, Action::UpdateProfileSubscription {
-                                profile_id: id,
-                                name: name(),
-                                subscription_url: url(),
-                            });
+                            services.update_profile_subscription(id, name(), url());
                             profile_id.set(None);
                         }
                     },
@@ -523,11 +540,11 @@ fn profile_edit_dialog(
 }
 
 fn profile_delete_dialog(
-    state: Signal<State>,
     locale: UiLocale,
     profile: Option<paws_model::ProfileSummary>,
     mut profile_id: Signal<Option<String>>,
 ) -> Element {
+    let services = use_context::<UiServices>();
     let Some(profile) = profile else {
         return rsx! {};
     };
@@ -554,7 +571,7 @@ fn profile_delete_dialog(
                         variant: FlatButtonVariant::Destructive,
                         onclick: move |_| {
                             profile_id.set(None);
-                            dispatch(state, Action::DeleteProfile(delete_id.clone()));
+                            services.delete_profile(delete_id.clone());
                         },
                         text { content: translate_ui(locale, tr::page_tr_115()), font_size: 13.0, font_weight: 600, font_color: destructive_text() }
                     }
@@ -565,33 +582,22 @@ fn profile_delete_dialog(
 }
 
 fn profile_import_dialog(
-    state: Signal<State>,
-    current: &State,
     open: bool,
     mut open_signal: Signal<bool>,
     url: Signal<String>,
     name: Signal<String>,
     mut submitted: Signal<bool>,
 ) -> Element {
-    let import_loading = current.profile_import_loading;
-    let error_value = current.profile_import_error.clone().unwrap_or_default();
-    // Refresh the overlay shell when pending/error flips so the live body is remounted
-    // with the latest loading branch. Field edits are handled by the body component.
-    let content_key = dialog_content_key(&[
-        if import_loading { "loading" } else { "idle" },
-        &error_value,
-    ]);
+    let services = use_context::<UiServices>();
     rsx! {
         FlatDialog {
             open: open,
-            content_key: content_key,
             on_close: move |_| {
                 open_signal.set(false);
                 submitted.set(false);
-                dispatch(state, Action::CancelProfileImport);
+                services.cancel_profile_import();
             },
             ProfileImportDialogBody {
-                state,
                 open_signal,
                 url,
                 name,
@@ -601,19 +607,26 @@ fn profile_import_dialog(
     }
 }
 
-/// Lives inside the overlay tree and re-reads `state` so Spinner/disabled can
-/// update while the dialog stays open.
+/// Lives inside the overlay tree and reads only the profile import store so
+/// Spinner/disabled updates do not invalidate the profile list.
 #[component]
 fn ProfileImportDialogBody(
-    state: Signal<State>,
     mut open_signal: Signal<bool>,
     mut url: Signal<String>,
     mut name: Signal<String>,
     mut submitted: Signal<bool>,
 ) -> Element {
-    let current = state.read().clone();
-    let locale = current.locale;
-    let import_loading = current.profile_import_loading;
+    let services = use_context::<UiServices>();
+    let url_services = services.clone();
+    let name_services = services.clone();
+    let file_services = services.clone();
+    let scan_services = services.clone();
+    let cancel_services = services.clone();
+    let stores = use_context::<UiStores>();
+    let operations = use_context::<UiOperationStores>();
+    let current = operations.profile_import.read();
+    let locale = stores.preferences.read().locale;
+    let import_loading = current.loading;
     let loading_label = translate_ui(locale, tr::profiles_import_loading());
     let url_value = url();
     let name_value = name();
@@ -632,7 +645,7 @@ fn ProfileImportDialogBody(
                 disabled: import_loading,
                 on_change: move |value| {
                     url.set(value);
-                    dispatch(state, Action::ResetProfileImportFeedback);
+                    url_services.reset_profile_import_feedback();
                 },
             }
             row { height: 12.0 }
@@ -643,7 +656,7 @@ fn ProfileImportDialogBody(
                 disabled: import_loading,
                 on_change: move |value| {
                     name.set(value);
-                    dispatch(state, Action::ResetProfileImportFeedback);
+                    name_services.reset_profile_import_feedback();
                 },
             }
             row { height: 8.0 }
@@ -655,9 +668,9 @@ fn ProfileImportDialogBody(
                     size: ButtonSize::Sm,
                     disabled: Some(import_loading),
                     onclick: move |_| {
-                        if !state.read().profile_import_loading {
+                        if !operations.profile_import.peek().loading {
                             submitted.set(true);
-                            dispatch(state, Action::ImportLocalProfile);
+                            file_services.import_local_profile();
                         }
                     },
                     if import_loading {
@@ -683,11 +696,9 @@ fn ProfileImportDialogBody(
                     size: ButtonSize::Sm,
                     disabled: Some(import_loading),
                     onclick: move |_| {
-                        if !state.read().profile_import_loading {
+                        if !operations.profile_import.peek().loading {
                             submitted.set(true);
-                            dispatch(state, Action::ScanProfileSubscription {
-                                name: name(),
-                            });
+                            scan_services.scan_profile_subscription(name());
                         }
                     },
                     if import_loading {
@@ -708,7 +719,7 @@ fn ProfileImportDialogBody(
                     }
                 }
             }
-            if let Some(error) = current.profile_import_error.clone() {
+            if let Some(error) = current.error.clone() {
                 text { content: error, margin_top: 10.0, font_size: 12.0, line_height: 18.0, font_color: danger() }
             }
         }
@@ -720,7 +731,7 @@ fn ProfileImportDialogBody(
                     onclick: move |_| {
                         open_signal.set(false);
                         submitted.set(false);
-                        dispatch(state, Action::CancelProfileImport);
+                        cancel_services.cancel_profile_import();
                     },
                     text {
                         content: translate_ui(locale, tr::profiles_import_cancel()),
@@ -734,12 +745,9 @@ fn ProfileImportDialogBody(
                     variant: FlatButtonVariant::Primary,
                     disabled: Some(import_loading),
                     onclick: move |_| {
-                        if !state.read().profile_import_loading {
+                        if !operations.profile_import.peek().loading {
                             submitted.set(true);
-                            dispatch(state, Action::ImportProfileFromUrl {
-                                url: url(),
-                                name: name(),
-                            });
+                            services.import_profile_from_url(url(), name());
                         }
                     },
                     if import_loading {

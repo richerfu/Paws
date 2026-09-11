@@ -569,14 +569,26 @@ pub(crate) async fn fetch_backend_version(
         .to_owned())
 }
 
-pub(crate) fn load_draft() -> SubscriptionConverterDraft {
-    let Some(path) = draft_path() else {
-        return SubscriptionConverterDraft::default();
+pub(crate) fn load_draft(locale: UiLocale) -> Result<SubscriptionConverterDraft, String> {
+    let path = draft_path().ok_or_else(|| translate_ui(locale, tr::conv_026()).to_owned())?;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(SubscriptionConverterDraft::default());
+        }
+        Err(error) => {
+            return Err(translate_ui(
+                locale,
+                tr::conv_038(path.display().to_string(), error.to_string()),
+            ));
+        }
     };
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+    serde_json::from_str(&text).map_err(|error| {
+        translate_ui(
+            locale,
+            tr::conv_039(path.display().to_string(), error.to_string()),
+        )
+    })
 }
 
 pub(crate) fn save_draft(
