@@ -6,16 +6,71 @@ HDC="${HDC:-hdc}"
 HDC_TARGET="${HDC_TARGET:-}"
 BUNDLE_NAME="${BUNDLE_NAME:-com.richerfu.paws}"
 ABILITY_NAME="${ABILITY_NAME:-EntryAbility}"
+HAP_PATH="${HAP_PATH:-}"
 PROFILE_URL="${PROFILE_URL:-http://10.0.2.2:8766/direct.yaml}"
 PROFILE_NAME="${PROFILE_NAME:-Meow订阅交互测试}"
 LOG_DIR="${LOG_DIR:-$ROOT_DIR/smoke-logs}"
 RESET_APP_DATA="${RESET_APP_DATA:-1}"
+
+usage() {
+  cat <<USAGE
+Usage: scripts/harmony-subscription-ui-smoke.sh --hap DEBUG_HAP
+
+Installs a debug HAP, imports a subscription through debug-only Want
+automation, and verifies the subscription UI. Release HAPs are rejected
+because EntryAbility intentionally ignores automation Want parameters.
+
+Options:
+  --hap PATH  Install and test this debug HAP.
+  -h, --help  Show this help.
+
+Environment overrides:
+  HDC, HDC_TARGET, BUNDLE_NAME, ABILITY_NAME, HAP_PATH, PROFILE_URL,
+  PROFILE_NAME, LOG_DIR, RESET_APP_DATA
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --hap)
+      HAP_PATH="${2:?missing HAP path}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
 
 hdc_cmd() {
   if [ -n "$HDC_TARGET" ]; then
     "$HDC" -t "$HDC_TARGET" "$@"
   else
     "$HDC" "$@"
+  fi
+}
+
+require_debug_automation_hap() {
+  if [ -z "$HAP_PATH" ]; then
+    echo "Subscription Want automation requires --hap DEBUG_HAP (or HAP_PATH)." >&2
+    echo "Release EntryAbility ignores these Want parameters, so the script fails closed." >&2
+    exit 2
+  fi
+  if [ ! -f "$HAP_PATH" ]; then
+    echo "HAP not found: $HAP_PATH" >&2
+    exit 1
+  fi
+  if ! unzip -p "$HAP_PATH" module.json 2>/dev/null \
+    | jq -e '.app.debug == true' >/dev/null 2>&1; then
+    echo "Subscription Want automation requires a debug HAP (module.json app.debug=true)." >&2
+    echo "The selected HAP is release or its manifest could not be read: $HAP_PATH" >&2
+    exit 1
   fi
 }
 
@@ -64,6 +119,12 @@ click_text() {
 
 mkdir -p "$LOG_DIR"
 command -v jq >/dev/null
+command -v unzip >/dev/null
+require_debug_automation_hap
+
+# Install the same HAP whose manifest was checked. Merely inspecting a local
+# debug artifact would not prove that the device is running a debug package.
+hdc_cmd install -r "$HAP_PATH" >/dev/null
 
 if [ "$RESET_APP_DATA" = "1" ]; then
   hdc_cmd shell aa force-stop "$BUNDLE_NAME" >/dev/null 2>&1 || true

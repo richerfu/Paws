@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn parse_imported_rule_lines(rules_text: &str) -> Result<Vec<String>, PawsError> {
+pub fn parse_imported_rule_lines(rules_text: &str) -> Result<Vec<String>, PawsError> {
     let content = rules_text.trim_start_matches('\u{feff}').trim();
     if content.is_empty() {
         return Err(PawsError::Core(

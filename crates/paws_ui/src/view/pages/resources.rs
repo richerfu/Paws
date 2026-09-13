@@ -31,10 +31,9 @@ enum VirtualResourceRow {
     Geodata(paws_model::GeodataFileSummary),
     GeodataEmpty,
     ProvidersHeader,
-    Provider(paws_model::ProviderSummary),
+    Provider(Box<paws_model::ProviderSummary>),
     ProvidersEmpty,
     RulesHeader {
-        import_loading: bool,
         has_active_profile: bool,
     },
     Rule(paws_model::RuleSummary),
@@ -48,7 +47,6 @@ struct VirtualResourceListState {
     all_rules: Rc<Vec<paws_model::RuleSummary>>,
     locale: UiLocale,
     palette: VirtualResourcePalette,
-    diagnostic_pending: bool,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -66,55 +64,63 @@ enum VirtualResourceRowKey {
     Footer,
 }
 
-pub(crate) fn resources_page(state: Signal<State>) -> Element {
+pub(crate) fn resources_page() -> Element {
+    let services = use_context::<UiServices>();
+    let page_tasks = use_page_tasks();
+    let cleanup_services = services.clone();
+    use_drop(move || cleanup_services.cancel_rule_import());
+    let local_editors = use_local_rule_editors();
+    let lookup_services = services.clone();
+    let lookup_editors = local_editors.clone();
+    let import_services = services.clone();
+    let import_tasks = page_tasks.clone();
+    let manual_services = services.clone();
+    let manual_editors = local_editors.clone();
+    let health_services = services.clone();
+    let provider_services = services.clone();
+    let toggle_services = services.clone();
+    let reorder_services = services.clone();
+    let delete_services = services.clone();
     let mut query = use_signal(String::new);
     let geodata_detail = use_signal(|| None::<paws_model::GeodataFileSummary>);
     let provider_detail = use_signal(|| None::<String>);
-    let current = state.read().clone();
+    let stores = use_context::<UiStores>();
+    let operations = use_context::<UiOperationStores>();
+    let locale = stores.preferences.read().locale;
+    let session = stores.session.read();
+    let profiles = stores.profiles.read();
+    let proxies = stores.proxies.read();
+    let resources = stores.resources.read();
     let query_value = query();
-    let active_profile_name = current
-        .snapshot
+    let active_profile_name = profiles
         .profiles
         .iter()
         .find(|profile| profile.active)
         .map(|profile| profile.name.clone())
-        .unwrap_or_else(|| translate_ui(current.locale, tr::page_tr_154()));
-    let enabled_rule_count = current
-        .snapshot
-        .rules
-        .iter()
-        .filter(|rule| rule.enabled)
-        .count();
-    let total_rule_count = current.snapshot.rules.len();
-    let total_provider_count = current.snapshot.providers.len();
-    let ready_geodata_count = current
-        .snapshot
-        .geodata
-        .iter()
-        .filter(|file| file.exists)
-        .count();
-    let total_geodata_count = current.snapshot.geodata.len();
-    let mode_label = match current.snapshot.mode {
-        RuntimeMode::Rule => translate_ui(current.locale, tr::page_tr_164()),
-        RuntimeMode::Global => translate_ui(current.locale, tr::page_tr_165()),
-        RuntimeMode::Direct => translate_ui(current.locale, tr::page_tr_166()),
+        .unwrap_or_else(|| translate_ui(locale, tr::page_tr_154()));
+    let enabled_rule_count = resources.rules.iter().filter(|rule| rule.enabled).count();
+    let total_rule_count = resources.rules.len();
+    let total_provider_count = resources.providers.len();
+    let ready_geodata_count = resources.geodata.iter().filter(|file| file.exists).count();
+    let total_geodata_count = resources.geodata.len();
+    let mode_label = match proxies.mode {
+        RuntimeMode::Rule => translate_ui(locale, tr::page_tr_164()),
+        RuntimeMode::Global => translate_ui(locale, tr::page_tr_165()),
+        RuntimeMode::Direct => translate_ui(locale, tr::page_tr_166()),
     };
-    let providers = current
-        .snapshot
+    let providers = resources
         .providers
         .iter()
         .filter(|provider| matches_provider_query(provider, &query_value))
         .cloned()
         .collect::<Vec<_>>();
-    let rules = current
-        .snapshot
+    let rules = resources
         .rules
         .iter()
         .filter(|rule| matches_rule_query(rule, &query_value))
         .cloned()
         .collect::<Vec<_>>();
-    let geodata = current
-        .snapshot
+    let geodata = resources
         .geodata
         .iter()
         .filter(|file| matches_geodata_query(file, &query_value))
@@ -122,8 +128,7 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
         .collect::<Vec<_>>();
     let selected_geodata = geodata_detail();
     let selected_provider = provider_detail().and_then(|name| {
-        current
-            .snapshot
+        resources
             .providers
             .iter()
             .find(|provider| provider.name == name)
@@ -132,7 +137,7 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
     let mut rows = Vec::with_capacity(8 + geodata.len() + providers.len() + rules.len());
     rows.push(VirtualResourceRow::Summary {
         active_profile_name,
-        engine_loaded: current.snapshot.engine_loaded,
+        engine_loaded: session.engine_loaded,
         mode_label,
         enabled_rule_count,
         total_rule_count,
@@ -153,11 +158,15 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
     if providers.is_empty() {
         rows.push(VirtualResourceRow::ProvidersEmpty);
     } else {
-        rows.extend(providers.into_iter().map(VirtualResourceRow::Provider));
+        rows.extend(
+            providers
+                .into_iter()
+                .map(Box::new)
+                .map(VirtualResourceRow::Provider),
+        );
     }
     rows.push(VirtualResourceRow::RulesHeader {
-        import_loading: current.rule_import_loading,
-        has_active_profile: current.snapshot.active_profile.is_some(),
+        has_active_profile: profiles.active_profile.is_some(),
     });
     if rules.is_empty() {
         rows.push(VirtualResourceRow::RulesEmpty);
@@ -177,14 +186,14 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
         danger: theme.colors.destructive,
     };
     let rows = Rc::new(rows);
-    let all_rules = Rc::new(current.snapshot.rules.clone());
+    let all_rules = Rc::new(resources.rules.clone());
     let body = rsx! {
         column {
             width: "100%",
             height: "100%",
             Input {
                 value: Some(query_value),
-                placeholder: Some(translate_ui(current.locale, tr::resources_search_placeholder())),
+                placeholder: Some(translate_ui(locale, tr::resources_search_placeholder())),
                 width: Some("100%".into()),
                 on_change: move |value| query.set(value),
             }
@@ -195,43 +204,40 @@ pub(crate) fn resources_page(state: Signal<State>) -> Element {
                 VirtualResourceList {
                     rows,
                     all_rules,
-                    locale: current.locale,
+                    locale,
                     palette,
-                    diagnostic_pending: current.controller_diagnostic_pending.is_some(),
-                    state,
                     geodata_detail,
                     provider_detail,
+                    resource_operations: operations.resources,
+                    diagnostic_operations: operations.diagnostics,
+                    on_import_rules: move |_| import_services.import_rules(import_tasks.clone()),
+                    on_open_manual_rule: move |_| manual_services.open_manual_rule_editor(manual_editors.clone(), None, String::new(), String::new()),
+                    on_healthcheck_provider: move |provider_name: String| health_services.healthcheck_proxy_provider(provider_name),
+                    on_refresh_provider: move |(provider_type, provider_name): (String, String)| provider_services.refresh_provider(provider_type, provider_name),
+                    on_set_rule_enabled: move |(profile_id, rule_id, enabled): (String, String, bool)| toggle_services.set_rule_enabled(profile_id, rule_id, enabled),
+                    on_reorder_rules: move |(profile_id, ordered_ids): (String, Vec<String>)| reorder_services.reorder_rules(profile_id, ordered_ids),
+                    on_delete_rule: move |(profile_id, rule_id): (String, String)| delete_services.delete_rule(profile_id, rule_id),
                 }
             }
         }
     };
     let actions = rsx! {
         row {
-            {icon_action("route", Action::OpenRuleLookup, state)}
-            {icon_action("refresh-cw", Action::RefreshAllProviders, state)}
+            FlatButton { variant: FlatButtonVariant::Ghost, size: ButtonSize::Icon, onclick: move |_| lookup_services.open_rule_lookup(lookup_editors.clone()), {arkit::icon("route", 17.0, text_color())} }
+            FlatButton { variant: FlatButtonVariant::Ghost, size: ButtonSize::Icon, onclick: move |_| services.refresh_all_providers(), {arkit::icon("refresh-cw", 17.0, text_color())} }
         }
     };
-    let page = fixed_scaffold(state, Route::Resources {}, actions, body);
+    let page = fixed_scaffold(Route::Resources {}, actions, body);
     rsx! {
         {page}
         if let Some(file) = selected_geodata {
-            {geodata_detail_dialog(current.locale, file, geodata_detail)}
+            {geodata_detail_dialog(locale, file, geodata_detail)}
         }
         if let Some(provider) = selected_provider {
-            {provider_detail_dialog(
-                state,
-                current.locale,
-                provider,
-                provider_detail,
-                current.controller_diagnostic_pending.is_some(),
-            )}
+            ProviderDetailDialog { locale, provider, selected: provider_detail }
         }
-        if current.manual_rule_editor.is_some() {
-            {manual_rule_dialog(state, &current)}
-        }
-        if current.rule_lookup.is_some() {
-            {rule_lookup_dialog(state, &current)}
-        }
+        ManualRuleDialog { local: local_editors.clone() }
+        RuleLookupDialog { local: local_editors }
     }
 }
 
@@ -241,10 +247,17 @@ fn VirtualResourceList(
     all_rules: Rc<Vec<paws_model::RuleSummary>>,
     locale: UiLocale,
     palette: VirtualResourcePalette,
-    diagnostic_pending: bool,
-    state: Signal<State>,
     geodata_detail: Signal<Option<paws_model::GeodataFileSummary>>,
     provider_detail: Signal<Option<String>>,
+    resource_operations: Signal<ResourceOperationState>,
+    diagnostic_operations: Signal<DiagnosticOperationState>,
+    on_import_rules: EventHandler<()>,
+    on_open_manual_rule: EventHandler<()>,
+    on_healthcheck_provider: EventHandler<String>,
+    on_refresh_provider: EventHandler<(String, String)>,
+    on_set_rule_enabled: EventHandler<(String, String, bool)>,
+    on_reorder_rules: EventHandler<(String, Vec<String>)>,
+    on_delete_rule: EventHandler<(String, String)>,
 ) -> Element {
     let item_keys = rows
         .iter()
@@ -276,7 +289,6 @@ fn VirtualResourceList(
         all_rules,
         locale,
         palette,
-        diagnostic_pending,
     };
     let mut list_state = use_signal(|| next_list_state.clone());
     use_effect(use_reactive(
@@ -293,9 +305,17 @@ fn VirtualResourceList(
             VirtualResourceRowView {
                 index,
                 list_state,
-                state,
                 geodata_detail,
                 provider_detail,
+                resource_operations,
+                diagnostic_operations,
+                on_import_rules,
+                on_open_manual_rule,
+                on_healthcheck_provider,
+                on_refresh_provider,
+                on_set_rule_enabled,
+                on_reorder_rules,
+                on_delete_rule,
             }
         }
     });
@@ -315,9 +335,17 @@ fn VirtualResourceList(
 fn VirtualResourceRowView(
     index: u32,
     list_state: Signal<VirtualResourceListState>,
-    state: Signal<State>,
     mut geodata_detail: Signal<Option<paws_model::GeodataFileSummary>>,
     mut provider_detail: Signal<Option<String>>,
+    resource_operations: Signal<ResourceOperationState>,
+    diagnostic_operations: Signal<DiagnosticOperationState>,
+    on_import_rules: EventHandler<()>,
+    on_open_manual_rule: EventHandler<()>,
+    on_healthcheck_provider: EventHandler<String>,
+    on_refresh_provider: EventHandler<(String, String)>,
+    on_set_rule_enabled: EventHandler<(String, String, bool)>,
+    on_reorder_rules: EventHandler<(String, Vec<String>)>,
+    on_delete_rule: EventHandler<(String, String)>,
 ) -> Element {
     let current = list_state.read();
     let Some(row) = current.rows.get(index as usize).cloned() else {
@@ -325,7 +353,6 @@ fn VirtualResourceRowView(
     };
     let locale = current.locale;
     let palette = current.palette;
-    let diagnostic_pending = current.diagnostic_pending;
     let all_rules = current.all_rules.clone();
     drop(current);
 
@@ -449,77 +476,42 @@ fn VirtualResourceRowView(
         VirtualResourceRow::ProvidersHeader => {
             virtual_resource_section_label(translate_ui(locale, tr::page_tr_189()), palette)
         }
-        VirtualResourceRow::Provider(provider) => virtual_provider_row(
-            state,
-            locale,
-            palette,
-            diagnostic_pending,
-            provider,
-            provider_detail,
-        ),
+        VirtualResourceRow::Provider(provider) => rsx! {
+            VirtualProviderRow {
+                locale,
+                palette,
+                provider: *provider,
+                provider_detail,
+                diagnostic_operations,
+                on_healthcheck: on_healthcheck_provider,
+                on_refresh: on_refresh_provider,
+            }
+        },
         VirtualResourceRow::ProvidersEmpty => {
             virtual_resource_empty("database", translate_ui(locale, tr::page_tr_190()), palette)
         }
-        VirtualResourceRow::RulesHeader {
-            import_loading,
-            has_active_profile,
-        } => {
-            let import_disabled = import_loading || !has_active_profile;
-            rsx! {
-                row {
-                    width: "100%",
-                    height: 52.0,
-                    margin_top: 10.0,
-                    align_items: "center",
-                    text { content: translate_ui(locale, tr::resources_rules_title()), font_size: typography::SM, font_weight: 600, font_color: palette.foreground }
-                    row { layout_weight: 1.0 }
-                    button {
-                        height: 36.0,
-                        padding_left: 8.0,
-                        padding_right: 8.0,
-                        background_color: palette.surface,
-                        border_width: 0.0,
-                        border_radius: 6.0,
-                        enabled: !import_disabled,
-                        opacity: if import_disabled { 0.5 } else { 1.0 },
-                        onclick: move |_| {
-                            if !state.read().rule_import_loading {
-                                dispatch(state, Action::ImportRules);
-                            }
-                        },
-                        row {
-                            align_items: "center",
-                            {arkit::icon(if import_loading { "loader-circle" } else { "file-up" }, 14.0, palette.foreground)}
-                            text { content: translate_ui(locale, tr::resources_import_rules()), margin_left: 5.0, font_size: 12.0, font_weight: 600, font_color: palette.foreground }
-                        }
-                    }
-                    button {
-                        height: 36.0,
-                        padding_left: 8.0,
-                        padding_right: 8.0,
-                        background_color: palette.surface,
-                        border_width: 0.0,
-                        border_radius: 6.0,
-                        enabled: has_active_profile,
-                        opacity: if has_active_profile { 1.0 } else { 0.5 },
-                        onclick: move |_| dispatch(state, Action::OpenManualRuleEditor {
-                            connection_id: None,
-                            domain: String::new(),
-                            destination_ip: String::new(),
-                        }),
-                        row {
-                            align_items: "center",
-                            {arkit::icon("plus", 14.0, palette.foreground)}
-                            text { content: translate_ui(locale, tr::page_tr_192()), margin_left: 5.0, font_size: typography::XS, font_weight: 600, font_color: palette.foreground }
-                        }
-                    }
-                }
+        VirtualResourceRow::RulesHeader { has_active_profile } => rsx! {
+            ResourceRulesHeader {
+                locale,
+                palette,
+                has_active_profile,
+                resource_operations,
+                on_import: on_import_rules,
+                on_open_manual: on_open_manual_rule,
             }
-        }
+        },
         VirtualResourceRow::Rule(rule) => rsx! {
             column {
                 width: "100%",
-                {rule_view(state, locale, palette, &all_rules, rule)}
+                {rule_view(
+                    locale,
+                    palette,
+                    &all_rules,
+                    rule,
+                    on_set_rule_enabled,
+                    on_reorder_rules,
+                    on_delete_rule,
+                )}
                 row { height: 6.0 }
             }
         },
@@ -611,14 +603,76 @@ fn virtual_resource_empty(
     }
 }
 
-fn virtual_provider_row(
-    state: Signal<State>,
+#[component]
+fn ResourceRulesHeader(
     locale: UiLocale,
     palette: VirtualResourcePalette,
-    diagnostic_pending: bool,
+    has_active_profile: bool,
+    resource_operations: Signal<ResourceOperationState>,
+    on_import: EventHandler<()>,
+    on_open_manual: EventHandler<()>,
+) -> Element {
+    let import_loading = resource_operations.read().rule_import_loading;
+    let import_disabled = import_loading || !has_active_profile;
+    rsx! {
+        row {
+            width: "100%",
+            height: 52.0,
+            margin_top: 10.0,
+            align_items: "center",
+            text { content: translate_ui(locale, tr::resources_rules_title()), font_size: typography::SM, font_weight: 600, font_color: palette.foreground }
+            row { layout_weight: 1.0 }
+            button {
+                height: 36.0,
+                padding_left: 8.0,
+                padding_right: 8.0,
+                background_color: palette.surface,
+                border_width: 0.0,
+                border_radius: 6.0,
+                enabled: !import_disabled,
+                opacity: if import_disabled { 0.5 } else { 1.0 },
+                onclick: move |_| {
+                    if !resource_operations.peek().rule_import_loading {
+                        on_import.call(());
+                    }
+                },
+                row {
+                    align_items: "center",
+                    {arkit::icon(if import_loading { "loader-circle" } else { "file-up" }, 14.0, palette.foreground)}
+                    text { content: translate_ui(locale, tr::resources_import_rules()), margin_left: 5.0, font_size: 12.0, font_weight: 600, font_color: palette.foreground }
+                }
+            }
+            button {
+                height: 36.0,
+                padding_left: 8.0,
+                padding_right: 8.0,
+                background_color: palette.surface,
+                border_width: 0.0,
+                border_radius: 6.0,
+                enabled: has_active_profile,
+                opacity: if has_active_profile { 1.0 } else { 0.5 },
+                onclick: move |_| on_open_manual.call(()),
+                row {
+                    align_items: "center",
+                    {arkit::icon("plus", 14.0, palette.foreground)}
+                    text { content: translate_ui(locale, tr::page_tr_192()), margin_left: 5.0, font_size: typography::XS, font_weight: 600, font_color: palette.foreground }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn VirtualProviderRow(
+    locale: UiLocale,
+    palette: VirtualResourcePalette,
     provider: paws_model::ProviderSummary,
     mut provider_detail: Signal<Option<String>>,
+    diagnostic_operations: Signal<DiagnosticOperationState>,
+    on_healthcheck: EventHandler<String>,
+    on_refresh: EventHandler<(String, String)>,
 ) -> Element {
+    let diagnostic_pending = diagnostic_operations.read().pending.is_some();
     let refresh_provider_type = provider.provider_type.clone();
     let refresh_provider_name = provider.name.clone();
     let health_provider_name = provider.name.clone();
@@ -710,9 +764,7 @@ fn virtual_provider_row(
                             border_radius: 6.0,
                             enabled: !diagnostic_pending,
                             opacity: if diagnostic_pending { 0.5 } else { 1.0 },
-                            onclick: move |_| dispatch(state, Action::HealthcheckProxyProvider {
-                                provider_name: health_provider_name.clone(),
-                            }),
+                            onclick: move |_| on_healthcheck.call(health_provider_name.clone()),
                             row {
                                 align_items: "center",
                                 {arkit::icon("heart-pulse", 14.0, palette.foreground)}
@@ -727,10 +779,7 @@ fn virtual_provider_row(
                         background_color: palette.surface,
                         border_width: 0.0,
                         border_radius: 6.0,
-                        onclick: move |_| dispatch(state, Action::RefreshProvider {
-                            provider_type: refresh_provider_type.clone(),
-                            provider_name: refresh_provider_name.clone(),
-                        }),
+                        onclick: move |_| on_refresh.call((refresh_provider_type.clone(), refresh_provider_name.clone())),
                         row {
                             align_items: "center",
                             {arkit::icon("refresh-cw", 14.0, palette.foreground)}
@@ -743,41 +792,41 @@ fn virtual_provider_row(
     }
 }
 
-fn rule_lookup_dialog(state: Signal<State>, current: &State) -> Element {
-    let open = current.rule_lookup.is_some();
-    let content_key = current
-        .rule_lookup
-        .as_ref()
-        .map(|lookup| {
-            dialog_content_key(&[
-                &lookup.id.to_string(),
-                &lookup.query,
-                &lookup.submitting.to_string(),
-                &format!("{:?}", lookup.result),
-                lookup.error.as_deref().unwrap_or(""),
-            ])
-        })
-        .unwrap_or(0);
+#[component]
+fn RuleLookupDialog(local: LocalRuleEditors) -> Element {
+    let services = use_context::<UiServices>();
+    let open = local.signal.read().lookup.is_some();
+    if !open {
+        return rsx! {};
+    }
+    let close_editors = local.clone();
     rsx! {
         FlatDialog {
             open,
-            content_key,
-            on_close: move |_| dispatch(state, Action::CloseRuleLookup),
-            RuleLookupDialogContent { state }
+            on_close: move |_| services.close_rule_lookup(close_editors.clone()),
+            RuleLookupDialogContent { local }
         }
     }
 }
 
 #[component]
-fn RuleLookupDialogContent(state: Signal<State>) -> Element {
-    let current = state.read().clone();
-    let Some(lookup) = current.rule_lookup.clone() else {
+fn RuleLookupDialogContent(local: LocalRuleEditors) -> Element {
+    let services = use_context::<UiServices>();
+    let query_services = services.clone();
+    let add_services = services.clone();
+    let stores = use_context::<UiStores>();
+    let locale = stores.preferences.read().locale;
+    let editors = local.signal.read().clone();
+    let profiles = stores.profiles.read();
+    let proxies = stores.proxies.read();
+    let Some(lookup) = editors.lookup else {
         return rsx! {};
     };
-    let locale = current.locale;
-    let can_lookup = !lookup.submitting
-        && !lookup.query.trim().is_empty()
-        && current.snapshot.active_profile.is_some();
+    let can_lookup =
+        !lookup.submitting && !lookup.query.trim().is_empty() && profiles.active_profile.is_some();
+    let query_editors = local.clone();
+    let add_editors = local.clone();
+    let lookup_editors = local;
 
     rsx! {
         DialogHeader {
@@ -790,9 +839,9 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
             placeholder: Some("example.com / 203.0.113.1".to_owned()),
             width: Some("100%".into()),
             disabled: lookup.submitting,
-            on_change: move |value| dispatch(state, Action::SetRuleLookupQuery(value)),
+            on_change: move |value| query_services.set_rule_lookup_query(query_editors.clone(), value),
         }
-        if current.snapshot.active_profile.is_none() {
+        if profiles.active_profile.is_none() {
             text {
                 content: translate_ui(locale, tr::page_tr_197()),
                 margin_top: 9.0,
@@ -801,7 +850,7 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
                 font_color: warning(),
             }
         }
-        if current.snapshot.mode != RuntimeMode::Rule {
+        if proxies.mode != RuntimeMode::Rule {
             text {
                 content: translate_ui(locale, tr::page_tr_198()),
                 margin_top: 9.0,
@@ -881,7 +930,7 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
                 FlatButton {
                     variant: FlatButtonVariant::Outline,
                     width: "100%",
-                    onclick: move |_| dispatch(state, Action::AddRuleFromLookup),
+                    onclick: move |_| add_services.add_rule_from_lookup(add_editors.clone()),
                     {arkit::icon("plus", 15.0, text_color())}
                     text {
                         content: translate_ui(locale, tr::page_tr_207()),
@@ -898,7 +947,7 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
                 variant: FlatButtonVariant::Primary,
                 width: "100%",
                 disabled: Some(!can_lookup),
-                onclick: move |_| dispatch(state, Action::LookupRule),
+                onclick: move |_| services.lookup_rule(lookup_editors.clone()),
                 if lookup.submitting {
                     Spinner { size: 16.0, color: Some(primary_text()) }
                 } else {
@@ -916,13 +965,15 @@ fn RuleLookupDialogContent(state: Signal<State>) -> Element {
     }
 }
 
-fn provider_detail_dialog(
-    state: Signal<State>,
+#[component]
+fn ProviderDetailDialog(
     locale: UiLocale,
     provider: paws_model::ProviderSummary,
     mut selected: Signal<Option<String>>,
-    pending: bool,
 ) -> Element {
+    let services = use_context::<UiServices>();
+    let operations = use_context::<UiOperationStores>();
+    let pending = operations.diagnostics.read().pending.is_some();
     let provider_name = provider.name.clone();
     let health_url = provider
         .health_check_url
@@ -930,6 +981,7 @@ fn provider_detail_dialog(
         .unwrap_or_else(|| "https://www.gstatic.com/generate_204".to_owned());
     let expected_status = provider.expected_status.clone();
     let members = provider.members.into_iter().map(|member| {
+        let member_services = services.clone();
         let check_provider = provider_name.clone();
         let check_proxy = member.name.clone();
         let check_url = health_url.clone();
@@ -960,12 +1012,7 @@ fn provider_detail_dialog(
                     variant: FlatButtonVariant::Ghost,
                     size: ButtonSize::Icon,
                     disabled: Some(pending),
-                    onclick: move |_| dispatch(state, Action::HealthcheckProviderProxy {
-                        provider_name: check_provider.clone(),
-                        proxy_name: check_proxy.clone(),
-                        url: check_url.clone(),
-                        expected_status: check_expected.clone(),
-                    }),
+                    onclick: move |_| member_services.healthcheck_provider_proxy(check_provider.clone(), check_proxy.clone(), check_url.clone(), check_expected.clone()),
                     {arkit::icon("gauge", 15.0, text_color())}
                 }
             }
@@ -1061,11 +1108,13 @@ fn geodata_detail_dialog(
 }
 
 fn rule_view(
-    state: Signal<State>,
     locale: UiLocale,
     palette: VirtualResourcePalette,
     all_rules: &[paws_model::RuleSummary],
     rule: paws_model::RuleSummary,
+    on_set_enabled: EventHandler<(String, String, bool)>,
+    on_reorder: EventHandler<(String, Vec<String>)>,
+    on_delete: EventHandler<(String, String)>,
 ) -> Element {
     let editable = rule.source != "profile-yaml";
     let rule_source = if editable {
@@ -1088,15 +1137,6 @@ fn rule_view(
         )
     } else {
         (None, None)
-    };
-    let toggle_action = Action::SetRuleEnabled {
-        profile_id: toggle_profile,
-        rule_id: toggle_id,
-        enabled: !enabled,
-    };
-    let delete_action = Action::DeleteRule {
-        profile_id: delete_profile,
-        rule_id: delete_id,
     };
     rsx! {
         column {
@@ -1135,14 +1175,14 @@ fn rule_view(
                     }
                 }
                 if editable {
-                    {compact_rule_action(if enabled { "toggle-right" } else { "toggle-left" }, if enabled { palette.success } else { palette.muted_foreground }, toggle_action, state, palette)}
+                    {compact_rule_action(if enabled { "toggle-right" } else { "toggle-left" }, if enabled { palette.success } else { palette.muted_foreground }, move || on_set_enabled.call((toggle_profile.clone(), toggle_id.clone(), !enabled)), palette)}
                     if let Some(ids) = up {
-                        {compact_rule_action("arrow-up", palette.muted_foreground, Action::ReorderRules { profile_id: rule.profile_id.clone(), ordered_rule_ids: ids }, state, palette)}
+                        {compact_rule_action("arrow-up", palette.muted_foreground, { let on_reorder = on_reorder.clone(); let profile_id = rule.profile_id.clone(); move || on_reorder.call((profile_id.clone(), ids.clone())) }, palette)}
                     }
                     if let Some(ids) = down {
-                        {compact_rule_action("arrow-down", palette.muted_foreground, Action::ReorderRules { profile_id: rule.profile_id.clone(), ordered_rule_ids: ids }, state, palette)}
+                        {compact_rule_action("arrow-down", palette.muted_foreground, { let on_reorder = on_reorder.clone(); let profile_id = rule.profile_id.clone(); move || on_reorder.call((profile_id.clone(), ids.clone())) }, palette)}
                     }
-                    {compact_rule_action("trash-2", palette.danger, delete_action, state, palette)}
+                    {compact_rule_action("trash-2", palette.danger, move || on_delete.call((delete_profile.clone(), delete_id.clone())), palette)}
                 } else {
                     {virtual_resource_pill(translate_ui(locale, tr::page_tr_220()), palette.success, palette)}
                 }
@@ -1160,13 +1200,15 @@ fn rule_view(
     }
 }
 
-fn compact_rule_action(
+fn compact_rule_action<F>(
     icon: &'static str,
     color: u32,
-    action: Action,
-    state: Signal<State>,
+    mut action: F,
     palette: VirtualResourcePalette,
-) -> Element {
+) -> Element
+where
+    F: FnMut() + 'static,
+{
     rsx! {
         button {
             width: 32.0,
@@ -1175,7 +1217,7 @@ fn compact_rule_action(
             background_color: palette.surface,
             border_width: 0.0,
             border_radius: 6.0,
-            onclick: move |_| dispatch(state, action.clone()),
+            onclick: move |_| action(),
             row {
                 width: "100%",
                 height: "100%",

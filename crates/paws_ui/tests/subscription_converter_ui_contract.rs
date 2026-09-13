@@ -22,19 +22,23 @@ fn converter_page_exposes_sub_web_actions_and_privacy_context() {
         fs::read_to_string(root().join("crates/paws_ui/src/view/pages/subscription_converter.rs"))
             .unwrap();
 
-    for marker in [
-        "生成订阅链接",
-        "生成短链",
-        "一键导入 Clash",
-        "从长链或短链解析",
-        "上传并使用配置",
-        "第三方服务",
+    for message in [
+        "tr::page_tr_072()",
+        "tr::page_tr_079()",
+        "tr::page_tr_083()",
+        "tr::page_tr_084()",
+        "tr::page_tr_094()",
+        "tr::hard_zh_046()",
     ] {
         assert!(
-            page.contains("translate_ui(current.locale, tr::page_tr_"),
-            "missing converter UI marker: {marker}"
+            page.contains(message),
+            "missing converter UI message: {message}"
         );
     }
+    assert!(page.contains("version_tasks.query("));
+    assert!(page.contains("short_tasks.query("));
+    assert!(page.contains("parse_tasks.query("));
+    assert!(page.contains("upload_tasks.mutate("));
 }
 
 #[test]
@@ -50,4 +54,27 @@ fn system_clipboard_and_clash_scheme_are_wired_through_entry_ability() {
     assert!(clipboard.contains("pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN"));
     assert!(entry.contains("new LazyPlugin(() => new ClipboardPlugin())"));
     assert!(callbacks.contains("clash://install-config?url="));
+}
+
+#[test]
+fn converter_draft_failures_are_visible_and_never_silently_replace_the_file() {
+    let logic =
+        fs::read_to_string(root().join("crates/paws_ui/src/subscription_converter.rs")).unwrap();
+    let page =
+        fs::read_to_string(root().join("crates/paws_ui/src/view/pages/subscription_converter.rs"))
+            .unwrap();
+
+    let load = logic
+        .split("pub(crate) fn load_draft")
+        .nth(1)
+        .and_then(|tail| tail.split("pub(crate) fn save_draft").next())
+        .expect("load_draft section");
+    assert!(load.contains("Result<SubscriptionConverterDraft, String>"));
+    assert!(load.contains("ErrorKind::NotFound"));
+    assert!(load.contains("serde_json::from_str(&text).map_err"));
+    assert!(!load.contains(".ok()"));
+    assert!(page.contains("persistence_error"));
+    assert!(page.contains("persist_converter_draft"));
+    assert!(page.contains("if !unchanged"));
+    assert!(!page.contains("let _ = save_draft"));
 }

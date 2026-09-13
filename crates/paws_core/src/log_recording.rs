@@ -28,6 +28,7 @@ pub struct LogArchiveSummary {
 pub struct LogRecordingStatus {
     pub enabled: bool,
     pub archives: Vec<LogArchiveSummary>,
+    pub last_error: Option<String>,
 }
 
 pub(crate) struct RecordedLogBuffer {
@@ -35,6 +36,17 @@ pub(crate) struct RecordedLogBuffer {
     session_id: Option<String>,
     appender: Option<RollingFileAppender>,
     entries: Vec<LogEntry>,
+    last_error: Option<String>,
+    last_error_source: Option<LogRecordingErrorSource>,
+    #[cfg(test)]
+    fail_next_write: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LogRecordingErrorSource {
+    Control,
+    Session,
+    Writer,
 }
 
 impl RecordedLogBuffer {
@@ -44,6 +56,10 @@ impl RecordedLogBuffer {
             session_id: None,
             appender: None,
             entries: Vec::with_capacity(MAX_IN_MEMORY_LOGS),
+            last_error: None,
+            last_error_source: None,
+            #[cfg(test)]
+            fail_next_write: false,
         }
     }
 
@@ -53,7 +69,17 @@ impl RecordedLogBuffer {
             return;
         }
         if let Some(appender) = self.appender.as_mut() {
-            let _ = write_log_entry(appender, &entry);
+            #[cfg(test)]
+            let write_result = if std::mem::take(&mut self.fail_next_write) {
+                Err(PawsError::Core(
+                    "injected recorded log write failure".to_owned(),
+                ))
+            } else {
+                write_log_entry(appender, &entry)
+            };
+            #[cfg(not(test))]
+            let write_result = write_log_entry(appender, &entry);
+            self.record_writer_result(write_result);
         }
         if self.entries.len() >= MAX_IN_MEMORY_LOGS {
             self.entries.remove(0);
@@ -66,13 +92,28 @@ impl RecordedLogBuffer {
     }
 
     pub(crate) fn sync_session(&mut self) {
-        let session_id = active_session_id(&self.root);
+        let session_id = match active_session_id(&self.root) {
+            Ok(session_id) => session_id,
+            Err(error) => {
+                self.set_error(LogRecordingErrorSource::Session, error);
+                return;
+            }
+        };
+        self.clear_error_from(LogRecordingErrorSource::Session);
         if session_id != self.session_id {
             self.entries.clear();
-            self.appender = session_id
-                .as_ref()
-                .and_then(|_| build_daily_appender(&self.root).ok());
+            self.appender = None;
             self.session_id = session_id;
+            self.clear_error_from(LogRecordingErrorSource::Writer);
+        }
+        if self.session_id.is_some() && self.appender.is_none() {
+            match build_daily_appender(&self.root) {
+                Ok(appender) => {
+                    self.appender = Some(appender);
+                    self.clear_error_from(LogRecordingErrorSource::Writer);
+                }
+                Err(error) => self.set_error(LogRecordingErrorSource::Writer, error),
+            }
         }
     }
 
@@ -82,6 +123,37 @@ impl RecordedLogBuffer {
 
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(crate) fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    pub(crate) fn record_control_error(&mut self, error: &PawsError) {
+        self.set_error(LogRecordingErrorSource::Control, error.to_string());
+    }
+
+    pub(crate) fn clear_control_error(&mut self) {
+        self.clear_error_from(LogRecordingErrorSource::Control);
+    }
+
+    fn record_writer_result(&mut self, result: Result<(), PawsError>) {
+        match result {
+            Ok(()) => self.clear_error_from(LogRecordingErrorSource::Writer),
+            Err(error) => self.set_error(LogRecordingErrorSource::Writer, error),
+        }
+    }
+
+    fn set_error(&mut self, source: LogRecordingErrorSource, error: impl ToString) {
+        self.last_error = Some(error.to_string());
+        self.last_error_source = Some(source);
+    }
+
+    fn clear_error_from(&mut self, source: LogRecordingErrorSource) {
+        if self.last_error_source == Some(source) {
+            self.last_error = None;
+            self.last_error_source = None;
+        }
     }
 }
 
@@ -105,6 +177,9 @@ pub(crate) struct RuntimeLogBuffer {
     entries: VecDeque<CapturedRuntimeLog>,
     next_sequence: u64,
     persisted_sequence: u64,
+    last_error: Option<String>,
+    #[cfg(test)]
+    fail_next_write: bool,
 }
 
 impl Default for RuntimeLogBuffer {
@@ -115,6 +190,9 @@ impl Default for RuntimeLogBuffer {
             entries: VecDeque::with_capacity(MAX_IN_MEMORY_LOGS),
             next_sequence: 1,
             persisted_sequence: 0,
+            last_error: None,
+            #[cfg(test)]
+            fail_next_write: false,
         }
     }
 }
@@ -134,7 +212,13 @@ impl RuntimeLogBuffer {
     }
 
     pub(crate) fn sync(&mut self, root: &Path) {
-        let session_id = active_session_id(root);
+        let session_id = match active_session_id(root) {
+            Ok(session_id) => session_id,
+            Err(error) => {
+                self.last_error = Some(error.to_string());
+                return;
+            }
+        };
         if session_id != self.session_id {
             let started_at = session_id
                 .as_deref()
@@ -143,16 +227,26 @@ impl RuntimeLogBuffer {
             self.entries
                 .retain(|captured| captured.captured_at >= started_at);
             self.persisted_sequence = 0;
-            self.appender = session_id
-                .as_ref()
-                .and_then(|_| build_daily_appender(root).ok());
+            self.appender = None;
             self.session_id = session_id;
+            self.last_error = None;
         }
         if self.session_id.is_none() {
             self.entries.clear();
             self.persisted_sequence = 0;
             self.appender = None;
+            self.last_error = None;
             return;
+        }
+
+        if self.appender.is_none() {
+            match build_daily_appender(root) {
+                Ok(appender) => {
+                    self.appender = Some(appender);
+                    self.last_error = None;
+                }
+                Err(error) => self.last_error = Some(error.to_string()),
+            }
         }
 
         let mut persisted_sequence = self.persisted_sequence;
@@ -164,10 +258,25 @@ impl RuntimeLogBuffer {
             .iter()
             .filter(|captured| captured.sequence > self.persisted_sequence)
         {
-            if write_log_entry(appender, &captured.entry).is_ok() {
-                persisted_sequence = captured.sequence;
+            #[cfg(test)]
+            let write_result = if std::mem::take(&mut self.fail_next_write) {
+                Err(PawsError::Core(
+                    "injected runtime log write failure".to_owned(),
+                ))
             } else {
-                break;
+                write_log_entry(appender, &captured.entry)
+            };
+            #[cfg(not(test))]
+            let write_result = write_log_entry(appender, &captured.entry);
+            match write_result {
+                Ok(()) => {
+                    persisted_sequence = captured.sequence;
+                    self.last_error = None;
+                }
+                Err(error) => {
+                    self.last_error = Some(error.to_string());
+                    break;
+                }
             }
         }
         self.persisted_sequence = persisted_sequence;
@@ -193,11 +302,15 @@ impl RuntimeLogBuffer {
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
+
+    pub(crate) fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
 }
 
 pub(crate) fn reset_recording(root: &Path) -> Result<(), PawsError> {
     let marker = recording_marker(root);
-    if marker.exists() {
+    if marker.try_exists().map_err(io_error)? {
         fs::remove_file(marker).map_err(io_error)?;
     }
     Ok(())
@@ -220,20 +333,24 @@ pub(crate) fn set_recording_enabled(root: &Path, enabled: bool) -> Result<(), Pa
             let _ = fs::remove_file(temporary_marker);
             return Err(io_error(error));
         }
-    } else if marker.exists() {
+    } else if marker.try_exists().map_err(io_error)? {
         fs::remove_file(marker).map_err(io_error)?;
     }
     Ok(())
 }
 
 pub(crate) fn recording_status(root: &Path) -> Result<LogRecordingStatus, PawsError> {
-    let enabled = active_session_id(root).is_some();
+    let enabled = active_session_id(root)?.is_some();
     let active_file_name = enabled.then(current_archive_file_name);
     let mut archives = list_archives(root)?;
     for archive in &mut archives {
         archive.active = active_file_name.as_deref() == Some(archive.file_name.as_str());
     }
-    Ok(LogRecordingStatus { enabled, archives })
+    Ok(LogRecordingStatus {
+        enabled,
+        archives,
+        last_error: None,
+    })
 }
 
 pub(crate) fn read_archive(root: &Path, file_name: &str) -> Result<String, PawsError> {
@@ -247,7 +364,7 @@ pub(crate) fn delete_archive(root: &Path, file_name: &str) -> Result<(), PawsErr
     if !is_log_file_name(file_name) {
         return Err(PawsError::Core("invalid log archive name".to_owned()));
     }
-    if active_session_id(root).is_some() && file_name == current_archive_file_name() {
+    if active_session_id(root)?.is_some() && file_name == current_archive_file_name() {
         return Err(PawsError::Core(
             "stop log recording before deleting the active archive".to_owned(),
         ));
@@ -257,7 +374,7 @@ pub(crate) fn delete_archive(root: &Path, file_name: &str) -> Result<(), PawsErr
 
 fn list_archives(root: &Path) -> Result<Vec<LogArchiveSummary>, PawsError> {
     let directory = log_directory(root);
-    if !directory.exists() {
+    if !directory.try_exists().map_err(io_error)? {
         return Ok(Vec::new());
     }
     let mut archives = Vec::new();
@@ -310,11 +427,22 @@ fn write_log_entry(appender: &mut RollingFileAppender, entry: &LogEntry) -> Resu
     appender.write_all(line.as_bytes()).map_err(io_error)
 }
 
-fn active_session_id(root: &Path) -> Option<String> {
-    fs::read_to_string(recording_marker(root))
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
+fn active_session_id(root: &Path) -> Result<Option<String>, PawsError> {
+    match fs::read_to_string(recording_marker(root)) {
+        Ok(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                Err(PawsError::Core(
+                    "log recording marker is empty; refusing to treat its state as disabled"
+                        .to_owned(),
+                ))
+            } else {
+                Ok(Some(value.to_owned()))
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io_error(error)),
+    }
 }
 
 fn log_directory(root: &Path) -> PathBuf {
@@ -500,6 +628,52 @@ mod tests {
         assert_eq!(status.archives.len(), 1);
         let content = read_archive(&root, &status.archives[0].file_name).unwrap();
         assert_eq!(content.lines().count(), 300);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recorded_log_write_failure_is_visible_until_that_writer_recovers() {
+        let root = temp_root("recorded-write-error");
+        set_recording_enabled(&root, true).unwrap();
+        let mut logs = RecordedLogBuffer::new(&root);
+        logs.fail_next_write = true;
+        logs.push(LogEntry {
+            level: "error".to_owned(),
+            message: "first write fails".to_owned(),
+            timestamp: "0".to_owned(),
+        });
+        assert!(logs
+            .last_error()
+            .is_some_and(|error| error.contains("injected recorded log write failure")));
+
+        logs.push(LogEntry {
+            level: "info".to_owned(),
+            message: "writer recovered".to_owned(),
+            timestamp: "1".to_owned(),
+        });
+        assert_eq!(logs.last_error(), None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_log_write_failure_is_visible_and_retried() {
+        let root = temp_root("runtime-write-error");
+        set_recording_enabled(&root, true).unwrap();
+        let mut logs = RuntimeLogBuffer::default();
+        logs.capture(LogEntry {
+            level: "error".to_owned(),
+            message: "first runtime write fails".to_owned(),
+            timestamp: "0".to_owned(),
+        });
+        logs.fail_next_write = true;
+        logs.sync(&root);
+        assert!(logs
+            .last_error()
+            .is_some_and(|error| error.contains("injected runtime log write failure")));
+
+        logs.sync(&root);
+        assert_eq!(logs.last_error(), None);
+        assert_eq!(logs.persisted_sequence, 1);
         let _ = fs::remove_dir_all(root);
     }
 }

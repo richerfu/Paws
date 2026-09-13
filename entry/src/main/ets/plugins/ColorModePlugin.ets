@@ -29,7 +29,7 @@ export class ColorModePlugin extends AsyncPluginBase {
     if (action !== 'set-color-mode') {
       throw new Error(`Unsupported paws.color-mode action '${action}'`);
     }
-    if (request.typeName !== COLOR_MODE_REQUEST_TYPE || typeof request.value !== 'object') {
+    if (request.typeName !== COLOR_MODE_REQUEST_TYPE || request.value === null || typeof request.value !== 'object') {
       throw new Error(
         `paws.color-mode expected ${COLOR_MODE_REQUEST_TYPE}, got ${request.typeName}`,
       );
@@ -37,6 +37,11 @@ export class ColorModePlugin extends AsyncPluginBase {
     const payload = request.value as ColorModeRequest;
     if (typeof payload.mode !== 'number' || !Number.isInteger(payload.mode)) {
       throw new Error(`paws.color-mode invalid request shape`);
+    }
+    if (payload.mode !== ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET &&
+      payload.mode !== ConfigurationConstant.ColorMode.COLOR_MODE_DARK &&
+      payload.mode !== ConfigurationConstant.ColorMode.COLOR_MODE_LIGHT) {
+      throw new Error(`paws.color-mode unsupported mode ${payload.mode}`);
     }
     let mode = ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET;
     if (payload.mode === ConfigurationConstant.ColorMode.COLOR_MODE_DARK) {

@@ -45,11 +45,44 @@ export default function localUnitTest() {
       expect(currentPawsBundleName()).assertEqual(PAWS_BUNDLE_NAME);
     });
 
-    it('parsesOptionsAndFallsBackToDefaultJson', 0, () => {
-      expect(readOptionsJson(undefined)).assertEqual(DEFAULT_OPTIONS_JSON);
-      expect(parseOptions('bad-json').mtu).assertEqual(undefined);
+    it('parsesOptionsAndRejectsMalformedInput', 0, () => {
+      let missingRejected = false;
+      let malformedRejected = false;
+      try {
+        readOptionsJson(undefined);
+      } catch (_err) {
+        missingRejected = true;
+      }
+      try {
+        parseOptions('bad-json');
+      } catch (_err) {
+        malformedRejected = true;
+      }
+      expect(missingRejected).assertTrue();
+      expect(malformedRejected).assertTrue();
       expect(parseOptions('{"mtu":1400,"ipv6":true}').mtu).assertEqual(1400);
       expect(parseOptions('{"mtu":1400,"ipv6":true}').ipv6).assertTrue();
+    });
+
+    it('rejectsMalformedVpnOptionFields', 0, () => {
+      const invalidOptions = [
+        '{"addresses":"172.19.0.1/30"}',
+        '{"routes":[1]}',
+        '{"mtu":0}',
+        '{"mtu":"1500"}',
+        '{"ipv6":"true"}',
+        '{"stack":"unknown"}',
+        '{"dnsNameserverPolicy":{"geosite:cn":"223.5.5.5"}}',
+      ];
+      invalidOptions.forEach((value: string): void => {
+        let rejected = false;
+        try {
+          parseOptions(value);
+        } catch (_err) {
+          rejected = true;
+        }
+        expect(rejected).assertTrue();
+      });
     });
 
     it('keepsDefaultDnsInSyncWithRustModel', 0, () => {
@@ -87,6 +120,36 @@ export default function localUnitTest() {
       const ipv6 = parseLinkAddress('fdfe:dcba:9876::1/126', 128);
       expect(ipv6.address.family).assertEqual(2);
       expect(ipv6.prefixLength).assertEqual(126);
+      const invalidValues = ['10.0.0.1/99', '10.0.0.1/no', '10.0.0.1/24junk', '999.2.3.4/24', '::1/129'];
+      invalidValues.forEach((value: string): void => {
+        let rejected = false;
+        try {
+          parseLinkAddress(value, value.includes(':') ? 128 : 32);
+        } catch (_err) {
+          rejected = true;
+        }
+        expect(rejected).assertTrue();
+      });
+    });
+
+    it('rejectsUnsupportedGlobalBypass', 0, () => {
+      let rejected = false;
+      try {
+        new PawsVpnConfig({ allowBypass: true });
+      } catch (_err) {
+        rejected = true;
+      }
+      expect(rejected).assertTrue();
+    });
+
+    it('rejectsUnsupportedSystemProxy', 0, () => {
+      let rejected = false;
+      try {
+        new PawsVpnConfig({ systemProxy: true });
+      } catch (_err) {
+        rejected = true;
+      }
+      expect(rejected).assertTrue();
     });
 
     it('readsDirectVpnExtensionWant', 0, () => {

@@ -78,7 +78,7 @@ impl TryFrom<&str> for VpnStack {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VpnOptions {
     #[serde(default = "default_vpn_addresses")]
@@ -99,7 +99,7 @@ pub struct VpnOptions {
     pub dns_nameserver_policy: BTreeMap<String, Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DnsSnapshot {
     pub model: String,
@@ -245,7 +245,7 @@ fn default_dns_policy() -> BTreeMap<String, Vec<String>> {
     ])
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrafficSnapshot {
     pub upload_bytes: u64,
@@ -270,14 +270,14 @@ pub struct TrafficSnapshot {
     pub meow_download_speed: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrafficHistoryPoint {
     pub download_speed: u64,
     pub upload_speed: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyItem {
     pub name: String,
@@ -286,7 +286,7 @@ pub struct ProxyItem {
     pub selected: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyGroup {
     pub name: String,
@@ -299,7 +299,7 @@ pub struct ProxyGroup {
     pub proxies: Vec<ProxyItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileSummary {
     pub id: String,
@@ -468,7 +468,7 @@ pub struct ProviderProxySummary {
     pub delay_ms: Option<u32>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControllerDiagnostics {
     #[serde(default)]
@@ -496,7 +496,7 @@ pub struct GeodataFileSummary {
     pub updated_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogEntry {
     pub level: String,
@@ -504,7 +504,7 @@ pub struct LogEntry {
     pub timestamp: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionSummary {
     pub id: String,
@@ -528,7 +528,7 @@ pub struct ConnectionSummary {
     pub download_bytes: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestSummary {
     pub id: String,
@@ -548,14 +548,14 @@ pub struct RequestSummary {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExitIpServiceSummary {
     pub name: String,
     pub documentation_url: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AboutSnapshot {
     pub app_version: String,
@@ -616,9 +616,23 @@ pub struct ExitLocationSnapshot {
     pub provider: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSnapshot {
+    /// Monotonically increasing identity for the complete runtime projection.
+    /// Consumers must ignore snapshots older than the last one they applied.
+    #[serde(default)]
+    pub revision: u64,
+    /// Monotonically increasing identity for persisted profile/configuration data.
+    #[serde(default)]
+    pub config_revision: u64,
+    /// Wall-clock observation time for diagnostics. Ordering must use `revision`.
+    #[serde(default)]
+    pub observed_at_unix_nanos: u128,
+    /// Identity of the currently connected platform VPN session. Consumers
+    /// must revalidate it before restarting resources after async settings work.
+    #[serde(default)]
+    pub vpn_session_id: Option<String>,
     #[serde(default)]
     pub vpn_lifecycle: VpnLifecycle,
     #[serde(default)]
@@ -667,6 +681,10 @@ pub struct RuntimeSnapshot {
 impl Default for RuntimeSnapshot {
     fn default() -> Self {
         Self {
+            revision: 0,
+            config_revision: 0,
+            observed_at_unix_nanos: 0,
+            vpn_session_id: None,
             vpn_lifecycle: VpnLifecycle::Stopped,
             engine_loaded: false,
             running: false,
@@ -723,6 +741,10 @@ pub enum PawsError {
     ProfileNotFound(String),
     #[error("rule not found: {0}")]
     RuleNotFound(String),
+    #[error("stale configuration revision: expected {expected}, current {current}")]
+    StaleConfigRevision { expected: u64, current: u64 },
+    #[error("stale resource revision: expected {expected}, current {current}")]
+    StaleResourceRevision { expected: u64, current: u64 },
     #[error("platform callback not registered: {0}")]
     MissingCallback(String),
     #[error("core error: {0}")]

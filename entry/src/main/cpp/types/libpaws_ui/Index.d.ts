@@ -74,35 +74,121 @@ export interface ScanResponse {
 }
 
 export interface VpnStartRequest {
+  /** Rust-process-scoped idempotency key used to recover a lost submit receipt. */
+  requestId: string
   /** Serialized `VpnOptions` JSON for the extension Want. */
   optionsJson: string
 }
 
 export interface VpnStartResponse {
-
+  operationId: string
 }
 
 export interface VpnStopRequest {
-
+  /** Rust-process-scoped idempotency key used to recover a lost submit receipt. */
+  requestId: string
 }
 
 export interface VpnStopResponse {
-
+  operationId: string
 }
 
-export declare function activateProfile(profileId: string): Promise<void>
+export interface VpnOwnedStopRequest {
+  /** Rust-process-scoped idempotency key used to recover a lost submit receipt. */
+  requestId: string
+  expectedSessionId: string
+  /** Decimal u64 captured from the checked configuration mutation receipt. */
+  expectedConfigRevision: string
+}
+
+export interface VpnOwnedStopResponse {
+  operationId: string
+}
+
+export interface VpnRestartRequest {
+  /** Rust-process-scoped idempotency key used to recover a lost submit receipt. */
+  requestId: string
+  expectedSessionId: string
+  /** Decimal u64 captured from the checked settings mutation receipt. */
+  expectedConfigRevision: string
+  optionsJson: string
+}
+
+export interface VpnRestartResponse {
+  operationId: string
+}
+
+export interface VpnOperationLookupRequest {
+  requestId: string
+}
+
+export interface VpnOperationLookupResponse {
+  /** `found` or `unknown-session`; unknown never proves that an earlier submit was not accepted. */
+  status: string
+  operationId: string
+  /** `pending`, `succeeded`, `failed`, or `unknown`. */
+  operationStatus: string
+  result: boolean
+  error: string
+}
+
+export interface VpnOperationWaitRequest {
+  operationId: string
+  /** One bounded long-poll slice, no greater than 45 seconds. */
+  waitMs: number
+}
+
+export interface VpnOperationWaitResponse {
+  /** `pending`, `succeeded`, `failed`, or `unavailable`. */
+  status: string
+  result: boolean
+  error: string
+}
 
 export declare function attachPlatformSharedMemory(ashmemFd: number, notificationFd: number): void
 
 export declare function awaitPlatformVpnStart(attemptId: string): Promise<string>
 
-export declare function beginPlatformVpnStart(): string
+export declare function acknowledgeTerminalPlatformVpnStartDelivery(ashmemFd: number, notificationFd: number, attemptId: string): boolean
 
-export declare function bindPlatformVpnStart(attemptId: string): void
+export declare function awaitPlatformVpnStop(attemptId: string): Promise<boolean>
+
+/**
+  * Called only after HarmonyOS `stopVpnExtensionAbility` resolves. Recovery
+  * additionally requires proof that the exact journaled owner no longer
+  * exists (or that the fenced terminal request never attached).
+  */
+export declare function recoverPlatformVpnCleanupAfterConfirmedStop(attemptId: string): Promise<boolean>
+
+export declare function completePlatformVpnCleanup(attemptId: string): boolean
+
+export declare function currentPlatformVpnSessionId(): string
+
+export declare function advancePlatformVpnIntent(): string
+
+export declare function isPlatformVpnIntentCurrent(intentEpoch: string): boolean
+
+export declare function isPlatformVpnStopCurrent(intentEpoch: string, attemptId: string): boolean
+
+export declare function beginPlatformVpnOsStop(intentEpoch: string, attemptId: string): boolean
+
+export declare function completePlatformVpnOsStop(intentEpoch: string, attemptId: string): boolean
+
+export declare function failPlatformVpnOsStop(intentEpoch: string, attemptId: string): boolean
+
+export declare function beginPlatformVpnStartForIntent(intentEpoch: string): string
+
+/** Returns the fenced Extension process identity as `pid:starttime`. */
+export declare function bindPlatformVpnStart(attemptId: string): string
 
 export declare function cancelPlatformChangeWait(): void
 
 export declare function cancelPlatformVpnStart(attemptId: string): boolean
+
+export declare function requestPlatformVpnStop(attemptId: string): boolean
+
+/** Atomically fences and returns the exact owner that still owes cleanup. */
+export declare function claimCurrentPlatformVpnStop(intentEpoch: string): string
 
 export declare function clearLogs(): void
 
@@ -118,27 +204,15 @@ export declare function configureSystemColorMode(colorMode: number): void
 
 export declare function configureUiLocale(locale: string): void
 
-export declare function defaultVpnOptions(): string
-
-export declare function deleteProfile(profileId: string): Promise<void>
-
-export declare function deleteRule(ruleId: string): void
-
 export declare function destroy(): void
-
-export declare function expirePlatformVpnStart(): boolean
 
 export declare function failPlatformVpnStart(attemptId: string, error: string): boolean
 
 export declare function failUnattachedPlatformVpnStart(attemptId: string, error: string): boolean
 
-export declare function importProfileFromContent(name: string, source: string, rawYaml: string): Promise<string>
+export declare function importProfileFromContentAndActivate(name: string, source: string, rawYaml: string): Promise<string>
 
-export declare function importProfileFromPicker(): Promise<string>
-
-export declare function importProfileFromUrl(url: string, name?: string | undefined | null): Promise<string>
-
-export declare function importRulesFromContent(profileId: string | undefined | null, source: string, rulesText: string): string
+export declare function importProfileFromUrlAndActivate(url: string, name?: string | undefined | null): Promise<string>
 
 export declare function init(context?: AbilityInitContext): ApplicationLifecycle
 
@@ -154,31 +228,19 @@ export declare function onBridgeSyncEvent(pluginId: string, event: string, reque
 
 export declare function persistVpnTelemetry(): void
 
-export declare function prepareVpn(): Promise<boolean>
+export declare function prepareVpn(attemptId: string): Promise<boolean>
 
 export declare function profileRawYaml(profileId: string): string
 
 export declare function querySnapshot(): string
 
-export declare function refreshAllProfiles(): Promise<void>
-
 export declare function refreshAllProviders(): Promise<void>
-
-export declare function refreshDueProfiles(): Promise<void>
-
-export declare function refreshProfile(profileId: string): Promise<void>
 
 export declare function refreshProvider(providerName: string): Promise<void>
 
 export declare function refreshProviderOfType(providerType: string, providerName: string): Promise<void>
 
-export declare function reloadConfig(profileId: string): Promise<void>
-
 export declare function render(bindings: object, slot: NodeContent): void
-
-export declare function reorderRules(profileId: string, orderedRuleIdsJson: string): void
-
-export declare function restoreProfileBackup(profileId: string): Promise<void>
 
 export declare function seedGeodataFromRawfiles(resourceManager: resourceManager.ResourceManager): number
 
@@ -186,26 +248,23 @@ export declare function selectProxy(group: string, proxy: string): Promise<void>
 
 export declare function setMode(mode: string): Promise<void>
 
-export declare function setPlatformNetworkProtected(protected: boolean, error?: string | undefined | null): void
+export declare function setPlatformNetworkProtected(attemptId: string, protected: boolean, error?: string | undefined | null): boolean
 
-export declare function setPlatformVpnFailed(error: string): void
+export declare function setPlatformVpnFailed(attemptId: string, error: string): boolean
 
-export declare function setPlatformVpnRunning(running: boolean): void
+export declare function setPlatformVpnStarting(attemptId: string, starting: boolean): boolean
 
-export declare function setPlatformVpnStarting(starting: boolean): void
+export declare function startVpn(fd: number, optionsJson: string, attemptId: string): Promise<void>
 
-export declare function setProfileDnsConfig(profileId: string, dnsServersJson: string, dnsFallbacksJson: string, dnsNameserverPolicyJson: string): Promise<void>
+export declare function stopVpn(attemptId: string): Promise<boolean>
 
-export declare function setProfileDnsServers(profileId: string, dnsServersJson: string): Promise<void>
+export declare function extensionTick(attemptId: string): string
 
-export declare function setProfileVpnConfig(profileId: string, systemProxy: boolean, dnsHijacking: boolean, allowBypass: boolean, stack: string): Promise<void>
-export declare function setProfileNetworkConfig(profileId: string, mixedPort: number, controllerPort: number, allowLan: boolean): Promise<void>
+export declare function isPlatformVpnSessionCurrent(sessionId: string, expectedConfigRevision: string): boolean
 
-export declare function setRuleEnabled(profileId: string, ruleId: string, enabled: boolean): void
+export declare function isRuntimeConfigRevisionCurrent(expectedConfigRevision: string): boolean
 
-export declare function startVpn(fd: number, optionsJson: string): Promise<void>
-
-export declare function stopVpn(): Promise<void>
+export declare function validatePlatformVpnStartRequest(ashmemFd: number, notificationFd: number, attemptId: string): void
 
 export declare function syncPlatformChanges(): void
 
@@ -214,10 +273,6 @@ export declare function testProxyDelay(proxyName: string, url?: string | undefin
 export declare function testProxyEcho(proxyName: string, url: string, payload: string, timeoutMs?: number | undefined | null): Promise<string>
 
 export declare function unfixProxy(group: string): Promise<void>
-
-export declare function updateProfileContent(profileId: string, rawYaml: string): Promise<void>
-
-export declare function updateProfileSubscription(profileId: string, name: string, subscriptionUrl: string): void
 
 export declare function validateProfileContent(rawYaml: string): Promise<void>
 
@@ -294,4 +349,3 @@ export interface WindowStageEventCallback {
   onWindowRectChange: (arg: object) => void
   onAvoidAreaChange: (arg: object) => void
 }
-

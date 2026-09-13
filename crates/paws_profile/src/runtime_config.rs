@@ -36,7 +36,7 @@ pub fn controller_access_from_yaml(raw_yaml: &str) -> Result<ControllerAccessCon
             "profile root must be a YAML map".to_owned(),
         ));
     };
-    Ok(controller_access_from_mapping(root))
+    controller_access_from_mapping(root)
 }
 
 pub fn network_ports_from_yaml(raw_yaml: &str) -> Result<NetworkPortConfig, PawsError> {
@@ -47,36 +47,181 @@ pub fn network_ports_from_yaml(raw_yaml: &str) -> Result<NetworkPortConfig, Paws
             "profile root must be a YAML map".to_owned(),
         ));
     };
-    Ok(network_ports_from_mapping(root))
+    network_ports_from_mapping(root)
 }
 
-pub(super) fn network_ports_from_mapping(root: &Mapping) -> NetworkPortConfig {
+fn invalid_profile_field(field: &str, expected: &str) -> PawsError {
+    PawsError::Core(format!(
+        "profile field '{field}' must be {expected}; refusing to use a default"
+    ))
+}
+
+fn optional_mapping<'a>(root: &'a Mapping, key: &str) -> Result<Option<&'a Mapping>, PawsError> {
+    match root.get(value_key(key)) {
+        None => Ok(None),
+        Some(Value::Mapping(value)) => Ok(Some(value)),
+        Some(_) => Err(invalid_profile_field(key, "a mapping")),
+    }
+}
+
+fn strict_bool(value: &Value, field: &str) -> Result<bool, PawsError> {
+    value
+        .as_bool()
+        .ok_or_else(|| invalid_profile_field(field, "a boolean"))
+}
+
+fn strict_string(value: &Value, field: &str) -> Result<String, PawsError> {
+    value
+        .as_str()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| invalid_profile_field(field, "a string"))
+}
+
+fn strict_u16(value: &Value, field: &str) -> Result<u16, PawsError> {
+    value
+        .as_u64()
+        .and_then(|value| u16::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| invalid_profile_field(field, "an integer between 1 and 65535"))
+}
+
+fn aliased_field<T: PartialEq>(
+    map: &Mapping,
+    canonical: &str,
+    legacy: &str,
+    parse: impl Fn(&Value, &str) -> Result<T, PawsError>,
+) -> Result<Option<T>, PawsError> {
+    let canonical_value = map
+        .get(value_key(canonical))
+        .map(|value| parse(value, canonical))
+        .transpose()?;
+    let legacy_value = map
+        .get(value_key(legacy))
+        .map(|value| parse(value, legacy))
+        .transpose()?;
+    match (canonical_value, legacy_value) {
+        (Some(canonical_value), Some(legacy_value)) if canonical_value != legacy_value => {
+            Err(PawsError::Core(format!(
+                "profile fields '{canonical}' and legacy alias '{legacy}' conflict"
+            )))
+        }
+        (Some(value), _) | (_, Some(value)) => Ok(Some(value)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn strict_string_list(map: &Mapping, key: &str) -> Result<Option<Vec<String>>, PawsError> {
+    let Some(value) = map.get(value_key(key)) else {
+        return Ok(None);
+    };
+    let values = match value {
+        Value::String(value) => vec![value.clone()],
+        Value::Sequence(values) => values
+            .iter()
+            .map(|value| strict_string(value, key))
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => return Err(invalid_profile_field(key, "a string or list of strings")),
+    };
+    Ok(Some(values))
+}
+
+fn strict_string_list_map(
+    map: &Mapping,
+    key: &str,
+) -> Result<Option<BTreeMap<String, Vec<String>>>, PawsError> {
+    let Some(value) = map.get(value_key(key)) else {
+        return Ok(None);
+    };
+    let Value::Mapping(entries) = value else {
+        return Err(invalid_profile_field(key, "a mapping of string lists"));
+    };
+    let mut result = BTreeMap::new();
+    for (matcher, servers) in entries {
+        let matcher = strict_string(matcher, key)?;
+        if matcher.trim().is_empty() {
+            return Err(invalid_profile_field(key, "non-empty string keys"));
+        }
+        let servers = match servers {
+            Value::String(server) => vec![server.clone()],
+            Value::Sequence(servers) => servers
+                .iter()
+                .map(|server| strict_string(server, key))
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => return Err(invalid_profile_field(key, "a mapping of string lists")),
+        };
+        let servers = normalize_dns_optional_servers(servers);
+        if servers.is_empty() {
+            return Err(invalid_profile_field(key, "non-empty DNS server lists"));
+        }
+        result.insert(matcher.trim().to_owned(), servers);
+    }
+    Ok(Some(result))
+}
+
+fn validate_networks(
+    values: &[String],
+    field: &str,
+    expected_ipv6: Option<bool>,
+) -> Result<(), PawsError> {
+    for value in values {
+        let network = value.parse::<IpNet>().map_err(|error| {
+            PawsError::Core(format!(
+                "profile field '{field}' contains invalid network '{value}': {error}"
+            ))
+        })?;
+        let is_ipv6 = matches!(network, IpNet::V6(_));
+        if expected_ipv6.is_some_and(|expected| expected != is_ipv6) {
+            return Err(PawsError::Core(format!(
+                "profile field '{field}' contains the wrong address family: {value}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn network_ports_from_mapping(root: &Mapping) -> Result<NetworkPortConfig, PawsError> {
     let defaults = NetworkPortConfig::default();
-    let Some(Value::Mapping(paws)) = root.get(value_key("paws")) else {
-        return defaults;
+    let Some(paws) = optional_mapping(root, "paws")? else {
+        return Ok(defaults);
     };
     let ports = NetworkPortConfig {
-        mixed_port: get_u16(paws, "mixed-port")
-            .or_else(|| get_u16(paws, "mixedPort"))
+        mixed_port: aliased_field(paws, "mixed-port", "mixedPort", strict_u16)?
             .unwrap_or(defaults.mixed_port),
-        controller_port: get_u16(paws, "controller-port")
-            .or_else(|| get_u16(paws, "controllerPort"))
+        controller_port: aliased_field(paws, "controller-port", "controllerPort", strict_u16)?
             .unwrap_or(defaults.controller_port),
     };
-    ports.validate().unwrap_or(defaults)
+    ports.validate()
 }
 
-pub(super) fn controller_access_from_mapping(root: &Mapping) -> ControllerAccessConfig {
-    let Some(Value::Mapping(paws)) = root.get(value_key("paws")) else {
-        return ControllerAccessConfig::default();
+pub(super) fn controller_access_from_mapping(
+    root: &Mapping,
+) -> Result<ControllerAccessConfig, PawsError> {
+    let Some(paws) = optional_mapping(root, "paws")? else {
+        return Ok(ControllerAccessConfig::default());
     };
-    let allow_lan = get_bool(paws, "controller-allow-lan")
-        .or_else(|| get_bool(paws, "controllerAllowLan"))
-        .unwrap_or(false);
-    let secret = get_string(paws, "controller-secret")
-        .or_else(|| get_string(paws, "controllerSecret"))
-        .filter(|secret| controller_secret_is_valid(secret));
-    ControllerAccessConfig { allow_lan, secret }
+    let allow_lan = aliased_field(
+        paws,
+        "controller-allow-lan",
+        "controllerAllowLan",
+        strict_bool,
+    )?
+    .unwrap_or(false);
+    let secret = aliased_field(paws, "controller-secret", "controllerSecret", strict_string)?;
+    if secret
+        .as_deref()
+        .is_some_and(|secret| !controller_secret_is_valid(secret))
+    {
+        return Err(invalid_profile_field(
+            "controller-secret",
+            "a 64-character hexadecimal string",
+        ));
+    }
+    if allow_lan && secret.is_none() {
+        return Err(PawsError::Core(
+            "LAN controller access requires a generated 64-character secret".to_owned(),
+        ));
+    }
+    Ok(ControllerAccessConfig { allow_lan, secret })
 }
 
 pub(super) fn patch_controller_access(
@@ -122,52 +267,71 @@ pub fn vpn_options_from_yaml(raw_yaml: &str) -> Result<VpnOptions, PawsError> {
     };
 
     let mut options = VpnOptions::default();
-    if let Some(ipv6) = get_bool(root, "ipv6") {
-        options.ipv6 = ipv6;
+    if let Some(ipv6) = root.get(value_key("ipv6")) {
+        options.ipv6 = strict_bool(ipv6, "ipv6")?;
     }
 
-    if let Some(Value::Mapping(dns)) = root.get(&value_key("dns")) {
-        let nameservers = get_string_list(dns, "nameserver");
-        if !nameservers.is_empty() {
+    if let Some(dns) = optional_mapping(root, "dns")? {
+        if let Some(nameservers) = strict_string_list(dns, "nameserver")? {
+            let nameservers = normalize_dns_optional_servers(nameservers);
+            if nameservers.is_empty() {
+                return Err(invalid_profile_field(
+                    "nameserver",
+                    "at least one non-empty DNS server",
+                ));
+            }
             options.dns_servers = nameservers;
         }
-        if dns.contains_key(&value_key("fallback")) {
-            options.dns_fallbacks = get_string_list(dns, "fallback");
+        if let Some(fallbacks) = strict_string_list(dns, "fallback")? {
+            options.dns_fallbacks = normalize_dns_optional_servers(fallbacks);
         }
-        if dns.contains_key(&value_key("nameserver-policy")) {
-            options.dns_nameserver_policy = get_string_list_map(dns, "nameserver-policy");
+        if let Some(policy) = strict_string_list_map(dns, "nameserver-policy")? {
+            options.dns_nameserver_policy = policy;
         }
     }
 
-    if let Some(Value::Mapping(paws)) = root.get(&value_key("paws")) {
-        if let Some(system_proxy) =
-            get_bool(paws, "system-proxy").or_else(|| get_bool(paws, "systemProxy"))
+    if let Some(paws) = optional_mapping(root, "paws")? {
+        if let Some(system_proxy) = aliased_field(paws, "system-proxy", "systemProxy", strict_bool)?
         {
             options.system_proxy = system_proxy;
         }
-        if let Some(allow_bypass) =
-            get_bool(paws, "allow-bypass").or_else(|| get_bool(paws, "allowBypass"))
+        if let Some(allow_bypass) = aliased_field(paws, "allow-bypass", "allowBypass", strict_bool)?
         {
             options.allow_bypass = allow_bypass;
         }
     }
 
-    if let Some(Value::Mapping(tun)) = root.get(&value_key("tun")) {
-        if let Some(mtu) = get_u16(tun, "mtu") {
-            options.mtu = mtu;
+    if let Some(tun) = optional_mapping(root, "tun")? {
+        if let Some(mtu) = tun.get(value_key("mtu")) {
+            options.mtu = strict_u16(mtu, "mtu")?;
         }
-        if let Some(stack) = get_string(tun, "stack") {
-            options.stack = normalize_vpn_stack(stack);
+        if let Some(stack) = tun.get(value_key("stack")) {
+            options.stack = normalize_vpn_stack(strict_string(stack, "stack")?)?;
         }
-        if let Some(Value::Bool(enabled)) = tun.get(&value_key("dns-hijack")) {
-            options.dns_hijacking = *enabled;
-        } else if let Some(Value::Sequence(items)) = tun.get(&value_key("dns-hijack")) {
-            options.dns_hijacking = !items.is_empty();
+        if let Some(dns_hijack) = tun.get(value_key("dns-hijack")) {
+            options.dns_hijacking = match dns_hijack {
+                Value::Bool(enabled) => *enabled,
+                Value::Sequence(items) => {
+                    for item in items {
+                        strict_string(item, "dns-hijack")?;
+                    }
+                    !items.is_empty()
+                }
+                _ => {
+                    return Err(invalid_profile_field(
+                        "dns-hijack",
+                        "a boolean or list of strings",
+                    ));
+                }
+            };
         }
 
-        let inet4 = get_string_list(tun, "inet4-address");
-        let inet6 = get_string_list(tun, "inet6-address");
-        let route_addresses = get_string_list(tun, "route-address");
+        let inet4 = strict_string_list(tun, "inet4-address")?.unwrap_or_default();
+        let inet6 = strict_string_list(tun, "inet6-address")?.unwrap_or_default();
+        let route_addresses = strict_string_list(tun, "route-address")?.unwrap_or_default();
+        validate_networks(&inet4, "inet4-address", Some(false))?;
+        validate_networks(&inet6, "inet6-address", Some(true))?;
+        validate_networks(&route_addresses, "route-address", None)?;
 
         options.addresses.clear();
         if inet4.is_empty() {
@@ -204,6 +368,16 @@ pub fn vpn_options_from_yaml(raw_yaml: &str) -> Result<VpnOptions, PawsError> {
     }
 
     Ok(options)
+}
+
+/// Validates the application-owned portions of an imported profile before
+/// Meow sanitization removes or rewrites them. This prevents malformed values
+/// from being laundered into working defaults during import.
+pub fn validate_profile_app_config(raw_yaml: &str) -> Result<(), PawsError> {
+    vpn_options_from_yaml(raw_yaml)?;
+    controller_access_from_yaml(raw_yaml)?;
+    network_ports_from_yaml(raw_yaml)?;
+    Ok(())
 }
 
 pub const DEFAULT_TCP_CONNECT_TIMEOUT_SECONDS: i64 = 10;
@@ -791,6 +965,7 @@ pub(super) fn get_u64(map: &Mapping, key: &str) -> Option<u64> {
         .filter(|value| *value > 0)
 }
 
+#[cfg(test)]
 pub(super) fn get_u16(map: &Mapping, key: &str) -> Option<u16> {
     let value = map.get(&value_key(key))?;
     if let Some(number) = value.as_u64() {
@@ -825,6 +1000,7 @@ pub(super) fn get_string_list(map: &Mapping, key: &str) -> Vec<String> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn get_string_list_map(map: &Mapping, key: &str) -> BTreeMap<String, Vec<String>> {
     let Some(Value::Mapping(values)) = map.get(&value_key(key)) else {
         return BTreeMap::new();
@@ -907,11 +1083,8 @@ pub(super) fn normalize_dns_policy(
         .collect()
 }
 
-pub(super) fn normalize_vpn_stack(stack: String) -> String {
-    VpnStack::try_from(stack.as_str())
-        .unwrap_or_default()
-        .as_str()
-        .to_owned()
+pub(super) fn normalize_vpn_stack(stack: String) -> Result<String, PawsError> {
+    Ok(VpnStack::try_from(stack.as_str())?.as_str().to_owned())
 }
 
 pub(super) fn dns_config_needs_default_nameserver(options: &VpnOptions) -> bool {

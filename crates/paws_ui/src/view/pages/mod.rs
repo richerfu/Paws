@@ -11,7 +11,7 @@ mod tools;
 mod traffic;
 mod yaml_editor;
 
-pub(super) use activity::{connections_page, manual_rule_dialog, requests_page};
+pub(super) use activity::{connections_page, requests_page, ManualRuleDialog};
 pub(super) use appearance::appearance_page;
 pub(super) use dashboard::dashboard_page;
 pub(super) use logs::logs_page;
@@ -22,4 +22,3 @@ pub(super) use settings::settings_page;
 pub(super) use subscription_converter::subscription_converter_page;
 pub(super) use tools::{about_page, privacy_page, tools_page};
 pub(super) use traffic::traffic_page;
-pub(super) use yaml_editor::yaml_editor_dialog;

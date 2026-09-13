@@ -11,6 +11,203 @@ fn new_store_starts_without_profiles() {
 }
 
 #[test]
+fn missing_index_in_non_empty_store_is_not_treated_as_first_run() {
+    let root = std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("missing-index")));
+    fs::create_dir_all(root.join("profiles")).unwrap();
+    let existing = root.join("profiles/existing.yaml");
+    fs::write(&existing, "proxies: []\n").unwrap();
+
+    let error = ProfileStore::open(root.clone()).unwrap_err();
+
+    assert!(error.to_string().contains("refusing to initialize"));
+    assert_eq!(fs::read_to_string(existing).unwrap(), "proxies: []\n");
+    assert!(!root.join("profiles.json").exists());
+}
+
+#[test]
+fn first_run_allows_unrelated_seed_geodata() {
+    let root = std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("seed-geodata")));
+    fs::create_dir_all(root.join("geodata")).unwrap();
+    fs::write(root.join("geodata/Country.mmdb"), b"seed").unwrap();
+
+    let store = ProfileStore::open(root.clone()).unwrap();
+
+    assert!(store.summaries().is_empty());
+    assert!(root.join("profiles.json").is_file());
+    assert_eq!(
+        fs::read(root.join("geodata/Country.mmdb")).unwrap(),
+        b"seed"
+    );
+}
+
+#[test]
+fn damaged_index_is_reported_without_being_replaced() {
+    let root = std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("damaged-index")));
+    fs::create_dir_all(&root).unwrap();
+    let index = root.join("profiles.json");
+    fs::write(&index, "{ definitely not valid json").unwrap();
+
+    let error = ProfileStore::open(root).unwrap_err();
+
+    assert!(matches!(error, PawsError::InvalidJson(_)));
+    assert_eq!(
+        fs::read_to_string(index).unwrap(),
+        "{ definitely not valid json"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_dangling_index_is_not_replaced_as_first_run() {
+    let root =
+        std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("dangling-index")));
+    fs::create_dir_all(&root).unwrap();
+    let index = root.join("profiles.json");
+    std::os::unix::fs::symlink(root.join("missing-index-target"), &index).unwrap();
+
+    let error = ProfileStore::open(root.clone()).unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("cannot read profile store index"));
+    assert!(fs::symlink_metadata(&index)
+        .unwrap()
+        .file_type()
+        .is_symlink());
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn valid_index_with_missing_profile_yaml_is_reported_as_damaged() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-profile-test-{}",
+        next_id("missing-profile-yaml")
+    ));
+    let mut store = ProfileStore::open(root.clone()).unwrap();
+    let profile_id = store
+        .import_profile_content("Missing", "test", default_runtime_yaml(), None)
+        .unwrap();
+    let raw_path = PathBuf::from(
+        store
+            .summaries()
+            .into_iter()
+            .find(|profile| profile.id == profile_id)
+            .unwrap()
+            .raw_yaml_path,
+    );
+    fs::remove_file(&raw_path).unwrap();
+
+    let error = ProfileStore::open(root).unwrap_err();
+
+    assert!(error.to_string().contains("cannot read profile YAML"));
+    assert!(!raw_path.exists());
+}
+
+#[test]
+fn profile_yaml_update_rolls_back_when_index_commit_fails() {
+    let root =
+        std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("update-rollback")));
+    let mut store = ProfileStore::open(root.clone()).unwrap();
+    let profile_id = store
+        .import_profile_content("Stable", "test", default_runtime_yaml(), None)
+        .unwrap();
+    let original_yaml = store.raw_yaml(&profile_id).unwrap();
+    let index_path = root.join("profiles.json");
+    let saved_index_path = root.join("profiles.json.saved");
+    fs::rename(&index_path, &saved_index_path).unwrap();
+    fs::create_dir(&index_path).unwrap();
+
+    let error = store
+        .update_profile_content(
+            &profile_id,
+            "mixed-port: 7890\nproxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n",
+        )
+        .unwrap_err();
+
+    assert!(error.to_string().contains("prior data was restored"));
+    assert_eq!(store.raw_yaml(&profile_id).unwrap(), original_yaml);
+    fs::remove_dir(&index_path).unwrap();
+    fs::rename(&saved_index_path, &index_path).unwrap();
+    let reopened = ProfileStore::open(root).unwrap();
+    assert_eq!(reopened.raw_yaml(&profile_id).unwrap(), original_yaml);
+}
+
+#[test]
+fn profile_checkpoint_restores_document_raw_yaml_and_backup_exactly() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-profile-test-{}",
+        next_id("profile-checkpoint")
+    ));
+    let mut store = ProfileStore::open(root.clone()).unwrap();
+    let profile_id = store
+        .import_profile_content("Stable", "test", default_runtime_yaml(), None)
+        .unwrap();
+    let original_document = serde_json::to_value(store.profile(&profile_id).unwrap()).unwrap();
+    let original_raw = store.raw_yaml(&profile_id).unwrap();
+    let backup_path = store
+        .profile(&profile_id)
+        .unwrap()
+        .yaml_backup_path
+        .clone()
+        .unwrap();
+    let original_backup = fs::read(root.join(&backup_path)).unwrap();
+    let checkpoint = store.checkpoint_profile(&profile_id).unwrap();
+
+    store
+        .replace_profile_content_with_subscription_metadata(
+            &profile_id,
+            "mixed-port: 7999\nproxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n",
+            None,
+            None,
+        )
+        .unwrap();
+    store.restore_profile_checkpoint(checkpoint).unwrap();
+
+    assert_eq!(
+        serde_json::to_value(store.profile(&profile_id).unwrap()).unwrap(),
+        original_document
+    );
+    assert_eq!(store.raw_yaml(&profile_id).unwrap(), original_raw);
+    assert_eq!(fs::read(root.join(backup_path)).unwrap(), original_backup);
+}
+
+#[test]
+fn profile_import_rollback_restores_exact_index_and_removes_imported_files() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-profile-test-{}",
+        next_id("profile-import-rollback")
+    ));
+    let mut store = ProfileStore::open(root.clone()).unwrap();
+    let original_id = store
+        .import_profile_content("Original", "test", default_runtime_yaml(), None)
+        .unwrap();
+    let previous = store.clone();
+    let previous_index = fs::read(root.join("profiles.json")).unwrap();
+    let imported_id = store
+        .import_profile_content("Imported", "test", default_runtime_yaml(), None)
+        .unwrap();
+    let imported = store.profile(&imported_id).unwrap().clone();
+    let imported_raw = root.join(&imported.raw_yaml_path);
+    let imported_backup = root.join(imported.yaml_backup_path.unwrap());
+
+    store
+        .rollback_profile_import(&imported_id, previous)
+        .unwrap();
+
+    assert_eq!(store.active_profile(), Some(original_id.as_str()));
+    assert!(matches!(
+        store.profile(&imported_id),
+        Err(PawsError::ProfileNotFound(_))
+    ));
+    assert!(!imported_raw.exists());
+    assert!(!imported_backup.exists());
+    assert_eq!(
+        fs::read(root.join("profiles.json")).unwrap(),
+        previous_index
+    );
+}
+
+#[test]
 fn profile_summary_exposes_raw_and_runtime_yaml_paths() {
     let root = std::env::temp_dir().join(format!(
         "paws-profile-test-{}",
@@ -2319,6 +2516,38 @@ rules:
 }
 
 #[test]
+fn delete_profile_restores_files_when_index_commit_fails() {
+    let root =
+        std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("delete-rollback")));
+    let mut store = ProfileStore::open(root.clone()).unwrap();
+    let profile_id = store
+        .import_profile_content("Stable", "test", default_runtime_yaml(), None)
+        .unwrap();
+    let summary = store
+        .summaries()
+        .into_iter()
+        .find(|profile| profile.id == profile_id)
+        .unwrap();
+    let raw_path = PathBuf::from(summary.raw_yaml_path);
+    let backup_path = root.join(format!("backups/{profile_id}.yaml"));
+    let index_path = root.join("profiles.json");
+    let saved_index_path = root.join("profiles.json.saved");
+    fs::rename(&index_path, &saved_index_path).unwrap();
+    fs::create_dir(&index_path).unwrap();
+
+    let error = store.delete_profile(&profile_id).unwrap_err();
+
+    assert!(error.to_string().contains("prior data was restored"));
+    assert!(store.profile(&profile_id).is_ok());
+    assert!(raw_path.is_file());
+    assert!(backup_path.is_file());
+    fs::remove_dir(&index_path).unwrap();
+    fs::rename(&saved_index_path, &index_path).unwrap();
+    let reopened = ProfileStore::open(root).unwrap();
+    assert!(reopened.profile(&profile_id).is_ok());
+}
+
+#[test]
 fn provider_cache_paths_are_profile_scoped_and_sanitized() {
     let root = std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("provider-path")));
     let mut store = ProfileStore::open(root.clone()).unwrap();
@@ -2814,8 +3043,12 @@ fn network_ports_and_controller_access_are_profile_scoped_and_validated() {
 }
 
 #[test]
-fn rejects_unsupported_stack_updates_and_safely_imports_legacy_values() {
-    let options = vpn_options_from_yaml("tun:\n  stack: gvisor\n").unwrap();
+fn rejects_unsupported_stack_updates_and_imports() {
+    let error = vpn_options_from_yaml("tun:\n  stack: gvisor\n")
+        .expect_err("unsupported persisted stack must remain visible");
+    assert!(error.to_string().contains("unsupported VPN network stack"));
+
+    let options = vpn_options_from_yaml("tun:\n  stack: netstack-smoltcp\n").unwrap();
     assert_eq!(options.stack, VpnStack::Smoltcp.as_str());
 
     let root = std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("stack")));
@@ -2832,6 +3065,128 @@ fn rejects_unsupported_stack_updates_and_safely_imports_legacy_values() {
         .set_profile_vpn_config(&profile_id, false, true, false, "gvisor".to_owned())
         .expect_err("unsupported stack must be rejected");
     assert!(error.to_string().contains("unsupported VPN network stack"));
+}
+
+#[test]
+fn valid_app_owned_profile_fields_are_loaded_without_fallbacks() {
+    let secret = "ab".repeat(32);
+    let yaml = format!(
+        r#"
+ipv6: true
+dns:
+  nameserver: [1.1.1.1]
+  fallback: https://dns.google/dns-query
+  nameserver-policy:
+    geosite:cn: [223.5.5.5]
+paws:
+  mixed-port: 17890
+  controller-port: 19090
+  controller-allow-lan: true
+  controller-secret: {secret}
+  system-proxy: true
+  allow-bypass: true
+tun:
+  mtu: 1400
+  stack: lwip
+  dns-hijack: ["any:"]
+  inet4-address: [172.19.0.1/30]
+  inet6-address: [fd00::1/126]
+  route-address: [0.0.0.0/0, "::/0"]
+proxies: []
+proxy-groups: []
+rules: []
+"#
+    );
+
+    let options = vpn_options_from_yaml(&yaml).unwrap();
+    assert!(options.ipv6);
+    assert!(options.system_proxy);
+    assert!(options.allow_bypass);
+    assert_eq!(options.stack, VpnStack::Lwip.as_str());
+    assert_eq!(options.mtu, 1400);
+    assert_eq!(options.addresses, ["172.19.0.1/30", "fd00::1/126"]);
+    assert_eq!(options.routes, ["0.0.0.0/0", "::/0"]);
+    assert_eq!(options.dns_servers, ["1.1.1.1"]);
+    assert_eq!(options.dns_fallbacks, ["https://dns.google/dns-query"]);
+
+    assert_eq!(
+        network_ports_from_yaml(&yaml).unwrap(),
+        NetworkPortConfig {
+            mixed_port: 17890,
+            controller_port: 19090,
+        }
+    );
+    assert_eq!(
+        controller_access_from_yaml(&yaml).unwrap(),
+        ControllerAccessConfig {
+            allow_lan: true,
+            secret: Some(secret),
+        }
+    );
+    normalize_profile_content(&yaml).expect("valid app-owned fields remain importable");
+}
+
+#[test]
+fn malformed_app_owned_profile_field_types_are_rejected() {
+    let cases = [
+        ("paws: invalid\n", "paws"),
+        ("paws:\n  mixed-port: '17890'\n", "mixed-port"),
+        (
+            "paws:\n  controller-allow-lan: 'true'\n",
+            "controller-allow-lan",
+        ),
+        ("paws:\n  controller-secret: 123\n", "controller-secret"),
+        ("ipv6: 'true'\n", "ipv6"),
+        ("dns: invalid\n", "dns"),
+        ("dns:\n  nameserver: [1.1.1.1, 2]\n", "nameserver"),
+        (
+            "dns:\n  nameserver-policy:\n    geosite:cn: 1\n",
+            "nameserver-policy",
+        ),
+        ("tun: invalid\n", "tun"),
+        ("tun:\n  mtu: '1400'\n", "mtu"),
+        ("tun:\n  stack: true\n", "stack"),
+        ("tun:\n  dns-hijack: enabled\n", "dns-hijack"),
+        (
+            "tun:\n  inet4-address: [172.19.0.1/30, 2]\n",
+            "inet4-address",
+        ),
+        ("tun:\n  route-address: [10.0.0.1/99]\n", "route-address"),
+    ];
+
+    for (yaml, field) in cases {
+        let error = normalize_profile_content(yaml)
+            .expect_err("malformed app-owned profile field must fail closed");
+        assert!(
+            error.to_string().contains(field),
+            "{field} error was not preserved: {error}"
+        );
+    }
+}
+
+#[test]
+fn persisted_network_port_conflicts_are_rejected_instead_of_defaulted() {
+    for yaml in [
+        "paws:\n  mixed-port: 19090\n  controller-port: 19090\n",
+        "paws:\n  mixed-port: 1023\n  controller-port: 19090\n",
+        "paws:\n  mixed-port: 17890\n  mixedPort: 17891\n",
+    ] {
+        assert!(network_ports_from_yaml(yaml).is_err());
+        assert!(normalize_profile_content(yaml).is_err());
+    }
+
+    let root = std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("invalid-app")));
+    let mut store = ProfileStore::open(root.clone()).unwrap();
+    store
+        .import_profile_content(
+            "Invalid",
+            "local",
+            "paws:\n  mixed-port: 19090\n  controller-port: 19090\n",
+            None,
+        )
+        .expect_err("invalid app settings must not be persisted");
+    assert!(store.summaries().is_empty());
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

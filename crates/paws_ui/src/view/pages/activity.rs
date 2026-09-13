@@ -1,4 +1,6 @@
 use super::super::*;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 // shadcn-style list cards: room for host / meta / traffic rows with badge + action.
 const REQUEST_ROW_HEIGHT: f32 = 88.0;
@@ -8,25 +10,31 @@ const ACTIVITY_CARD_GAP: f32 = 8.0;
 /// shadcn Button size="icon" (h-8 w-8).
 const ACTIVITY_ACTION_SIZE: f32 = 28.0;
 
-pub(crate) fn requests_page(state: Signal<State>) -> Element {
+pub(crate) fn requests_page() -> Element {
+    let services = use_context::<UiServices>();
+    let local_editors = use_local_rule_editors();
+    let add_rule_services = services.clone();
+    let add_rule_editors = local_editors.clone();
+    let clear_services = services.clone();
     let mut request_query = use_signal(String::new);
     let mut request_filter = use_signal(|| RequestStatusFilter::All);
-    let current = state.read().clone();
+    let stores = use_context::<UiStores>();
+    let locale = stores.preferences.read().locale;
+    let activity = stores.activity.read();
     let navigator = use_navigator();
     let query_value = request_query();
     let filter_value = request_filter();
-    let all_label = translate_ui(current.locale, tr::requests_status_all());
-    let active_label = translate_ui(current.locale, tr::requests_status_active());
-    let ended_label = translate_ui(current.locale, tr::requests_status_ended());
+    let all_label = translate_ui(locale, tr::requests_status_all());
+    let active_label = translate_ui(locale, tr::requests_status_active());
+    let ended_label = translate_ui(locale, tr::requests_status_ended());
     let filter_options = vec![all_label.clone(), active_label.clone(), ended_label.clone()];
     let selected_filter = match filter_value {
         RequestStatusFilter::All => all_label.clone(),
         RequestStatusFilter::Active => active_label.clone(),
         RequestStatusFilter::Ended => ended_label.clone(),
     };
-    let rows = current
-        .snapshot
-        .request_history
+    let rows = activity
+        .requests
         .iter()
         .filter(|request| matches_request_filter(request, filter_value, &query_value))
         .map(|request| VirtualRequestRow {
@@ -53,7 +61,7 @@ pub(crate) fn requests_page(state: Signal<State>) -> Element {
             },
             active: request.active,
             connection_query: request_connection_query(request),
-            rule_accessibility: translate_ui(current.locale, tr::page_tr_004()),
+            rule_accessibility: translate_ui(locale, tr::page_tr_004()),
         })
         .collect::<Vec<_>>();
     let empty = rows.is_empty();
@@ -79,7 +87,7 @@ pub(crate) fn requests_page(state: Signal<State>) -> Element {
             height: "100%",
             Input {
                 value: Some(query_value),
-                placeholder: Some(translate_ui(current.locale, tr::requests_search_placeholder())),
+                placeholder: Some(translate_ui(locale, tr::requests_search_placeholder())),
                 width: Some("100%".into()),
                 on_change: move |value| request_query.set(value),
             }
@@ -103,7 +111,7 @@ pub(crate) fn requests_page(state: Signal<State>) -> Element {
                 layout_weight: 1.0,
                 width: "100%",
                 if empty {
-                    {empty_state("activity", translate_ui(current.locale, tr::requests_empty_title()), translate_ui(current.locale, tr::requests_empty_subtitle()))}
+                    {empty_state("activity", translate_ui(locale, tr::requests_empty_title()), translate_ui(locale, tr::requests_empty_subtitle()))}
                 } else {
                     VirtualRequestList {
                         items: rows,
@@ -112,11 +120,12 @@ pub(crate) fn requests_page(state: Signal<State>) -> Element {
                             navigator.push(Route::Connections { query });
                         },
                         on_add_rule: move |context: ManualRuleContext| {
-                            dispatch(state, Action::OpenManualRuleEditor {
-                                connection_id: context.connection_id,
-                                domain: context.domain,
-                                destination_ip: context.destination_ip,
-                            });
+                            add_rule_services.open_manual_rule_editor(
+                                add_rule_editors.clone(),
+                                context.connection_id,
+                                context.domain,
+                                context.destination_ip,
+                            );
                         },
                     }
                 }
@@ -124,25 +133,36 @@ pub(crate) fn requests_page(state: Signal<State>) -> Element {
         }
     };
     let page = fixed_scaffold(
-        state,
         Route::Requests {},
-        destructive_icon_action("trash-2", Action::ClearRequestHistory, state),
+        rsx! {
+            FlatButton {
+                variant: FlatButtonVariant::Ghost,
+                size: ButtonSize::Icon,
+                onclick: move |_| clear_services.clear_request_history(),
+                {arkit::icon("trash-2", 17.0, danger())}
+            }
+        },
         body,
     );
     rsx! {
         {page}
-        if current.manual_rule_editor.is_some() {
-            {manual_rule_dialog(state, &current)}
-        }
+        ManualRuleDialog { local: local_editors }
     }
 }
 
-pub(crate) fn connections_page(state: Signal<State>, initial_query: String) -> Element {
+pub(crate) fn connections_page(initial_query: String) -> Element {
+    let services = use_context::<UiServices>();
+    let local_editors = use_local_rule_editors();
+    let close_services = services.clone();
+    let add_rule_services = services.clone();
+    let add_rule_editors = local_editors.clone();
+    let close_all_services = services.clone();
     let mut query = use_signal(move || initial_query);
-    let current = state.read().clone();
+    let stores = use_context::<UiStores>();
+    let locale = stores.preferences.read().locale;
+    let activity = stores.activity.read();
     let query_value = query();
-    let rows = current
-        .snapshot
+    let rows = activity
         .connections
         .iter()
         .filter(|connection| matches_connection_query(connection, &query_value))
@@ -171,8 +191,8 @@ pub(crate) fn connections_page(state: Signal<State>, initial_query: String) -> E
                     format_total(connection.upload_bytes),
                 ),
                 started_at: format_activity_timestamp(&connection.started_at),
-                close_accessibility: translate_ui(current.locale, tr::connections_close()),
-                rule_accessibility: translate_ui(current.locale, tr::page_tr_004()).to_owned(),
+                close_accessibility: translate_ui(locale, tr::connections_close()),
+                rule_accessibility: translate_ui(locale, tr::page_tr_004()).to_owned(),
             }
         })
         .collect::<Vec<_>>();
@@ -199,7 +219,7 @@ pub(crate) fn connections_page(state: Signal<State>, initial_query: String) -> E
             height: "100%",
             Input {
                 value: Some(query_value),
-                placeholder: Some(translate_ui(current.locale, tr::connections_search_placeholder())),
+                placeholder: Some(translate_ui(locale, tr::connections_search_placeholder())),
                 width: Some("100%".into()),
                 on_change: move |value| query.set(value),
             }
@@ -208,18 +228,19 @@ pub(crate) fn connections_page(state: Signal<State>, initial_query: String) -> E
                 layout_weight: 1.0,
                 width: "100%",
                 if empty {
-                    {empty_state("unplug", translate_ui(current.locale, tr::connections_empty_title()), translate_ui(current.locale, tr::connections_empty_subtitle()))}
+                    {empty_state("unplug", translate_ui(locale, tr::connections_empty_title()), translate_ui(locale, tr::connections_empty_subtitle()))}
                 } else {
                     VirtualConnectionList {
                         items: rows,
                         palette,
-                        on_close: move |id: String| dispatch(state, Action::CloseConnection(id)),
+                        on_close: move |id: String| close_services.close_connection(id),
                         on_add_rule: move |context: ManualRuleContext| {
-                            dispatch(state, Action::OpenManualRuleEditor {
-                                connection_id: context.connection_id,
-                                domain: context.domain,
-                                destination_ip: context.destination_ip,
-                            });
+                            add_rule_services.open_manual_rule_editor(
+                                add_rule_editors.clone(),
+                                context.connection_id,
+                                context.domain,
+                                context.destination_ip,
+                            );
                         },
                     }
                 }
@@ -227,18 +248,22 @@ pub(crate) fn connections_page(state: Signal<State>, initial_query: String) -> E
         }
     };
     let page = fixed_scaffold(
-        state,
         Route::Connections {
             query: String::new(),
         },
-        destructive_icon_action("circle-x", Action::CloseAllConnections, state),
+        rsx! {
+            FlatButton {
+                variant: FlatButtonVariant::Ghost,
+                size: ButtonSize::Icon,
+                onclick: move |_| close_all_services.close_all_connections(),
+                {arkit::icon("circle-x", 17.0, danger())}
+            }
+        },
         body,
     );
     rsx! {
         {page}
-        if current.manual_rule_editor.is_some() {
-            {manual_rule_dialog(state, &current)}
-        }
+        ManualRuleDialog { local: local_editors }
     }
 }
 
@@ -692,40 +717,39 @@ fn format_iso_activity_timestamp(value: &str) -> Option<String> {
     Some(format!("{} {}", &date[..10], &time[..5]))
 }
 
-pub(crate) fn manual_rule_dialog(state: Signal<State>, current: &State) -> Element {
-    let open = current.manual_rule_editor.is_some();
-    // Refresh overlay body when fields change so arkit Select / inputs stay live.
-    let content_key = current
-        .manual_rule_editor
-        .as_ref()
-        .map(|editor| {
-            dialog_content_key(&[
-                &editor.value,
-                &editor.target,
-                &format!("{:?}", editor.match_kind),
-                &editor.submitting.to_string(),
-                editor.error.as_deref().unwrap_or(""),
-                &editor.disconnect_after_save.to_string(),
-            ])
-        })
-        .unwrap_or(0);
+#[component]
+pub(crate) fn ManualRuleDialog(local: LocalRuleEditors) -> Element {
+    let services = use_context::<UiServices>();
+    let open = local.signal.read().manual.is_some();
+    if !open {
+        return rsx! {};
+    }
+    let close_editors = local.clone();
     rsx! {
         FlatDialog {
             open,
-            content_key,
-            on_close: move |_| dispatch(state, Action::CloseManualRuleEditor),
-            ManualRuleDialogContent { state }
+            on_close: move |_| services.close_manual_rule_editor(close_editors.clone()),
+            ManualRuleDialogContent { local }
         }
     }
 }
 
 #[component]
-fn ManualRuleDialogContent(state: Signal<State>) -> Element {
-    let current = state.read().clone();
-    let Some(editor) = current.manual_rule_editor.clone() else {
+fn ManualRuleDialogContent(local: LocalRuleEditors) -> Element {
+    let services = use_context::<UiServices>();
+    let kind_services = services.clone();
+    let value_services = services.clone();
+    let target_services = services.clone();
+    let disconnect_services = services.clone();
+    let stores = use_context::<UiStores>();
+    let locale = stores.preferences.read().locale;
+    let editors = local.signal.read().clone();
+    let proxies = stores.proxies.read();
+    let profiles = stores.profiles.read();
+    let resources = stores.resources.read();
+    let Some(editor) = editors.manual else {
         return rsx! {};
     };
-    let locale = current.locale;
     let exact_label = translate_ui(locale, tr::page_tr_005());
     let suffix_label = translate_ui(locale, tr::page_tr_006());
     let ip_label = "IP/CIDR".to_owned();
@@ -737,7 +761,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
     let suffix_option = suffix_label.clone();
     let ip_option = ip_label.clone();
     let mut targets = vec!["DIRECT".to_owned()];
-    for group in &current.snapshot.proxy_groups {
+    for group in &proxies.groups {
         if !group.name.eq_ignore_ascii_case("GLOBAL")
             && !targets.iter().any(|target| target == &group.name)
         {
@@ -746,7 +770,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
     }
     let preview = manual_rule_preview(editor.match_kind, &editor.value, &editor.target);
     let conflict = find_manual_rule_conflict(
-        &current.snapshot.rules,
+        &resources.rules,
         editor.match_kind,
         &editor.value,
         &editor.target,
@@ -773,7 +797,13 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
     let can_save = !editor.submitting
         && !editor.value.trim().is_empty()
         && !editor.target.trim().is_empty()
-        && current.snapshot.active_profile.is_some();
+        && profiles.active_profile.is_some();
+    let kind_editors = local.clone();
+    let value_editors = local.clone();
+    let target_editors = local.clone();
+    let target_guard = local.clone();
+    let disconnect_editors = local.clone();
+    let save_editors = local;
 
     rsx! {
         DialogHeader {
@@ -794,7 +824,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                     } else {
                         ManualRuleMatchKind::Domain
                     };
-                    dispatch(state, Action::SetManualRuleMatchKind(match_kind));
+                    kind_services.set_manual_rule_match_kind(kind_editors.clone(), match_kind);
                 },
             }
             row { height: 10.0 }
@@ -807,7 +837,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                 }.to_owned()),
                 width: Some("100%".into()),
                 disabled: editor.submitting,
-                on_change: move |value| dispatch(state, Action::SetManualRuleValue(value)),
+                on_change: move |value| value_services.set_manual_rule_value(value_editors.clone(), value),
             }
             row { height: spacing::MD }
             {field_label(translate_ui(locale, tr::page_tr_012()))}
@@ -822,8 +852,8 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                     default_selected: editor.target.clone(),
                     default_open: false,
                     on_select: move |value: String| {
-                        if !state.read().manual_rule_editor.as_ref().is_some_and(|e| e.submitting) {
-                            dispatch(state, Action::SetManualRuleTarget(value));
+                        if !target_guard.signal.peek().manual.as_ref().is_some_and(|e| e.submitting) {
+                            target_services.set_manual_rule_target(target_editors.clone(), value);
                         }
                     },
                 }
@@ -842,7 +872,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
             if let Some(message) = conflict_message {
                 text { content: message, margin_top: 8.0, font_size: 11.0, line_height: 16.0, font_color: warning() }
             }
-            if current.snapshot.mode != RuntimeMode::Rule {
+            if proxies.mode != RuntimeMode::Rule {
                 text { content: translate_ui(locale, tr::page_tr_014()), margin_top: 8.0, font_size: 11.0, line_height: 16.0, font_color: warning() }
             }
             if editor.connection_id.is_some() {
@@ -852,7 +882,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                     align_items: "center",
                     Switch {
                         checked: Some(editor.disconnect_after_save),
-                        on_change: move |value| dispatch(state, Action::SetManualRuleDisconnect(value)),
+                        on_change: move |value| disconnect_services.set_manual_rule_disconnect(disconnect_editors.clone(), value),
                     }
                     text { content: translate_ui(locale, tr::page_tr_015()), margin_left: 8.0, font_size: 11.0, line_height: 16.0, font_color: subtle() }
                 }
@@ -867,7 +897,7 @@ fn ManualRuleDialogContent(state: Signal<State>) -> Element {
                 variant: FlatButtonVariant::Primary,
                 width: "100%",
                 disabled: Some(!can_save),
-                onclick: move |_| dispatch(state, Action::SaveManualRule),
+                onclick: move |_| services.save_manual_rule(save_editors.clone()),
                 if editor.submitting {
                     Spinner { size: 16.0, color: Some(primary_text()) }
                 } else {

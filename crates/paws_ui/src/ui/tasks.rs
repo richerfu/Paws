@@ -1,16 +1,17 @@
 use super::*;
 use crate::i18n::{tr, translate_ui};
 use crate::locale::UiLocale;
+use std::time::Duration;
 
 const PROFILE_IMPORT_TIMEOUT: Duration = Duration::from_secs(120);
 
-pub(super) async fn run_profile_import_task<F, T>(
+pub(super) async fn run_profile_import_task<F>(
     task: F,
     mut cancel_rx: tokio::sync::watch::Receiver<bool>,
     locale: UiLocale,
-) -> Result<T, String>
+) -> Result<ProfileImportPreparation, String>
 where
-    F: Future<Output = Result<T, String>> + Send,
+    F: Future<Output = Result<ProfileImportPreparation, String>> + Send,
 {
     let cancelled = async move {
         if *cancel_rx.borrow() {
@@ -25,7 +26,7 @@ where
 
     tokio::select! {
         biased;
-        _ = cancelled => Err("profile import cancelled".to_owned()),
+        _ = cancelled => Ok(ProfileImportPreparation::Cancelled),
         result = task => result,
         _ = tokio::time::sleep(PROFILE_IMPORT_TIMEOUT) => {
             Err(translate_ui(locale, tr::profiles_import_timeout()).to_owned())
@@ -33,49 +34,51 @@ where
     }
 }
 
-pub(super) async fn load_snapshot() -> RuntimeSnapshot {
-    let core = paws_core::shared_core();
-    let _ = core.sync_external_controller_config().await;
-    let snapshot = core.snapshot().unwrap_or_default();
-    tokio::spawn(async move {
-        let _ = core.refresh_exit_location_if_due().await;
-    });
-    snapshot
+pub(super) enum ProfileImportPreparation {
+    Cancelled,
+    Ready(PreparedProfileMutation),
 }
 
-pub(super) async fn delayed_snapshot() -> RuntimeSnapshot {
-    // Runtime telemetry remains sampled for charts and counters. VPN
-    // lifecycle transitions are delivered independently by the platform
-    // event stream and never depend on this timer.
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-    load_snapshot().await
+pub(super) enum PreparedProfileMutation {
+    Import {
+        prepared: paws_core::PreparedProfileImport,
+        expected_config_revision: u64,
+    },
+    Refresh {
+        profile_id: String,
+        name: Option<String>,
+        subscription_url: String,
+        prepared: paws_core::PreparedProfileRefresh,
+        expected_config_revision: u64,
+    },
 }
 
-pub(super) async fn await_vpn_state_event(
-    after_revision: u64,
-) -> Result<VpnStateEventResult, String> {
-    let core = paws_core::shared_core();
-    let revision = core
-        .await_platform_vpn_event(after_revision)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(VpnStateEventResult {
-        revision,
-        snapshot: load_snapshot().await,
-    })
+pub(super) struct ProfileImportCommitResult {
+    pub result: ProfileImportResult,
+    pub config: paws_core::ConfigProjection,
 }
 
-pub(super) async fn bootstrap_active_profile() -> RuntimeSnapshot {
+pub(super) async fn bootstrap_active_profile() -> Result<(), String> {
     let core = paws_core::shared_core();
-    // State::new restores a revision-checked proxy-group cache synchronously,
+    // The typed stores restore a revision-checked proxy-group cache synchronously,
     // so the dashboard can render immediately. Parse the complete meow config
     // only after the first frame, then replace the cache-backed snapshot.
-    let _ = core.prepare_active_vpn().await;
-    let refresh_core = core.clone();
-    tokio::spawn(async move {
-        let _ = refresh_core.refresh_due_profiles().await;
-    });
-    load_snapshot().await
+    let active_profile = core
+        .config_projection()
+        .map_err(|error| error.to_string())?
+        .active_profile;
+    if active_profile.is_some() {
+        core.prepare_active_vpn()
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    // Keep the refresh inside the root-owned Dioxus future. A nested Tokio
+    // task would detach when the root is disposed and could outlive the UI
+    // generation which initiated it.
+    core.refresh_due_profiles()
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub(super) async fn lookup_rule(query: String) -> Result<paws_core::RuleLookupResult, String> {
@@ -85,194 +88,70 @@ pub(super) async fn lookup_rule(query: String) -> Result<paws_core::RuleLookupRe
         .map_err(|error| error.to_string())
 }
 
-pub(super) fn reconcile_vpn_command(state: &mut State) {
-    state.vpn_command_pending = state.vpn_command_pending.filter(|action| {
-        vpn_command_is_pending(
-            *action,
-            state.snapshot.vpn_lifecycle,
-            state.snapshot.vpn_running,
-        )
-    });
-}
-
-pub(super) fn count_failed_refreshed_profiles(
-    snapshot: &RuntimeSnapshot,
-    attempted_profile_ids: &[String],
-) -> usize {
-    snapshot
-        .profiles
-        .iter()
-        .filter(|profile| {
-            attempted_profile_ids.iter().any(|id| id == &profile.id)
-                && profile.last_refresh_error.is_some()
-        })
-        .count()
-}
-
-pub(super) fn count_failed_refreshed_providers(
-    snapshot: &RuntimeSnapshot,
-    attempted_providers: &[(String, String)],
-) -> usize {
-    snapshot
-        .providers
-        .iter()
-        .filter(|provider| {
-            attempted_providers.iter().any(|(provider_type, name)| {
-                provider_type == &provider.provider_type && name == &provider.name
-            }) && provider.last_refresh_error.is_some()
-        })
-        .count()
-}
-
-pub(super) async fn start_vpn_command_and_snapshot(
+pub(super) async fn start_vpn_command(
     profile_id: String,
     profile_name: String,
     locale: UiLocale,
 ) -> Result<VpnCommandResult, String> {
     let core = paws_core::shared_core();
-    let active_profile = core
-        .snapshot()
-        .map_err(|error| error.to_string())?
-        .active_profile;
-    if active_profile.as_deref() != Some(profile_id.as_str()) {
-        core.activate_profile(&profile_id).await.map_err(|error| {
-            format!(
-                "{}{}{}{}",
-                translate_ui(locale, tr::feedback_vpn_start_profile_load_failed_prefix()),
-                profile_name,
-                translate_ui(locale, tr::feedback_vpn_start_profile_load_failed_mid()),
-                error
-            )
-        })?;
+    let mut config = core
+        .config_projection()
+        .map_err(|error| error.to_string())?;
+    if config.active_profile.as_deref() != Some(profile_id.as_str()) {
+        config = core
+            .activate_profile_checked(&profile_id, config.revisions.config_revision)
+            .await
+            .map_err(|error| {
+                format!(
+                    "{}{}{}{}",
+                    translate_ui(locale, tr::feedback_vpn_start_profile_load_failed_prefix()),
+                    profile_name,
+                    translate_ui(locale, tr::feedback_vpn_start_profile_load_failed_mid()),
+                    error
+                )
+            })?;
     }
-    let options_json = core.active_vpn_options_json().map_err(|error| {
+    let options_json = serde_json::to_string(&config.vpn_options).map_err(|error| {
         format!(
             "{}{}",
             translate_ui(locale, tr::feedback_vpn_start_options_failed_prefix()),
             error
         )
     })?;
-    let request_error = crate::bridge::request_start_vpn(options_json)
+    let (request_error, request_unconfirmed) = match crate::bridge::request_start_vpn(options_json)
         .await
-        .err()
-        .map(|error| error.to_string());
+    {
+        Ok(crate::bridge::VpnOperationOutcome::Completed(())) => (None, None),
+        Ok(crate::bridge::VpnOperationOutcome::Unconfirmed(operation)) => (None, Some(operation)),
+        Err(error) => (Some(error), None),
+    };
     Ok(VpnCommandResult {
-        snapshot: load_snapshot().await,
         action: VpnCommandAction::Start,
         profile_name: Some(profile_name),
         request_error,
+        request_unconfirmed,
     })
 }
 
-pub(super) async fn stop_vpn_command_and_snapshot(
-    locale: UiLocale,
-) -> Result<VpnCommandResult, String> {
-    let request_error = match crate::bridge::request_stop_vpn().await {
-        Ok(()) => None,
-        Err(error) => {
-            paws_core::shared_core().stop_vpn().map_err(|fallback| {
-                format!(
-                    "{}{}{}{}",
-                    translate_ui(locale, tr::feedback_vpn_stop_callback_failed_prefix()),
-                    error,
-                    translate_ui(locale, tr::feedback_vpn_stop_fallback_failed_mid()),
-                    fallback
-                )
-            })?;
-            Some(error.to_string())
-        }
+pub(super) async fn stop_vpn_command(locale: UiLocale) -> Result<VpnCommandResult, String> {
+    let (request_error, request_unconfirmed) = match crate::bridge::request_stop_vpn().await {
+        Ok(crate::bridge::VpnOperationOutcome::Completed(())) => (None, None),
+        Ok(crate::bridge::VpnOperationOutcome::Unconfirmed(operation)) => (None, Some(operation)),
+        Err(error) => (
+            Some(format!(
+                "{}{}",
+                translate_ui(locale, tr::feedback_vpn_stop_callback_failed_prefix()),
+                error
+            )),
+            None,
+        ),
     };
     Ok(VpnCommandResult {
-        snapshot: load_snapshot().await,
         action: VpnCommandAction::Stop,
         profile_name: None,
         request_error,
+        request_unconfirmed,
     })
-}
-
-pub(super) async fn request_vpn_restart_if_running(
-    was_vpn_running: bool,
-    locale: UiLocale,
-) -> Option<String> {
-    if !was_vpn_running {
-        return None;
-    }
-
-    let mut errors = Vec::new();
-    if let Err(error) = crate::bridge::request_stop_vpn().await {
-        match paws_core::shared_core().stop_vpn() {
-            Ok(()) => {
-                errors.push(format!(
-                    "{}{}",
-                    translate_ui(locale, tr::feedback_vpn_stop_fallback_applied_prefix()),
-                    error
-                ));
-                return Some(errors.join("；"));
-            }
-            Err(fallback) => {
-                errors.push(format!(
-                    "{}{}{}{}",
-                    translate_ui(locale, tr::feedback_vpn_stop_failed_prefix()),
-                    error,
-                    translate_ui(locale, tr::feedback_vpn_stop_fallback_failed_suffix()),
-                    fallback
-                ));
-                return Some(errors.join("；"));
-            }
-        }
-    }
-
-    match paws_core::shared_core().active_vpn_options_json() {
-        Ok(options_json) => {
-            if let Err(error) = crate::bridge::request_start_vpn(options_json).await {
-                errors.push(format!(
-                    "{}{}",
-                    translate_ui(locale, tr::feedback_vpn_start_callback_failed_prefix()),
-                    error
-                ));
-            }
-        }
-        Err(error) => errors.push(format!(
-            "{}{}",
-            translate_ui(locale, tr::feedback_vpn_options_failed_prefix()),
-            error
-        )),
-    }
-
-    if errors.is_empty() {
-        None
-    } else {
-        Some(errors.join("；"))
-    }
-}
-
-pub(super) fn dns_draft_from_snapshot(snapshot: &RuntimeSnapshot) -> (String, String, String) {
-    (
-        snapshot.vpn_options.dns_servers.join(", "),
-        snapshot.vpn_options.dns_fallbacks.join(", "),
-        dns_policy_text(&snapshot.vpn_options.dns_nameserver_policy),
-    )
-}
-
-pub(super) fn vpn_draft_from_snapshot(snapshot: &RuntimeSnapshot) -> (bool, bool, bool, String) {
-    let stack = paws_model::VpnStack::try_from(snapshot.vpn_options.stack.as_str())
-        .unwrap_or_default()
-        .as_str()
-        .to_owned();
-    (
-        snapshot.vpn_options.system_proxy,
-        snapshot.vpn_options.dns_hijacking,
-        snapshot.vpn_options.allow_bypass,
-        stack,
-    )
-}
-
-pub(super) fn dns_policy_text(policy: &BTreeMap<String, Vec<String>>) -> String {
-    policy
-        .iter()
-        .map(|(matcher, servers)| format!("{matcher} = {}", servers.join(", ")))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 pub(super) fn parse_dns_servers_text(value: &str) -> Vec<String> {
@@ -323,28 +202,37 @@ pub(super) fn parse_dns_policy_text(
     Ok(policy)
 }
 
-pub(super) async fn import_profile_url_and_snapshot(
+pub(super) async fn prepare_profile_url_import(
     url: String,
     name: Option<String>,
-    was_vpn_running: bool,
-    locale: UiLocale,
-) -> Result<ProfileImportResult, String> {
-    let id = paws_core::shared_core()
-        .import_profile_from_url(&url, name)
+) -> Result<ProfileImportPreparation, String> {
+    let core = paws_core::shared_core();
+    let expected_config_revision = core
+        .config_projection()
+        .map_err(|error| error.to_string())?
+        .revisions
+        .config_revision;
+    let prepared = core
+        .prepare_profile_import_from_url(&url, name)
         .await
         .map_err(|error| error.to_string())?;
-    paws_core::shared_core()
-        .activate_profile(&id)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(profile_import_result(id, was_vpn_running, locale).await)
+    Ok(ProfileImportPreparation::Ready(
+        PreparedProfileMutation::Import {
+            prepared,
+            expected_config_revision,
+        },
+    ))
 }
 
-pub(super) async fn scan_profile_subscription_and_snapshot(
+pub(super) async fn prepare_scanned_profile_import(
     name: String,
-    was_vpn_running: bool,
     locale: UiLocale,
-) -> Result<ProfileImportResult, String> {
+) -> Result<ProfileImportPreparation, String> {
+    let core = paws_core::shared_core();
+    let initial_config = core
+        .config_projection()
+        .map_err(|error| error.to_string())?;
+    let expected_config_revision = initial_config.revisions.config_revision;
     let payload = crate::bridge::scan_subscription_code()
         .await
         .map_err(|error| {
@@ -357,7 +245,7 @@ pub(super) async fn scan_profile_subscription_and_snapshot(
     let scanned = match parse_scanned_subscription(&payload) {
         Ok(scanned) => scanned,
         Err(ScannedSubscriptionError::Empty) => {
-            return Err("profile scan cancelled".to_owned());
+            return Ok(ProfileImportPreparation::Cancelled);
         }
         Err(ScannedSubscriptionError::Unsupported) => {
             return Err(translate_ui(locale, tr::profiles_scan_invalid()));
@@ -367,180 +255,131 @@ pub(super) async fn scan_profile_subscription_and_snapshot(
         "" => scanned.name,
         value => Some(value.to_owned()),
     };
-    let core = paws_core::shared_core();
-    let existing = core.snapshot().ok().and_then(|snapshot| {
-        snapshot
-            .profiles
-            .into_iter()
-            .find(|profile| profile.subscription_url.as_deref() == Some(scanned.url.as_str()))
-    });
+    let existing = initial_config
+        .profiles
+        .into_iter()
+        .find(|profile| profile.subscription_url.as_deref() == Some(scanned.url.as_str()));
     if let Some(profile) = existing {
-        if let Some(name) = name {
-            core.update_profile_subscription(&profile.id, &name, &scanned.url)
-                .map_err(|error| error.to_string())?;
-        }
-        core.refresh_profile(&profile.id)
+        let prepared = core
+            .prepare_profile_refresh_from_url(&scanned.url)
             .await
             .map_err(|error| error.to_string())?;
-        core.activate_profile(&profile.id)
-            .await
-            .map_err(|error| error.to_string())?;
-        return Ok(profile_import_result(profile.id, was_vpn_running, locale).await);
+        return Ok(ProfileImportPreparation::Ready(
+            PreparedProfileMutation::Refresh {
+                profile_id: profile.id,
+                name,
+                subscription_url: scanned.url,
+                prepared,
+                expected_config_revision,
+            },
+        ));
     }
-    import_profile_url_and_snapshot(scanned.url, name, was_vpn_running, locale).await
-}
-
-pub(super) async fn import_profile_file_and_snapshot(
-    was_vpn_running: bool,
-    locale: UiLocale,
-) -> Result<ProfileImportResult, String> {
-    let (name, raw_yaml) = crate::bridge::pick_profile_text().await?;
-    let id = paws_core::shared_core()
-        .import_profile_from_content(&name, "local-file", &raw_yaml, None)
+    let prepared = core
+        .prepare_profile_import_from_url(&scanned.url, name)
         .await
         .map_err(|error| error.to_string())?;
-    paws_core::shared_core()
-        .activate_profile(&id)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(profile_import_result(id, was_vpn_running, locale).await)
+    Ok(ProfileImportPreparation::Ready(
+        PreparedProfileMutation::Import {
+            prepared,
+            expected_config_revision,
+        },
+    ))
 }
 
-pub(super) async fn profile_import_result(
-    profile_id: String,
-    was_vpn_running: bool,
-    locale: UiLocale,
-) -> ProfileImportResult {
-    let restart_error = request_vpn_restart_if_running(was_vpn_running, locale).await;
-    let snapshot = load_snapshot().await;
-    let profile_name = snapshot
+pub(super) async fn prepare_local_profile_import() -> Result<ProfileImportPreparation, String> {
+    let core = paws_core::shared_core();
+    let expected_config_revision = core
+        .config_projection()
+        .map_err(|error| error.to_string())?
+        .revisions
+        .config_revision;
+    let Some((name, raw_yaml)) = crate::bridge::pick_profile_text().await? else {
+        return Ok(ProfileImportPreparation::Cancelled);
+    };
+    let prepared = core
+        .prepare_profile_import_from_content(&name, "local-file", &raw_yaml, None)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(ProfileImportPreparation::Ready(
+        PreparedProfileMutation::Import {
+            prepared,
+            expected_config_revision,
+        },
+    ))
+}
+
+pub(super) async fn commit_prepared_profile_import(
+    prepared: PreparedProfileMutation,
+) -> Result<ProfileImportCommitResult, String> {
+    let core = paws_core::shared_core();
+    let (profile_id, config) = match prepared {
+        PreparedProfileMutation::Import {
+            prepared,
+            expected_config_revision,
+        } => {
+            let receipt = core
+                .commit_prepared_profile_import_and_activate_checked(
+                    prepared,
+                    expected_config_revision,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            (receipt.profile_id, receipt.config)
+        }
+        PreparedProfileMutation::Refresh {
+            profile_id,
+            name,
+            subscription_url,
+            prepared,
+            expected_config_revision,
+        } => {
+            let config = core
+                .commit_prepared_profile_refresh_and_activate_checked(
+                    &profile_id,
+                    name,
+                    Some(subscription_url),
+                    prepared,
+                    expected_config_revision,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            (profile_id, config)
+        }
+    };
+    let profile_name = config
         .profiles
         .iter()
         .find(|profile| profile.id == profile_id)
         .map(|profile| profile.name.clone())
         .unwrap_or(profile_id);
-    ProfileImportResult {
-        snapshot,
-        profile_name,
-        restart_requested: was_vpn_running,
-        restart_error,
-    }
-}
-
-pub(super) async fn import_rules_and_snapshot(
-    active_profile: Option<String>,
-    was_vpn_running: bool,
-    locale: UiLocale,
-) -> Result<RuleImportResult, String> {
-    let profile_id = active_profile
-        .ok_or_else(|| translate_ui(locale, tr::feedback_active_profile_required()))?;
-    let (name, rules_text) = crate::bridge::pick_profile_text().await?;
-    let source = format!("rules:{name}");
-    let imported_rule_ids = paws_core::shared_core()
-        .import_rules_from_content(Some(&profile_id), &source, &rules_text)
-        .map_err(|error| error.to_string())?;
-    let reload_error = paws_core::shared_core()
-        .activate_profile(&profile_id)
-        .await
-        .err()
-        .map(|error| error.to_string());
-    let restart_error = if reload_error.is_none() {
-        request_vpn_restart_if_running(was_vpn_running, locale).await
-    } else {
-        None
-    };
-    Ok(RuleImportResult {
-        snapshot: load_snapshot().await,
-        imported_count: imported_rule_ids.len(),
-        reload_error,
-        restart_requested: was_vpn_running,
-        restart_error,
+    Ok(ProfileImportCommitResult {
+        result: ProfileImportResult {
+            profile_name,
+            restart_requested: false,
+            restart_error: None,
+            restart_unconfirmed: None,
+        },
+        config,
     })
 }
 
-pub(super) fn picker_was_cancelled(error: &str) -> bool {
-    error.to_ascii_lowercase().contains("cancel")
-        || error.contains("取消")
-        || error.contains("已取消")
-}
-
-pub(super) async fn delete_profile_and_snapshot(
-    profile_id: String,
-    profile_name: String,
-    was_active: bool,
-    was_vpn_running: bool,
-    locale: UiLocale,
-) -> Result<ProfileDeleteResult, String> {
-    let mut vpn_errors = Vec::new();
-    if was_active && was_vpn_running {
-        if let Err(error) = crate::bridge::request_stop_vpn().await {
-            match paws_core::shared_core().stop_vpn() {
-                Ok(()) => vpn_errors.push(format!(
-                    "{}{}",
-                    translate_ui(locale, tr::feedback_vpn_stop_fallback_applied_prefix()),
-                    error
-                )),
-                Err(fallback) => {
-                    return Err(format!(
-                        "{}{}{}{}",
-                        translate_ui(locale, tr::feedback_vpn_stop_failed_prefix()),
-                        error,
-                        translate_ui(locale, tr::feedback_vpn_stop_fallback_failed_suffix()),
-                        fallback
-                    ));
-                }
-            }
-        }
-    }
-    paws_core::shared_core()
-        .delete_profile(&profile_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    let snapshot = load_snapshot().await;
-    let mut vpn_action = None;
-    if was_active && was_vpn_running && snapshot.active_profile.is_some() {
-        vpn_action = Some(ProfileDeleteVpnAction::Restart);
-        let options_json = paws_core::shared_core()
-            .active_vpn_options_json()
-            .map_err(|error| error.to_string())?;
-        if let Err(error) = crate::bridge::request_start_vpn(options_json).await {
-            vpn_errors.push(format!(
-                "{}{}",
-                translate_ui(locale, tr::feedback_vpn_start_callback_failed_prefix()),
-                error
-            ));
-        }
-    } else if was_active && was_vpn_running {
-        vpn_action = Some(ProfileDeleteVpnAction::Stop);
-    }
-    Ok(ProfileDeleteResult {
-        snapshot: load_snapshot().await,
-        profile_name,
-        vpn_action,
-        vpn_error: (!vpn_errors.is_empty()).then(|| vpn_errors.join("；")),
-    })
-}
-
-pub(super) async fn select_proxy_and_snapshot(
-    group: String,
-    proxy: String,
-) -> Result<RuntimeSnapshot, String> {
+pub(super) async fn select_proxy(group: String, proxy: String) -> Result<(), String> {
     paws_core::shared_core()
         .select_proxy_via_controller(&group, &proxy)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(load_snapshot().await)
+    Ok(())
 }
 
-pub(super) async fn unfix_proxy_and_snapshot(group: String) -> Result<RuntimeSnapshot, String> {
+pub(super) async fn unfix_proxy(group: String) -> Result<(), String> {
     paws_core::shared_core()
         .unfix_proxy_via_controller(&group)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(load_snapshot().await)
+    Ok(())
 }
 
-pub(super) async fn test_proxy_delays_and_snapshot(
+pub(super) async fn test_proxy_delays(
     groups: Vec<(String, usize)>,
 ) -> Result<ProxyDelayBatchResult, String> {
     let mut succeeded = 0;
@@ -557,33 +396,18 @@ pub(super) async fn test_proxy_delays_and_snapshot(
             Err(_) => failed += member_count,
         }
     }
-    Ok(ProxyDelayBatchResult {
-        snapshot: load_snapshot().await,
-        succeeded,
-        failed,
-    })
+    Ok(ProxyDelayBatchResult { succeeded, failed })
 }
 
-pub(super) fn proxy_groups_for_delay_test(snapshot: &RuntimeSnapshot) -> Vec<(String, usize)> {
-    snapshot
-        .proxy_groups
-        .iter()
-        .filter(|group| !group.name.eq_ignore_ascii_case("GLOBAL") && !group.proxies.is_empty())
-        .map(|group| (group.name.clone(), group.proxies.len()))
-        .collect()
-}
-
-pub(super) async fn close_connection_and_snapshot(
-    connection_id: String,
-) -> Result<RuntimeSnapshot, String> {
+pub(super) async fn close_connection(connection_id: String) -> Result<(), String> {
     paws_core::shared_core()
         .close_connection_via_controller(&connection_id)
         .await
         .map_err(|error| error.to_string())?;
-    Ok(load_snapshot().await)
+    Ok(())
 }
 
-pub(super) async fn apply_manual_rule_and_snapshot(
+pub(super) async fn apply_manual_rule(
     profile_id: String,
     spec: ManualRuleSpec,
     connection_id: Option<String>,
@@ -603,50 +427,32 @@ pub(super) async fn apply_manual_rule_and_snapshot(
         None
     };
     Ok(ManualRuleSaveResult {
-        snapshot: load_snapshot().await,
         applied,
         connection_close_requested,
         connection_close_error,
     })
 }
 
-pub(super) async fn close_all_connections_and_snapshot() -> Result<RuntimeSnapshot, String> {
+pub(super) async fn close_all_connections() -> Result<(), String> {
     paws_core::shared_core()
         .close_all_connections_via_controller()
         .await
         .map_err(|error| error.to_string())?;
-    Ok(load_snapshot().await)
+    Ok(())
 }
 
-pub(super) async fn clear_request_history_and_snapshot() -> Result<RuntimeSnapshot, String> {
+pub(super) async fn clear_request_history() -> Result<(), String> {
     paws_core::shared_core()
         .clear_request_history()
         .map_err(|error| error.to_string())?;
-    Ok(load_snapshot().await)
+    Ok(())
 }
 
-pub(super) async fn load_log_recording_status() -> Option<paws_core::LogRecordingStatus> {
-    paws_core::shared_core().log_recording_status().ok()
-}
-
-pub(super) fn locale_text(locale: UiLocale, zh: &'static str, en: &'static str) -> &'static str {
-    if locale == UiLocale::ZhCn {
-        zh
-    } else {
-        en
-    }
-}
-
-pub(super) async fn set_log_recording_and_snapshot(
-    enabled: bool,
-) -> Result<LogRecordingChangeResult, String> {
+pub(super) async fn set_log_recording(enabled: bool) -> Result<LogRecordingChangeResult, String> {
     let status = paws_core::shared_core()
         .set_log_recording_enabled(enabled)
         .map_err(|error| error.to_string())?;
-    Ok(LogRecordingChangeResult {
-        snapshot: load_snapshot().await,
-        status,
-    })
+    Ok(LogRecordingChangeResult { status })
 }
 
 pub(super) async fn export_log_archive(file_name: String) -> Result<String, String> {
@@ -664,60 +470,6 @@ pub(super) async fn delete_log_archive(
         .delete_log_archive(&file_name)
         .map_err(|error| error.to_string())?;
     Ok(LogArchiveDeleteResult { file_name, status })
-}
-
-pub(super) async fn set_rule_enabled_and_snapshot(
-    profile_id: String,
-    rule_id: String,
-    enabled: bool,
-    was_vpn_running: bool,
-    locale: UiLocale,
-) -> Result<RuleChangeResult, String> {
-    paws_core::shared_core()
-        .set_rule_enabled(&profile_id, &rule_id, enabled)
-        .map_err(|error| error.to_string())?;
-    reload_profile_after_rule_change(&profile_id, was_vpn_running, locale).await
-}
-
-pub(super) async fn delete_rule_and_snapshot(
-    profile_id: String,
-    rule_id: String,
-    was_vpn_running: bool,
-    locale: UiLocale,
-) -> Result<RuleChangeResult, String> {
-    paws_core::shared_core()
-        .delete_rule(&rule_id)
-        .map_err(|error| error.to_string())?;
-    reload_profile_after_rule_change(&profile_id, was_vpn_running, locale).await
-}
-
-pub(super) async fn reorder_rules_and_snapshot(
-    profile_id: String,
-    ordered_rule_ids: Vec<String>,
-    was_vpn_running: bool,
-    locale: UiLocale,
-) -> Result<RuleChangeResult, String> {
-    paws_core::shared_core()
-        .reorder_rules(&profile_id, &ordered_rule_ids)
-        .map_err(|error| error.to_string())?;
-    reload_profile_after_rule_change(&profile_id, was_vpn_running, locale).await
-}
-
-pub(super) async fn reload_profile_after_rule_change(
-    profile_id: &str,
-    was_vpn_running: bool,
-    locale: UiLocale,
-) -> Result<RuleChangeResult, String> {
-    paws_core::shared_core()
-        .activate_profile(profile_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    let restart_error = request_vpn_restart_if_running(was_vpn_running, locale).await;
-    Ok(RuleChangeResult {
-        snapshot: load_snapshot().await,
-        restart_requested: was_vpn_running,
-        restart_error,
-    })
 }
 
 pub(super) fn localized_profile_import_message(
@@ -745,29 +497,6 @@ pub(super) fn localized_profile_import_message(
         )
     } else {
         base
-    }
-}
-
-pub(super) fn localized_profile_backup_restore_message(
-    profile_name: &str,
-    error: Option<&str>,
-    locale: UiLocale,
-) -> String {
-    if let Some(error) = error.filter(|error| !error.trim().is_empty()) {
-        format!(
-            "{}{}{}{}",
-            translate_ui(locale, tr::feedback_profile_prefix()),
-            profile_name,
-            translate_ui(locale, tr::profiles_backup_restore_failed_suffix()),
-            error
-        )
-    } else {
-        format!(
-            "{}{}{}",
-            translate_ui(locale, tr::feedback_profile_prefix()),
-            profile_name,
-            translate_ui(locale, tr::profiles_backup_restore_success_suffix())
-        )
     }
 }
 

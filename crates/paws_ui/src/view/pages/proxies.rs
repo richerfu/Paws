@@ -1,17 +1,17 @@
 use super::super::*;
 
-pub(crate) fn proxies_page(state: Signal<State>) -> Element {
+pub(crate) fn proxies_page() -> Element {
+    let services = use_context::<UiServices>();
+    let selection_services = services.clone();
     let mut query = use_signal(String::new);
     let mut expanded_group = use_signal(|| None::<String>);
-    let current = state.read().clone();
+    let stores = use_context::<UiStores>();
+    let locale = stores.preferences.read().locale;
+    let proxies = stores.proxies.read();
     let query_value = query();
     let expanded = expanded_group();
     let mut rows = Vec::new();
-    let subscription_rows = grouped_proxy_rows(
-        &current.snapshot.proxy_groups,
-        &query_value,
-        expanded.as_deref(),
-    );
+    let subscription_rows = grouped_proxy_rows(&proxies.groups, &query_value, expanded.as_deref());
     if !subscription_rows.is_empty() {
         rows.push(ProxyGroupRow::Section);
         rows.extend(subscription_rows);
@@ -38,9 +38,9 @@ pub(crate) fn proxies_page(state: Signal<State>) -> Element {
             _ => None,
         })
         .unwrap_or(0);
-    let result_summary = match current.locale {
+    let result_summary = match locale {
         UiLocale::ZhCn => translate_ui(
-            current.locale,
+            locale,
             tr::hard_zh_018(
                 global_node_count,
                 matching_group_count,
@@ -70,7 +70,7 @@ pub(crate) fn proxies_page(state: Signal<State>) -> Element {
             layout_weight: 1.0,
             Input {
                 value: Some(query_value),
-                placeholder: Some(translate_ui(current.locale, tr::proxies_search_placeholder())),
+                placeholder: Some(translate_ui(locale, tr::proxies_search_placeholder())),
                 width: Some("100%".into()),
                 on_change: move |value| query.set(value),
             }
@@ -89,7 +89,7 @@ pub(crate) fn proxies_page(state: Signal<State>) -> Element {
                     layout_weight: 1.0,
                     width: "100%",
                     justify_content: "center",
-                    {empty_state("git-branch", translate_ui(current.locale, tr::proxies_empty_title()), translate_ui(current.locale, tr::proxies_empty_subtitle()))}
+                    {empty_state("git-branch", translate_ui(locale, tr::proxies_empty_title()), translate_ui(locale, tr::proxies_empty_subtitle()))}
                 }
             } else {
                 column {
@@ -97,47 +97,26 @@ pub(crate) fn proxies_page(state: Signal<State>) -> Element {
                     width: "100%",
                     VirtualProxyGroupList {
                         rows,
-                        locale: current.locale,
+                        locale,
                         palette,
-                        selection_pending: current.proxy_selection_pending.clone(),
                         on_toggle: move |group: String| {
                             let next = (expanded_group().as_deref() != Some(group.as_str()))
                                 .then_some(group);
                             expanded_group.set(next);
                         },
                         on_select: move |(group, proxy): (String, String)| {
-                            if proxy.is_empty() {
-                                dispatch(state, Action::UnfixProxy { group });
-                            } else {
-                                dispatch(state, Action::SelectProxy { group, proxy });
-                            }
+                            let proxy = (!proxy.is_empty()).then_some(proxy);
+                            selection_services.select_proxy(group, proxy);
                         },
                     }
                 }
             }
         }
     };
-    let proxy_delay_loading = current.proxy_delay_loading;
     let actions = rsx! {
-        row {
-            FlatButton {
-                variant: FlatButtonVariant::Outline,
-                size: ButtonSize::Icon,
-                disabled: Some(proxy_delay_loading),
-                onclick: move |_| {
-                    if !proxy_delay_loading {
-                        dispatch(state, Action::TestAllProxyDelays);
-                    }
-                },
-                if proxy_delay_loading {
-                    Spinner { size: 16.0, color: Some(text_color()) }
-                } else {
-                    {arkit::icon("gauge", 17.0, text_color())}
-                }
-            }
-        }
+        ProxyDelayAction {}
     };
-    fixed_scaffold(state, Route::Proxies {}, actions, body)
+    fixed_scaffold(Route::Proxies {}, actions, body)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -183,10 +162,14 @@ pub(crate) fn VirtualProxyGroupList(
     rows: Vec<ProxyGroupRow>,
     locale: UiLocale,
     palette: VirtualProxyPalette,
-    selection_pending: Option<(String, String)>,
     on_toggle: EventHandler<String>,
     on_select: EventHandler<(String, String)>,
 ) -> Element {
+    let selection_pending = use_context::<UiOperationStores>()
+        .proxy
+        .read()
+        .selection_pending
+        .clone();
     let item_keys = virtual_proxy_row_keys(&rows);
     let next_list_state = VirtualProxyListState {
         rows,
@@ -221,6 +204,32 @@ pub(crate) fn VirtualProxyGroupList(
             width: "100%",
             height: "100%",
             list_cached_count: 20_i32,
+        }
+    }
+}
+
+#[component]
+fn ProxyDelayAction() -> Element {
+    let services = use_context::<UiServices>();
+    let operations = use_context::<UiOperationStores>();
+    let loading = operations.proxy.read().delay_loading;
+    rsx! {
+        row {
+            FlatButton {
+                variant: FlatButtonVariant::Outline,
+                size: ButtonSize::Icon,
+                disabled: Some(loading),
+                onclick: move |_| {
+                    if !operations.proxy.peek().delay_loading {
+                        services.test_all_proxy_delays();
+                    }
+                },
+                if loading {
+                    Spinner { size: 16.0, color: Some(text_color()) }
+                } else {
+                    {arkit::icon("gauge", 17.0, text_color())}
+                }
+            }
         }
     }
 }
@@ -438,9 +447,10 @@ fn VirtualProxyMemberRow(
     };
     let group = member.group.clone();
     let proxy = member.name.clone();
-    // The reducer serializes proxy changes. Keeping this closure independent
-    // from the list-wide pending state lets unaffected virtual rows stay
-    // mounted without retaining a stale enabled/disabled value.
+    // UiServices admits only one proxy-selection operation at a time, while
+    // the core rejects a completion from an older config revision. Reading the
+    // narrow pending signal here keeps unaffected virtual rows mounted without
+    // retaining a stale enabled/disabled value.
     let can_select = member.selectable;
     let unfix = member.pinned;
     rsx! {
@@ -474,7 +484,7 @@ fn VirtualProxyMemberRow(
                 align_items: "center",
                 justify_content: "center",
                 if pending && selected {
-                    Spinner { size: 15.0, color: Some(palette.success) }
+                    {virtual_loading_indicator(15.0, palette.success)}
                 } else {
                     {arkit::icon(
                         if selected { "circle-check" } else if member.subgroup { "folder-tree" } else { "circle" },

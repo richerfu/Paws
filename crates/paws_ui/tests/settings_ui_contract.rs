@@ -112,7 +112,7 @@ fn about_page_has_one_privacy_entry_and_detail_page_discloses_exit_ip_providers(
     assert!(privacy.contains(".privacy_summary"));
     assert!(privacy.contains(".exit_ip_services"));
     assert!(privacy.contains("documentation_url"));
-    assert!(privacy.contains("translate_ui(current.locale, tr::"));
+    assert!(privacy.contains("translate_ui(locale, tr::"));
     assert!(
         !privacy.contains("max_lines"),
         "privacy disclosures must never be truncated"
@@ -150,12 +150,15 @@ fn appearance_settings_use_arkit_shadcn_choices_and_persist_actions() {
         fs::read_to_string("../../entry/src/main/ets/plugins/ColorModePlugin.ets").unwrap();
 
     assert!(page.contains("RadioGroup"));
-    assert!(page.contains("Action::SetLanguagePreference"));
-    assert!(page.contains("Action::SetThemePreference"));
+    assert!(page.contains("language_services.set_language(preference)"));
+    assert!(page.contains("theme_services.set_theme(preference)"));
     assert!(!page.contains("button {"));
     assert!(view.contains("ThemeProvider"));
     assert!(view.contains("use_theme().colors"));
     assert!(platform.contains("set_color_mode"));
+    assert!(view.contains("pending_color_mode"));
+    assert!(view.contains("applied_color_mode: Some(color_mode)"));
+    assert!(page.contains("retry_color_mode"));
     assert!(color_mode.contains("context.abilityContext.setColorMode"));
 }
 
@@ -176,14 +179,13 @@ fn network_stack_is_a_bounded_selector_with_two_real_backends() {
     assert!(!stack_field.contains("Input"));
     assert!(page.contains("VpnStack::Smoltcp"));
     assert!(page.contains("VpnStack::Lwip"));
-    assert!(page.contains("Action::SaveVpnSettings"));
+    assert!(page.contains("set_profile_vpn_config_checked"));
     assert!(view.contains("Select,"));
 }
 
 #[test]
 fn network_ports_are_editable_and_lan_access_requires_a_secret() {
     let page = fs::read_to_string("src/view/pages/settings.rs").unwrap();
-    let ui = fs::read_to_string("src/ui.rs").unwrap();
     let model = fs::read_to_string("../paws_model/src/lib.rs").unwrap();
     let core = fs::read_to_string("../paws_core/src/lib.rs").unwrap();
     let callbacks = fs::read_to_string("src/bridge/mod.rs").unwrap();
@@ -198,9 +200,13 @@ fn network_ports_are_editable_and_lan_access_requires_a_secret() {
     assert!(page.contains("Authorization: Bearer <secret>"));
     assert!(page.contains("copy_controller_secret"));
     assert!(page.contains("crate::bridge::copy_text(secret)"));
-    assert!(ui.contains("Action::SaveNetworkSettings"));
-    assert!(ui.contains("set_profile_network_config"));
-    assert!(ui.contains("mixed_port != state.snapshot.network_ports.mixed_port"));
+    assert!(page.contains("set_profile_network_config_checked"));
+    assert!(page.contains("saved.revisions.config_revision"));
+    assert!(page.contains("runtime_status_projection()"));
+    assert!(page.contains("request_restart_vpn("));
+    assert!(page.contains("finish_vpn_followup(vpn_operation_id, restart)"));
+    assert!(page.contains("tr::settings_saved_restart_unconfirmed()"));
+    assert!(callbacks.contains("expected_config_revision: expected_config_revision.to_string()"));
     assert!(model.contains("pub const DEFAULT_MIXED_PORT: u16 = 7890"));
     assert!(model.contains("pub const DEFAULT_CONTROLLER_PORT: u16 = 9090"));
     assert!(core.contains("restart_mixed_listener(tunnel, mixed_port)"));

@@ -1,8 +1,7 @@
 use napi_derive_ohos::napi;
 use napi_ohos::{bindgen_prelude::Object, Env, Error, Result, Status};
 use ohos_resource_manager_binding::ResourceManager;
-use paws_model::{RuntimeMode, VpnOptions};
-use std::collections::BTreeMap;
+use paws_model::RuntimeMode;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
@@ -19,17 +18,21 @@ mod profile_refresh_feedback;
 mod provider_refresh_feedback;
 mod proxy_filter;
 mod proxy_grid;
+mod reactive_signal;
 mod resource_filter;
 mod route_status;
 mod rule_feedback;
+mod settings_draft;
 mod settings_feedback;
 mod subscription_converter;
 mod subscription_scan;
+mod system_preferences;
 mod time_format;
 mod traffic_history;
 mod ui;
 mod ui_preferences;
 mod vpn_feedback;
+mod vpn_operation;
 mod yaml_summary;
 
 use arkit::entry;
@@ -55,8 +58,7 @@ fn app(handle: arkit::openharmony_ability::OpenHarmonyApp) -> Element {
 
 #[napi]
 pub fn configure_app_home(home_dir: String) -> Result<()> {
-    std::env::set_var("PAWS_HOME", home_dir);
-    Ok(())
+    paws_core::configure_app_home(std::path::Path::new(&home_dir)).map_err(to_napi_error)
 }
 
 #[napi]
@@ -71,6 +73,17 @@ pub fn initialize_platform_shared_memory() -> Result<String> {
 pub fn attach_platform_shared_memory(ashmem_fd: i32, notification_fd: i32) -> Result<()> {
     paws_core::shared_core()
         .attach_platform_shared_memory(ashmem_fd, notification_fd)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn validate_platform_vpn_start_request(
+    ashmem_fd: i32,
+    notification_fd: i32,
+    attempt_id: String,
+) -> Result<()> {
+    paws_core::shared_core()
+        .validate_platform_vpn_start_request(ashmem_fd, notification_fd, &attempt_id)
         .map_err(to_napi_error)
 }
 
@@ -95,14 +108,69 @@ pub fn sync_platform_changes() -> Result<()> {
 }
 
 #[napi]
-pub fn begin_platform_vpn_start() -> Result<String> {
+pub fn advance_platform_vpn_intent() -> Result<String> {
     paws_core::shared_core()
-        .begin_platform_vpn_start()
+        .advance_platform_vpn_intent()
+        .map(|epoch| epoch.to_string())
         .map_err(to_napi_error)
 }
 
 #[napi]
-pub fn bind_platform_vpn_start(attempt_id: String) -> Result<()> {
+pub fn is_platform_vpn_intent_current(intent_epoch: String) -> Result<bool> {
+    paws_core::shared_core()
+        .is_platform_vpn_intent_current(parse_positive_u64(&intent_epoch, "VPN intent epoch")?)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn is_platform_vpn_stop_current(intent_epoch: String, attempt_id: String) -> Result<bool> {
+    paws_core::shared_core()
+        .is_platform_vpn_stop_current(
+            parse_positive_u64(&intent_epoch, "VPN intent epoch")?,
+            &attempt_id,
+        )
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn begin_platform_vpn_os_stop(intent_epoch: String, attempt_id: String) -> Result<bool> {
+    paws_core::shared_core()
+        .begin_platform_vpn_os_stop(
+            parse_positive_u64(&intent_epoch, "VPN intent epoch")?,
+            &attempt_id,
+        )
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn complete_platform_vpn_os_stop(intent_epoch: String, attempt_id: String) -> Result<bool> {
+    paws_core::shared_core()
+        .complete_platform_vpn_os_stop(
+            parse_positive_u64(&intent_epoch, "VPN intent epoch")?,
+            &attempt_id,
+        )
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn fail_platform_vpn_os_stop(intent_epoch: String, attempt_id: String) -> Result<bool> {
+    paws_core::shared_core()
+        .fail_platform_vpn_os_stop(
+            parse_positive_u64(&intent_epoch, "VPN intent epoch")?,
+            &attempt_id,
+        )
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn begin_platform_vpn_start_for_intent(intent_epoch: String) -> Result<String> {
+    paws_core::shared_core()
+        .begin_platform_vpn_start_for_intent(parse_positive_u64(&intent_epoch, "VPN intent epoch")?)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn bind_platform_vpn_start(attempt_id: String) -> Result<String> {
     paws_core::shared_core()
         .bind_platform_vpn_start(&attempt_id)
         .map_err(to_napi_error)
@@ -122,6 +190,37 @@ pub async fn await_platform_vpn_start(attempt_id: String) -> Result<String> {
         paws_core::PlatformStartOutcome::Pending => "pending",
     }
     .to_owned())
+}
+
+#[napi]
+pub fn acknowledge_terminal_platform_vpn_start_delivery(
+    ashmem_fd: i32,
+    notification_fd: i32,
+    attempt_id: String,
+) -> Result<bool> {
+    paws_core::shared_core()
+        .acknowledge_terminal_platform_vpn_start_delivery(ashmem_fd, notification_fd, &attempt_id)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub async fn await_platform_vpn_stop(attempt_id: String) -> Result<bool> {
+    paws_core::shared_core()
+        .await_platform_vpn_stop(&attempt_id)
+        .await
+        .map_err(to_napi_error)
+}
+
+/// Called only after ArkTS has awaited HarmonyOS
+/// `stopVpnExtensionAbility`. Core still requires release of the exact owner
+/// lease (or proof the terminal Want never attached) before releasing an
+/// orphaned cleanup barrier.
+#[napi]
+pub async fn recover_platform_vpn_cleanup_after_confirmed_stop(attempt_id: String) -> Result<bool> {
+    paws_core::shared_core()
+        .recover_platform_vpn_cleanup_after_confirmed_stop(&attempt_id)
+        .await
+        .map_err(to_napi_error)
 }
 
 #[napi]
@@ -146,14 +245,27 @@ pub fn cancel_platform_vpn_start(attempt_id: String) -> Result<bool> {
 }
 
 #[napi]
+pub fn request_platform_vpn_stop(attempt_id: String) -> Result<bool> {
+    paws_core::shared_core()
+        .request_platform_vpn_stop(&attempt_id)
+        .map_err(to_napi_error)
+}
+
+#[napi]
 pub fn configure_ui_locale(locale: String) -> Result<()> {
-    std::env::set_var("PAWS_UI_LOCALE", locale);
+    if locale.trim().is_empty() {
+        return Err(Error::from_reason("system locale must not be empty"));
+    }
+    system_preferences::set_locale(locale);
     Ok(())
 }
 
 #[napi]
 pub fn configure_system_color_mode(color_mode: i32) -> Result<()> {
-    std::env::set_var("PAWS_SYSTEM_COLOR_MODE", color_mode.to_string());
+    if !matches!(color_mode, -1..=1) {
+        return Err(Error::from_reason("invalid system color mode"));
+    }
+    system_preferences::set_color_mode(color_mode);
     Ok(())
 }
 
@@ -219,151 +331,184 @@ fn io_to_napi(err: io::Error) -> Error {
 }
 
 #[napi]
-pub async fn prepare_vpn() -> Result<bool> {
+pub fn claim_current_platform_vpn_stop(intent_epoch: String) -> Result<String> {
     paws_core::shared_core()
-        .prepare_active_vpn()
+        .claim_current_platform_vpn_stop(parse_positive_u64(&intent_epoch, "VPN intent epoch")?)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub async fn prepare_vpn(attempt_id: String) -> Result<bool> {
+    paws_core::shared_core()
+        .prepare_platform_vpn(&attempt_id)
         .await
         .map_err(to_napi_error)
 }
 
 #[napi]
-pub async fn start_vpn(fd: i32, options_json: String) -> Result<()> {
+pub async fn start_vpn(fd: i32, options_json: String, attempt_id: String) -> Result<()> {
     paws_core::shared_core()
-        .start_vpn(fd, &options_json)
+        .start_platform_vpn(fd, &options_json, &attempt_id)
         .await
         .map_err(to_napi_error)
 }
 
 #[napi]
-pub async fn stop_vpn() -> Result<()> {
-    paws_core::shared_core().stop_vpn().map_err(to_napi_error)
+pub async fn stop_vpn(attempt_id: String) -> Result<bool> {
+    paws_core::shared_core()
+        .stop_platform_vpn(&attempt_id)
+        .await
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn complete_platform_vpn_cleanup(attempt_id: String) -> Result<bool> {
+    paws_core::shared_core()
+        .complete_platform_vpn_cleanup(&attempt_id)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn extension_tick(attempt_id: String) -> Result<String> {
+    paws_core::shared_core()
+        .extension_tick(&attempt_id)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn current_platform_vpn_session_id() -> Result<String> {
+    paws_core::shared_core()
+        .current_platform_vpn_session_id()
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn is_platform_vpn_session_current(
+    session_id: String,
+    expected_config_revision: String,
+) -> Result<bool> {
+    let revision = parse_config_revision(&expected_config_revision)?;
+    paws_core::shared_core()
+        .is_platform_vpn_session_current_at_revision(&session_id, revision)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn is_runtime_config_revision_current(expected_config_revision: String) -> Result<bool> {
+    let revision = parse_config_revision(&expected_config_revision)?;
+    paws_core::shared_core()
+        .is_runtime_config_revision_current(revision)
+        .map_err(to_napi_error)
+}
+
+fn parse_config_revision(value: &str) -> Result<u64> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(Error::new(
+            Status::InvalidArg,
+            "config revision must be an unsigned decimal integer".to_owned(),
+        ));
+    }
+    value.parse::<u64>().map_err(|_| {
+        Error::new(
+            Status::InvalidArg,
+            "config revision is outside the supported u64 range".to_owned(),
+        )
+    })
+}
+
+fn parse_positive_u64(value: &str, label: &str) -> Result<u64> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(Error::new(
+            Status::InvalidArg,
+            format!("{label} must be an unsigned decimal integer"),
+        ));
+    }
+    let parsed = value.parse::<u64>().map_err(|_| {
+        Error::new(
+            Status::InvalidArg,
+            format!("{label} is outside the supported range"),
+        )
+    })?;
+    if parsed == 0 {
+        return Err(Error::new(
+            Status::InvalidArg,
+            format!("{label} must be greater than zero"),
+        ));
+    }
+    Ok(parsed)
 }
 
 #[napi]
 pub fn persist_vpn_telemetry() -> Result<()> {
+    paws_core::shared_core()
+        .persist_vpn_telemetry()
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn set_platform_vpn_starting(attempt_id: String, starting: bool) -> Result<bool> {
+    paws_core::shared_core()
+        .set_platform_vpn_starting_for_attempt(&attempt_id, starting)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn set_platform_vpn_failed(attempt_id: String, error: String) -> Result<bool> {
+    paws_core::shared_core()
+        .set_platform_vpn_failed_for_attempt(&attempt_id, error)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn set_platform_network_protected(
+    attempt_id: String,
+    protected: bool,
+    error: Option<String>,
+) -> Result<bool> {
+    paws_core::shared_core()
+        .set_platform_network_protected_for_attempt(&attempt_id, protected, error)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub async fn import_profile_from_url_and_activate(
+    url: String,
+    name: Option<String>,
+) -> Result<String> {
     let core = paws_core::shared_core();
-    let sync_core = core.clone();
-    napi_ohos::bindgen_prelude::spawn(async move {
-        let _ = sync_core.sync_external_controller_config().await;
-    });
-    core.persist_vpn_telemetry().map_err(to_napi_error)
-}
-
-#[napi]
-pub fn set_platform_vpn_running(running: bool) -> Result<()> {
-    paws_core::shared_core()
-        .set_platform_vpn_running(running)
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn set_platform_vpn_starting(starting: bool) -> Result<()> {
-    paws_core::shared_core()
-        .set_platform_vpn_starting(starting)
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn expire_platform_vpn_start() -> Result<bool> {
-    paws_core::shared_core()
-        .expire_platform_vpn_start()
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn set_platform_vpn_failed(error: String) -> Result<()> {
-    paws_core::shared_core()
-        .set_platform_vpn_failed(error)
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn set_platform_network_protected(protected: bool, error: Option<String>) -> Result<()> {
-    paws_core::shared_core()
-        .set_platform_network_protected(protected, error)
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn reload_config(profile_id: String) -> Result<()> {
-    paws_core::shared_core()
-        .reload_config(&profile_id)
+    let expected_config_revision = core
+        .config_projection()
+        .map_err(to_napi_error)?
+        .revisions
+        .config_revision;
+    core.import_profile_from_url_and_activate_checked(&url, name, expected_config_revision)
         .await
+        .map(|receipt| receipt.profile_id)
         .map_err(to_napi_error)
 }
 
 #[napi]
-pub async fn import_profile_from_url(url: String, name: Option<String>) -> Result<String> {
-    paws_core::shared_core()
-        .import_profile_from_url(&url, name)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn import_profile_from_content(
+pub async fn import_profile_from_content_and_activate(
     name: String,
     source: String,
     raw_yaml: String,
 ) -> Result<String> {
-    paws_core::shared_core()
-        .import_profile_from_content(&name, &source, &raw_yaml, None)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn import_profile_from_picker() -> Result<String> {
-    let (name, raw_yaml) = bridge::pick_profile_text()
-        .await
-        .map_err(|err| Error::new(Status::GenericFailure, err))?;
-    paws_core::shared_core()
-        .import_profile_from_content(&name, "local-file", &raw_yaml, None)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn refresh_profile(profile_id: String) -> Result<()> {
-    paws_core::shared_core()
-        .refresh_profile(&profile_id)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn refresh_all_profiles() -> Result<()> {
-    paws_core::shared_core()
-        .refresh_all_profiles()
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn refresh_due_profiles() -> Result<()> {
-    paws_core::shared_core()
-        .refresh_due_profiles()
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn update_profile_content(profile_id: String, raw_yaml: String) -> Result<()> {
-    paws_core::shared_core()
-        .update_profile_content(&profile_id, &raw_yaml)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn update_profile_subscription(
-    profile_id: String,
-    name: String,
-    subscription_url: String,
-) -> Result<()> {
-    paws_core::shared_core()
-        .update_profile_subscription(&profile_id, &name, &subscription_url)
-        .map_err(to_napi_error)
+    let core = paws_core::shared_core();
+    let expected_config_revision = core
+        .config_projection()
+        .map_err(to_napi_error)?
+        .revisions
+        .config_revision;
+    core.import_profile_from_content_and_activate_checked(
+        &name,
+        &source,
+        &raw_yaml,
+        None,
+        expected_config_revision,
+    )
+    .await
+    .map(|receipt| receipt.profile_id)
+    .map_err(to_napi_error)
 }
 
 #[napi]
@@ -378,105 +523,6 @@ pub async fn validate_profile_content(raw_yaml: String) -> Result<()> {
 pub fn profile_raw_yaml(profile_id: String) -> Result<String> {
     paws_core::shared_core()
         .profile_raw_yaml(&profile_id)
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn restore_profile_backup(profile_id: String) -> Result<()> {
-    paws_core::shared_core()
-        .restore_profile_backup(&profile_id)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn set_profile_dns_servers(profile_id: String, dns_servers_json: String) -> Result<()> {
-    let dns_servers: Vec<String> = serde_json::from_str(&dns_servers_json)
-        .map_err(|err| Error::new(Status::InvalidArg, err.to_string()))?;
-    paws_core::shared_core()
-        .set_profile_dns_servers(&profile_id, dns_servers)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn set_profile_dns_config(
-    profile_id: String,
-    dns_servers_json: String,
-    dns_fallbacks_json: String,
-    dns_nameserver_policy_json: String,
-) -> Result<()> {
-    let dns_servers: Vec<String> = serde_json::from_str(&dns_servers_json)
-        .map_err(|err| Error::new(Status::InvalidArg, err.to_string()))?;
-    let dns_fallbacks: Vec<String> = serde_json::from_str(&dns_fallbacks_json)
-        .map_err(|err| Error::new(Status::InvalidArg, err.to_string()))?;
-    let dns_nameserver_policy: BTreeMap<String, Vec<String>> =
-        serde_json::from_str(&dns_nameserver_policy_json)
-            .map_err(|err| Error::new(Status::InvalidArg, err.to_string()))?;
-    paws_core::shared_core()
-        .set_profile_dns_config(
-            &profile_id,
-            dns_servers,
-            dns_fallbacks,
-            dns_nameserver_policy,
-        )
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn set_profile_vpn_config(
-    profile_id: String,
-    system_proxy: bool,
-    dns_hijacking: bool,
-    allow_bypass: bool,
-    stack: String,
-) -> Result<()> {
-    paws_core::shared_core()
-        .set_profile_vpn_config(
-            &profile_id,
-            system_proxy,
-            dns_hijacking,
-            allow_bypass,
-            stack,
-        )
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn set_profile_network_config(
-    profile_id: String,
-    mixed_port: u16,
-    controller_port: u16,
-    allow_lan: bool,
-) -> Result<()> {
-    paws_core::shared_core()
-        .set_profile_network_config(
-            &profile_id,
-            paws_model::NetworkPortConfig {
-                mixed_port,
-                controller_port,
-            },
-            allow_lan,
-        )
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn activate_profile(profile_id: String) -> Result<()> {
-    paws_core::shared_core()
-        .activate_profile(&profile_id)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn delete_profile(profile_id: String) -> Result<()> {
-    paws_core::shared_core()
-        .delete_profile(&profile_id)
-        .await
         .map_err(to_napi_error)
 }
 
@@ -501,41 +547,6 @@ pub async fn unfix_proxy(group: String) -> Result<()> {
     paws_core::shared_core()
         .unfix_proxy_via_controller(&group)
         .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn import_rules_from_content(
-    profile_id: Option<String>,
-    source: String,
-    rules_text: String,
-) -> Result<String> {
-    let ids = paws_core::shared_core()
-        .import_rules_from_content(profile_id.as_deref(), &source, &rules_text)
-        .map_err(to_napi_error)?;
-    serde_json::to_string(&ids).map_err(|err| Error::new(Status::GenericFailure, err.to_string()))
-}
-
-#[napi]
-pub fn set_rule_enabled(profile_id: String, rule_id: String, enabled: bool) -> Result<()> {
-    paws_core::shared_core()
-        .set_rule_enabled(&profile_id, &rule_id, enabled)
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn reorder_rules(profile_id: String, ordered_rule_ids_json: String) -> Result<()> {
-    let ordered_rule_ids: Vec<String> = serde_json::from_str(&ordered_rule_ids_json)
-        .map_err(|err| Error::new(Status::InvalidArg, err.to_string()))?;
-    paws_core::shared_core()
-        .reorder_rules(&profile_id, &ordered_rule_ids)
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn delete_rule(rule_id: String) -> Result<()> {
-    paws_core::shared_core()
-        .delete_rule(&rule_id)
         .map_err(to_napi_error)
 }
 
@@ -629,11 +640,6 @@ pub fn query_snapshot() -> Result<String> {
     paws_core::shared_core()
         .snapshot_json()
         .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn default_vpn_options() -> Result<String> {
-    paws_model::to_json(&VpnOptions::default()).map_err(to_napi_error)
 }
 
 fn to_napi_error(error: paws_model::PawsError) -> Error {
