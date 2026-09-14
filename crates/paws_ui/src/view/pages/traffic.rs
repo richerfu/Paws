@@ -143,7 +143,7 @@ pub(crate) fn traffic_page() -> Element {
                                 align_items: "center",
                                 justify_content: "center",
                                 background_color: muted(),
-                                border_radius: 8.0,
+                                border_radius: radius::LG,
                                 text {
                                     content: translate_ui(locale, tr::page_tr_274()),
                                     font_size: typography::XS,
@@ -185,7 +185,7 @@ pub(crate) fn traffic_page() -> Element {
                             onclick: move |_| {
                                 connections_navigator.push(Route::Connections { query: String::new() });
                             },
-                            text { content: translate_ui(locale, tr::page_tr_138()), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                            text { content: translate_ui(locale, tr::page_tr_138()), font_size: typography::XS, font_weight: 600, font_color: text_color() }
                             {arkit::icon("chevron-right", 14.0, subtle())}
                         }
                     }
@@ -219,7 +219,7 @@ pub(crate) fn traffic_page() -> Element {
                                 size: ButtonSize::Sm,
                                 disabled: Some(diagnostic_pending),
                                 onclick: move |_| dns_services.flush_dns_cache(),
-                                text { content: translate_ui(locale, tr::page_tr_147()), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                                text { content: translate_ui(locale, tr::page_tr_147()), font_size: typography::XS, font_weight: 600, font_color: text_color() }
                             }
                             row { width: 8.0 }
                             FlatButton {
@@ -227,7 +227,7 @@ pub(crate) fn traffic_page() -> Element {
                                 size: ButtonSize::Sm,
                                 disabled: Some(diagnostic_pending),
                                 onclick: move |_| services.flush_fake_ip_cache(),
-                                text { content: translate_ui(locale, tr::page_tr_148()), font_size: 12.0, font_weight: 600, font_color: text_color() }
+                                text { content: translate_ui(locale, tr::page_tr_148()), font_size: typography::XS, font_weight: 600, font_color: text_color() }
                             }
                         }
                     }
@@ -245,7 +245,7 @@ pub(crate) fn traffic_page() -> Element {
                         {info_row(translate_ui(locale, tr::page_tr_152()), diagnostics.diagnostics.config_sync_count.to_string())}
                         {info_row(translate_ui(locale, tr::page_tr_153()), last_config_sync)}
                         if let Some(error) = diagnostics.diagnostics.last_config_sync_error.clone() {
-                            text { content: compact(&error), margin_top: 6.0, font_size: 12.0, font_color: danger(), max_lines: 3 }
+                            text { content: compact(&error), margin_top: 6.0, font_size: typography::XS, font_color: danger(), max_lines: 3 }
                         }
                     }
                 }

@@ -313,7 +313,7 @@ fn log_archive_delete_dialog(
                     FlatButton {
                         variant: FlatButtonVariant::Outline,
                         onclick: move |_| selected.set(None),
-                        text { content: translate_ui(locale, tr::page_tr_114()), font_size: 13.0, font_weight: 600, font_color: text_color() }
+                        text { content: translate_ui(locale, tr::page_tr_114()), font_size: typography::SM, font_weight: 600, font_color: text_color() }
                     }
                     row { layout_weight: 1.0 }
                     FlatButton {
@@ -322,7 +322,7 @@ fn log_archive_delete_dialog(
                             selected.set(None);
                             services.delete_log_archive(delete_file_name.clone());
                         },
-                        text { content: translate_ui(locale, tr::page_tr_115()), font_size: 13.0, font_weight: 600, font_color: destructive_text() }
+                        text { content: translate_ui(locale, tr::page_tr_115()), font_size: typography::SM, font_weight: 600, font_color: destructive_text() }
                     }
                 }
             }
@@ -371,8 +371,13 @@ fn VirtualLogArchiveList(
             hasher.finish()
         })
         .collect::<Vec<_>>();
+    let stamps = items
+        .iter()
+        .zip(item_keys)
+        .map(|(item, revision)| VirtualItemStamp::new(item.file_name.clone(), revision))
+        .collect();
     let render_items = items;
-    let source = use_virtual_source_items_keyed(VirtualKind::List, item_keys, move |index| {
+    let source = use_virtual_items(VirtualKind::List, stamps, move |index| {
         let Some(item) = render_items.get(index as usize).cloned() else {
             return rsx! {};
         };
@@ -412,8 +417,19 @@ fn VirtualLogList(
             hasher.finish()
         })
         .collect::<Vec<_>>();
+    // Logs have no persisted ID; repeated equal records still need distinct IDs.
+    let ids = crate::virtual_identity::occurrence_ids(
+        items
+            .iter()
+            .map(|item| (item.meta.clone(), item.message.clone())),
+    );
+    let stamps = ids
+        .into_iter()
+        .zip(item_keys)
+        .map(|(id, revision)| VirtualItemStamp::new(id, revision))
+        .collect();
     let render_items = items;
-    let source = use_virtual_source_items_keyed(VirtualKind::List, item_keys, move |index| {
+    let source = use_virtual_items(VirtualKind::List, stamps, move |index| {
         let Some(item) = render_items.get(index as usize).cloned() else {
             return rsx! {};
         };
@@ -471,7 +487,7 @@ fn VirtualLogArchiveRowView(
             margin_bottom: spacing::SM,
             border_width: 1.0,
             border_color: palette.border,
-            border_radius: 8.0,
+            border_radius: radius::LG,
             clip: true,
             align_items: "center",
             column {
@@ -481,7 +497,7 @@ fn VirtualLogArchiveRowView(
                 text {
                     width: "100%",
                     content: item.file_name,
-                    font_size: 14.0,
+                    font_size: typography::SM,
                     font_weight: 600,
                     font_color: palette.foreground,
                     line_height: 20.0,
@@ -579,7 +595,7 @@ fn VirtualLogRowView(
             margin_bottom: spacing::SM,
             border_width: 1.0,
             border_color: palette.border,
-            border_radius: 8.0,
+            border_radius: radius::LG,
             clip: true,
             align_items: "start",
             onclick: move |_| on_open.call(open_item.clone()),
@@ -597,7 +613,7 @@ fn VirtualLogRowView(
                 width: "100%",
                 content: item.preview,
                 padding_top: 4.0,
-                font_size: 12.0,
+                font_size: typography::XS,
                 font_weight: 400,
                 font_color: palette.foreground,
                 line_height: 17.0,
@@ -634,7 +650,7 @@ fn log_detail_dialog(
                 alignment: "top-start",
                 scroll_bar: "off",
                 background_color: muted(),
-                border_radius: 8.0,
+                border_radius: radius::LG,
                 column {
                     width: "100%",
                     padding: 12.0,
@@ -643,7 +659,7 @@ fn log_detail_dialog(
                     text {
                         content: log.message,
                         width: "100%",
-                        font_size: 12.0,
+                        font_size: typography::XS,
                         line_height: 19.0,
                         font_color: text_color(),
                     }

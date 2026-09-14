@@ -31,6 +31,7 @@ mod time_format;
 mod traffic_history;
 mod ui;
 mod ui_preferences;
+mod virtual_identity;
 mod vpn_feedback;
 mod vpn_operation;
 mod yaml_summary;
@@ -43,6 +44,8 @@ use arkit::prelude::Element;
 /// plugins declaratively, and passes the shared `OpenHarmonyApp` handle into
 /// the entry function so the platform call surface can resolve it.
 #[entry(plugins = [
+    openharmony_ability_plugin_files::FilesBridgePlugin,
+    openharmony_ability_plugin_url::UrlBridgePlugin,
     bridge::PawsScanBridgePlugin,
     bridge::PawsClipboardBridgePlugin,
     bridge::PawsColorModeBridgePlugin,

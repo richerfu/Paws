@@ -97,9 +97,7 @@ pub(crate) fn settings_page() -> Element {
                 translate_ui(current.locale, tr::page_tr_223()),
                 Some(translate_ui(current.locale, tr::page_tr_224())),
                 rsx! {
-                    Form {
-                        surface: false,
-                        submit_label: String::new(),
+                    FieldGroup {
                         Field {
                             orientation: FieldOrientation::Horizontal,
                             FieldContent {
@@ -139,8 +137,8 @@ pub(crate) fn settings_page() -> Element {
                             }
                         }
                         row { height: 12.0 }
-                        FormItem {
-                            label: translate_ui(current.locale, tr::page_tr_231()),
+                        Field {
+                            FieldLabel { content: translate_ui(current.locale, tr::page_tr_231()) }
                             Select {
                                 options: stack_options,
                                 selected: Some(vpn_stack_label_value.clone()),
@@ -162,7 +160,7 @@ pub(crate) fn settings_page() -> Element {
                             disabled: Some(blocked || !vpn_dirty),
                             onclick: move |_| save_settings(form, SettingsSection::Vpn, vpn_runtime.clone(), vpn_alive.clone(), notifications, vpn_services.clone(), current.locale),
                             {arkit::icon("save", 16.0, primary_text())}
-                            text { content: translate_ui(current.locale, tr::page_tr_232()), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
+                            text { content: translate_ui(current.locale, tr::page_tr_232()), margin_left: 8.0, font_size: typography::SM, font_weight: 600, font_color: primary_text() }
                         }
                     }
                 }
@@ -172,11 +170,9 @@ pub(crate) fn settings_page() -> Element {
                 translate_ui(current.locale, tr::page_tr_233()),
                 Some(translate_ui(current.locale, tr::page_tr_234())),
                 rsx! {
-                    Form {
-                        surface: false,
-                        submit_label: String::new(),
-                        FormItem {
-                            label: translate_ui(current.locale, tr::page_tr_235()),
+                    FieldGroup {
+                        Field {
+                            FieldLabel { content: translate_ui(current.locale, tr::page_tr_235()) }
                             Input {
                                 value: Some(mixed_port_value.clone()),
                                 placeholder: Some("7890".to_owned()),
@@ -189,8 +185,8 @@ pub(crate) fn settings_page() -> Element {
                             content: translate_ui(current.locale, tr::page_tr_236()),
                             inset: true,
                         }
-                        FormItem {
-                            label: translate_ui(current.locale, tr::page_tr_237()),
+                        Field {
+                            FieldLabel { content: translate_ui(current.locale, tr::page_tr_237()) }
                             Input {
                                 value: Some(controller_port_value.clone()),
                                 placeholder: Some("9090".to_owned()),
@@ -248,7 +244,7 @@ pub(crate) fn settings_page() -> Element {
                             disabled: Some(blocked || !network_dirty),
                             onclick: move |_| save_settings(form, SettingsSection::Network, network_runtime.clone(), network_alive.clone(), notifications, network_services.clone(), current.locale),
                             {arkit::icon("save", 16.0, primary_text())}
-                            text { content: translate_ui(current.locale, tr::page_tr_243()), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
+                            text { content: translate_ui(current.locale, tr::page_tr_243()), margin_left: 8.0, font_size: typography::SM, font_weight: 600, font_color: primary_text() }
                         }
                     }
                 }
@@ -258,11 +254,9 @@ pub(crate) fn settings_page() -> Element {
                 "DNS",
                 Some(translate_ui(current.locale, tr::page_tr_244())),
                 rsx! {
-                    Form {
-                        surface: false,
-                        submit_label: String::new(),
-                        FormItem {
-                            label: translate_ui(current.locale, tr::page_tr_245()),
+                    FieldGroup {
+                        Field {
+                            FieldLabel { content: translate_ui(current.locale, tr::page_tr_245()) }
                             Textarea {
                                 value: Some(dns_servers_value.clone()),
                                 height: Some(92.0),
@@ -271,8 +265,8 @@ pub(crate) fn settings_page() -> Element {
                                 on_change: move |value| form.write().values.dns.servers = value,
                             }
                         }
-                        FormItem {
-                            label: translate_ui(current.locale, tr::page_tr_276()),
+                        Field {
+                            FieldLabel { content: translate_ui(current.locale, tr::page_tr_276()) }
                             Textarea {
                                 value: Some(dns_fallbacks_value.clone()),
                                 height: Some(76.0),
@@ -281,8 +275,8 @@ pub(crate) fn settings_page() -> Element {
                                 on_change: move |value| form.write().values.dns.fallbacks = value,
                             }
                         }
-                        FormItem {
-                            label: translate_ui(current.locale, tr::page_tr_246()),
+                        Field {
+                            FieldLabel { content: translate_ui(current.locale, tr::page_tr_246()) }
                             Textarea {
                                 value: Some(dns_policy_value.clone()),
                                 height: Some(104.0),
@@ -298,7 +292,7 @@ pub(crate) fn settings_page() -> Element {
                             disabled: Some(blocked || !dns_dirty),
                             onclick: move |_| save_settings(form, SettingsSection::Dns, dns_runtime.clone(), dns_alive.clone(), notifications, dns_services.clone(), current.locale),
                             {arkit::icon("save", 16.0, primary_text())}
-                            text { content: translate_ui(current.locale, tr::page_tr_247()), margin_left: 8.0, font_size: 14.0, font_weight: 600, font_color: primary_text() }
+                            text { content: translate_ui(current.locale, tr::page_tr_247()), margin_left: 8.0, font_size: typography::SM, font_weight: 600, font_color: primary_text() }
                         }
                     }
                 }

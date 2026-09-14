@@ -97,7 +97,7 @@ pub(super) fn YamlEditorDialog(mut editor: Signal<Option<YamlEditorDraft>>) -> E
                     },
                 }
                 if let Some(error) = current.error.clone() {
-                    text { content: error, margin_top: 8.0, font_size: 12.0, font_color: danger() }
+                    text { content: error, margin_top: 8.0, font_size: typography::XS, font_color: danger() }
                 }
             }
             DialogFooter {
@@ -114,7 +114,7 @@ pub(super) fn YamlEditorDialog(mut editor: Signal<Option<YamlEditorDraft>>) -> E
                             }
                         },
                         {arkit::icon("rotate-ccw", 14.0, text_color())}
-                        text { content: translate_ui(locale, tr::profiles_yaml_reset()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
+                        text { content: translate_ui(locale, tr::profiles_yaml_reset()), margin_left: 6.0, font_size: typography::XS, font_weight: 600, font_color: text_color() }
                     }
                     row { layout_weight: 1.0 }
                     FlatButton {
@@ -162,7 +162,7 @@ pub(super) fn YamlEditorDialog(mut editor: Signal<Option<YamlEditorDraft>>) -> E
                         } else {
                             {arkit::icon("check", 14.0, text_color())}
                         }
-                        text { content: if current.testing { translate_ui(locale, tr::profiles_yaml_testing()) } else { translate_ui(locale, tr::profiles_yaml_test()) }, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: text_color() }
+                        text { content: if current.testing { translate_ui(locale, tr::profiles_yaml_testing()) } else { translate_ui(locale, tr::profiles_yaml_test()) }, margin_left: 6.0, font_size: typography::XS, font_weight: 600, font_color: text_color() }
                     }
                     row { width: 8.0 }
                     FlatButton {
@@ -241,7 +241,7 @@ pub(super) fn YamlEditorDialog(mut editor: Signal<Option<YamlEditorDraft>>) -> E
                         } else {
                             {arkit::icon("save", 14.0, primary_text())}
                         }
-                        text { content: if current.saving { translate_ui(locale, tr::profiles_yaml_saving()) } else { translate_ui(locale, tr::profiles_yaml_save()) }, margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: primary_text() }
+                        text { content: if current.saving { translate_ui(locale, tr::profiles_yaml_saving()) } else { translate_ui(locale, tr::profiles_yaml_save()) }, margin_left: 6.0, font_size: typography::XS, font_weight: 600, font_color: primary_text() }
                     }
                 }
             }
