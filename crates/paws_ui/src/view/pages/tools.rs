@@ -225,7 +225,7 @@ pub(crate) fn about_page() -> Element {
                     align_items: "center",
                     justify_content: "center",
                     background_color: muted(),
-                    border_radius: 16.0,
+                    border_radius: radius::XXL,
                     {arkit::icon("paw-print", 26.0, text_color())}
                 }
                 text {

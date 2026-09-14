@@ -18,7 +18,7 @@ fn section<'a>(source: &'a str, start: &str, end: &str) -> &'a str {
 #[test]
 fn logs_use_arkit_rsx_virtual_rows_and_expose_full_details() {
     assert!(VIEW_SOURCE.contains("fn VirtualLogList("));
-    assert!(VIEW_SOURCE.contains("use_virtual_source_items_keyed(VirtualKind::List, item_keys"));
+    assert!(VIEW_SOURCE.contains("use_virtual_items(VirtualKind::List, stamps"));
     assert!(!VIEW_SOURCE.contains("use_virtual_node_adapter_items_keyed"));
     assert_eq!(VIEW_SOURCE.matches("virtual_source: source").count(), 3);
     assert!(!VIEW_SOURCE.contains("use_layout_frame_node(move |host_node, _frame|"));
@@ -82,7 +82,7 @@ fn activity_lists_use_compact_arkit_rsx_virtual_rows() {
     assert!(ACTIVITY_SOURCE.contains("fn VirtualConnectionList("));
     assert_eq!(
         ACTIVITY_SOURCE
-            .matches("use_virtual_source_items_keyed(VirtualKind::List, item_keys")
+            .matches("use_virtual_items(VirtualKind::List, stamps")
             .count(),
         2,
     );
@@ -168,7 +168,8 @@ fn resource_rules_are_compact_and_section_titles_have_no_counts() {
 fn segmented_filter_buttons_preserve_the_full_label_width() {
     let segmented = section(VIEW_SOURCE, "fn FlatSegmented(", "struct FlatDialogProps");
 
-    // The default ArkUI button padding squeezes the label (e.g. "Debug" in
-    // the log level filter); zero it out so every option stays readable.
-    assert!(segmented.contains("padding: 0.0"));
+    // Upstream TabsTrigger owns equal-width layout and avoids native Button insets.
+    assert!(segmented.contains("TabsList {"));
+    assert!(segmented.contains("TabsTrigger {"));
+    assert!(!segmented.contains("button {"));
 }

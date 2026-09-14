@@ -300,7 +300,12 @@ fn VirtualResourceList(
         },
     ));
 
-    let source = use_virtual_source_items_keyed(VirtualKind::List, item_keys, move |index| {
+    // Detached rows observe list_state and operation Signals directly.
+    let stamps = item_keys
+        .into_iter()
+        .map(|id| VirtualItemStamp::new(id, ()))
+        .collect();
+    let source = use_virtual_items(VirtualKind::List, stamps, move |index| {
         rsx! {
             VirtualResourceRowView {
                 index,
@@ -405,7 +410,7 @@ fn VirtualResourceRowView(
                     background_color: palette.surface,
                     border_width: 1.0,
                     border_color: palette.border,
-                    border_radius: 8.0,
+                    border_radius: radius::LG,
                     text { content: "GeoData", font_size: typography::SM, font_weight: 600, font_color: palette.foreground }
                     row { layout_weight: 1.0 }
                     text {
@@ -444,7 +449,7 @@ fn VirtualResourceRowView(
                     background_color: palette.surface,
                     border_width: 1.0,
                     border_color: palette.border,
-                    border_radius: 8.0,
+                    border_radius: radius::LG,
                     onclick: move |_| geodata_detail.set(Some(detail.clone())),
                     row {
                         width: "100%",
@@ -455,7 +460,7 @@ fn VirtualResourceRowView(
                             align_items: "center",
                             justify_content: "center",
                             background_color: palette.muted,
-                            border_radius: 8.0,
+                            border_radius: radius::LG,
                             {arkit::icon("file-text", 17.0, status_color)}
                         }
                         column {
@@ -538,7 +543,7 @@ fn virtual_resource_card(
             background_color: palette.surface,
             border_width: 1.0,
             border_color: palette.border,
-            border_radius: 8.0,
+            border_radius: radius::LG,
             text { content: title.into(), font_size: typography::SM, line_height: 20.0, font_weight: 600, font_color: palette.foreground }
             if let Some(subtitle) = subtitle {
                 text { content: subtitle, margin_top: spacing::XXS, font_size: typography::XS, line_height: 18.0, font_color: palette.muted_foreground }
@@ -596,7 +601,7 @@ fn virtual_resource_empty(
             background_color: palette.surface,
             border_width: 1.0,
             border_color: palette.border,
-            border_radius: 8.0,
+            border_radius: radius::LG,
             {arkit::icon(icon, 16.0, palette.muted_foreground)}
             text { content: message.into(), margin_left: 8.0, font_size: typography::XS, font_color: palette.muted_foreground, max_lines: 2 }
         }
@@ -628,7 +633,7 @@ fn ResourceRulesHeader(
                 padding_right: 8.0,
                 background_color: palette.surface,
                 border_width: 0.0,
-                border_radius: 6.0,
+                border_radius: radius::MD,
                 enabled: !import_disabled,
                 opacity: if import_disabled { 0.5 } else { 1.0 },
                 onclick: move |_| {
@@ -639,7 +644,7 @@ fn ResourceRulesHeader(
                 row {
                     align_items: "center",
                     {arkit::icon(if import_loading { "loader-circle" } else { "file-up" }, 14.0, palette.foreground)}
-                    text { content: translate_ui(locale, tr::resources_import_rules()), margin_left: 5.0, font_size: 12.0, font_weight: 600, font_color: palette.foreground }
+                    text { content: translate_ui(locale, tr::resources_import_rules()), margin_left: 5.0, font_size: typography::XS, font_weight: 600, font_color: palette.foreground }
                 }
             }
             button {
@@ -648,7 +653,7 @@ fn ResourceRulesHeader(
                 padding_right: 8.0,
                 background_color: palette.surface,
                 border_width: 0.0,
-                border_radius: 6.0,
+                border_radius: radius::MD,
                 enabled: has_active_profile,
                 opacity: if has_active_profile { 1.0 } else { 0.5 },
                 onclick: move |_| on_open_manual.call(()),
@@ -721,7 +726,7 @@ fn VirtualProviderRow(
             background_color: palette.surface,
             border_width: 1.0,
             border_color: palette.border,
-            border_radius: 8.0,
+            border_radius: radius::LG,
             text { content: title, font_size: typography::SM, line_height: 20.0, font_weight: 600, font_color: palette.foreground }
             text { content: subtitle, margin_top: spacing::XXS, font_size: typography::XS, line_height: 18.0, font_color: palette.muted_foreground }
             column {
@@ -734,7 +739,7 @@ fn VirtualProviderRow(
                     {virtual_resource_info_row(translate_ui(locale, tr::page_tr_175()), format!("{alive_count}/{member_count}"), palette)}
                 }
                 if let Some(error) = provider.last_refresh_error.clone() {
-                    text { content: compact(&error), margin_top: 6.0, font_size: 12.0, font_color: palette.danger, max_lines: 2 }
+                    text { content: compact(&error), margin_top: 6.0, font_size: typography::XS, font_color: palette.danger, max_lines: 2 }
                 }
                 row { height: 4.0 }
                 row {
@@ -746,12 +751,12 @@ fn VirtualProviderRow(
                         padding_right: 8.0,
                         background_color: palette.surface,
                         border_width: 0.0,
-                        border_radius: 6.0,
+                        border_radius: radius::MD,
                         onclick: move |_| provider_detail.set(Some(detail_provider_name.clone())),
                         row {
                             align_items: "center",
                             {arkit::icon("list", 14.0, palette.foreground)}
-                            text { content: translate_ui(locale, tr::page_tr_176()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: palette.foreground }
+                            text { content: translate_ui(locale, tr::page_tr_176()), margin_left: 6.0, font_size: typography::XS, font_weight: 600, font_color: palette.foreground }
                         }
                     }
                     if can_healthcheck {
@@ -761,14 +766,14 @@ fn VirtualProviderRow(
                             padding_right: 8.0,
                             background_color: palette.surface,
                             border_width: 0.0,
-                            border_radius: 6.0,
+                            border_radius: radius::MD,
                             enabled: !diagnostic_pending,
                             opacity: if diagnostic_pending { 0.5 } else { 1.0 },
                             onclick: move |_| on_healthcheck.call(health_provider_name.clone()),
                             row {
                                 align_items: "center",
                                 {arkit::icon("heart-pulse", 14.0, palette.foreground)}
-                                text { content: translate_ui(locale, tr::page_tr_177()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: palette.foreground }
+                                text { content: translate_ui(locale, tr::page_tr_177()), margin_left: 6.0, font_size: typography::XS, font_weight: 600, font_color: palette.foreground }
                             }
                         }
                     }
@@ -778,12 +783,12 @@ fn VirtualProviderRow(
                         padding_right: 8.0,
                         background_color: palette.surface,
                         border_width: 0.0,
-                        border_radius: 6.0,
+                        border_radius: radius::MD,
                         onclick: move |_| on_refresh.call((refresh_provider_type.clone(), refresh_provider_name.clone())),
                         row {
                             align_items: "center",
                             {arkit::icon("refresh-cw", 14.0, palette.foreground)}
-                            text { content: translate_ui(locale, tr::page_tr_178()), margin_left: 6.0, font_size: 12.0, font_weight: 600, font_color: palette.foreground }
+                            text { content: translate_ui(locale, tr::page_tr_178()), margin_left: 6.0, font_size: typography::XS, font_weight: 600, font_color: palette.foreground }
                         }
                     }
                 }
@@ -845,7 +850,7 @@ fn RuleLookupDialogContent(local: LocalRuleEditors) -> Element {
             text {
                 content: translate_ui(locale, tr::page_tr_197()),
                 margin_top: 9.0,
-                font_size: 11.0,
+                font_size: typography::XS,
                 line_height: 16.0,
                 font_color: warning(),
             }
@@ -854,7 +859,7 @@ fn RuleLookupDialogContent(local: LocalRuleEditors) -> Element {
             text {
                 content: translate_ui(locale, tr::page_tr_198()),
                 margin_top: 9.0,
-                font_size: 11.0,
+                font_size: typography::XS,
                 line_height: 16.0,
                 font_color: warning(),
             }
@@ -863,7 +868,7 @@ fn RuleLookupDialogContent(local: LocalRuleEditors) -> Element {
             text {
                 content: error,
                 margin_top: 9.0,
-                font_size: 11.0,
+                font_size: typography::XS,
                 line_height: 16.0,
                 font_color: danger(),
             }
@@ -875,7 +880,7 @@ fn RuleLookupDialogContent(local: LocalRuleEditors) -> Element {
                 padding: 12.0,
                 border_width: 1.0,
                 border_color: if result.matched { success() } else { line() },
-                border_radius: 8.0,
+                border_radius: radius::LG,
                 background_color: muted(),
                 row {
                     width: "100%",
@@ -894,7 +899,7 @@ fn RuleLookupDialogContent(local: LocalRuleEditors) -> Element {
                         content: rule_line,
                         width: "100%",
                         margin_top: 8.0,
-                        font_size: 12.0,
+                        font_size: typography::XS,
                         line_height: 18.0,
                         font_weight: 600,
                         font_color: text_color(),
@@ -906,7 +911,7 @@ fn RuleLookupDialogContent(local: LocalRuleEditors) -> Element {
                         content: translate_ui(locale, tr::page_tr_201()),
                         width: "100%",
                         margin_top: 8.0,
-                        font_size: 12.0,
+                        font_size: typography::XS,
                         line_height: 18.0,
                         font_color: subtle(),
                     }
@@ -935,7 +940,7 @@ fn RuleLookupDialogContent(local: LocalRuleEditors) -> Element {
                     text {
                         content: translate_ui(locale, tr::page_tr_207()),
                         margin_left: 7.0,
-                        font_size: 12.0,
+                        font_size: typography::XS,
                         font_weight: 600,
                         font_color: text_color(),
                     }
@@ -956,7 +961,7 @@ fn RuleLookupDialogContent(local: LocalRuleEditors) -> Element {
                 text {
                     content: if lookup.submitting { translate_ui(locale, tr::page_tr_208()) } else { translate_ui(locale, tr::page_tr_209()) },
                     margin_left: 8.0,
-                    font_size: 13.0,
+                    font_size: typography::SM,
                     font_weight: 600,
                     font_color: primary_text(),
                 }
@@ -1006,7 +1011,7 @@ fn ProviderDetailDialog(
                     layout_weight: 1.0,
                     align_items: "start",
                     text { content: truncate_text(&member.name, 34), width: "100%", font_size: typography::XS, font_weight: 600, font_color: text_color(), max_lines: 1 }
-                    text { content: format!("{} · {} · {}", member.proxy_type, status, delay), margin_top: 3.0, width: "100%", font_size: 10.0, font_color: if member.alive { success() } else { danger() }, max_lines: 1 }
+                    text { content: format!("{} · {} · {}", member.proxy_type, status, delay), margin_top: 3.0, width: "100%", font_size: typography::XS, font_color: if member.alive { success() } else { danger() }, max_lines: 1 }
                 }
                 FlatButton {
                     variant: FlatButtonVariant::Ghost,
@@ -1029,13 +1034,13 @@ fn ProviderDetailDialog(
             }
             row { height: 12.0 }
             if members.is_empty() {
-                text { content: translate_ui(locale, tr::page_tr_214()), font_size: 12.0, font_color: subtle() }
+                text { content: translate_ui(locale, tr::page_tr_214()), font_size: typography::XS, font_color: subtle() }
             } else {
                 column {
                     width: "100%",
                     border_width: 1.0,
                     border_color: line(),
-                    border_radius: 8.0,
+                    border_radius: radius::LG,
                     clip: true,
                     {members.into_iter()}
                 }
@@ -1077,7 +1082,7 @@ fn geodata_detail_dialog(
                 width: "100%",
                 border_width: 1.0,
                 border_color: line(),
-                border_radius: 8.0,
+                border_radius: radius::LG,
                 padding_left: spacing::MD,
                 padding_right: spacing::MD,
                 {info_row(translate_ui(locale, tr::page_tr_171()), availability)}
@@ -1093,11 +1098,11 @@ fn geodata_detail_dialog(
                 width: "100%",
                 padding: 11.0,
                 background_color: muted(),
-                border_radius: 8.0,
+                border_radius: radius::LG,
                 text {
                     content: file.path,
                     width: "100%",
-                    font_size: 11.0,
+                    font_size: typography::XS,
                     line_height: 17.0,
                     font_color: text_color(),
                     max_lines: 5,
@@ -1149,7 +1154,7 @@ fn rule_view(
             background_color: palette.surface,
             border_width: 1.0,
             border_color: palette.border,
-            border_radius: 8.0,
+            border_radius: radius::LG,
             clip: true,
             row {
                 width: "100%",
@@ -1169,7 +1174,7 @@ fn rule_view(
                     text {
                         content: rule_source,
                         width: "100%",
-                        font_size: 10.0,
+                        font_size: typography::XS,
                         font_color: palette.muted_foreground,
                         max_lines: 1,
                     }
@@ -1191,7 +1196,7 @@ fn rule_view(
                 content: truncate_text(&rule.line, 180),
                 width: "100%",
                 margin_top: 5.0,
-                font_size: 11.0,
+                font_size: typography::XS,
                 line_height: 16.0,
                 font_color: palette.foreground,
                 max_lines: 2,
@@ -1216,7 +1221,7 @@ where
             padding: 0.0,
             background_color: palette.surface,
             border_width: 0.0,
-            border_radius: 6.0,
+            border_radius: radius::MD,
             onclick: move |_| action(),
             row {
                 width: "100%",
@@ -1242,8 +1247,8 @@ fn virtual_resource_pill(
             align_items: "center",
             justify_content: "center",
             background_color: palette.muted,
-            border_radius: 999.0,
-            text { content: label.into(), font_size: 10.0, font_weight: 600, font_color: color, max_lines: 1 }
+            border_radius: radius::FULL,
+            text { content: label.into(), font_size: typography::XS, font_weight: 600, font_color: color, max_lines: 1 }
         }
     }
 }

@@ -102,9 +102,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                 translate_ui(locale, tr::page_tr_041()),
                 Some(translate_ui(locale, tr::hard_zh_040())),
                 rsx! {
-                    Form {
-                        surface: false,
-                        submit_label: String::new(),
+                    FieldGroup {
                         Field {
                             FieldLabel { content: translate_ui(locale, tr::page_tr_042()) }
                             FlatSegmented {
@@ -162,9 +160,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                     translate_ui(locale, tr::page_tr_045()),
                     Some(translate_ui(locale, tr::hard_zh_042())),
                     rsx! {
-                        Form {
-                            surface: false,
-                            submit_label: String::new(),
+                        FieldGroup {
                             Field {
                                 FieldLabel { content: translate_ui(locale, tr::page_tr_046()) }
                                 Input {
@@ -569,9 +565,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                 translate_ui(locale, tr::page_tr_088()),
                 Some(translate_ui(locale, tr::hard_zh_046())),
                 rsx! {
-                    Form {
-                        surface: false,
-                        submit_label: String::new(),
+                    FieldGroup {
                         Field {
                             FieldLabel { content: translate_ui(locale, tr::page_tr_089()) }
                             Input {

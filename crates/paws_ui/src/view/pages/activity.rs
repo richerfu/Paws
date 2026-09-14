@@ -5,10 +5,10 @@ use std::hash::{Hash, Hasher};
 // shadcn-style list cards: room for host / meta / traffic rows with badge + action.
 const REQUEST_ROW_HEIGHT: f32 = 88.0;
 const CONNECTION_ROW_HEIGHT: f32 = 88.0;
-const ACTIVITY_CARD_RADIUS: f32 = 12.0;
-const ACTIVITY_CARD_GAP: f32 = 8.0;
+const ACTIVITY_CARD_RADIUS: f32 = radius::LG;
+const ACTIVITY_CARD_GAP: f32 = spacing::SM;
 /// shadcn Button size="icon" (h-8 w-8).
-const ACTIVITY_ACTION_SIZE: f32 = 28.0;
+const ACTIVITY_ACTION_SIZE: f32 = control::ICON_SM;
 
 pub(crate) fn requests_page() -> Element {
     let services = use_context::<UiServices>();
@@ -74,10 +74,7 @@ pub(crate) fn requests_page() -> Element {
         secondary: theme.colors.secondary,
         border: theme.colors.border,
         success: success(),
-        success_soft: match theme.mode {
-            ThemeMode::Light => 0xFFDCFCE7,
-            ThemeMode::Dark => 0xFF14532D,
-        },
+        success_soft: success_surface(),
         danger: theme.colors.destructive,
         radius: ACTIVITY_CARD_RADIUS,
     };
@@ -206,10 +203,7 @@ pub(crate) fn connections_page(initial_query: String) -> Element {
         secondary: theme.colors.secondary,
         border: theme.colors.border,
         success: success(),
-        success_soft: match theme.mode {
-            ThemeMode::Light => 0xFFDCFCE7,
-            ThemeMode::Dark => 0xFF14532D,
-        },
+        success_soft: success_surface(),
         danger: theme.colors.destructive,
         radius: ACTIVITY_CARD_RADIUS,
     };
@@ -338,9 +332,13 @@ fn VirtualRequestList(
     on_open: EventHandler<String>,
     on_add_rule: EventHandler<ManualRuleContext>,
 ) -> Element {
-    let item_keys = activity_item_keys(&items, palette);
+    let stamps = items
+        .iter()
+        .zip(activity_item_keys(&items, palette))
+        .map(|(item, revision)| VirtualItemStamp::new(item.id.clone(), revision))
+        .collect();
     let render_items = items;
-    let source = use_virtual_source_items_keyed(VirtualKind::List, item_keys, move |index| {
+    let source = use_virtual_items(VirtualKind::List, stamps, move |index| {
         let Some(item) = render_items.get(index as usize).cloned() else {
             return rsx! {};
         };
@@ -366,9 +364,13 @@ fn VirtualConnectionList(
     on_close: EventHandler<String>,
     on_add_rule: EventHandler<ManualRuleContext>,
 ) -> Element {
-    let item_keys = activity_item_keys(&items, palette);
+    let stamps = items
+        .iter()
+        .zip(activity_item_keys(&items, palette))
+        .map(|(item, revision)| VirtualItemStamp::new(item.id.clone(), revision))
+        .collect();
     let render_items = items;
-    let source = use_virtual_source_items_keyed(VirtualKind::List, item_keys, move |index| {
+    let source = use_virtual_items(VirtualKind::List, stamps, move |index| {
         let Some(item) = render_items.get(index as usize).cloned() else {
             return rsx! {};
         };
@@ -653,7 +655,7 @@ fn VirtualStatusBadge(label: String, background: u32, foreground: u32) -> Elemen
             padding_right: 8.0,
             padding_left: 8.0,
             background_color: background,
-            border_radius: 999.0,
+            border_radius: radius::FULL,
             align_items: "center",
             justify_content: "center",
             text {
@@ -669,7 +671,7 @@ fn VirtualStatusBadge(label: String, background: u32, foreground: u32) -> Elemen
 
 /// shadcn Button size="icon" variant="ghost".
 ///
-/// Trailing actions share a fixed 28×28 hit target so a pair of icons stays
+/// Trailing actions share the upstream 32×32 compact hit target so icons stay
 /// level. `margin_right` is the gap after this action.
 #[component]
 fn VirtualIconAction(
@@ -687,7 +689,7 @@ fn VirtualIconAction(
             align_items: "center",
             justify_content: "center",
             background_color: 0x0000_0000,
-            border_radius: 6.0,
+            border_radius: radius::MD,
             onclick: move |_| on_click.call(()),
             {arkit::icon(icon, 16.0, foreground)}
         }
@@ -864,16 +866,16 @@ fn ManualRuleDialogContent(local: LocalRuleEditors) -> Element {
                 padding: spacing::SM,
                 border_width: 1.0,
                 border_color: line(),
-                border_radius: 8.0,
+                border_radius: radius::LG,
                 background_color: muted(),
                 text { content: translate_ui(locale, tr::page_tr_013()), font_size: typography::XS, font_weight: 500, font_color: subtle() }
                 text { content: preview, margin_top: 3.0, font_size: typography::XS, font_color: text_color(), max_lines: 2, text_overflow: "ellipsis" }
             }
             if let Some(message) = conflict_message {
-                text { content: message, margin_top: 8.0, font_size: 11.0, line_height: 16.0, font_color: warning() }
+                text { content: message, margin_top: 8.0, font_size: typography::XS, line_height: 16.0, font_color: warning() }
             }
             if proxies.mode != RuntimeMode::Rule {
-                text { content: translate_ui(locale, tr::page_tr_014()), margin_top: 8.0, font_size: 11.0, line_height: 16.0, font_color: warning() }
+                text { content: translate_ui(locale, tr::page_tr_014()), margin_top: 8.0, font_size: typography::XS, line_height: 16.0, font_color: warning() }
             }
             if editor.connection_id.is_some() {
                 row {
@@ -884,13 +886,13 @@ fn ManualRuleDialogContent(local: LocalRuleEditors) -> Element {
                         checked: Some(editor.disconnect_after_save),
                         on_change: move |value| disconnect_services.set_manual_rule_disconnect(disconnect_editors.clone(), value),
                     }
-                    text { content: translate_ui(locale, tr::page_tr_015()), margin_left: 8.0, font_size: 11.0, line_height: 16.0, font_color: subtle() }
+                    text { content: translate_ui(locale, tr::page_tr_015()), margin_left: 8.0, font_size: typography::XS, line_height: 16.0, font_color: subtle() }
                 }
             } else {
-                text { content: translate_ui(locale, tr::page_tr_016()), margin_top: 8.0, font_size: 11.0, font_color: subtle() }
+                text { content: translate_ui(locale, tr::page_tr_016()), margin_top: 8.0, font_size: typography::XS, font_color: subtle() }
             }
             if let Some(error) = editor.error {
-                text { content: error, margin_top: 8.0, font_size: 11.0, line_height: 16.0, font_color: danger() }
+                text { content: error, margin_top: 8.0, font_size: typography::XS, line_height: 16.0, font_color: danger() }
             }
         DialogFooter {
             FlatButton {

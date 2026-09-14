@@ -9,12 +9,13 @@ use arkit::router::{
     use_back_handler, use_navigator, use_route, AnimatedOutlet, RouteProvider, Router,
 };
 use arkit::shadcn::components::{
-    BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant, Card, DialogFooter,
-    DialogHeader, Field, FieldContent, FieldDescription, FieldLabel, FieldOrientation, FieldTitle,
-    Form, FormItem, Input, RadioGroup, Select, Separator, Spinner, Switch, Textarea,
+    BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant, Card,
+    CardDescription, CardTitle, Dialog, DialogFooter, DialogHeader, Field, FieldContent,
+    FieldDescription, FieldGroup, FieldLabel, FieldOrientation, FieldTitle, Input, RadioGroup,
+    Select, Separator, Spinner, Switch, TabsList, TabsTrigger, Textarea,
 };
 use arkit::shadcn::theme::{
-    spacing, typography, use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider,
+    control, radius, spacing, typography, use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider,
 };
 use std::cell::{Cell, RefCell};
 use std::future::Future;
@@ -75,6 +76,14 @@ fn warning() -> u32 {
     match use_theme().mode {
         ThemeMode::Light => 0xFFD97706,
         ThemeMode::Dark => 0xFFFBBF24,
+    }
+}
+
+// App semantic extension to shadcn tokens, shared by normal and detached rows.
+fn success_surface() -> u32 {
+    match use_theme().mode {
+        ThemeMode::Light => 0xFFDCFCE7,
+        ThemeMode::Dark => 0xFF14532D,
     }
 }
 
@@ -225,7 +234,7 @@ struct FlatButtonProps {
     children: Element,
 }
 
-/// Flat mobile button: shadcn Button variants/sizes with elevation disabled.
+/// App action names mapped to upstream shadcn variants; styling stays upstream.
 #[component]
 fn FlatButton(props: FlatButtonProps) -> Element {
     rsx! {
@@ -234,7 +243,6 @@ fn FlatButton(props: FlatButtonProps) -> Element {
             size: props.size,
             disabled: props.disabled,
             width: props.width,
-            shadow: Some(false),
             onclick: props.onclick,
             {props.children}
         }
@@ -248,64 +256,27 @@ struct FlatSegmentedProps {
     on_change: EventHandler<String>,
 }
 
-/// Full-width segmented control in the shadcn ToggleGroup style:
-/// muted track, raised active segment, no outer border or divider lines.
+/// Controlled app selection using upstream shadcn tab styling.
 #[component]
 fn FlatSegmented(props: FlatSegmentedProps) -> Element {
-    let theme = use_theme();
     let runtime = arkit::use_runtime_handle();
-    let options = props
-        .options
-        .into_iter()
-        .map(|option| {
-            let active = option == props.selected;
-            let next = option.clone();
-            let on_change = props.on_change;
-            let runtime = runtime.clone();
-            rsx! {
-                row {
+    rsx! {
+        TabsList {
+            for option in props.options {
+                TabsTrigger {
                     key: "{option}",
-                    layout_weight: 1.0,
-                    height: "100%",
-                    padding_left: 2.0,
-                    padding_right: 2.0,
-                    button {
-                        button_type: "normal",
-                        width: "100%",
-                        height: 30.0,
-                        padding: 0.0,
-                        background_color: if active { theme.colors.background } else { 0x00000000 },
-                        foreground_color: theme.colors.foreground,
-                        border_width: 1.0,
-                        border_color: 0x00000000,
-                        border_radius: theme.radii.md,
-                        onclick: move |_| {
-                            let next = next.clone();
+                    label: option.clone(),
+                    active: option == props.selected,
+                    on_press: {
+                        let runtime = runtime.clone();
+                        let on_change = props.on_change;
+                        move |_| {
+                            let next = option.clone();
                             runtime.queue_ui(move || on_change.call(next));
-                        },
-                        text {
-                            content: option,
-                            font_size: typography::SM,
-                            font_weight: if active { 600 } else { 500 },
-                            font_color: if active { theme.colors.foreground } else { theme.colors.muted_foreground },
                         }
-                    }
+                    },
                 }
             }
-        })
-        .collect::<Vec<_>>();
-
-    rsx! {
-        row {
-            width: "100%",
-            height: 36.0,
-            padding: 3.0,
-            align_items: "center",
-            border_width: 0.0,
-            border_radius: theme.radii.lg,
-            background_color: theme.colors.muted,
-            clip: true,
-            {options.into_iter()}
         }
     }
 }
@@ -317,60 +288,14 @@ struct FlatDialogProps {
     children: Element,
 }
 
-/// Arkit modal behavior and shadcn dialog composition with a strictly flat panel.
+/// Use the upstream dialog for focus, dismissal, motion and panel tokens.
 #[component]
 fn FlatDialog(props: FlatDialogProps) -> Element {
-    let theme = use_theme();
-    let close = props.on_close;
-    let panel_close = close;
-    let panel = rsx! {
-        stack {
-            width: "100%",
-            max_width_constraint: 512.0,
-            alignment: "top-start",
-            border_radius: theme.radii.lg,
-            border_width: 1.0,
-            border_color: theme.colors.border,
-            background_color: theme.colors.background,
-            clip: true,
-            column {
-                width: "100%",
-                padding: spacing::XXL,
-                {props.children}
-            }
-            row {
-                width: "100%",
-                justify_content: "end",
-                padding_top: 14.0,
-                padding_right: 14.0,
-                hit_test_behavior: "transparent",
-                button {
-                    button_type: "normal",
-                    width: 28.0,
-                    height: 28.0,
-                    padding: 0.0,
-                    background_color: 0x00000000,
-                    border_width: 0.0,
-                    border_radius: theme.radii.sm,
-                    clip: true,
-                    focusable: false,
-                    focus_on_touch: false,
-                    alignment: "center",
-                    onclick: move |_| panel_close.call(()),
-                    {arkit::icon("x", 18.0, theme.colors.muted_foreground)}
-                }
-            }
-        }
-    };
     rsx! {
-        ModalPortal {
-            open: props.open,
-            presentation: ModalPresentation::CenteredDialog,
-            dismiss_on_backdrop: true,
-            backdrop_color: 0x8000_0000_u32,
-            viewport_inset: 8.0,
-            on_dismiss: close,
-            {panel}
+        Dialog {
+            open: Some(props.open),
+            on_close: Some(props.on_close),
+            {props.children}
         }
     }
 }
@@ -1059,7 +984,6 @@ fn use_parent_back_handler(parent: Option<Route>) {
 
 fn card(title: impl Into<String>, subtitle: Option<String>, body: Element) -> Element {
     let title = title.into();
-    let theme = use_theme();
     rsx! {
         Card {
             shadow: Some(false),
@@ -1067,21 +991,12 @@ fn card(title: impl Into<String>, subtitle: Option<String>, body: Element) -> El
                 width: "100%",
                 padding: spacing::LG,
                 align_items: "start",
-                text {
-                    content: title,
-                    font_size: typography::SM,
-                    line_height: 20.0,
-                    font_weight: 600,
-                    font_color: theme.colors.card_foreground,
-                    text_letter_spacing: -0.2,
-                }
+                CardTitle { content: title }
                 if let Some(subtitle) = subtitle {
-                    text {
-                        content: subtitle,
-                        margin_top: spacing::XXS,
-                        font_size: typography::XS,
-                        line_height: 18.0,
-                        font_color: theme.colors.muted_foreground,
+                    row {
+                        width: "100%",
+                        margin_top: spacing::XS,
+                        CardDescription { content: subtitle }
                     }
                 }
                 column {

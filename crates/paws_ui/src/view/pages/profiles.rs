@@ -77,7 +77,7 @@ pub(crate) fn profiles_page() -> Element {
                     background_color: if active { muted() } else { surface() },
                     border_width: 1.0,
                     border_color: line(),
-                    border_radius: 8.0,
+                    border_radius: radius::LG,
                     clip: true,
                     row {
                         layout_weight: 1.0,
@@ -160,7 +160,7 @@ pub(crate) fn profiles_page() -> Element {
                             padding: 0.0,
                             background_color: 0x00000000,
                             border_width: 0.0,
-                            border_radius: 8.0,
+                            border_radius: radius::LG,
                             onclick: move |_| action_profile_id.set(Some(menu_id.clone())),
                             {arkit::icon("ellipsis-vertical", 18.0, subtle())}
                         }
@@ -313,7 +313,7 @@ fn profile_action_dialog(
                 width: "100%",
                 border_width: 1.0,
                 border_color: line(),
-                border_radius: 8.0,
+                border_radius: radius::LG,
                 clip: true,
                 if !profile.active {
                     button {
@@ -332,7 +332,7 @@ fn profile_action_dialog(
                             width: "100%",
                             align_items: "center",
                             {arkit::icon("circle-check", 16.0, text_color())}
-                            text { content: translate_ui(locale, tr::page_tr_100()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
+                            text { content: translate_ui(locale, tr::page_tr_100()), margin_left: 10.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
                             row { layout_weight: 1.0 }
                         }
                     }
@@ -357,7 +357,7 @@ fn profile_action_dialog(
                             width: "100%",
                             align_items: "center",
                             {arkit::icon("file-pen-line", 16.0, text_color())}
-                            text { content: translate_ui(locale, tr::page_tr_101()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
+                            text { content: translate_ui(locale, tr::page_tr_101()), margin_left: 10.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
                             row { layout_weight: 1.0 }
                         }
                     }
@@ -390,7 +390,7 @@ fn profile_action_dialog(
                         width: "100%",
                         align_items: "center",
                         {arkit::icon("file-pen-line", 16.0, text_color())}
-                        text { content: translate_ui(locale, tr::page_tr_102()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
+                        text { content: translate_ui(locale, tr::page_tr_102()), margin_left: 10.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
                         row { layout_weight: 1.0 }
                     }
                 }
@@ -411,7 +411,7 @@ fn profile_action_dialog(
                         width: "100%",
                         align_items: "center",
                         {arkit::icon("download", 16.0, text_color())}
-                        text { content: translate_ui(locale, tr::page_tr_103()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
+                        text { content: translate_ui(locale, tr::page_tr_103()), margin_left: 10.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
                         row { layout_weight: 1.0 }
                     }
                 }
@@ -433,7 +433,7 @@ fn profile_action_dialog(
                             width: "100%",
                             align_items: "center",
                             {arkit::icon("refresh-cw", 16.0, text_color())}
-                            text { content: translate_ui(locale, tr::page_tr_104()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
+                            text { content: translate_ui(locale, tr::page_tr_104()), margin_left: 10.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
                             row { layout_weight: 1.0 }
                         }
                     }
@@ -456,7 +456,7 @@ fn profile_action_dialog(
                             width: "100%",
                             align_items: "center",
                             {arkit::icon("history", 16.0, text_color())}
-                            text { content: translate_ui(locale, tr::page_tr_105()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: text_color() }
+                            text { content: translate_ui(locale, tr::page_tr_105()), margin_left: 10.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
                             row { layout_weight: 1.0 }
                         }
                     }
@@ -478,7 +478,7 @@ fn profile_action_dialog(
                         width: "100%",
                         align_items: "center",
                         {arkit::icon("trash-2", 16.0, danger())}
-                        text { content: translate_ui(locale, tr::page_tr_106()), margin_left: 10.0, font_size: 13.0, font_weight: 600, font_color: danger() }
+                        text { content: translate_ui(locale, tr::page_tr_106()), margin_left: 10.0, font_size: typography::SM, font_weight: 600, font_color: danger() }
                         row { layout_weight: 1.0 }
                     }
                 }
@@ -532,7 +532,7 @@ fn ProfileEditDialog(
                             profile_id.set(None);
                         }
                     },
-                    text { content: translate_ui(locale, tr::page_tr_111()), font_size: 13.0, font_weight: 600, font_color: primary_text() }
+                    text { content: translate_ui(locale, tr::page_tr_111()), font_size: typography::SM, font_weight: 600, font_color: primary_text() }
                 }
             }
         }
@@ -564,7 +564,7 @@ fn profile_delete_dialog(
                     FlatButton {
                         variant: FlatButtonVariant::Outline,
                         onclick: move |_| profile_id.set(None),
-                        text { content: translate_ui(locale, tr::page_tr_114()), font_size: 13.0, font_weight: 600, font_color: text_color() }
+                        text { content: translate_ui(locale, tr::page_tr_114()), font_size: typography::SM, font_weight: 600, font_color: text_color() }
                     }
                     row { layout_weight: 1.0 }
                     FlatButton {
@@ -573,7 +573,7 @@ fn profile_delete_dialog(
                             profile_id.set(None);
                             services.delete_profile(delete_id.clone());
                         },
-                        text { content: translate_ui(locale, tr::page_tr_115()), font_size: 13.0, font_weight: 600, font_color: destructive_text() }
+                        text { content: translate_ui(locale, tr::page_tr_115()), font_size: typography::SM, font_weight: 600, font_color: destructive_text() }
                     }
                 }
             }
@@ -685,7 +685,7 @@ fn ProfileImportDialogBody(
                             translate_ui(locale, tr::page_tr_116())
                         },
                         margin_left: 6.0,
-                        font_size: 12.0,
+                        font_size: typography::XS,
                         font_weight: 600,
                         font_color: text_color(),
                     }
@@ -713,14 +713,14 @@ fn ProfileImportDialogBody(
                             translate_ui(locale, tr::profiles_scan_action())
                         },
                         margin_left: 6.0,
-                        font_size: 12.0,
+                        font_size: typography::XS,
                         font_weight: 600,
                         font_color: text_color(),
                     }
                 }
             }
             if let Some(error) = current.error.clone() {
-                text { content: error, margin_top: 10.0, font_size: 12.0, line_height: 18.0, font_color: danger() }
+                text { content: error, margin_top: 10.0, font_size: typography::XS, line_height: 18.0, font_color: danger() }
             }
         }
         DialogFooter {
@@ -735,7 +735,7 @@ fn ProfileImportDialogBody(
                     },
                     text {
                         content: translate_ui(locale, tr::profiles_import_cancel()),
-                        font_size: 13.0,
+                        font_size: typography::SM,
                         font_weight: 600,
                         font_color: text_color(),
                     }
@@ -762,7 +762,7 @@ fn ProfileImportDialogBody(
                             translate_ui(locale, tr::profiles_import_submit())
                         },
                         margin_left: 8.0,
-                        font_size: 14.0,
+                        font_size: typography::SM,
                         font_weight: 600,
                         font_color: primary_text(),
                     }

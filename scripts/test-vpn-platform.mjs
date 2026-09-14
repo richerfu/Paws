@@ -60,6 +60,29 @@ function configModule() {
   return loadArkts('entry/src/main/ets/vpnability/VpnConfig.ets', { '@kit.AbilityKit': {} });
 }
 
+test('URL capability forwards About links through the actual packaged plugin', async () => {
+  const { UrlPlugin } = loadArkts('entry/oh_modules/@ohos-rs/ability-plugin-url/src/main/ets/UrlPlugin.ets', {
+    '@ohos-rs/ability': { AsyncPluginBase: class {} },
+  });
+  const plugin = new UrlPlugin();
+  assert.equal(plugin.id, 'ohos.url');
+  const opened = [];
+  const context = { abilityContext: { async openLink(url) { opened.push(url); } }, isActive: () => true };
+  const about = readFileSync(resolve(root, 'crates/paws_ui/src/view/pages/tools.rs'), 'utf8')
+    .split('pub(crate) fn about_page')[1].split('pub(crate) fn privacy_page')[0];
+  const links = [...about.matchAll(/open_external_url\("([^"]+)"/g)].map(match => match[1]);
+  assert.equal(links.length, 2, 'exercise both production About repository links');
+  for (const url of links) {
+    const result = await plugin.invokeAsync('open-url', { typeName: 'ohos.url.OpenRequest', value: { url } }, context);
+    assert.equal(result.typeName, 'ohos.url.OpenResponse');
+    assert.equal(result.value.accepted, true);
+    assert.equal(opened.at(-1), url);
+  }
+  await assert.rejects(plugin.invokeAsync('open-url', { typeName: 'ohos.url.OpenRequest', value: { url: 'not-a-url' } }, context), /absolute URL/);
+  context.abilityContext.openLink = async () => { throw new Error('browser unavailable'); };
+  await assert.rejects(plugin.invokeAsync('open-url', { typeName: 'ohos.url.OpenRequest', value: { url: 'https://example.com' } }, context), /browser unavailable/);
+});
+
 test('default application VPN options survive the ArkTS configuration boundary', () => {
   const api = configModule();
   const options = api.parseOptions(api.DEFAULT_OPTIONS_JSON);

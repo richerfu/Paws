@@ -187,7 +187,12 @@ pub(crate) fn VirtualProxyGroupList(
         },
     ));
 
-    let source = use_virtual_source_items_keyed(VirtualKind::List, item_keys, move |index| {
+    // Row projections are read through list_state; only identity is structural.
+    let stamps = item_keys
+        .into_iter()
+        .map(|id| VirtualItemStamp::new(id, ()))
+        .collect();
+    let source = use_virtual_items(VirtualKind::List, stamps, move |index| {
         rsx! {
             VirtualProxyRow {
                 index,
@@ -344,7 +349,7 @@ fn VirtualProxyGroupRow(
             margin_bottom: spacing::SM,
             border_width: 1.0,
             border_color: palette.border,
-            border_radius: 8.0,
+            border_radius: radius::LG,
             clip: true,
             align_items: "center",
             justify_content: "center",
@@ -355,7 +360,7 @@ fn VirtualProxyGroupRow(
                 align_items: "center",
                 justify_content: "center",
                 background_color: palette.selected_surface,
-                border_radius: 6.0,
+                border_radius: radius::MD,
                 {arkit::icon("git-branch", 17.0, palette.foreground)}
             }
             column {
@@ -467,7 +472,7 @@ fn VirtualProxyMemberRow(
             margin_bottom: spacing::XXS,
             border_width: 1.0,
             border_color: palette.border,
-            border_radius: 8.0,
+            border_radius: radius::LG,
             clip: true,
             align_items: "center",
             onclick: move |_| {
