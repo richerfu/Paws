@@ -1332,6 +1332,169 @@ fn remote_session_liveness_matches_watchdog_wake_grace() {
 }
 
 #[test]
+fn owner_liveness_detects_killed_extension_without_waiting_for_heartbeat() {
+    const CHILD_ROOT: &str = "PAWS_OWNER_LIVENESS_CHILD_ROOT";
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        let root = PathBuf::from(root);
+        let journal_path = root.join("runtime/platform-vpn-owner.json");
+        let JournalRead::Present(journal) = platform_owner::read(&journal_path).unwrap() else {
+            panic!("pending owner journal missing");
+        };
+        let owner = current_process_identity().unwrap();
+        let _lease = platform_owner::acquire_owner_lease_exact(
+            &root.join("runtime/platform-vpn-owner.extension.lease"),
+            platform_owner_lease_record(
+                &journal.attempt_id,
+                owner.clone(),
+                PlatformVpnOwnerLeaseRole::Extension,
+            ),
+        )
+        .unwrap();
+        platform_owner::upgrade_attached_exact(
+            &journal_path,
+            &journal.attempt_id,
+            journal.issuer,
+            owner,
+        )
+        .unwrap();
+        std::fs::write(root.join("extension-ready"), b"ready").unwrap();
+        std::thread::sleep(Duration::from_secs(10));
+        return;
+    }
+
+    let root = std::env::temp_dir().join(format!("paws-owner-liveness-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let attempt_id = core.begin_platform_vpn_start().unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("--exact")
+        .arg("tests::owner_liveness_detects_killed_extension_without_waiting_for_heartbeat")
+        .arg("--test-threads=1")
+        .env(CHILD_ROOT, &root)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    for _ in 0..200 {
+        if root.join("extension-ready").exists() {
+            break;
+        }
+        assert!(child.try_wait().unwrap().is_none());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(root.join("extension-ready").exists());
+    let JournalRead::Present(journal) =
+        platform_owner::read(&root.join("runtime/platform-vpn-owner.json")).unwrap()
+    else {
+        panic!("attached owner journal missing");
+    };
+    let owner = journal.extension.unwrap();
+    let mut remote = PlatformVpnState {
+        start_attempt_id: attempt_id.clone(),
+        start_outcome: PlatformStartOutcome::Connected,
+        extension_attached: true,
+        extension_owner_pid: owner.pid,
+        extension_owner_start_time: owner.start_time,
+        running: true,
+        network_protected: true,
+        updated_at: 1,
+        ..PlatformVpnState::default()
+    };
+    {
+        let mut state = core.lock_state().unwrap();
+        core.apply_platform_envelope_locked(&mut state, true, None, Some(remote.clone()));
+        core.refresh_platform_vpn_owner_liveness_locked(&mut state)
+            .unwrap();
+        assert!(
+            state.platform_vpn_running,
+            "a held lease must stay connected"
+        );
+    }
+    let mut revisions = core.subscribe_runtime_revisions();
+    let before = *revisions.borrow_and_update();
+    let event_before = core.platform_vpn_event_revision();
+    child.kill().unwrap();
+    assert!(!child.wait().unwrap().success());
+    {
+        let mut state = core.lock_state().unwrap();
+        assert!(
+            state.platform_remote_state_seen_at.unwrap().elapsed() < PLATFORM_HEARTBEAT_STALE_AFTER
+        );
+        core.refresh_platform_vpn_owner_liveness_locked(&mut state)
+            .unwrap();
+        assert!(
+            !state.platform_vpn_cleanup_complete,
+            "owner exit is not OS stop confirmation"
+        );
+        // Even a newer timestamp from the dead owner's last publication must
+        // not revive this terminal session.
+        remote.updated_at = 2;
+        core.apply_platform_envelope_locked(&mut state, true, None, Some(remote));
+    }
+    assert!(revisions.has_changed().unwrap());
+    assert!(revisions.borrow_and_update().status_revision > before.status_revision);
+    assert!(core.platform_vpn_event_revision() > event_before);
+    let snapshot = core.snapshot().unwrap();
+    assert_eq!(snapshot.vpn_lifecycle, VpnLifecycle::Failed);
+    assert!(!snapshot.vpn_running);
+    assert!(!snapshot.network_protected);
+    assert!(snapshot
+        .network_protect_error
+        .unwrap()
+        .contains("owner lease was released"));
+    assert!(
+        core.begin_platform_vpn_start().is_err(),
+        "keep the exact cleanup barrier"
+    );
+    let event_after = core.platform_vpn_event_revision();
+    core.refresh_platform_vpn_owner_liveness_locked(&mut core.lock_state().unwrap())
+        .unwrap();
+    assert_eq!(core.platform_vpn_event_revision(), event_after);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn owner_liveness_ignores_cleanup_and_a_rebound_journal() {
+    for replacement in [false, true] {
+        let root =
+            std::env::temp_dir().join(format!("paws-owner-liveness-journal-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let attempt_id = core.begin_platform_vpn_start().unwrap();
+        core.bind_platform_vpn_start(&attempt_id).unwrap();
+        core.set_platform_vpn_running(true).unwrap();
+        let owner = current_process_identity().unwrap();
+        let journal_path = root.join("runtime/platform-vpn-owner.json");
+        let mut state = core.lock_state().unwrap();
+        state.platform_vpn_extension_lease = None;
+        if replacement {
+            let JournalRead::Present(journal) = platform_owner::read(&journal_path).unwrap() else {
+                panic!("attached journal missing");
+            };
+            platform_owner::rebind_attached_exact(
+                &journal_path,
+                &attempt_id,
+                journal.issuer,
+                owner.clone(),
+                ProcessIdentity {
+                    start_time: owner.start_time + 1,
+                    ..owner
+                },
+            )
+            .unwrap();
+        } else {
+            platform_owner::delete_exact(&journal_path, &attempt_id, Some(owner)).unwrap();
+        }
+        let before = core.platform_vpn_event_revision();
+        core.refresh_platform_vpn_owner_liveness_locked(&mut state)
+            .unwrap();
+        assert!(state.platform_vpn_running);
+        assert_eq!(core.platform_vpn_event_revision(), before);
+        drop(state);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn process_identity_requires_boot_and_process_filesystem_evidence() {
     let identity = ProcessIdentity {
         boot_id: "boot-a".to_owned(),
