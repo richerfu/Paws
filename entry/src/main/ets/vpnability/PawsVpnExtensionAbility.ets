@@ -130,17 +130,14 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
 
   public onCreate(want: Want): void {
     super.onCreate(want);
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'onCreate');
     this.startFromWant(want);
   }
 
-  public onRequest(want: Want, startId: number): void {
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'onRequest %{public}d', startId);
+  public onRequest(want: Want, _startId: number): void {
     this.startFromWant(want);
   }
 
   public onDestroy(): void {
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'onDestroy');
     this.requestGeneration += 1;
     this.stopHeartbeat();
     this.stopPlatformSubscription();
@@ -153,7 +150,6 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     try {
       setPawsBundleName(this.context.applicationInfo.name);
       pawsUi.configureAppHome(`${this.context.filesDir}/paws`);
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'configured native home');
       return true;
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'configure native home failed %{public}s', describeError(err));
@@ -191,7 +187,6 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     // Validate its descriptors first, then keep an already queued, starting,
     // or connected owner intact instead of superseding it with itself.
     if (attemptId === this.inFlightAttemptId || attemptId === this.activeAttemptId) {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'ignored duplicate VPN request %{public}s', attemptId);
       return;
     }
     const generation = ++this.requestGeneration;
@@ -206,7 +201,6 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       );
     }).catch(async (err: Error): Promise<void> => {
       if (generation !== this.requestGeneration || this.inFlightAttemptId !== attemptId) {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'ignored stale VPN request completion');
         return;
       }
       const message = describeError(err) || 'VPN startup pipeline failed';
@@ -414,8 +408,6 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       throw new Error('stale VPN request generation after TUN create');
     }
     this.tunFd = fd;
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'created tun fd %{public}d in %{public}d ms',
-      fd, Date.now() - startedAt);
 
     try {
       await this.awaitPlatformOperation(connection, connection.protectProcessNet(),

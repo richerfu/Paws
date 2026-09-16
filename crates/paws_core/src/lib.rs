@@ -6653,9 +6653,16 @@ impl CoreHandle {
         allow_platform_telemetry: bool,
     ) -> Result<RuntimeRevisions, PawsError> {
         let mut state = self.lock_state()?;
-        // This one-second sampler is also the monotonic liveness clock for a
-        // remote VPN Extension. snapshot() remains a read-only projection.
+        // This one-second sampler also observes remote Extension ownership
+        // and advances its monotonic heartbeat watchdog. Snapshot reads stay
+        // pure, and process exit does not have to wait for heartbeat expiry.
         self.sync_platform_vpn_state_locked(&mut state);
+        if self
+            .platform_ipc()?
+            .is_some_and(|platform| platform.is_ui())
+        {
+            self.refresh_platform_vpn_owner_liveness_locked(&mut state)?;
+        }
         state.logs.sync_session();
         if let Ok(mut runtime_logs) = RUNTIME_LOGS.lock() {
             runtime_logs.sync(state.logs.root());
@@ -6918,6 +6925,49 @@ impl CoreHandle {
     fn read_platform_vpn_telemetry(&self) -> Option<PlatformVpnTelemetry> {
         let platform = self.platform_ipc().ok().flatten()?;
         platform.read_remote().ok().flatten()?.telemetry
+    }
+
+    fn refresh_platform_vpn_owner_liveness_locked(
+        &self,
+        state: &mut CoreState,
+    ) -> Result<(), PawsError> {
+        if !state.platform_extension_attached
+            || state.platform_vpn_cleanup_complete
+            || !matches!(
+                state.platform_start_outcome,
+                PlatformStartOutcome::Pending | PlatformStartOutcome::Connected
+            )
+        {
+            return Ok(());
+        }
+        let Some(_released_lease) = platform_owner::lock_released_owner_lease(
+            &platform_owner_lease_path(state, PlatformVpnOwnerLeaseRole::Extension),
+        )?
+        else {
+            return Ok(());
+        };
+        let JournalRead::Present(journal) =
+            platform_owner::read(&platform_owner_journal_path(state))?
+        else {
+            // Cooperative cleanup deletes the journal before releasing the
+            // lease. Its terminal IPC frame may still be on the way.
+            return Ok(());
+        };
+        if journal.attempt_id != state.platform_start_attempt_id
+            || journal.phase != PlatformVpnOwnerPhase::Attached
+            || !journal.extension.as_ref().is_some_and(|owner| {
+                owner.pid == state.platform_extension_owner_pid
+                    && owner.start_time == state.platform_extension_owner_start_time
+            })
+        {
+            return Ok(());
+        }
+        const MESSAGE: &str = "VPN extension owner lease was released";
+        apply_platform_failure(state, MESSAGE.to_owned());
+        state.logs.push(warning_log(MESSAGE));
+        // Publish the terminal fence while the lease guard still excludes a
+        // rebind. Keep the cleanup barrier until exact-owner OS stop recovery.
+        self.persist_platform_vpn_state_locked(state)
     }
 
     fn sync_platform_vpn_state_locked(&self, state: &mut CoreState) {

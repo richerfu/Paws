@@ -458,7 +458,6 @@ export class VpnPlugin extends AsyncPluginBase {
         throw new Error('native platform shared memory returned invalid file descriptors');
       }
       this.platformSharedMemory = { ashmemFd, notificationFd };
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'initialized platform shared memory');
     } catch (err) {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'initialize platform shared memory failed %{public}s',
         describeError(err));
@@ -471,7 +470,6 @@ export class VpnPlugin extends AsyncPluginBase {
     context: BridgePluginContext,
   ): Promise<void> {
     if (this.vpnStartRequest) {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'reusing pending VPN start request');
       return this.vpnStartRequest;
     }
     const intentEpoch = pawsUi.advancePlatformVpnIntent();
@@ -547,10 +545,8 @@ export class VpnPlugin extends AsyncPluginBase {
     await this.invokeVpnExtensionStart(optionsJson, attemptId);
     if (generation !== this.operationGeneration ||
       !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'skipped stale VPN authorization redispatch %{public}s', attemptId);
       return;
     }
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'system acknowledged VPN start attempt %{public}s', attemptId);
 
     // The first-authorization dialog on some HarmonyOS builds starts the VPN
     // Extension with a replacement Want containing only bundleName/abilityName.
@@ -560,14 +556,7 @@ export class VpnPlugin extends AsyncPluginBase {
     // repeated start is idempotent). The terminal outcome is owned entirely
     // by the Extension's shared-memory events, so no timed attach probing is
     // needed.
-    hilog.warn(
-      LOG_DOMAIN,
-      LOG_TAG,
-      'redispatching VPN start attempt %{public}s after system acknowledgement',
-      attemptId,
-    );
     await this.invokeVpnExtensionStart(optionsJson, attemptId);
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'redispatched VPN start attempt %{public}s', attemptId);
   }
 
   private async performStartVpn(
@@ -578,7 +567,6 @@ export class VpnPlugin extends AsyncPluginBase {
   ): Promise<void> {
     let attemptId: string = '';
     try {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'request VPN start received');
       if (generation !== this.operationGeneration ||
         !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) {
         throw new Error('VPN start request was superseded');
@@ -643,7 +631,6 @@ export class VpnPlugin extends AsyncPluginBase {
         return;
       }
       await notificationManager.requestEnableNotification(context.abilityContext);
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'notification permission enabled');
     } catch (err) {
       // Notification permission must never prevent the user from starting VPN.
       hilog.warn(LOG_DOMAIN, LOG_TAG, 'notification permission unavailable %{public}s',
@@ -669,7 +656,6 @@ export class VpnPlugin extends AsyncPluginBase {
     isStillAuthorized?: () => boolean,
   ): Promise<boolean> {
     try {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'request VPN stop received');
       // The start Promise may remain pending indefinitely after authorization.
       // Core has already persisted an exact terminal/journal fence, so a late
       // Want cannot bind and this Promise is not a stop barrier.

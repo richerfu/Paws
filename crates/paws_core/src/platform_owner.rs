@@ -239,6 +239,20 @@ pub(crate) fn observe_owner_lease_exact(
     })
 }
 
+/// Hold an already released lease without changing its record. The observer
+/// must verify the owner journal while holding this guard; a replacement
+/// Extension cannot acquire ownership until the observation is committed.
+pub(crate) fn lock_released_owner_lease(
+    path: &Path,
+) -> Result<Option<PlatformVpnOwnerLease>, PawsError> {
+    let file = open_owner_lease(path, false)?;
+    if try_lock_owner_lease(&file, path)? {
+        Ok(Some(PlatformVpnOwnerLease { file }))
+    } else {
+        Ok(None)
+    }
+}
+
 pub(crate) fn read(path: &Path) -> Result<JournalRead, PawsError> {
     let _lock = lock_journal(path)?;
     read_unlocked(path)
@@ -974,12 +988,16 @@ mod tests {
             observe_owner_lease_exact(&path, &different).unwrap(),
             PlatformVpnOwnerLeaseObservation::HeldOther
         );
+        assert!(lock_released_owner_lease(&path).unwrap().is_none());
 
         assert!(child.wait().unwrap().success());
         assert_eq!(
             observe_owner_lease_exact(&path, &expected).unwrap(),
             PlatformVpnOwnerLeaseObservation::Released
         );
+        let released_guard = lock_released_owner_lease(&path).unwrap().unwrap();
+        assert!(acquire_owner_lease_exact(&path, different.clone()).is_err());
+        drop(released_guard);
         let replacement = acquire_owner_lease_exact(&path, different.clone()).unwrap();
         assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), inode);
         assert_eq!(

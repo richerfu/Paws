@@ -53,13 +53,7 @@ pub(crate) fn dashboard_page() -> Element {
     let transitioning = vpn_starting || vpn_stopping;
     let disabled = vpn_operation.is_some() || matches!(session.lifecycle, VpnLifecycle::Starting);
     let connected = session.vpn_running && !transitioning;
-    let visible_error = session
-        .bootstrap_error
-        .as_deref()
-        .or(session.runtime_error.as_deref());
-    let status_label = if let Some(error) = visible_error {
-        compact(error)
-    } else if vpn_confirming {
+    let status_label = if vpn_confirming {
         translate_ui(s, tr::vpn_operation_confirming())
     } else if vpn_unconfirmed {
         translate_ui(s, tr::vpn_operation_unconfirmed())
@@ -69,8 +63,9 @@ pub(crate) fn dashboard_page() -> Element {
         translate_ui(s, tr::page_tr_249())
     } else {
         match session.lifecycle {
-            VpnLifecycle::Stopped => translate_ui(s, tr::dashboard_disconnected()),
-            VpnLifecycle::EngineLoaded => translate_ui(s, tr::page_tr_250()),
+            VpnLifecycle::Stopped | VpnLifecycle::EngineLoaded => {
+                translate_ui(s, tr::dashboard_disconnected())
+            }
             VpnLifecycle::Starting => translate_ui(s, tr::lifecycle_starting()),
             VpnLifecycle::Connected => translate_ui(s, tr::dashboard_connected()),
             VpnLifecycle::ProtectFailed => translate_ui(s, tr::lifecycle_protect_failed()),
@@ -83,9 +78,7 @@ pub(crate) fn dashboard_page() -> Element {
         .find(|profile| profiles.active_profile.as_deref() == Some(profile.id.as_str()))
         .map(|profile| profile.name.clone())
         .unwrap_or_else(|| translate_ui(s, tr::dashboard_profile_empty()));
-    let status_color = if visible_error.is_some() {
-        danger()
-    } else if transitioning {
+    let status_color = if transitioning {
         subtle()
     } else if matches!(
         session.lifecycle,
