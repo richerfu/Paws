@@ -13,7 +13,7 @@ const UI_LANE_SIZE: usize = 1024 * 1024;
 const FRAME_HEADER_SIZE: usize = 32;
 const FRAME_MAGIC: u32 = 0x5041_5753;
 const REGION_MAGIC: &[u8; 8] = b"PAWSIPC\0";
-const PROTOCOL_VERSION: u32 = 1;
+const PROTOCOL_VERSION: u32 = 2;
 const SLOT_COUNT: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,8 +62,9 @@ pub(crate) struct PlatformIpc {
 }
 
 struct SocketNotification {
-    local: OwnedFd,
-    transfer: Option<OwnedFd>,
+    listener: Option<OwnedFd>,
+    address: NotificationAddress,
+    connection: Mutex<Option<Arc<OwnedFd>>>,
     subscription: Mutex<()>,
     cancel_read: OwnedFd,
     cancel_write: OwnedFd,
@@ -77,17 +78,17 @@ impl PlatformIpc {
         ashmem
             .map_read_write()
             .map_err(|error| PlatformIpcError::Memory(error.to_string()))?;
-        let (local, transfer) = create_notification_pair()?;
+        let notification = SocketNotification::listen(session_id())?;
         let fds = PlatformSharedMemoryFds {
             ashmem: ashmem.as_raw_fd(),
-            notification: transfer.as_raw_fd(),
+            notification: notification.listener_fd()?,
         };
         let ipc = Arc::new(Self {
             memory: Mutex::new(ashmem),
             role: PlatformRole::Ui,
             published: Mutex::new(PlatformEnvelope::default()),
             next_generation: AtomicU64::new(1),
-            notification: SocketNotification::new(local, Some(transfer))?,
+            notification,
         });
         ipc.initialize_region()?;
         Ok((ipc, fds))
@@ -97,12 +98,11 @@ impl PlatformIpc {
         if ashmem_fd < 0 || notification_fd < 0 {
             return Err(PlatformIpcError::InvalidHeader);
         }
-        // The descriptors originate from ArkTS Want parameters and remain
-        // owned by that runtime. Keep independent duplicates so a repeated
-        // onRequest can safely rebind the same session without double-closing
-        // the descriptors managed by ArkTS.
+        // ArkTS owns the Want descriptors. Duplicate ashmem for this binding.
+        // The notification descriptor now identifies the UI listener; the VPN
+        // must create its own endpoint, using the session address in ashmem,
+        // rather than write a transferred UI-domain socket.
         let ashmem_fd = duplicate_fd(ashmem_fd)?;
-        let notification_fd = duplicate_fd(notification_fd)?;
         let mut ashmem = Ashmem::from_owned_fd(ashmem_fd)
             .map_err(|error| PlatformIpcError::Memory(error.to_string()))?;
         if ashmem.size() != REGION_SIZE {
@@ -111,17 +111,18 @@ impl PlatformIpc {
         ashmem
             .map_read_write()
             .map_err(|error| PlatformIpcError::Memory(error.to_string()))?;
-        configure_nonblocking(notification_fd.as_raw_fd())?;
-        let ipc = Arc::new(Self {
+        let mut ipc = Self {
             memory: Mutex::new(ashmem),
             role: PlatformRole::Vpn,
             published: Mutex::new(PlatformEnvelope::default()),
             next_generation: AtomicU64::new(1),
-            notification: SocketNotification::new(notification_fd, None)?,
-        });
+            notification: SocketNotification::connect_lazily(0)?,
+        };
         ipc.validate_region()?;
+        let header = ipc.read_memory(0, 32)?;
+        ipc.notification.address = NotificationAddress::new(read_u64(&header[16..24]));
         ipc.seed_next_generation()?;
-        Ok(ipc)
+        Ok(Arc::new(ipc))
     }
 
     pub(crate) fn ui_fds(&self) -> Result<PlatformSharedMemoryFds> {
@@ -133,12 +134,7 @@ impl PlatformIpc {
             .lock()
             .map_err(|_| PlatformIpcError::LockPoisoned)?
             .as_raw_fd();
-        let notification = self
-            .notification
-            .transfer
-            .as_ref()
-            .ok_or(PlatformIpcError::InvalidHeader)?
-            .as_raw_fd();
+        let notification = self.notification.listener_fd()?;
         Ok(PlatformSharedMemoryFds {
             ashmem,
             notification,
@@ -229,7 +225,7 @@ impl PlatformIpc {
         header[..REGION_MAGIC.len()].copy_from_slice(REGION_MAGIC);
         header[8..12].copy_from_slice(&PROTOCOL_VERSION.to_le_bytes());
         header[12..16].copy_from_slice(&(REGION_SIZE as u32).to_le_bytes());
-        header[16..24].copy_from_slice(&session_id().to_le_bytes());
+        header[16..24].copy_from_slice(&self.notification.address.session.to_le_bytes());
         let header_checksum = checksum(&header[..24]);
         header[24..28].copy_from_slice(&header_checksum.to_le_bytes());
         self.write_memory(0, &header)
@@ -347,12 +343,71 @@ impl PlatformIpc {
     }
 }
 
+struct NotificationAddress {
+    session: u64,
+    raw: libc::sockaddr_un,
+    length: libc::socklen_t,
+}
+
+impl NotificationAddress {
+    fn new(session: u64) -> Self {
+        let mut raw: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        raw.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        #[cfg(any(target_os = "linux", target_env = "ohos"))]
+        let name = format!("\0paws-platform-{session:016x}");
+        #[cfg(not(any(target_os = "linux", target_env = "ohos")))]
+        let name = format!("/tmp/paws-platform-{session:016x}.sock");
+        for (target, byte) in raw.sun_path.iter_mut().zip(name.bytes()) {
+            *target = byte as libc::c_char;
+        }
+        let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + name.len();
+        #[cfg(not(any(target_os = "linux", target_env = "ohos")))]
+        let length = length + 1;
+        #[cfg(target_os = "macos")]
+        {
+            raw.sun_len = length as u8;
+        }
+        Self {
+            session,
+            raw,
+            length: length as libc::socklen_t,
+        }
+    }
+
+    fn pointer(&self) -> *const libc::sockaddr {
+        (&self.raw as *const libc::sockaddr_un).cast()
+    }
+}
+
 impl SocketNotification {
-    fn new(local: OwnedFd, transfer: Option<OwnedFd>) -> Result<Self> {
+    fn listen(session: u64) -> Result<Self> {
+        let address = NotificationAddress::new(session);
+        let listener = Self::create_socket()?;
+        if unsafe { libc::bind(listener.as_raw_fd(), address.pointer(), address.length) } < 0
+            || unsafe { libc::listen(listener.as_raw_fd(), 16) } < 0
+        {
+            return Err(notification_error());
+        }
+        configure_nonblocking(listener.as_raw_fd())?;
+        Self::new(Some(listener), address, None)
+    }
+
+    fn connect_lazily(session: u64) -> Result<Self> {
+        // Want validation only maps ashmem. Connect when this binding actually
+        // publishes or subscribes, so a duplicate Want cannot replace a live peer.
+        Self::new(None, NotificationAddress::new(session), None)
+    }
+
+    fn new(
+        listener: Option<OwnedFd>,
+        address: NotificationAddress,
+        connection: Option<OwnedFd>,
+    ) -> Result<Self> {
         let (cancel_read, cancel_write) = create_notification_pair()?;
         Ok(Self {
-            local,
-            transfer,
+            listener,
+            address,
+            connection: Mutex::new(connection.map(Arc::new)),
             subscription: Mutex::new(()),
             cancel_read,
             cancel_write,
@@ -360,12 +415,80 @@ impl SocketNotification {
         })
     }
 
+    fn listener_fd(&self) -> Result<RawFd> {
+        self.listener
+            .as_ref()
+            .map(AsRawFd::as_raw_fd)
+            .ok_or(PlatformIpcError::InvalidHeader)
+    }
+
+    fn create_socket() -> Result<OwnedFd> {
+        let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+        if fd < 0 {
+            return Err(notification_error());
+        }
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    fn connection(&self) -> Result<Option<Arc<OwnedFd>>> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| PlatformIpcError::LockPoisoned)?;
+        if let Some(listener) = &self.listener {
+            loop {
+                let fd = unsafe {
+                    libc::accept(
+                        listener.as_raw_fd(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                    )
+                };
+                if fd >= 0 {
+                    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+                    configure_nonblocking(fd.as_raw_fd())?;
+                    *connection = Some(Arc::new(fd));
+                    // A publisher may accept while the waiter is parked on
+                    // only the listener. Wake it to rebuild its poll set.
+                    self.wake_local_waiter();
+                    continue;
+                }
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    break;
+                }
+                return Err(PlatformIpcError::Notification(error.to_string()));
+            }
+        } else if connection.is_none() {
+            // Each process creates its own endpoint in its own SELinux domain.
+            // Passing a UI-created socketpair endpoint through Want grants FD
+            // use, but does not grant vpn_isolate_hap write access to that socket.
+            let fd = Self::create_socket()?;
+            if unsafe { libc::connect(fd.as_raw_fd(), self.address.pointer(), self.address.length) }
+                < 0
+            {
+                return Err(notification_error());
+            }
+            configure_nonblocking(fd.as_raw_fd())?;
+            *connection = Some(Arc::new(fd));
+        }
+        Ok(connection.clone())
+    }
+
     fn notify(&self) -> Result<()> {
+        let Some(connection) = self.connection()? else {
+            // The UI can publish before the Extension attaches. Its latest
+            // frame is already in ashmem and is read when the peer binds.
+            return Ok(());
+        };
         let value = [1_u8];
         loop {
             let written = unsafe {
                 libc::send(
-                    self.local.as_raw_fd(),
+                    connection.as_raw_fd(),
                     value.as_ptr().cast(),
                     value.len(),
                     libc::MSG_NOSIGNAL,
@@ -381,26 +504,73 @@ impl SocketNotification {
             if error.kind() == io::ErrorKind::WouldBlock {
                 return Ok(());
             }
+            if self.listener.is_some()
+                && matches!(error.raw_os_error(), Some(libc::EPIPE | libc::ECONNRESET))
+            {
+                self.clear_connection(&connection)?;
+                return Ok(());
+            }
             return Err(PlatformIpcError::Notification(error.to_string()));
         }
     }
 
+    fn clear_connection(&self, expected: &Arc<OwnedFd>) -> Result<()> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| PlatformIpcError::LockPoisoned)?;
+        if connection
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, expected))
+        {
+            *connection = None;
+        }
+        Ok(())
+    }
+
     fn wait(&self, timeout: Option<Duration>) -> Result<bool> {
+        self.wait_internal(timeout, false)
+    }
+
+    fn wait_event_cancellable(&self) -> Result<bool> {
+        self.wait_internal(None, true)
+    }
+
+    fn wait_internal(&self, timeout: Option<Duration>, cancellable: bool) -> Result<bool> {
         let _subscription = self
             .subscription
             .lock()
             .map_err(|_| PlatformIpcError::LockPoisoned)?;
+        let cancel_fd = self.cancel_read.as_raw_fd();
+        if cancellable && self.cancel_pending.swap(false, Ordering::AcqRel) {
+            drain_cancel_fd(cancel_fd);
+            return Ok(false);
+        }
         let timeout_ms = timeout
             .map(|timeout| timeout.as_millis().min(i32::MAX as u128) as i32)
             .unwrap_or(-1);
-        let fd = self.local.as_raw_fd();
-        let mut descriptor = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
         loop {
-            let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+            // Hold an Arc while polling: a concurrent publication may accept a
+            // replacement session, but cannot close or reuse this descriptor.
+            let connection = self.connection()?;
+            let mut descriptors = [
+                libc::pollfd {
+                    fd: connection.as_ref().map_or(-1, |fd| fd.as_raw_fd()),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: self.listener.as_ref().map_or(-1, AsRawFd::as_raw_fd),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: cancel_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 3, timeout_ms) };
             if ready == 0 {
                 return Ok(false);
             }
@@ -411,59 +581,37 @@ impl SocketNotification {
                 }
                 return Err(PlatformIpcError::Notification(error.to_string()));
             }
-            return drain_notifications(fd);
-        }
-    }
-
-    /// Block on the session notification socket until a frame arrives or the
-    /// process-local cancellation socket is signalled. No timeout, no polling.
-    fn wait_event_cancellable(&self) -> Result<bool> {
-        let _subscription = self
-            .subscription
-            .lock()
-            .map_err(|_| PlatformIpcError::LockPoisoned)?;
-        let session_fd = self.local.as_raw_fd();
-        let cancel_fd = self.cancel_read.as_raw_fd();
-        // Cancellation is sticky for this exact IPC binding. If stop races the
-        // subscription before it reaches poll, the waiter still observes the
-        // pending cancellation instead of parking forever. A replacement IPC
-        // owns a different cancellation pair, so it cannot steal this wakeup.
-        if self.cancel_pending.swap(false, Ordering::AcqRel) {
-            drain_cancel_fd(cancel_fd);
-            return Ok(false);
-        }
-        let mut descriptors = [
-            libc::pollfd {
-                fd: session_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: cancel_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        loop {
-            let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
+            if descriptors[2].revents != 0 {
+                drain_cancel_fd(cancel_fd);
+                if cancellable && self.cancel_pending.swap(false, Ordering::AcqRel) {
+                    return Ok(false);
                 }
-                return Err(PlatformIpcError::Notification(error.to_string()));
+                continue;
             }
             if descriptors[1].revents != 0 {
-                drain_cancel_fd(cancel_fd);
-                self.cancel_pending.store(false, Ordering::Release);
-                return Ok(false);
+                // Attachment itself wakes consumers to read the latest ashmem
+                // lane, including a terminal delivery acknowledgement.
+                self.connection()?;
+                return Ok(true);
             }
             if descriptors[0].revents != 0 {
-                let changed = drain_notifications(session_fd)?;
-                if changed {
-                    return Ok(true);
+                if let Some(connection) = connection {
+                    let (changed, closed) = drain_notifications(connection.as_raw_fd())?;
+                    if closed {
+                        self.clear_connection(&connection)?;
+                        if self.listener.is_none() {
+                            return Err(PlatformIpcError::Notification(
+                                "platform notification peer closed".to_owned(),
+                            ));
+                        }
+                        // A dead Extension cannot publish. Wake once, then wait
+                        // on the listener for a future owner instead of spinning.
+                        return Ok(true);
+                    }
+                    if changed {
+                        return Ok(true);
+                    }
                 }
-                // Spurious wakeup on the session socket: park again.
             }
         }
     }
@@ -472,21 +620,35 @@ impl SocketNotification {
         if self.cancel_pending.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.wake_local_waiter();
+    }
+
+    fn wake_local_waiter(&self) {
         let value = [1_u8];
-        let written = unsafe {
+        unsafe {
             libc::send(
                 self.cancel_write.as_raw_fd(),
                 value.as_ptr().cast(),
                 value.len(),
                 libc::MSG_NOSIGNAL,
-            )
-        };
-        if written != value.len() as isize {
-            // Keep cancel_pending set even if the socket buffer was already
-            // full: the waiter checks the flag before entering poll.
-            let _ = io::Error::last_os_error();
+            );
         }
     }
+}
+
+impl Drop for SocketNotification {
+    fn drop(&mut self) {
+        #[cfg(not(any(target_os = "linux", target_env = "ohos")))]
+        if self.listener.is_some() {
+            unsafe {
+                libc::unlink(self.address.raw.sun_path.as_ptr());
+            }
+        }
+    }
+}
+
+fn notification_error() -> PlatformIpcError {
+    PlatformIpcError::Notification(io::Error::last_os_error().to_string())
 }
 
 fn drain_cancel_fd(fd: RawFd) {
@@ -546,7 +708,7 @@ const fn lane_layout(role: PlatformRole) -> (usize, usize) {
 
 fn create_notification_pair() -> Result<(OwnedFd, OwnedFd)> {
     let mut fds = [-1; 2];
-    let result = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, fds.as_mut_ptr()) };
+    let result = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
     if result < 0 {
         return Err(PlatformIpcError::Notification(
             io::Error::last_os_error().to_string(),
@@ -587,7 +749,7 @@ fn duplicate_fd(fd: RawFd) -> Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(duplicate) })
 }
 
-fn drain_notifications(fd: RawFd) -> Result<bool> {
+fn drain_notifications(fd: RawFd) -> Result<(bool, bool)> {
     let mut changed = false;
     let mut buffer = [0_u8; 64];
     loop {
@@ -597,14 +759,17 @@ fn drain_notifications(fd: RawFd) -> Result<bool> {
             continue;
         }
         if read == 0 {
-            return Ok(changed);
+            return Ok((changed, true));
         }
         let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ECONNRESET) {
+            return Ok((changed, true));
+        }
         if error.kind() == io::ErrorKind::Interrupted {
             continue;
         }
         if error.kind() == io::ErrorKind::WouldBlock {
-            return Ok(changed);
+            return Ok((changed, false));
         }
         return Err(PlatformIpcError::Notification(error.to_string()));
     }
@@ -657,8 +822,11 @@ mod tests {
     #[test]
     fn blocking_event_subscription_wakes_for_peer_publication() {
         let (local, peer) = create_notification_pair().unwrap();
-        let subscription = Arc::new(SocketNotification::new(local, None).unwrap());
-        let notifier = SocketNotification::new(peer, None).unwrap();
+        let subscription = Arc::new(
+            SocketNotification::new(None, NotificationAddress::new(0), Some(local)).unwrap(),
+        );
+        let notifier =
+            SocketNotification::new(None, NotificationAddress::new(0), Some(peer)).unwrap();
         let waiter = {
             let subscription = Arc::clone(&subscription);
             std::thread::spawn(move || subscription.wait(None))
@@ -670,9 +838,87 @@ mod tests {
     }
 
     #[test]
+    fn stream_notifications_coalesce_and_remain_bidirectional() {
+        let (local, peer) = create_notification_pair().unwrap();
+        let first =
+            SocketNotification::new(None, NotificationAddress::new(0), Some(local)).unwrap();
+        let second =
+            SocketNotification::new(None, NotificationAddress::new(0), Some(peer)).unwrap();
+
+        for _ in 0..100 {
+            first.notify().unwrap();
+        }
+        assert!(second.wait(Some(Duration::ZERO)).unwrap());
+        assert!(!second.wait(Some(Duration::ZERO)).unwrap());
+        second.notify().unwrap();
+        assert!(first.wait(Some(Duration::ZERO)).unwrap());
+    }
+
+    #[test]
+    fn stream_peer_close_terminates_the_wait() {
+        let (local, peer) = create_notification_pair().unwrap();
+        let subscription =
+            SocketNotification::new(None, NotificationAddress::new(0), Some(local)).unwrap();
+        drop(peer);
+
+        assert!(subscription.wait_event_cancellable().is_err());
+        assert!(subscription.notify().is_err());
+    }
+
+    #[test]
+    fn listener_accepts_independently_created_endpoint_and_rebinds() {
+        let session = session_id();
+        let ui = SocketNotification::listen(session).unwrap();
+        ui.notify().unwrap(); // Publishing before attachment must succeed.
+        assert!(!ui.wait(Some(Duration::ZERO)).unwrap());
+        let vpn = SocketNotification::connect_lazily(session).unwrap();
+        vpn.notify().unwrap();
+        assert!(ui.wait(Some(Duration::ZERO)).unwrap());
+        ui.notify().unwrap();
+        assert!(vpn.wait(Some(Duration::ZERO)).unwrap());
+
+        // A read-only Want probe must not connect or displace the live owner.
+        let probe = SocketNotification::connect_lazily(session).unwrap();
+        assert!(probe.connection.lock().unwrap().is_none());
+        drop(probe);
+        ui.notify().unwrap();
+        assert!(vpn.wait(Some(Duration::ZERO)).unwrap());
+
+        // Closing with an unread UI wake byte may reset the stream. It must
+        // still retire the peer and leave the listener ready for a new owner.
+        ui.notify().unwrap();
+        drop(vpn);
+        assert!(ui.wait(Some(Duration::ZERO)).unwrap());
+        assert!(!ui.wait(Some(Duration::ZERO)).unwrap());
+        let rebound = SocketNotification::connect_lazily(session).unwrap();
+        rebound.notify().unwrap();
+        assert!(ui.wait(Some(Duration::ZERO)).unwrap());
+        ui.notify().unwrap();
+        assert!(rebound.wait(Some(Duration::ZERO)).unwrap());
+    }
+
+    #[test]
+    fn accepting_on_a_publisher_wakes_a_parked_listener_subscription() {
+        let session = session_id();
+        let ui = Arc::new(SocketNotification::listen(session).unwrap());
+        let waiter = {
+            let ui = Arc::clone(&ui);
+            std::thread::spawn(move || ui.wait_event_cancellable())
+        };
+        let vpn = SocketNotification::connect_lazily(session).unwrap();
+        vpn.connection().unwrap();
+        // Force acceptance on the publishing thread. The waiter may already
+        // be polling the listener without a connection descriptor.
+        ui.notify().unwrap();
+        vpn.notify().unwrap();
+        assert!(waiter.join().unwrap().unwrap());
+    }
+
+    #[test]
     fn cancellable_wait_keeps_a_pre_registration_wakeup() {
         let (local, _peer) = create_notification_pair().unwrap();
-        let subscription = SocketNotification::new(local, None).unwrap();
+        let subscription =
+            SocketNotification::new(None, NotificationAddress::new(0), Some(local)).unwrap();
 
         subscription.cancel_waits();
 
@@ -682,10 +928,13 @@ mod tests {
     #[test]
     fn cancellation_is_scoped_to_one_ipc_binding() {
         let (first_local, _first_peer) = create_notification_pair().unwrap();
-        let first = SocketNotification::new(first_local, None).unwrap();
+        let first =
+            SocketNotification::new(None, NotificationAddress::new(0), Some(first_local)).unwrap();
         let (second_local, second_peer) = create_notification_pair().unwrap();
-        let second = SocketNotification::new(second_local, None).unwrap();
-        let notifier = SocketNotification::new(second_peer, None).unwrap();
+        let second =
+            SocketNotification::new(None, NotificationAddress::new(0), Some(second_local)).unwrap();
+        let notifier =
+            SocketNotification::new(None, NotificationAddress::new(0), Some(second_peer)).unwrap();
 
         first.cancel_waits();
         notifier.notify().unwrap();
