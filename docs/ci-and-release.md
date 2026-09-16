@@ -1,5 +1,40 @@
 # CI and Release Checks
 
+## Release 1.1.0
+
+Application `versionName` and `buildVersion` are `1.1.0`; `versionCode` is
+`1001000`. All Paws workspace crates and the entry/native package manifests
+share this version. The About page reads the Cargo package version.
+
+The release artifacts are:
+
+- `dist/release/1.1.0/Paws-1.1.0-release-signed.app`: all three native ABIs,
+  signed with the local signing configuration named `release`.
+- `dist/release/1.1.0/Paws-1.1.0-arm64-v8a-unsigned.hap`.
+- `dist/release/1.1.0/Paws-1.1.0-armeabi-v7a-unsigned.hap`.
+- `dist/release/1.1.0/Paws-1.1.0-x86_64-unsigned.hap`.
+
+Compile the native release libraries with:
+
+```sh
+scripts/ohrs-build.sh --arch aarch --arch arm --arch x64 --release -p paws_ui
+```
+
+Use Arkdown in release mode for final packaging. In an isolated packaging
+copy of the project, bind the selected product's `signingConfig` to `release`
+for `arkdown build --target app --mode release --no-cache`. For each unsigned
+HAP, remove that product's `signingConfig`, include only the selected ABI's
+`libpaws_ui.so` and matching NDK `libc++_shared.so`, and set
+`buildOption.externalNativeOptions.abiFilters` to that ABI before running
+`arkdown build --target hap --mode release --module entry --no-cache`.
+This leaves the developer's local signing configuration and library directory
+intact.
+
+Verify application versions, release mode, ELF architecture, GeoData rawfiles,
+stored icon resources, and the APP's certificate/profile using the SDK signing
+tool. Publish SHA-256 checksums alongside the four artifacts. Signing keys and
+passwords stay outside source control.
+
 ## Local Verification
 
 Run the same checks expected before a pull request:
