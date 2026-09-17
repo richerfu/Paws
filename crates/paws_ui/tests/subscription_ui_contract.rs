@@ -115,7 +115,7 @@ fn subscription_overflow_preserves_the_meow_action_set() {
         "activate_services.activate_profile",
         "load_yaml_editor_draft",
         "yaml_editor.set(Some(draft))",
-        "export_services.export_profile",
+        "export_profile_id.set(Some",
         "refresh_services.refresh_profile",
         "restore_services.restore_profile_backup",
     ] {
@@ -135,10 +135,15 @@ fn subscription_overflow_preserves_the_meow_action_set() {
 #[test]
 fn profile_export_reaches_the_harmony_document_picker() {
     assert!(UI.contains("bridge::export_profile"));
+    assert!(UI.contains("bridge::export_profile_qr"));
+    assert!(VIEW.contains("use_barcode(qr_payload, options)"));
+    assert!(VIEW.contains("file_services.export_profile"));
+    assert!(VIEW.contains("code.png_bytes_async"));
     assert!(PLATFORM_CALLBACKS.contains("export_kind"));
     assert!(EXPORT_PLUGIN.contains("DocumentSaveOptions"));
     assert!(EXPORT_PLUGIN.contains("fileIo.writeSync"));
     assert!(EXPORT_PLUGIN.contains("export-text"));
+    assert!(EXPORT_PLUGIN.contains("export-image"));
 }
 
 #[test]

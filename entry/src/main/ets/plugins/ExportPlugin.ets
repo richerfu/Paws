@@ -1,5 +1,6 @@
 import { AsyncPluginBase, BridgeCallContext, BridgeContextRequirement, BridgeTypedValue } from '@ohos-rs/ability';
 import { fileIo, picker } from '@kit.CoreFileKit';
+import { util } from '@kit.ArkTS';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { describeError } from '../common/Errors';
 
@@ -8,11 +9,18 @@ const LOG_TAG: string = 'PawsExport';
 
 const EXPORT_REQUEST_TYPE = 'paws.ExportTextRequest';
 const EXPORT_RESPONSE_TYPE = 'paws.ExportTextResponse';
+const EXPORT_IMAGE_REQUEST_TYPE = 'paws.ExportImageRequest';
+const EXPORT_IMAGE_RESPONSE_TYPE = 'paws.ExportImageResponse';
 
 interface ExportTextRequest {
   exportKind: string;
   suggestedName: string;
   content: string;
+}
+
+interface ExportImageRequest {
+  suggestedName: string;
+  pngBase64: string;
 }
 
 /**
@@ -29,6 +37,17 @@ export class ExportPlugin extends AsyncPluginBase {
     request: BridgeTypedValue,
     _context: BridgeCallContext,
   ): Promise<BridgeTypedValue> {
+    if (action === 'export-image') {
+      if (request.typeName !== EXPORT_IMAGE_REQUEST_TYPE || typeof request.value !== 'object') {
+        throw new Error(`paws.export expected ${EXPORT_IMAGE_REQUEST_TYPE}, got ${request.typeName}`);
+      }
+      const image = request.value as ExportImageRequest;
+      if (typeof image.suggestedName !== 'string' || typeof image.pngBase64 !== 'string') {
+        throw new Error('paws.export invalid image request shape');
+      }
+      await this.exportImage(image);
+      return { typeName: EXPORT_IMAGE_RESPONSE_TYPE, value: {} };
+    }
     if (action !== 'export-text') {
       throw new Error(`Unsupported paws.export action '${action}'`);
     }
@@ -43,6 +62,46 @@ export class ExportPlugin extends AsyncPluginBase {
     }
     await this.exportText(payload);
     return { typeName: EXPORT_RESPONSE_TYPE, value: {} };
+  }
+
+  private async exportImage(payload: ExportImageRequest): Promise<void> {
+    const bytes = new util.Base64Helper().decodeSync(payload.pngBase64);
+    if (bytes.byteLength < 8 || bytes[0] !== 0x89 || bytes[1] !== 0x50 ||
+      bytes[2] !== 0x4e || bytes[3] !== 0x47) {
+      throw new Error('profile QR image is not a PNG');
+    }
+    const baseName = payload.suggestedName.replace(/[\\/:*?"<>|]/g, '_').trim() || 'profile';
+    const fileName = baseName.endsWith('.png') ? baseName : `${baseName}.png`;
+    const documentPicker = new picker.DocumentViewPicker();
+    const options = new picker.DocumentSaveOptions();
+    options.newFileNames = [fileName];
+    options.fileSuffixChoices = ['PNG|.png'];
+    const result = await documentPicker.save(options);
+    if (!result || result.length === 0 || result[0].length === 0) {
+      throw new Error('profile QR export cancelled');
+    }
+    let file: fileIo.File | undefined = undefined;
+    try {
+      file = fileIo.openSync(
+        result[0],
+        fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC,
+      );
+      const written = fileIo.writeSync(file.fd, bytes.slice().buffer as ArrayBuffer);
+      if (written !== bytes.byteLength) {
+        throw new Error(`incomplete profile QR image write (${written}/${bytes.byteLength})`);
+      }
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'exported profile QR image');
+    } catch (err) {
+      throw new Error(describeError(err) || 'write exported profile QR image failed');
+    } finally {
+      if (file) {
+        try {
+          fileIo.closeSync(file);
+        } catch (err) {
+          hilog.error(LOG_DOMAIN, LOG_TAG, 'close exported file failed %{public}s', describeError(err));
+        }
+      }
+    }
   }
 
   private async exportText(payload: ExportTextRequest): Promise<void> {

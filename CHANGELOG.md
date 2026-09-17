@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Allow profile export as a QR code with PNG saving. Subscription profiles share
+  their URL; local profiles share YAML when it fits in one code, and scanned
+  YAML profiles can be imported.
+
 ## 1.1.0 — 2026-09-16
 
 - Keep dashboard status focused on the VPN lifecycle; configuration reload and

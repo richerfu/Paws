@@ -15,7 +15,7 @@ interface ScanErrorLike {
 }
 
 /**
- * `paws.scan` — QR scan of a subscription link through ScanKit. The trimmed
+ * `paws.scan` — QR scan of a subscription link or profile YAML through ScanKit. The trimmed
  * payload is returned to Rust; an empty string means the user cancelled.
  */
 export class ScanPlugin extends AsyncPluginBase {

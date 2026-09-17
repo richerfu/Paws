@@ -1,5 +1,6 @@
 use super::super::*;
 use super::yaml_editor::{load_yaml_editor_draft, YamlEditorDialog, YamlEditorDraft};
+use arkit::barcode::{use_barcode, BarcodeOptions, BarcodePhase};
 
 pub(crate) fn profiles_page() -> Element {
     let services = use_context::<UiServices>();
@@ -13,6 +14,7 @@ pub(crate) fn profiles_page() -> Element {
     let mut import_name = use_signal(String::new);
     let mut import_submitted = use_signal(|| false);
     let mut action_profile_id = use_signal(|| None::<String>);
+    let export_profile_id = use_signal(|| None::<String>);
     let edit_profile_id = use_signal(|| None::<String>);
     let edit_name = use_signal(String::new);
     let edit_url = use_signal(String::new);
@@ -185,6 +187,13 @@ pub(crate) fn profiles_page() -> Element {
             .find(|profile| profile.id == id)
             .cloned()
     });
+    let export_profile = export_profile_id().and_then(|id| {
+        current
+            .profiles
+            .iter()
+            .find(|profile| profile.id == id)
+            .cloned()
+    });
     let body = rsx! {
         column {
             width: "100%",
@@ -248,12 +257,18 @@ pub(crate) fn profiles_page() -> Element {
             locale,
             action_profile,
             action_profile_id,
+            export_profile_id,
             edit_profile_id,
             edit_name,
             edit_url,
             delete_profile_id,
             yaml_editor,
         )}
+        ProfileExportDialog {
+            locale,
+            profile: export_profile,
+            profile_id: export_profile_id,
+        }
         ProfileEditDialog {
             locale,
             profile_id: edit_profile_id,
@@ -274,6 +289,7 @@ fn profile_action_dialog(
     locale: UiLocale,
     profile: Option<paws_model::ProfileSummary>,
     mut action_profile_id: Signal<Option<String>>,
+    mut export_profile_id: Signal<Option<String>>,
     mut edit_profile_id: Signal<Option<String>>,
     mut edit_name: Signal<String>,
     mut edit_url: Signal<String>,
@@ -284,7 +300,6 @@ fn profile_action_dialog(
     let stores = use_context::<UiStores>();
     let activate_services = services.clone();
     let yaml_services = services.clone();
-    let export_services = services.clone();
     let refresh_services = services.clone();
     let restore_services = services.clone();
     let Some(profile) = profile else {
@@ -405,7 +420,7 @@ fn profile_action_dialog(
                     border_radius: 0.0,
                     onclick: move |_| {
                         action_profile_id.set(None);
-                        export_services.export_profile(export_id.clone());
+                        export_profile_id.set(Some(export_id.clone()));
                     },
                     row {
                         width: "100%",
@@ -480,6 +495,161 @@ fn profile_action_dialog(
                         {arkit::icon("trash-2", 16.0, danger())}
                         text { content: translate_ui(locale, tr::page_tr_106()), margin_left: 10.0, font_size: typography::SM, font_weight: 600, font_color: danger() }
                         row { layout_weight: 1.0 }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn ProfileExportDialog(
+    locale: UiLocale,
+    profile: Option<paws_model::ProfileSummary>,
+    mut profile_id: Signal<Option<String>>,
+) -> Element {
+    let services = use_context::<UiServices>();
+    let file_services = services.clone();
+    let qr_services = services.clone();
+    let mut qr_payload = use_signal(String::new);
+    let mut qr_is_url = use_signal(|| false);
+    let options = use_signal(|| BarcodeOptions::qr(1024));
+    let code = use_barcode(qr_payload, options);
+    let phase = code.phase();
+    let Some(profile) = profile else {
+        return rsx! {};
+    };
+    let file_id = profile.id.clone();
+    let qr_id = profile.id.clone();
+    let save_name = profile.name.clone();
+    let subscription_url = profile.subscription_url.clone();
+    let has_qr = !qr_payload().is_empty();
+    let image_source = code.image();
+    rsx! {
+        FlatDialog {
+            open: true,
+            on_close: move |_| {
+                qr_payload.set(String::new());
+                profile_id.set(None);
+            },
+            DialogHeader {
+                title: translate_ui(locale, tr::page_tr_103()),
+                description: Some(truncate_text(&profile.name, 42)),
+            }
+            row { height: spacing::MD }
+            if !has_qr {
+                column {
+                    width: "100%",
+                    border_width: 1.0,
+                    border_color: line(),
+                    border_radius: radius::LG,
+                    clip: true,
+                    button {
+                        width: "100%",
+                        height: 52.0,
+                        padding_left: 14.0,
+                        background_color: surface(),
+                        border_width: 0.0,
+                        onclick: move |_| {
+                            profile_id.set(None);
+                            file_services.export_profile(file_id.clone());
+                        },
+                        row {
+                            align_items: "center",
+                            {arkit::icon("download", 16.0, text_color())}
+                            text { content: translate_ui(locale, tr::profiles_export_yaml()), margin_left: 10.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
+                        }
+                    }
+                    Separator {}
+                    button {
+                        width: "100%",
+                        height: 52.0,
+                        padding_left: 14.0,
+                        background_color: surface(),
+                        border_width: 0.0,
+                        onclick: move |_| {
+                            if let Some(url) = subscription_url.clone() {
+                                qr_is_url.set(true);
+                                qr_payload.set(url);
+                            } else {
+                                match paws_core::shared_core().profile_raw_yaml(&qr_id) {
+                                    Ok(yaml) => {
+                                        qr_is_url.set(false);
+                                        qr_payload.set(yaml);
+                                    }
+                                    Err(error) => qr_services.notify(format!(
+                                        "{}{}",
+                                        translate_ui(locale, tr::profiles_yaml_read_failed_prefix()),
+                                        error,
+                                    )),
+                                }
+                            }
+                        },
+                        row {
+                            align_items: "center",
+                            {arkit::icon("scan-qr-code", 16.0, text_color())}
+                            text { content: translate_ui(locale, tr::profiles_export_qr()), margin_left: 10.0, font_size: typography::SM, font_weight: 600, font_color: text_color() }
+                        }
+                    }
+                }
+            } else {
+                column {
+                    width: "100%",
+                    align_items: "center",
+                    text {
+                        content: if qr_is_url() {
+                            translate_ui(locale, tr::profiles_export_qr_url())
+                        } else {
+                            translate_ui(locale, tr::profiles_export_qr_yaml())
+                        },
+                        font_size: typography::XS,
+                        font_color: subtle(),
+                        text_align: "center",
+                    }
+                    row { height: spacing::MD }
+                    if let Some(image_source) = image_source {
+                        image {
+                            src: arkit::dioxus_core::AttributeValue::any_value(image_source),
+                            width: 260.0,
+                            height: 260.0,
+                            object_fit: "contain",
+                        }
+                    } else if matches!(&phase, BarcodePhase::Encoding) {
+                        Spinner { size: 28.0, color: Some(text_color()) }
+                    } else if let BarcodePhase::Error(error) = &phase {
+                        text {
+                            content: format!("{} {}", translate_ui(locale, tr::profiles_export_qr_too_large()), error.message()),
+                            font_size: typography::SM,
+                            font_color: danger(),
+                            text_align: "center",
+                        }
+                    }
+                    row { height: spacing::MD }
+                    row {
+                        width: "100%",
+                        FlatButton {
+                            variant: FlatButtonVariant::Outline,
+                            onclick: move |_| qr_payload.set(String::new()),
+                            text { content: translate_ui(locale, tr::profiles_export_back()), font_size: typography::SM, font_color: text_color() }
+                        }
+                        row { layout_weight: 1.0 }
+                        FlatButton {
+                            variant: FlatButtonVariant::Primary,
+                            disabled: Some(!matches!(&phase, BarcodePhase::Ready(_))),
+                            onclick: move |_| {
+                                let services = services.clone();
+                                let name = save_name.clone();
+                                code.png_bytes_async(move |result| match result {
+                                    Ok(bytes) => services.export_profile_qr(name, bytes),
+                                    Err(error) => services.notify(format!(
+                                        "{}{}",
+                                        translate_ui(locale, tr::hard_zh_068()),
+                                        error.message(),
+                                    )),
+                                });
+                            },
+                            text { content: translate_ui(locale, tr::profiles_export_save_qr()), font_size: typography::SM, font_color: primary_text() }
+                        }
                     }
                 }
             }
