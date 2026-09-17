@@ -37,9 +37,24 @@ pub struct ExportTextResponse {}
 
 impl_bridge_napi_type!(ExportTextResponse, "paws.ExportTextResponse");
 
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct ExportImageRequest {
+    pub suggested_name: String,
+    pub png_base64: String,
+}
+
+impl_bridge_napi_type!(ExportImageRequest, "paws.ExportImageRequest");
+
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct ExportImageResponse {}
+
+impl_bridge_napi_type!(ExportImageResponse, "paws.ExportImageResponse");
+
 #[cfg(test)]
 mod tests {
-    use super::{ExportTextRequest, ExportTextResponse};
+    use super::{ExportImageRequest, ExportImageResponse, ExportTextRequest, ExportTextResponse};
     use arkit::openharmony_ability::BridgeNapiType;
 
     #[test]
@@ -51,6 +66,14 @@ mod tests {
         assert_eq!(
             <ExportTextResponse as BridgeNapiType>::TYPE_NAME,
             "paws.ExportTextResponse"
+        );
+        assert_eq!(
+            <ExportImageRequest as BridgeNapiType>::TYPE_NAME,
+            "paws.ExportImageRequest"
+        );
+        assert_eq!(
+            <ExportImageResponse as BridgeNapiType>::TYPE_NAME,
+            "paws.ExportImageResponse"
         );
     }
 }

@@ -248,7 +248,27 @@ pub(super) async fn prepare_scanned_profile_import(
             return Ok(ProfileImportPreparation::Cancelled);
         }
         Err(ScannedSubscriptionError::Unsupported) => {
-            return Err(translate_ui(locale, tr::profiles_scan_invalid()));
+            let yaml = payload.trim_start_matches('\u{feff}').trim();
+            if !matches!(
+                serde_yaml::from_str::<serde_yaml::Value>(yaml),
+                Ok(serde_yaml::Value::Mapping(_))
+            ) {
+                return Err(translate_ui(locale, tr::profiles_scan_invalid()));
+            }
+            let name = match name.trim() {
+                "" => translate_ui(locale, tr::profiles_scan_profile_name()),
+                value => value.to_owned(),
+            };
+            let prepared = core
+                .prepare_profile_import_from_content(&name, "qr-code", yaml, None)
+                .await
+                .map_err(|error| error.to_string())?;
+            return Ok(ProfileImportPreparation::Ready(
+                PreparedProfileMutation::Import {
+                    prepared,
+                    expected_config_revision,
+                },
+            ));
         }
     };
     let name = match name.trim() {

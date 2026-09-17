@@ -1,4 +1,4 @@
-//! `paws.scan` bridge plugin: QR-code scan of a subscription link.
+//! `paws.scan` bridge plugin: QR-code scan of a subscription link or profile YAML.
 //!
 //! ArkTS side owns the ScanKit platform call (`scanBarcode.startScanForResult`
 //! on the Ability context); Rust only receives the trimmed scan payload.

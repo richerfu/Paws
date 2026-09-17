@@ -677,6 +677,21 @@ impl UiServices {
         );
     }
 
+    pub(crate) fn export_profile_qr(&self, profile_name: String, png_bytes: Vec<u8>) {
+        let locale = self.locale();
+        self.run_durable_mutation(
+            async move { crate::bridge::export_profile_qr(profile_name, png_bytes).await },
+            move |services, result| match result {
+                Ok(()) => services.notify(translate_ui(locale, tr::profiles_export_qr_saved())),
+                Err(error) => services.notify(format!(
+                    "{}{}",
+                    translate_ui(locale, tr::hard_zh_068()),
+                    error,
+                )),
+            },
+        );
+    }
+
     async fn restart_owned_session(
         owner: Option<String>,
     ) -> Result<crate::bridge::VpnOperationOutcome<bool>, String> {

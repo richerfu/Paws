@@ -30,7 +30,10 @@ pub(crate) use self::clipboard::{
     ClipboardSetRequest, ClipboardSetResponse, PawsClipboardBridgePlugin,
 };
 pub(crate) use self::color_mode::{ColorModeRequest, ColorModeResponse, PawsColorModeBridgePlugin};
-pub(crate) use self::export::{ExportTextRequest, ExportTextResponse, PawsExportBridgePlugin};
+pub(crate) use self::export::{
+    ExportImageRequest, ExportImageResponse, ExportTextRequest, ExportTextResponse,
+    PawsExportBridgePlugin,
+};
 pub(crate) use self::safe_area::{initial_safe_area, InitialSafeArea, PawsSafeAreaBridgePlugin};
 pub(crate) use self::scan::{PawsScanBridgePlugin, ScanRequest, ScanResponse};
 pub(crate) use self::vpn::{
@@ -480,6 +483,23 @@ pub(crate) async fn export_profile(
     content: String,
 ) -> std::result::Result<(), String> {
     export_text("profile", suggested_name, content).await
+}
+
+pub(crate) async fn export_profile_qr(
+    suggested_name: String,
+    png_bytes: Vec<u8>,
+) -> std::result::Result<(), String> {
+    use base64::Engine as _;
+    let png_base64 = base64::engine::general_purpose::STANDARD.encode(png_bytes);
+    call_async::<PawsExportBridgePlugin, ExportImageRequest, ExportImageResponse>(
+        "export-image",
+        ExportImageRequest {
+            suggested_name,
+            png_base64,
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 pub(crate) async fn export_log(
