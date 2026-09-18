@@ -2,6 +2,7 @@ use napi_derive_ohos::napi;
 use napi_ohos::{bindgen_prelude::Object, Env, Error, Result, Status};
 use ohos_resource_manager_binding::ResourceManager;
 use paws_model::RuntimeMode;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
@@ -33,6 +34,7 @@ mod ui;
 mod ui_preferences;
 mod virtual_identity;
 mod vpn_feedback;
+mod vpn_handoff;
 mod vpn_operation;
 mod yaml_summary;
 
@@ -77,6 +79,58 @@ pub fn attach_platform_shared_memory(ashmem_fd: i32, notification_fd: i32) -> Re
     paws_core::shared_core()
         .attach_platform_shared_memory(ashmem_fd, notification_fd)
         .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn prepare_platform_vpn_handoff(attempt_id: String) -> Result<String> {
+    vpn_handoff::prepare(&attempt_id)
+        .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))
+}
+
+#[napi]
+pub async fn send_platform_vpn_handoff(
+    ashmem_fd: i32,
+    notification_fd: i32,
+    attempt_id: String,
+    options_json: String,
+) -> Result<()> {
+    tokio::task::spawn_blocking(move || {
+        let pending_attempt_id = attempt_id.clone();
+        let core = paws_core::shared_core();
+        vpn_handoff::send(ashmem_fd, notification_fd, attempt_id, options_json, || {
+            core.validate_platform_vpn_start_request(
+                ashmem_fd,
+                notification_fd,
+                &pending_attempt_id,
+            )
+            .map_err(|error| io::Error::other(error.to_string()))
+        })
+    })
+    .await
+    .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))?
+    .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))
+}
+
+#[napi]
+pub async fn receive_and_attach_platform_vpn_handoff(token: String) -> Result<String> {
+    let received = tokio::task::spawn_blocking(move || vpn_handoff::receive(&token))
+        .await
+        .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))?
+        .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))?;
+    let core = paws_core::shared_core();
+    core.validate_platform_vpn_start_request(
+        received.ashmem.as_raw_fd(),
+        received.notification.as_raw_fd(),
+        &received.payload.attempt_id,
+    )
+    .map_err(to_napi_error)?;
+    core.attach_platform_shared_memory(
+        received.ashmem.as_raw_fd(),
+        received.notification.as_raw_fd(),
+    )
+    .map_err(to_napi_error)?;
+    serde_json::to_string(&received.payload)
+        .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))
 }
 
 #[napi]

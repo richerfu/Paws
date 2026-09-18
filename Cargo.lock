@@ -3851,6 +3851,7 @@ dependencies = [
  "arkit",
  "base64 0.22.1",
  "dioxus",
+ "libc",
  "napi-build-ohos",
  "napi-derive-ohos",
  "napi-ohos",

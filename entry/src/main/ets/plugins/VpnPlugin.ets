@@ -12,6 +12,12 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import pawsUi from 'libpaws_ui.so';
 import { describeError } from '../common/Errors';
 import { buildVpnWant, PawsPlatformSharedMemoryFds } from '../vpnability/VpnConfig';
+import {
+  authorizeVpnForEmulatorDebug,
+  canRecoverRejectedEmulatorStop,
+  isVpnEmulatorCompatibilityEnabled,
+} from '../vpnability/VpnEmulatorCompatibility';
+import { startVpnExtensionWithHandoff } from '../vpnability/VpnExtensionLauncher';
 
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'PawsVpn';
@@ -104,6 +110,7 @@ export class VpnPlugin extends AsyncPluginBase {
   private connectedVpnSessionId: string = '';
   private operationGeneration: number = 0;
   private operationChain: Promise<void> = Promise.resolve();
+  private startupVpnPreparation: Promise<void> = Promise.resolve();
   private platformSharedMemory?: PawsPlatformSharedMemoryFds;
   private readonly bridgeSessionNonce: string =
     `${Date.now().toString(36)}-${++vpnPluginInstanceSequence}-${Math.floor(Math.random() * 0x100000000).toString(36)}`;
@@ -113,6 +120,8 @@ export class VpnPlugin extends AsyncPluginBase {
 
   onInstall(_context: BridgePluginHookContext): void {
     this.initializePlatformSharedMemory();
+    authorizeVpnForEmulatorDebug();
+    this.startupVpnPreparation = this.prepareVpnForEmulatorDebug();
   }
 
   async invokeAsync(
@@ -469,6 +478,7 @@ export class VpnPlugin extends AsyncPluginBase {
     optionsJson: string,
     context: BridgePluginContext,
   ): Promise<void> {
+    await this.startupVpnPreparation;
     if (this.vpnStartRequest) {
       return this.vpnStartRequest;
     }
@@ -488,6 +498,31 @@ export class VpnPlugin extends AsyncPluginBase {
       if (this.vpnStartRequest === request) {
         this.vpnStartRequest = undefined;
       }
+    }
+  }
+
+  private async prepareVpnForEmulatorDebug(): Promise<void> {
+    if (!isVpnEmulatorCompatibilityEnabled()) {
+      return;
+    }
+    try {
+      const intentEpoch = pawsUi.advancePlatformVpnIntent();
+      await this.enqueueOperation(async (): Promise<void> => {
+        if (!pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) {
+          return;
+        }
+        const staleSessionId = pawsUi.claimCurrentPlatformVpnStop(intentEpoch);
+        if (staleSessionId.length === 0) {
+          hilog.info(LOG_DOMAIN, LOG_TAG, 'debug startup VPN state is already clean');
+          return;
+        }
+        await this.performStopVpn(staleSessionId, intentEpoch, undefined, true);
+        hilog.info(LOG_DOMAIN, LOG_TAG,
+          'debug startup VPN cleanup completed for attempt %{public}s', staleSessionId);
+      });
+    } catch (err) {
+      hilog.error(LOG_DOMAIN, LOG_TAG,
+        'debug startup VPN preparation failed %{public}s', describeError(err));
     }
   }
 
@@ -525,16 +560,6 @@ export class VpnPlugin extends AsyncPluginBase {
     });
   }
 
-  private async invokeVpnExtensionStart(optionsJson: string, attemptId: string): Promise<void> {
-    try {
-      await vpnExtension.startVpnExtensionAbility(
-        buildVpnWant(optionsJson, this.platformSharedMemory, attemptId),
-      );
-    } catch (err) {
-      throw new Error(describeError(err) || 'system rejected VPN start');
-    }
-  }
-
   private async runVpnStartDispatch(
     optionsJson: string,
     attemptId: string,
@@ -542,21 +567,11 @@ export class VpnPlugin extends AsyncPluginBase {
     generation: number,
     intentEpoch: string,
   ): Promise<void> {
-    await this.invokeVpnExtensionStart(optionsJson, attemptId);
     if (generation !== this.operationGeneration ||
-      !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) {
+      !pawsUi.isPlatformVpnIntentCurrent(intentEpoch) || !this.platformSharedMemory) {
       return;
     }
-
-    // The first-authorization dialog on some HarmonyOS builds starts the VPN
-    // Extension with a replacement Want containing only bundleName/abilityName.
-    // Redispatch the original payload unconditionally once the system promise
-    // resolves: the Extension is either running (the Want is delivered again
-    // via onRequest) or was already started with the full parameters (the
-    // repeated start is idempotent). The terminal outcome is owned entirely
-    // by the Extension's shared-memory events, so no timed attach probing is
-    // needed.
-    await this.invokeVpnExtensionStart(optionsJson, attemptId);
+    await startVpnExtensionWithHandoff(optionsJson, attemptId, this.platformSharedMemory);
   }
 
   private async performStartVpn(
@@ -654,6 +669,7 @@ export class VpnPlugin extends AsyncPluginBase {
     sessionId: string,
     intentEpoch: string,
     isStillAuthorized?: () => boolean,
+    recoverUnattachedDebugOwner: boolean = false,
   ): Promise<boolean> {
     try {
       // The start Promise may remain pending indefinitely after authorization.
@@ -668,7 +684,9 @@ export class VpnPlugin extends AsyncPluginBase {
       }
       let cleanupObservation: Promise<string> | undefined = undefined;
       let cleanupCompleted = sessionId.length === 0;
-      if (sessionId.length > 0 && pawsUi.requestPlatformVpnStop(sessionId)) {
+      const cooperativeStopRequested = sessionId.length > 0 &&
+        pawsUi.requestPlatformVpnStop(sessionId);
+      if (cooperativeStopRequested) {
         cleanupObservation = pawsUi.awaitPlatformVpnStop(sessionId).then(
           (completed: boolean): string => completed ? 'complete' : 'superseded',
           (err: Error): string => `error:${describeError(err) || 'platform cleanup wait failed'}`,
@@ -705,11 +723,16 @@ export class VpnPlugin extends AsyncPluginBase {
       try {
         await vpnExtension.stopVpnExtensionAbility(buildVpnWant());
       } catch (err) {
-        if (!pawsUi.failPlatformVpnOsStop(intentEpoch, sessionId)) {
-          hilog.error(LOG_DOMAIN, LOG_TAG,
-            'failed to retain exact VPN OS stop fence after system rejection');
+        if (!canRecoverRejectedEmulatorStop(
+          recoverUnattachedDebugOwner, sessionId, cooperativeStopRequested)) {
+          if (!pawsUi.failPlatformVpnOsStop(intentEpoch, sessionId)) {
+            hilog.error(LOG_DOMAIN, LOG_TAG,
+              'failed to retain exact VPN OS stop fence after system rejection');
+          }
+          throw new Error(describeError(err) || 'system rejected VPN stop');
         }
-        throw new Error(describeError(err) || 'system rejected VPN stop');
+        hilog.warn(LOG_DOMAIN, LOG_TAG,
+          'debug startup cleanup found no attached VPN for stale attempt %{public}s', sessionId);
       }
       if (!pawsUi.completePlatformVpnOsStop(intentEpoch, sessionId)) {
         throw new Error(`VPN OS stop confirmation did not match exact fence ${sessionId}`);

@@ -10,6 +10,11 @@ const ENTRY_ABILITY: &str =
 const VPN_ABILITY: &str =
     include_str!("../../../entry/src/main/ets/vpnability/PawsVpnExtensionAbility.ets");
 const VPN_CONFIG: &str = include_str!("../../../entry/src/main/ets/vpnability/VpnConfig.ets");
+const VPN_LAUNCHER: &str =
+    include_str!("../../../entry/src/main/ets/vpnability/VpnExtensionLauncher.ets");
+const VPN_EMULATOR: &str =
+    include_str!("../../../entry/src/main/ets/vpnability/VpnEmulatorCompatibility.ets");
+const VPN_HANDOFF: &str = include_str!("../src/vpn_handoff.rs");
 const NAPI_TYPES: &str = include_str!("../../../entry/src/main/cpp/types/libpaws_ui/Index.d.ts");
 const PLATFORM_CALLBACKS: &str = include_str!("../src/bridge/mod.rs");
 const CORE: &str = include_str!("../../paws_core/src/lib.rs");
@@ -46,14 +51,14 @@ fn notification_permission_is_deferred_until_after_the_vpn_ability_launches() {
         "private async requestStopVpnWithContext",
     );
     let launch = request
-        .find("vpnExtension.startVpnExtensionAbility")
-        .expect("VPN ability launch");
+        .find("startVpnExtensionWithHandoff(optionsJson, attemptId")
+        .expect("VPN ability launch and handoff");
     let permission = request
         .find("this.ensureSpeedNotificationPermission(context)")
         .expect("deferred notification permission");
 
     assert!(launch < permission);
-    assert!(request.contains("reusing pending VPN start request"));
+    assert!(request.contains("if (this.vpnStartRequest)"));
 }
 
 #[test]
@@ -75,12 +80,21 @@ fn first_authorization_start_is_coordinated_by_the_extension_terminal_state() {
     assert!(request.contains("beginPlatformVpnStartForIntent(intentEpoch)"));
     assert!(request.contains("awaitPlatformVpnStart(attemptId)"));
     assert!(request.contains("failUnattachedPlatformVpnStart(attemptId, message)"));
-    assert!(request.contains("buildVpnWant(optionsJson, this.platformSharedMemory, attemptId)"));
-    // The original Want is redispatch unconditionally after the system
-    // acknowledgement; no timed attach probing participates in the flow.
-    assert!(request.contains("system acknowledged VPN start attempt"));
-    assert!(request.contains("redispatching VPN start attempt"));
-    assert!(request.contains("redispatched VPN start attempt"));
+    assert!(request.contains(
+        "startVpnExtensionWithHandoff(optionsJson, attemptId, this.platformSharedMemory)"
+    ));
+    assert_eq!(
+        VPN_LAUNCHER
+            .matches("vpnExtension.startVpnExtensionAbility(")
+            .count(),
+        1
+    );
+    assert!(VPN_LAUNCHER.contains("buildVpnBootstrapWant(attemptId, token)"));
+    assert!(!VPN_LAUNCHER.contains("buildVpnWant("));
+    assert!(VPN_LAUNCHER.contains("sendPlatformVpnHandoff("));
+    assert!(VPN_HANDOFF.contains("libc::SCM_RIGHTS"));
+    assert!(VPN_EMULATOR.contains("BuildProfile.DEBUG"));
+    assert!(VPN_EMULATOR.contains("updateVpnAuthorizedState(BuildProfile.BUNDLE_NAME)"));
     assert!(!request.contains("awaitPlatformVpnStartAttachment"));
     assert!(!request.contains("VPN_EXTENSION_ATTACH_GRACE_MS"));
     assert!(!request.contains("Promise.race"));
@@ -92,8 +106,8 @@ fn first_authorization_start_is_coordinated_by_the_extension_terminal_state() {
         "private recordVpnFailureForAttempt",
     );
     let attach = extension
-        .find("attachPlatformSharedMemory")
-        .expect("ashmem attachment");
+        .find("receiveAndAttachPlatformVpnHandoff")
+        .expect("handoff attachment");
     let bind = extension
         .find("bindPlatformVpnStart")
         .expect("attempt binding");
@@ -139,21 +153,15 @@ fn tun_reader_parks_on_readiness_instead_of_busy_polling() {
 }
 
 #[test]
-fn descriptor_free_authorization_bootstrap_waits_for_the_rebound_want() {
+fn descriptor_free_authorization_bootstrap_receives_fd_handoff() {
     let start = section(
         VPN_ABILITY,
         "private enqueueStartFromWant",
         "private async handleRequest",
     );
-    let bootstrap = section(
-        start,
-        "const sharedMemory = readPlatformSharedMemoryFds(want)",
-        "if (!this.isLatestWant",
-    );
-
-    assert!(bootstrap.contains("authorization bootstrap"));
-    assert!(bootstrap.contains("waiting for rebound request"));
-    assert!(!bootstrap.contains("recordVpnFailure"));
+    assert!(start.contains("readPlatformHandoffToken(want)"));
+    assert!(start.contains("receivePlatformHandoff("));
+    assert!(!start.contains("waiting for rebound request"));
 }
 
 #[test]

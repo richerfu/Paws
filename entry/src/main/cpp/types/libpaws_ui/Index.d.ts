@@ -147,6 +147,12 @@ export interface VpnOperationWaitResponse {
 
 export declare function attachPlatformSharedMemory(ashmemFd: number, notificationFd: number): void
 
+export declare function preparePlatformVpnHandoff(attemptId: string): string
+
+export declare function sendPlatformVpnHandoff(ashmemFd: number, notificationFd: number, attemptId: string, optionsJson: string): Promise<void>
+
+export declare function receiveAndAttachPlatformVpnHandoff(token: string): Promise<string>
+
 export declare function awaitPlatformVpnStart(attemptId: string): Promise<string>
 
 export declare function acknowledgeTerminalPlatformVpnStartDelivery(ashmemFd: number, notificationFd: number, attemptId: string): boolean

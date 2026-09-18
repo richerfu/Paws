@@ -1,5 +1,7 @@
 # HarmonyOS Smoke Validation
 
+For DevEco simulator VPN validation, see [DevEco 模拟器 VPN 验收](harmony-emulator-vpn.md).
+
 This smoke check is the first automation layer for PAWS-MEOW-014. It covers
 the device loop that is easy to regress during VPN and native binding work:
 
@@ -121,9 +123,10 @@ device whose process-network protection behavior is still under investigation.
 
 `--allow-vpn-unsupported` is only for simulator diagnostics. The Entry ability
 still issues the system VPN request, but the smoke does not claim that a TUN was
-created. A request that does not resolve within 15 seconds is persisted as a
-failed lifecycle state; the Dashboard must remain disconnected and display the
-startup failure. Do not use this flag for physical-device release acceptance.
+created. A request that does not resolve before the core startup deadline is
+persisted as a failed lifecycle state; the Dashboard must remain disconnected
+and display the startup failure. Do not use this flag for physical-device
+release acceptance.
 
 The UI-specific smoke scripts cover interactions that hilog cannot validate:
 

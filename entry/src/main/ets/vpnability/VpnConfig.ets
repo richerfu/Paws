@@ -135,6 +135,7 @@ export class PawsVpnConfig {
 const PAWS_ASHMEM_FD_KEY = 'pawsPlatformAshmem';
 const PAWS_NOTIFICATION_FD_KEY = 'pawsPlatformNotification';
 const PAWS_START_ATTEMPT_ID_KEY = 'pawsStartAttemptId';
+const PAWS_HANDOFF_TOKEN_KEY = 'pawsHandoffToken';
 const PAWS_SYSTEM_PARAMETERS_KEY = 'myParams';
 
 export interface PawsPlatformSharedMemoryFds {
@@ -155,6 +156,11 @@ interface PawsVpnWantParameters extends Record<string, Object> {
   optionsJson: string;
 }
 
+interface PawsVpnBootstrapParameters extends Record<string, Object> {
+  pawsStartAttemptId: string;
+  pawsHandoffToken: string;
+}
+
 export function buildVpnWant(
   optionsJson?: string,
   sharedMemory?: PawsPlatformSharedMemoryFds,
@@ -170,6 +176,21 @@ export function buildVpnWant(
   if (startAttemptId && startAttemptId.length > 0) {
     parameters[PAWS_START_ATTEMPT_ID_KEY] = startAttemptId;
   }
+  return {
+    deviceId: '',
+    bundleName: currentPawsBundleName(),
+    moduleName: PAWS_MODULE_NAME,
+    abilityName: PAWS_VPN_ABILITY,
+    parameters,
+  };
+}
+
+/** The system sees only the attempt and one-time socket token on first start. */
+export function buildVpnBootstrapWant(startAttemptId: string, handoffToken: string): Want {
+  const parameters: PawsVpnBootstrapParameters = {
+    pawsStartAttemptId: startAttemptId,
+    pawsHandoffToken: handoffToken,
+  };
   return {
     deviceId: '',
     bundleName: currentPawsBundleName(),
@@ -222,6 +243,14 @@ export function readPlatformStartAttemptId(want?: Want): string {
     return value;
   }
   throw new Error('VPN extension request is missing start attempt id');
+}
+
+export function readPlatformHandoffToken(want?: Want): string {
+  const value = readVpnParameters(want)?.[PAWS_HANDOFF_TOKEN_KEY];
+  if (typeof value === 'string' && value.length > 0) {
+    return value;
+  }
+  throw new Error('VPN extension request is missing handoff token');
 }
 
 export function readOptionsJson(want?: Want): string {
