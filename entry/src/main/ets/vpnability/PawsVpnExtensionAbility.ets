@@ -5,10 +5,12 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import pawsUi from 'libpaws_ui.so';
 import {
   PawsVpnConfig,
+  PawsPlatformSharedMemoryFds,
   PAWS_ENTRY_ABILITY,
   PAWS_MODULE_NAME,
   parseOptions,
   readPlatformSharedMemoryFds,
+  readPlatformHandoffToken,
   readPlatformStartAttemptId,
   readOptionsJson,
   currentPawsBundleName,
@@ -20,6 +22,11 @@ const LOG_TAG: string = 'PawsVpn';
 const VPN_SPEED_NOTIFICATION_ID: number = 1001;
 const NOTIFICATION_RETRY_DELAY_MS: number = 30000;
 const PLATFORM_OPERATION_TIMEOUT_MS: number = 30000;
+
+interface PawsPlatformVpnHandoffPayload {
+  attemptId: string;
+  optionsJson: string;
+}
 
 function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return new Promise<T>((resolve: (value: T) => void, reject: (reason?: Object | string) => void): void => {
@@ -118,6 +125,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   private platformSubscriptionGeneration: number = 0;
   private requestGeneration: number = 0;
   private inFlightAttemptId: string = '';
+  private pendingHandoffAttemptId: string = '';
   private activeAttemptId: string = '';
   private heartbeatTimer: number = -1;
   private requestChain: Promise<void> = Promise.resolve();
@@ -130,6 +138,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
 
   public onCreate(want: Want): void {
     super.onCreate(want);
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'onCreate');
     this.startFromWant(want);
   }
 
@@ -139,6 +148,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
 
   public onDestroy(): void {
     this.requestGeneration += 1;
+    this.pendingHandoffAttemptId = '';
     this.stopHeartbeat();
     this.stopPlatformSubscription();
     this.destroyVpn().catch((err: Error): void => {
@@ -167,8 +177,15 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     }
     const sharedMemory = readPlatformSharedMemoryFds(want);
     if (!sharedMemory) {
-      hilog.warn(LOG_DOMAIN, LOG_TAG,
-        'VPN authorization bootstrap has no shared-memory descriptors; waiting for rebound request');
+      try {
+        this.receivePlatformHandoff(
+          readPlatformStartAttemptId(want),
+          readPlatformHandoffToken(want),
+        );
+      } catch (err) {
+        hilog.error(LOG_DOMAIN, LOG_TAG,
+          'descriptor-free VPN bootstrap rejected %{public}s', describeError(err));
+      }
       return;
     }
     let attemptId: string;
@@ -180,12 +197,51 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN request rejected %{public}s', describeError(err));
       return;
     }
-    if (!this.isLatestWant(sharedMemory.ashmemFd, sharedMemory.notificationFd, attemptId)) {
+    this.queueRequest(attemptId, optionsJson, sharedMemory);
+  }
+
+  private receivePlatformHandoff(attemptId: string, token: string): void {
+    if (attemptId === this.pendingHandoffAttemptId || attemptId === this.inFlightAttemptId ||
+      attemptId === this.activeAttemptId) {
       return;
     }
-    // The authorization workaround intentionally redispatches the same Want.
-    // Validate its descriptors first, then keep an already queued, starting,
-    // or connected owner intact instead of superseding it with itself.
+    this.pendingHandoffAttemptId = attemptId;
+    hilog.info(LOG_DOMAIN, LOG_TAG,
+      'waiting for VPN session FD handoff attempt %{public}s', attemptId);
+    pawsUi.receiveAndAttachPlatformVpnHandoff(token).then(
+      (payloadJson: string): void => {
+        const payload = JSON.parse(payloadJson) as PawsPlatformVpnHandoffPayload;
+        if (payload.attemptId !== attemptId || typeof payload.optionsJson !== 'string') {
+          throw new Error('VPN session FD handoff payload does not match bootstrap attempt');
+        }
+        hilog.info(LOG_DOMAIN, LOG_TAG,
+          'received and attached VPN session FD handoff attempt %{public}s', attemptId);
+        this.queueRequest(attemptId, payload.optionsJson);
+      },
+    ).catch((err: Error): void => {
+      const message = describeError(err) || 'VPN session FD handoff failed';
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN session FD handoff failed %{public}s', message);
+      try {
+        pawsUi.failUnattachedPlatformVpnStart(attemptId, message);
+      } catch (_innerErr) {
+        // The attempt may already have been superseded by the UI.
+      }
+    }).finally((): void => {
+      if (this.pendingHandoffAttemptId === attemptId) {
+        this.pendingHandoffAttemptId = '';
+      }
+    });
+  }
+
+  private queueRequest(
+    attemptId: string,
+    optionsJson: string,
+    sharedMemory?: PawsPlatformSharedMemoryFds,
+  ): void {
+    if (sharedMemory && !this.isLatestWant(
+      sharedMemory.ashmemFd, sharedMemory.notificationFd, attemptId)) {
+      return;
+    }
     if (attemptId === this.inFlightAttemptId || attemptId === this.activeAttemptId) {
       return;
     }
@@ -193,11 +249,10 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     this.inFlightAttemptId = attemptId;
     this.requestChain = this.requestChain.then(async (): Promise<void> => {
       await this.handleRequest(
-        sharedMemory.ashmemFd,
-        sharedMemory.notificationFd,
         attemptId,
         optionsJson,
         generation,
+        sharedMemory,
       );
     }).catch(async (err: Error): Promise<void> => {
       if (generation !== this.requestGeneration || this.inFlightAttemptId !== attemptId) {
@@ -227,18 +282,18 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   }
 
   private async handleRequest(
-    ashmemFd: number,
-    notificationFd: number,
     attemptId: string,
     optionsJson: string,
     generation: number,
+    sharedMemory?: PawsPlatformSharedMemoryFds,
   ): Promise<void> {
     if (generation !== this.requestGeneration) {
       return;
     }
     await this.waitForPendingCleanup();
     if (generation !== this.requestGeneration ||
-      !this.isLatestWant(ashmemFd, notificationFd, attemptId)) {
+      (sharedMemory !== undefined && !this.isLatestWant(
+        sharedMemory.ashmemFd, sharedMemory.notificationFd, attemptId))) {
       return;
     }
     if (this.activeAttemptId.length > 0 && this.activeAttemptId !== attemptId) {
@@ -253,7 +308,9 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     }
 
     this.stopPlatformSubscription();
-    pawsUi.attachPlatformSharedMemory(ashmemFd, notificationFd);
+    if (sharedMemory) {
+      pawsUi.attachPlatformSharedMemory(sharedMemory.ashmemFd, sharedMemory.notificationFd);
+    }
     const ownerIdentity = pawsUi.bindPlatformVpnStart(attemptId);
     hilog.info(
       LOG_DOMAIN,
@@ -408,6 +465,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       throw new Error('stale VPN request generation after TUN create');
     }
     this.tunFd = fd;
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'created tun fd %{public}d', fd);
 
     try {
       await this.awaitPlatformOperation(connection, connection.protectProcessNet(),
@@ -416,6 +474,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       if (!pawsUi.setPlatformNetworkProtected(attemptId, true)) {
         throw new Error('platform VPN protection result belongs to a stale attempt');
       }
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'protected process network');
     } catch (err) {
       const message = describeError(err) || 'protect process network failed';
       pawsUi.setPlatformNetworkProtected(attemptId, false, message);

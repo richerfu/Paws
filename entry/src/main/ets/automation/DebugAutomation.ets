@@ -13,6 +13,7 @@ interface PawsAutomationParams {
   pawsProfileUrl?: string;
   pawsProfileName?: string;
   pawsAutoStartVpn?: string | boolean;
+  pawsWaitForVpnBeforeProbes?: string | boolean;
   pawsDelayProxy?: string;
   pawsDelayUrl?: string;
   pawsDelayTimeoutMs?: string | number;
@@ -80,9 +81,15 @@ async function run(
 
   if (wantBool(want, 'pawsAutoStartVpn')) {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation requested VPN start');
-    startVpn(activeVpnOptionsJson()).catch((err: Error) => {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'debug automation VPN start failed %{public}s', err.message);
-    });
+    const vpnStart: Promise<void> = startVpn(activeVpnOptionsJson());
+    if (wantBool(want, 'pawsWaitForVpnBeforeProbes')) {
+      await vpnStart;
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation VPN connected before probes');
+    } else {
+      vpnStart.catch((err: Error) => {
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'debug automation VPN start failed %{public}s', err.message);
+      });
+    }
   }
 
   await runDebugDelay(want);
@@ -175,6 +182,8 @@ function automationParam(want: Want, key: keyof PawsAutomationParams): string | 
       return params.pawsProfileName;
     case 'pawsAutoStartVpn':
       return params.pawsAutoStartVpn;
+    case 'pawsWaitForVpnBeforeProbes':
+      return params.pawsWaitForVpnBeforeProbes;
     case 'pawsDelayProxy':
       return params.pawsDelayProxy;
     case 'pawsDelayUrl':

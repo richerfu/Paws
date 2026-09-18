@@ -400,6 +400,15 @@ start_protocol_lab() {
   PROTOCOL_LOG_PATH="$LOG_DIR/local-protocol-$PROTOCOL_MODE-$(date +%Y%m%d-%H%M%S).log"
   rm -f "$PROFILE_PATH"
 
+  # A cold Cargo cache can take longer than the server readiness timeout.
+  # Complete the build first so the timeout measures only server startup.
+  if ! (cd "$ROOT_DIR" && cargo build --manifest-path local-protocol-tests/Cargo.toml) \
+    >"$PROTOCOL_LOG_PATH" 2>&1; then
+    echo "Could not build local-protocol-tests." >&2
+    echo "Protocol log saved to: $PROTOCOL_LOG_PATH" >&2
+    exit 1
+  fi
+
   set -- "$PROTOCOL_MODE" --profile-out "$PROFILE_PATH" --bind "$MOCK_BIND"
   if [ -n "$MOCK_ADVERTISE_HOST" ]; then
     set -- "$@" --advertise-host "$MOCK_ADVERTISE_HOST"
@@ -408,7 +417,7 @@ start_protocol_lab() {
   (
     cd "$ROOT_DIR"
     cargo run --manifest-path local-protocol-tests/Cargo.toml -- "$@"
-  ) >"$PROTOCOL_LOG_PATH" 2>&1 &
+  ) >>"$PROTOCOL_LOG_PATH" 2>&1 &
   PROTOCOL_PID=$!
 
   wait_seconds=0
@@ -590,6 +599,9 @@ elif [ -n "$PROFILE_URL" ]; then
 fi
 if [ "$AUTO_START_VPN" -eq 1 ]; then
   AA_ARGS="$AA_ARGS --ps pawsAutoStartVpn true"
+  if [ "$ALLOW_VPN_UNSUPPORTED" -eq 0 ]; then
+    AA_ARGS="$AA_ARGS --ps pawsWaitForVpnBeforeProbes true"
+  fi
 fi
 if [ -n "$DELAY_PROXY" ]; then
   AA_ARGS="$AA_ARGS --ps pawsDelayProxy $(shell_quote "$DELAY_PROXY") --ps pawsDelayTimeoutMs $(shell_quote "$DELAY_TIMEOUT_MS")"
@@ -626,7 +638,16 @@ if [ "$AUTO_START_VPN" -eq 1 ]; then
   if [ "$ALLOW_VPN_UNSUPPORTED" -eq 1 ]; then
     require_log_marker 'request VPN start received|requested VPN start|debug automation requested VPN start' 'VPN start request was issued'
   else
+    require_log_marker 'received and attached VPN session FD handoff attempt' 'VPN Extension attached the shared session'
+    require_log_marker 'bound VPN owner attempt' 'VPN Extension bound the exact owner'
     require_log_marker 'created tun fd [0-9]+' 'Harmony VPN TUN was created'
+    require_log_marker 'VPN start completed attempt' 'VPN start reached the connected state'
+    require_log_marker 'debug automation VPN connected before probes' 'debug probes ran after VPN connected'
+    if ! hdc_cmd shell 'ifconfig vpn-tun' 2>/dev/null | grep -Eq 'inet addr:[0-9]+'; then
+      echo "Smoke logs show a VPN start, but vpn-tun has no IPv4 address." >&2
+      echo "Hilog saved to: $HILOG_PATH" >&2
+      exit 1
+    fi
     if require_protect_success_enabled; then
       require_log_marker 'protected process network' 'Harmony VPN egress protection succeeded'
     else

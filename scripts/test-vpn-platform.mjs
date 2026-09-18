@@ -136,6 +136,31 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+test('first VPN authorization hands off descriptors while system start is pending', async () => {
+  const systemStart = deferred();
+  const events = [];
+  const { startVpnExtensionWithHandoff } = loadArkts(
+    'entry/src/main/ets/vpnability/VpnExtensionLauncher.ets', {
+      '@kit.NetworkKit': { vpnExtension: {
+        startVpnExtensionAbility(want) {
+          events.push(['start', want.parameters.pawsStartAttemptId]);
+          return systemStart.promise;
+        },
+      } },
+      '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} } },
+      'libpaws_ui.so': { default: {
+        preparePlatformVpnHandoff() { return '0123456789abcdef0123456789abcdef'; },
+        async sendPlatformVpnHandoff(_ashmem, _notification, attemptId) {
+          events.push(['handoff', attemptId]);
+        },
+      } },
+    },
+  );
+  await startVpnExtensionWithHandoff('{}', 'first-auth', { ashmemFd: 21, notificationFd: 22 });
+  assert.deepEqual(events, [['start', 'first-auth'], ['handoff', 'first-auth']]);
+  systemStart.resolve();
+});
+
 test('scan cancellation uses the SDK error code and never message substrings', async () => {
   let failure;
   const { ScanPlugin } = loadArkts('entry/src/main/ets/plugins/ScanPlugin.ets', {
@@ -415,6 +440,8 @@ function pluginFixture({
   let dispatchCount = 0;
   const native = {
     initializePlatformSharedMemory() { return '21,22'; },
+    preparePlatformVpnHandoff() { return '0123456789abcdef0123456789abcdef'; },
+    async sendPlatformVpnHandoff() {},
     currentPlatformVpnSessionId() { return currentSession; },
     advancePlatformVpnIntent() { intentEpoch += 1; calls.push(['intent', `${intentEpoch}`]); return `${intentEpoch}`; },
     isPlatformVpnIntentCurrent(expected) { return expected === `${intentEpoch}`; },
@@ -507,6 +534,11 @@ function pluginFixture({
     } },
     '@kit.NotificationKit': { notificationManager: { async isNotificationEnabled() { return true; } } },
     '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error() {} } },
+    '../vpnability/VpnEmulatorCompatibility': {
+      authorizeVpnForEmulatorDebug() {},
+      canRecoverRejectedEmulatorStop() { return false; },
+      isVpnEmulatorCompatibilityEnabled() { return false; },
+    },
     'libpaws_ui.so': { default: native },
   });
   const createPlugin = () => {
@@ -616,8 +648,8 @@ test('bridge submits a VPN operation once and observes typed pending without ret
   const terminalLookup = await fixture.lookup('bridge-pending');
   assert.equal(terminalLookup.value.operationStatus, 'succeeded');
   assert.equal(terminalLookup.value.result, true);
-  assert.equal(fixture.calls.filter(call => call[0] === 'start-extension').length, 2,
-    'only the intentional authorization redispatch may invoke start twice');
+  assert.equal(fixture.calls.filter(call => call[0] === 'start-extension').length, 1,
+    'one connection intent sends one system VPN start');
 });
 
 test('bridge reports platform failure as typed terminal state', async () => {
@@ -669,7 +701,7 @@ test('watchdog orphan recovery confirms the OS stop before replacement start', a
   assert.equal(fixture.calls.some(call => call[0] === 'await-cleanup'), false);
 });
 
-for (const deferStartNumber of [1, 2]) {
+for (const deferStartNumber of [1]) {
   test(`user stop ignores unresolved platform start dispatch ${deferStartNumber}`, async () => {
     const startBarrier = deferred();
     const fixture = pluginFixture({ startBarrier, deferStartNumber });

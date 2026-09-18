@@ -23,3 +23,5 @@
 !/entry/src/main/resources/rawfile/geodata/.gitkeep
 
 /smoke-logs
+/.ohos-sign/
+**/__pycache__/
