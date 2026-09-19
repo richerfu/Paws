@@ -186,6 +186,15 @@ struct ApiControllerRuntime {
     memory_limit_bytes: Arc<AtomicU64>,
 }
 
+#[derive(Clone)]
+struct ControllerStartConfig {
+    runtime_path: PathBuf,
+    raw_config: RawConfig,
+    proxy_providers: HashMap<String, Arc<ProxyProvider>>,
+    rule_providers: HashMap<String, Arc<RuleProvider>>,
+    listeners: Vec<NamedListener>,
+}
+
 struct MixedListenerRuntime {
     task: tokio::task::JoinHandle<()>,
 }
@@ -283,6 +292,7 @@ struct CoreState {
     last_exit_location_check: Option<Instant>,
     exit_location_revision: u64,
     api_controller: Option<ApiControllerRuntime>,
+    controller_start: Option<ControllerStartConfig>,
     controller_diagnostics: ControllerDiagnostics,
     controller_config_sync_count: u64,
     last_controller_config_sync_at: Option<String>,
@@ -423,15 +433,42 @@ fn platform_vpn_session_id(state: &CoreState) -> Option<String> {
     .then(|| state.platform_start_attempt_id.clone())
 }
 
+fn active_profile_settings(
+    profiles: &ProfileStore,
+) -> Result<(VpnOptions, ControllerAccessConfig, NetworkPortConfig), PawsError> {
+    let Some(profile_id) = profiles.active_profile() else {
+        return Ok((
+            VpnOptions::default(),
+            ControllerAccessConfig::default(),
+            NetworkPortConfig::default(),
+        ));
+    };
+    Ok((
+        profiles.vpn_options_for_profile(profile_id)?,
+        profiles.controller_access_for_profile(profile_id)?,
+        profiles.network_ports_for_profile(profile_id)?,
+    ))
+}
+
 impl Default for CoreState {
     fn default() -> Self {
         let profiles = ProfileStore::open_default_or_unavailable();
         let proxy_groups = load_runtime_ui_cache(&profiles)
             .map(|cache| cache.proxy_groups)
             .unwrap_or_default();
-        let logs = RecordedLogBuffer::new(profiles.root());
+        let mut logs = RecordedLogBuffer::new(profiles.root());
         let geodata = profiles.geodata_files();
-        let vpn_options = VpnOptions::default();
+        let (vpn_options, controller_access, network_ports) = active_profile_settings(&profiles)
+            .unwrap_or_else(|error| {
+                logs.push(warning_log(format!(
+                    "failed to load active profile settings at startup: {error}"
+                )));
+                (
+                    VpnOptions::default(),
+                    ControllerAccessConfig::default(),
+                    NetworkPortConfig::default(),
+                )
+            });
         let dns = dns_snapshot(&vpn_options, None);
         Self {
             revision: 1,
@@ -501,12 +538,13 @@ impl Default for CoreState {
             logs,
             request_history: VecDeque::with_capacity(MAX_REQUEST_HISTORY),
             vpn_options,
-            controller_access: ControllerAccessConfig::default(),
-            network_ports: NetworkPortConfig::default(),
+            controller_access,
+            network_ports,
             exit_location: ExitLocationSnapshot::default(),
             last_exit_location_check: None,
             exit_location_revision: 0,
             api_controller: None,
+            controller_start: None,
             controller_diagnostics: ControllerDiagnostics::default(),
             controller_config_sync_count: 0,
             last_controller_config_sync_at: None,
@@ -798,7 +836,18 @@ impl CoreHandle {
             .map(|cache| cache.proxy_groups)
             .unwrap_or_default();
         let geodata = profiles.geodata_files();
-        let vpn_options = VpnOptions::default();
+        let mut logs = RecordedLogBuffer::new(log_root);
+        let (vpn_options, controller_access, network_ports) = active_profile_settings(&profiles)
+            .unwrap_or_else(|error| {
+                logs.push(warning_log(format!(
+                    "failed to load active profile settings at startup: {error}"
+                )));
+                (
+                    VpnOptions::default(),
+                    ControllerAccessConfig::default(),
+                    NetworkPortConfig::default(),
+                )
+            });
         let dns = dns_snapshot(&vpn_options, None);
         Self {
             state: Mutex::new(CoreState {
@@ -866,15 +915,16 @@ impl CoreHandle {
                 geodata,
                 last_traffic_sample: None,
                 last_meow_traffic_sample: None,
-                logs: RecordedLogBuffer::new(log_root),
+                logs,
                 request_history: VecDeque::with_capacity(MAX_REQUEST_HISTORY),
                 vpn_options,
-                controller_access: ControllerAccessConfig::default(),
-                network_ports: NetworkPortConfig::default(),
+                controller_access,
+                network_ports,
                 exit_location: ExitLocationSnapshot::default(),
                 last_exit_location_check: None,
                 exit_location_revision: 0,
                 api_controller: None,
+                controller_start: None,
                 controller_diagnostics: ControllerDiagnostics::default(),
                 controller_config_sync_count: 0,
                 last_controller_config_sync_at: None,
@@ -2164,6 +2214,7 @@ impl CoreHandle {
             let mut state = self.lock_state()?;
             if was_active && next_active.is_none() {
                 state.tunnel = None;
+                state.controller_start = None;
                 state.proxy_groups.clear();
                 state.providers.clear();
                 state.runtime_rules.clear();
@@ -2575,7 +2626,7 @@ impl CoreHandle {
         let options: VpnOptions = from_json(options_json)?;
         validate_supported_vpn_options(&options)?;
         self.prepare_active_vpn().await?;
-        let (tunnel, sniffer_config, mixed_port) = {
+        let (tunnel, sniffer_config, mixed_port, mixed_enabled) = {
             let mut state = self.lock_state()?;
             if let Some(attempt_id) = attempt_id {
                 self.sync_platform_vpn_state_locked(&mut state);
@@ -2585,6 +2636,7 @@ impl CoreHandle {
                 state.tunnel.clone(),
                 state.sniffer_config.clone(),
                 state.network_ports.mixed_port,
+                state.network_ports.mixed_enabled,
             )
         };
         let tunnel = tunnel
@@ -2604,7 +2656,12 @@ impl CoreHandle {
                 return Err(error);
             }
         }
-        let mixed_listener = self.restart_mixed_listener(tunnel, mixed_port).await;
+        let mixed_listener = if mixed_enabled {
+            self.restart_mixed_listener(tunnel, mixed_port).await
+        } else {
+            self.stop_mixed_listener()?;
+            Ok(false)
+        };
         if let Some(attempt_id) = attempt_id {
             let attempt_result = {
                 let mut state = self.lock_state()?;
@@ -4037,6 +4094,7 @@ impl CoreHandle {
         if attempt_id.is_some_and(|attempt_id| state.platform_start_attempt_id != attempt_id) {
             return Ok(true);
         }
+        state.api_controller.take();
         if let Some(stats) = stats {
             apply_traffic_sample(&mut state, &stats)?;
         }
@@ -4379,6 +4437,62 @@ impl CoreHandle {
         // then config reload) before this path may restart the native worker.
         let _vpn_operation_guard = self.vpn_operation_lock.lock().await;
         let _reload_guard = self.config_reload_lock.lock().await;
+        let (stopped_controller, start_config) = {
+            let mut state = self.lock_state()?;
+            self.sync_platform_vpn_state_locked(&mut state);
+            let connected = self.vpn.is_running() || state.platform_vpn_running;
+            let enabled =
+                self.api_controller_enabled && state.network_ports.controller_enabled && connected;
+            let pending_mutation = if let Some(controller) = state.api_controller.as_ref() {
+                controller.config_revision.load(Ordering::Acquire) != controller.synced_revision
+                    && !raw_configs_equal(
+                        &controller.baseline_raw_config,
+                        &controller.raw_config.read(),
+                    )?
+            } else {
+                false
+            };
+            let stopped = if enabled || pending_mutation {
+                None
+            } else {
+                state.api_controller.take()
+            };
+            if stopped.is_some() {
+                state.controller_diagnostics = sample_controller_diagnostics(&state);
+                self.publish_runtime_change_locked(&mut state, false, false);
+            }
+            let start_config = if enabled && state.api_controller.is_none() {
+                state.controller_start.clone().zip(state.tunnel.clone())
+            } else {
+                None
+            };
+            (stopped, start_config)
+        };
+        if let Some(mut controller) = stopped_controller {
+            controller.shutdown().await;
+        }
+        if let Some((config, tunnel)) = start_config {
+            let next_controller = self.start_api_controller(true, &config, &tunnel)?;
+            let mut state = self.lock_state()?;
+            self.sync_platform_vpn_state_locked(&mut state);
+            if (self.vpn.is_running() || state.platform_vpn_running)
+                && state.network_ports.controller_enabled
+            {
+                if let Some(controller) = next_controller {
+                    enrich_proxy_provider_members(
+                        &mut state.providers,
+                        &controller.proxy_providers,
+                    );
+                    state.logs.push(info_log(format!(
+                        "meow external-controller listening on {}",
+                        controller.bind_addr
+                    )));
+                    state.api_controller = Some(controller);
+                    state.controller_diagnostics = sample_controller_diagnostics(&state);
+                    self.publish_status_and_resource_change_locked(&mut state);
+                }
+            }
+        }
         let pending = {
             let mut state = self.lock_state()?;
             sync_live_controller_route(&mut state)?;
@@ -4631,12 +4745,16 @@ impl CoreHandle {
         if let Some(mut controller) = previous_controller {
             controller.shutdown().await;
         }
-        let next_controller = self.start_api_controller(
+        let controller_start = ControllerStartConfig {
             runtime_path,
             raw_config,
-            proxy_provider_registry,
-            rule_provider_registry,
+            proxy_providers: proxy_provider_registry,
+            rule_providers: rule_provider_registry,
             listeners,
+        };
+        let next_controller = self.start_api_controller(
+            network_ports.controller_enabled,
+            &controller_start,
             &tunnel,
         )?;
         let controller_bind_addr = next_controller
@@ -4668,6 +4786,7 @@ impl CoreHandle {
             .write_runtime_yaml(profile_id, &runtime_yaml)?;
         state.profiles.set_active(profile_id)?;
         state.api_controller = next_controller;
+        state.controller_start = Some(controller_start);
         state.controller_diagnostics = sample_controller_diagnostics(&state);
         state.tunnel = Some(tunnel);
         state.sniffer_config = sniffer_config;
@@ -4695,6 +4814,9 @@ impl CoreHandle {
             state.logs.push(info_log(format!(
                 "meow external-controller listening on {addr}"
             )));
+        }
+        if !network_ports.mixed_enabled {
+            self.stop_mixed_listener()?;
         }
         Ok(())
     }
@@ -6509,7 +6631,7 @@ impl CoreHandle {
         let (revision, mixed_port) = {
             let mut state = self.lock_state()?;
             let connected = self.vpn.is_running() || state.platform_vpn_running;
-            if !connected {
+            if !connected || !state.network_ports.mixed_enabled {
                 let changed = state.last_exit_location_check.is_some()
                     || state.exit_location != ExitLocationSnapshot::default();
                 if changed {
@@ -6756,14 +6878,11 @@ impl CoreHandle {
 
     fn start_api_controller(
         &self,
-        runtime_path: PathBuf,
-        raw_config: RawConfig,
-        proxy_providers: HashMap<String, Arc<ProxyProvider>>,
-        rule_providers: HashMap<String, Arc<RuleProvider>>,
-        listeners: Vec<NamedListener>,
+        enabled: bool,
+        config: &ControllerStartConfig,
         tunnel: &Tunnel,
     ) -> Result<Option<ApiControllerRuntime>, PawsError> {
-        if !self.api_controller_enabled {
+        if !enabled || !self.api_controller_enabled {
             return Ok(None);
         }
         if self
@@ -6772,6 +6891,16 @@ impl CoreHandle {
         {
             return Ok(None);
         }
+        if !self.vpn.is_running() && !self.lock_state()?.platform_vpn_running {
+            return Ok(None);
+        }
+        let ControllerStartConfig {
+            runtime_path,
+            raw_config,
+            proxy_providers,
+            rule_providers,
+            listeners,
+        } = config.clone();
         let bind_addr = self
             .api_controller_addr_override
             .or_else(|| {

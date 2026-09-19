@@ -21,6 +21,8 @@ fn baseline(profile: &str, revision: u64) -> SettingsBaseline {
             network: NetworkDraft {
                 mixed_port: "7890".into(),
                 controller_port: "9090".into(),
+                mixed_enabled: false,
+                controller_enabled: false,
                 allow_lan: false,
             },
         },

@@ -4339,6 +4339,107 @@ async fn platform_stop_settles_meow_traffic_when_native_stats_are_unavailable() 
     assert_eq!(snapshot.traffic.download_speed, 0);
 }
 
+fn enable_controller_for_test(core: &CoreHandle, profile_id: &str) {
+    {
+        let mut state = core.lock_state().unwrap();
+        state
+            .profiles
+            .set_profile_network_config(
+                profile_id,
+                NetworkPortConfig {
+                    controller_enabled: true,
+                    ..NetworkPortConfig::default()
+                },
+                false,
+            )
+            .unwrap();
+    }
+    core.set_platform_vpn_running(true).unwrap();
+}
+
+#[test]
+fn cold_core_restores_active_profile_service_switches_without_binding() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-cold-service-settings-{}",
+        now_unix_nanos()
+    ));
+    let mut profiles = ProfileStore::open(&root).unwrap();
+    let profile_id = profiles
+        .import_profile_content(
+            "Cold service settings",
+            "test",
+            "proxies: []\nproxy-groups: []\nrules: []\n",
+            None,
+        )
+        .unwrap();
+    profiles
+        .set_profile_network_config(
+            &profile_id,
+            NetworkPortConfig {
+                mixed_enabled: true,
+                controller_enabled: true,
+                ..NetworkPortConfig::default()
+            },
+            false,
+        )
+        .unwrap();
+    profiles.set_active(&profile_id).unwrap();
+    drop(profiles);
+
+    let core = CoreHandle::new_with_profile_root(&root);
+    let settings = core.config_projection().unwrap();
+    assert_eq!(
+        settings.active_profile.as_deref(),
+        Some(profile_id.as_str())
+    );
+    assert!(settings.network_ports.mixed_enabled);
+    assert!(settings.network_ports.controller_enabled);
+    assert!(!core.snapshot().unwrap().controller_running);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn controller_port_requires_setting_and_running_vpn() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-core-controller-gate-test-{}",
+        now_unix_nanos()
+    ));
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    let core = CoreHandle::new_with_profile_root_and_controller(root, addr);
+    let profile_id = core
+        .import_profile_from_content(
+            "Controller gate",
+            "test",
+            "proxies: []\nproxy-groups: []\nrules: []\n",
+            None,
+        )
+        .await
+        .unwrap();
+    core.reload_config(&profile_id).await.unwrap();
+    assert!(!core.snapshot().unwrap().controller_running);
+    assert!(std::net::TcpListener::bind(addr).is_ok());
+
+    {
+        let mut state = core.lock_state().unwrap();
+        state.network_ports.controller_enabled = true;
+    }
+    core.sync_external_controller_config().await.unwrap();
+    assert!(!core.snapshot().unwrap().controller_running);
+    assert!(std::net::TcpListener::bind(addr).is_ok());
+
+    core.set_platform_vpn_running(true).unwrap();
+    core.sync_external_controller_config().await.unwrap();
+    assert!(core.snapshot().unwrap().controller_running);
+    let _ = wait_for_json(&format!("http://{addr}/version")).await;
+    assert!(std::net::TcpListener::bind(addr).is_err());
+
+    core.set_platform_vpn_running(false).unwrap();
+    core.sync_external_controller_config().await.unwrap();
+    assert!(!core.snapshot().unwrap().controller_running);
+    assert!(std::net::TcpListener::bind(addr).is_ok());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reload_starts_meow_external_controller() {
     let root = std::env::temp_dir().join(format!(
@@ -4381,6 +4482,7 @@ rules:
         .import_profile_from_content("Direct", "test", &yaml, None)
         .await
         .unwrap();
+    enable_controller_for_test(&core, &profile_id);
     core.reload_config(&profile_id).await.unwrap();
 
     let snapshot = core.snapshot().unwrap();
@@ -4575,6 +4677,8 @@ rules:
         NetworkPortConfig {
             mixed_port: 17890,
             controller_port: 19090,
+            mixed_enabled: false,
+            controller_enabled: true,
         },
         true,
     )
@@ -4593,6 +4697,8 @@ rules:
         NetworkPortConfig {
             mixed_port: 17890,
             controller_port: 19090,
+            mixed_enabled: false,
+            controller_enabled: true,
         }
     );
     assert_eq!(
@@ -4645,6 +4751,7 @@ rules:
         .import_profile_from_content("Controller sync", "test", &original, None)
         .await
         .unwrap();
+    enable_controller_for_test(&core, &profile_id);
     core.reload_config(&profile_id).await.unwrap();
     let _ = wait_for_json(&format!("http://{addr}/version")).await;
     let mut fds = [0_i32; 2];
@@ -4754,6 +4861,7 @@ async fn controller_exposes_loaded_provider_registries() {
     )
     .unwrap();
 
+    enable_controller_for_test(&core, &profile_id);
     core.reload_config(&profile_id).await.unwrap();
 
     let proxy_providers = wait_for_json(&format!("http://{addr}/providers/proxies")).await;
@@ -4946,6 +5054,7 @@ async fn provider_refresh_disambiguates_same_name_by_type() {
         provider_proxy_yaml(),
     )
     .unwrap();
+    enable_controller_for_test(&core, &profile_id);
     core.reload_config(&profile_id).await.unwrap();
     let _ = wait_for_json(&format!("http://{addr}/providers/rules")).await;
 

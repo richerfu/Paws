@@ -180,6 +180,10 @@ pub struct ControllerAccessConfig {
 pub struct NetworkPortConfig {
     pub mixed_port: u16,
     pub controller_port: u16,
+    #[serde(default)]
+    pub mixed_enabled: bool,
+    #[serde(default)]
+    pub controller_enabled: bool,
 }
 
 impl NetworkPortConfig {
@@ -206,6 +210,8 @@ impl Default for NetworkPortConfig {
         Self {
             mixed_port: DEFAULT_MIXED_PORT,
             controller_port: DEFAULT_CONTROLLER_PORT,
+            mixed_enabled: false,
+            controller_enabled: false,
         }
     }
 }
