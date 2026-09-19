@@ -35,6 +35,8 @@ pub(crate) fn settings_page() -> Element {
     let dns_hijacking_value = draft.values.vpn.dns_hijacking;
     let allow_bypass_value = draft.values.vpn.allow_bypass;
     let controller_allow_lan_value = draft.values.network.allow_lan;
+    let mixed_enabled_value = draft.values.network.mixed_enabled;
+    let controller_enabled_value = draft.values.network.controller_enabled;
     let mixed_port_value = draft.values.network.mixed_port.clone();
     let controller_port_value = draft.values.network.controller_port.clone();
     let vpn_stack_label_value =
@@ -172,6 +174,14 @@ pub(crate) fn settings_page() -> Element {
                 rsx! {
                     FieldGroup {
                         Field {
+                            orientation: FieldOrientation::Horizontal,
+                            FieldContent {
+                                FieldTitle { content: match current.locale { UiLocale::ZhCn => "启用混合代理服务", UiLocale::En => "Enable mixed proxy service" } }
+                                FieldDescription { content: match current.locale { UiLocale::ZhCn => "仅在 VPN 已连接时监听代理端口", UiLocale::En => "Listen on the proxy port only while VPN is connected" }, inset: true }
+                            }
+                            Switch { checked: Some(mixed_enabled_value), on_change: move |value| if !busy { form.write().values.network.mixed_enabled = value } }
+                        }
+                        Field {
                             FieldLabel { content: translate_ui(current.locale, tr::page_tr_235()) }
                             Input {
                                 value: Some(mixed_port_value.clone()),
@@ -184,6 +194,14 @@ pub(crate) fn settings_page() -> Element {
                         FieldDescription {
                             content: translate_ui(current.locale, tr::page_tr_236()),
                             inset: true,
+                        }
+                        Field {
+                            orientation: FieldOrientation::Horizontal,
+                            FieldContent {
+                                FieldTitle { content: match current.locale { UiLocale::ZhCn => "启用 Controller 服务", UiLocale::En => "Enable controller service" } }
+                                FieldDescription { content: match current.locale { UiLocale::ZhCn => "仅在 VPN 已连接时监听控制端口", UiLocale::En => "Listen on the controller port only while VPN is connected" }, inset: true }
+                            }
+                            Switch { checked: Some(controller_enabled_value), on_change: move |value| if !busy { form.write().values.network.controller_enabled = value } }
                         }
                         Field {
                             FieldLabel { content: translate_ui(current.locale, tr::page_tr_237()) }
@@ -341,6 +359,8 @@ fn settings_values(
         network: NetworkDraft {
             mixed_port: ports.mixed_port.to_string(),
             controller_port: ports.controller_port.to_string(),
+            mixed_enabled: ports.mixed_enabled,
+            controller_enabled: ports.controller_enabled,
             allow_lan,
         },
     }
@@ -428,6 +448,8 @@ fn save_settings(
                         &values.network.controller_port,
                         translate_ui(locale, tr::controller_port()),
                     )?,
+                    mixed_enabled: values.network.mixed_enabled,
+                    controller_enabled: values.network.controller_enabled,
                 };
                 ports.validate().map_err(|error| error.to_string())?;
                 core.set_profile_network_config_checked(

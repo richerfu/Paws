@@ -27,23 +27,31 @@ fn network_ports_have_safe_defaults_and_reject_conflicts() {
         NetworkPortConfig {
             mixed_port: 7890,
             controller_port: 9090,
+            mixed_enabled: false,
+            controller_enabled: false,
         }
     );
     assert!(NetworkPortConfig {
         mixed_port: 17890,
         controller_port: 19090,
+        mixed_enabled: false,
+        controller_enabled: false,
     }
     .validate()
     .is_ok());
     assert!(NetworkPortConfig {
         mixed_port: 9090,
         controller_port: 9090,
+        mixed_enabled: false,
+        controller_enabled: false,
     }
     .validate()
     .is_err());
     assert!(NetworkPortConfig {
         mixed_port: 80,
         controller_port: 9090,
+        mixed_enabled: false,
+        controller_enabled: false,
     }
     .validate()
     .is_err());

@@ -189,6 +189,15 @@ pub(super) fn network_ports_from_mapping(root: &Mapping) -> Result<NetworkPortCo
             .unwrap_or(defaults.mixed_port),
         controller_port: aliased_field(paws, "controller-port", "controllerPort", strict_u16)?
             .unwrap_or(defaults.controller_port),
+        mixed_enabled: aliased_field(paws, "mixed-enabled", "mixedEnabled", strict_bool)?
+            .unwrap_or(false),
+        controller_enabled: aliased_field(
+            paws,
+            "controller-enabled",
+            "controllerEnabled",
+            strict_bool,
+        )?
+        .unwrap_or(false),
     };
     ports.validate()
 }

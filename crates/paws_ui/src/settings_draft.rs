@@ -18,6 +18,8 @@ pub(crate) struct VpnDraft {
 pub(crate) struct NetworkDraft {
     pub mixed_port: String,
     pub controller_port: String,
+    pub mixed_enabled: bool,
+    pub controller_enabled: bool,
     pub allow_lan: bool,
 }
 

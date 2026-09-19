@@ -2969,10 +2969,15 @@ fn network_ports_and_controller_access_are_profile_scoped_and_validated() {
     );
     assert_eq!(get_i64(default_root, "mixed-port"), Some(7890));
     assert!(!default_root.contains_key(value_key("secret")));
+    let default_ports = store.network_ports_for_profile(&profile_id).unwrap();
+    assert!(!default_ports.mixed_enabled);
+    assert!(!default_ports.controller_enabled);
 
     let custom_ports = NetworkPortConfig {
         mixed_port: 17890,
         controller_port: 19090,
+        mixed_enabled: true,
+        controller_enabled: true,
     };
     let (saved_ports, enabled) = store
         .set_profile_network_config(&profile_id, custom_ports, true)
@@ -2993,6 +2998,12 @@ fn network_ports_and_controller_access_are_profile_scoped_and_validated() {
         Some("0.0.0.0:19090".to_owned())
     );
     assert_eq!(get_i64(enabled_root, "mixed-port"), Some(17890));
+    let enabled_paws = enabled_root
+        .get(value_key("paws"))
+        .and_then(Value::as_mapping)
+        .unwrap();
+    assert_eq!(get_bool(enabled_paws, "mixed-enabled"), Some(true));
+    assert_eq!(get_bool(enabled_paws, "controller-enabled"), Some(true));
     assert_eq!(get_string(enabled_root, "secret"), Some(secret.clone()));
     assert_eq!(
         store.network_ports_for_profile(&profile_id).unwrap(),
@@ -3026,6 +3037,8 @@ fn network_ports_and_controller_access_are_profile_scoped_and_validated() {
             NetworkPortConfig {
                 mixed_port: 1023,
                 controller_port: 19090,
+                mixed_enabled: false,
+                controller_enabled: false,
             },
             false,
         )
@@ -3036,6 +3049,8 @@ fn network_ports_and_controller_access_are_profile_scoped_and_validated() {
             NetworkPortConfig {
                 mixed_port: 19090,
                 controller_port: 19090,
+                mixed_enabled: false,
+                controller_enabled: false,
             },
             false,
         )
@@ -3114,6 +3129,8 @@ rules: []
         NetworkPortConfig {
             mixed_port: 17890,
             controller_port: 19090,
+            mixed_enabled: false,
+            controller_enabled: false,
         }
     );
     assert_eq!(

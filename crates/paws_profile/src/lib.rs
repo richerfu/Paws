@@ -968,10 +968,16 @@ impl ProfileStore {
             secret = Some(ControllerSecretGenerator::generate()?);
         }
         put_i64(&mut paws, "mixed-port", i64::from(network_ports.mixed_port));
+        put_bool(&mut paws, "mixed-enabled", network_ports.mixed_enabled);
         put_i64(
             &mut paws,
             "controller-port",
             i64::from(network_ports.controller_port),
+        );
+        put_bool(
+            &mut paws,
+            "controller-enabled",
+            network_ports.controller_enabled,
         );
         put_bool(&mut paws, "controller-allow-lan", allow_lan);
         if let Some(secret) = secret.as_deref() {
