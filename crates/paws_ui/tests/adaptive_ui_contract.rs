@@ -56,3 +56,23 @@ fn desktop_navigation_and_primary_rows_expose_pointer_and_focus_states() {
         assert!(source.contains("focusable: adaptive.is_pc()"));
     }
 }
+
+#[test]
+fn paws_owns_the_vpn_action_and_desktop_selection_visuals() {
+    let dashboard = include_str!("../src/view/pages/dashboard.rs");
+    let tools = include_str!("../src/view/pages/tools.rs");
+
+    assert!(VIEW.contains("fn VpnPowerButton("));
+    assert!(VIEW.contains("background_color: 0x00000000"));
+    assert!(VIEW.contains("let corner_radius = size / 2.0"));
+    assert!(VIEW.contains("clip: true"));
+    assert!(VIEW.contains("adaptive.is_pc()"));
+    assert!(dashboard.contains("VpnPowerButton { session: session.clone(), size: 44.0 }"));
+
+    assert!(VIEW.contains("theme.colors.sidebar_primary"));
+    assert!(VIEW.contains("theme.colors.sidebar_accent_foreground"));
+
+    assert!(tools.contains("padding: spacing::XXS"));
+    assert!(tools.contains("padding_left: spacing::SM"));
+    assert!(tools.contains("padding_right: spacing::SM"));
+}

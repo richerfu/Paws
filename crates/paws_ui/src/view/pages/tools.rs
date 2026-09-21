@@ -98,8 +98,7 @@ fn settings_section(title: impl Into<String>, rows: Vec<Element>) -> Element {
                 shadow: Some(shadow),
                 column {
                     width: "100%",
-                    padding_left: spacing::MD,
-                    padding_right: spacing::SM,
+                    padding: spacing::XXS,
                     {rows}
                 }
             }
@@ -142,7 +141,8 @@ fn settings_route_row(page: Route, locale: UiLocale, subtitle: impl Into<String>
             },
             row {
                 width: "100%",
-                padding_right: spacing::XS,
+                padding_left: spacing::SM,
+                padding_right: spacing::SM,
                 align_items: "center",
                 row {
                     width: 34.0,

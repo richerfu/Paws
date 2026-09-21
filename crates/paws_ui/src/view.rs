@@ -15,7 +15,8 @@ use arkit::shadcn::components::{
     Select, Separator, Spinner, Switch, TabsList, TabsTrigger, Textarea,
 };
 use arkit::shadcn::theme::{
-    control, radius, spacing, typography, use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider,
+    control, radius, spacing, typography, use_theme, with_alpha, Theme, ThemeMode, ThemePreset,
+    ThemeProvider,
 };
 use std::cell::{Cell, RefCell};
 use std::future::Future;
@@ -841,7 +842,26 @@ fn DesktopSidebar() -> Element {
                             width: "100%",
                             align_items: "center",
                             justify_content: "start",
-                            {arkit::icon(target.icon(), 17.0, theme.colors.sidebar_foreground)}
+                            row {
+                                width: 3.0,
+                                height: 18.0,
+                                margin_right: spacing::SM,
+                                background_color: if selected == index {
+                                    theme.colors.sidebar_primary
+                                } else {
+                                    0x00000000
+                                },
+                                border_radius: theme.radii.full,
+                            }
+                            {arkit::icon(
+                                target.icon(),
+                                17.0,
+                                if selected == index {
+                                    theme.colors.sidebar_accent_foreground
+                                } else {
+                                    theme.colors.sidebar_foreground
+                                },
+                            )}
                             text {
                                 content: target.title(locale),
                                 margin_left: spacing::SM,
@@ -896,8 +916,9 @@ fn BottomBar() -> Element {
 #[component]
 fn DashboardVpnFloatingAction() -> Element {
     let route = use_route::<Route>();
+    let adaptive = use_adaptive_layout();
     let session = use_context::<UiStores>().session.read().clone();
-    if !matches!(route, Route::Dashboard {}) {
+    if !matches!(route, Route::Dashboard {}) || adaptive.is_pc() {
         return rsx! {};
     }
     rsx! { VpnFloatingAction { session } }
@@ -905,9 +926,31 @@ fn DashboardVpnFloatingAction() -> Element {
 
 #[component]
 fn VpnFloatingAction(session: SessionProjection) -> Element {
+    rsx! {
+        column {
+            width: "100%",
+            height: "100%",
+            padding_right: spacing::XXL,
+            padding_bottom: 92.0,
+            align_items: "end",
+            justify_content: "end",
+            hit_test_behavior: "transparent",
+            VpnPowerButton { session, size: 56.0 }
+        }
+    }
+}
+
+/// Paws-owned VPN action built on the semantic button primitive. The native
+/// button stays visually transparent; the inner circle owns every visual
+/// state so platform defaults cannot leak into the product design.
+#[component]
+fn VpnPowerButton(session: SessionProjection, size: f32) -> Element {
     let services = use_context::<UiServices>();
+    let locale = use_context::<UiStores>().preferences.read().locale;
     let theme = use_theme();
     let adaptive = use_adaptive_layout();
+    let mut hovering = use_signal(|| false);
+    let mut focused = use_signal(|| false);
     let operation = use_context::<UiOperationStores>().vpn.read().active.clone();
     let starting = operation.as_ref().map_or_else(
         || matches!(session.lifecycle, VpnLifecycle::Starting),
@@ -929,7 +972,7 @@ fn VpnFloatingAction(session: SessionProjection) -> Element {
     let active = session.vpn_running && !stopping;
     let disabled = operation.is_some() || matches!(session.lifecycle, VpnLifecycle::Starting);
     let icon = if active { "square" } else { "power" };
-    let background = if disabled {
+    let base_background = if disabled {
         theme.colors.muted
     } else if active {
         theme.colors.destructive
@@ -943,36 +986,53 @@ fn VpnFloatingAction(session: SessionProjection) -> Element {
     } else {
         theme.colors.primary_foreground
     };
+    let background = if adaptive.is_pc() && !disabled && (hovering() || focused()) {
+        with_alpha(base_background, 0xE6)
+    } else {
+        base_background
+    };
+    let label = if active {
+        translate_ui(locale, tr::dashboard_stop_vpn())
+    } else {
+        translate_ui(locale, tr::dashboard_start_vpn())
+    };
+    let corner_radius = size / 2.0;
     rsx! {
-        column {
-            width: "100%",
-            height: "100%",
-            padding_right: spacing::XXL,
-            padding_bottom: adaptive.select(92.0, spacing::XXL),
-            align_items: "end",
-            justify_content: "end",
-            hit_test_behavior: "transparent",
-            button {
-                button_type: "normal",
-                width: 56.0,
-                height: 56.0,
-                background_color: background,
-                border_width: 0.0,
-                border_radius: theme.radii.full,
-                enabled: !disabled,
-                opacity: if disabled { 0.6 } else { 1.0 },
-                onclick: move |_| services.toggle_vpn(),
-                row {
-                    width: "100%",
-                    height: "100%",
-                    align_items: "center",
-                    justify_content: "center",
-                    if starting || stopping {
-                        Spinner { size: 22.0, color: Some(foreground) }
-                    } else {
-                        {arkit::icon(icon, 22.0, foreground)}
-                    }
+        button {
+            width: size,
+            height: size,
+            padding: 0.0,
+            background_color: 0x00000000,
+            border_width: 0.0,
+            border_radius: corner_radius,
+            clip: true,
+            enabled: !disabled,
+            focusable: adaptive.is_pc() && !disabled,
+            focus_on_touch: false,
+            opacity: if disabled { 0.6 } else { 1.0 },
+            onhover: move |event| {
+                if adaptive.is_pc() && !disabled {
+                    hovering.set(event.data().is_hovering);
                 }
+            },
+            onfocus: move |_| focused.set(true),
+            onblur: move |_| focused.set(false),
+            onclick: move |_| services.toggle_vpn(),
+            row {
+                width: "100%",
+                height: "100%",
+                align_items: "center",
+                justify_content: "center",
+                background_color: background,
+                border_radius: corner_radius,
+                clip: true,
+                shadow: if adaptive.is_pc() { "sm" },
+                if starting || stopping {
+                    Spinner { size: size * 0.4, color: Some(foreground) }
+                } else {
+                    {arkit::icon(icon, size * 0.4, foreground)}
+                }
+                text { content: label, width: 0.0, height: 0.0, opacity: 0.0 }
             }
         }
     }
