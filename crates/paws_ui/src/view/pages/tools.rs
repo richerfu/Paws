@@ -74,6 +74,7 @@ pub(crate) fn tools_page() -> Element {
 fn settings_section(title: impl Into<String>, rows: Vec<Element>) -> Element {
     let title = title.into();
     let theme = use_theme();
+    let shadow = use_adaptive_layout().is_pc();
     let count = rows.len();
     let rows = rows.into_iter().enumerate().map(|(index, row)| {
         rsx! {
@@ -94,7 +95,7 @@ fn settings_section(title: impl Into<String>, rows: Vec<Element>) -> Element {
                 font_color: theme.colors.muted_foreground,
             }
             Card {
-                shadow: Some(false),
+                shadow: Some(shadow),
                 column {
                     width: "100%",
                     padding_left: spacing::MD,
@@ -108,7 +109,10 @@ fn settings_section(title: impl Into<String>, rows: Vec<Element>) -> Element {
 
 fn settings_route_row(page: Route, locale: UiLocale, subtitle: impl Into<String>) -> Element {
     let theme = use_theme();
+    let adaptive = use_adaptive_layout();
     let navigator = use_navigator();
+    let mut hovering = use_signal(|| false);
+    let mut focused = use_signal(|| false);
     let target = page.clone();
     let subtitle = subtitle.into();
     rsx! {
@@ -117,8 +121,22 @@ fn settings_route_row(page: Route, locale: UiLocale, subtitle: impl Into<String>
             width: "100%",
             height: 60.0,
             padding: 0.0,
-            background_color: 0x00000000,
+            background_color: if adaptive.is_pc() && (hovering() || focused()) {
+                theme.colors.accent
+            } else {
+                0x00000000
+            },
             border_width: 0.0,
+            border_radius: theme.radii.md,
+            focusable: adaptive.is_pc(),
+            focus_on_touch: false,
+            onhover: move |event| {
+                if adaptive.is_pc() {
+                    hovering.set(event.data().is_hovering);
+                }
+            },
+            onfocus: move |_| focused.set(true),
+            onblur: move |_| focused.set(false),
             onclick: move |_| {
                 navigator.push(target.clone());
             },

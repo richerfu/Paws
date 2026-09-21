@@ -149,6 +149,9 @@ pub(crate) fn dashboard_page() -> Element {
     };
 
     let theme = use_theme();
+    let adaptive = use_adaptive_layout();
+    let mut status_hovering = use_signal(|| false);
+    let mut status_focused = use_signal(|| false);
     let body = rsx! {
         column {
             width: "100%",
@@ -160,9 +163,23 @@ pub(crate) fn dashboard_page() -> Element {
                     width: "100%",
                     height: 52.0,
                     padding: 0.0,
-                    background_color: 0x00000000,
+                    background_color: if adaptive.is_pc() && (status_hovering() || status_focused()) {
+                        theme.colors.accent
+                    } else {
+                        0x00000000
+                    },
                     border_width: 0.0,
+                    border_radius: theme.radii.md,
                     enabled: !disabled,
+                    focusable: adaptive.is_pc() && !disabled,
+                    focus_on_touch: false,
+                    onhover: move |event| {
+                        if adaptive.is_pc() {
+                            status_hovering.set(event.data().is_hovering);
+                        }
+                    },
+                    onfocus: move |_| status_focused.set(true),
+                    onblur: move |_| status_focused.set(false),
                     onclick: move |_| vpn_services.toggle_vpn(),
                     row {
                         width: "100%",
