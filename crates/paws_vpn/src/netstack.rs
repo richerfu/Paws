@@ -564,7 +564,7 @@ where
     };
     if let Some(host) = host {
         metadata.host = host.as_str().into();
-        metadata.sniff_host = host.into();
+        metadata.sniff_host = host;
     }
     prefix
 }
@@ -789,10 +789,10 @@ pub(super) async fn handle_udp_datagram(
         return;
     };
     let dst_addr = SocketAddr::new(dst_ip, metadata.dst_port);
-    let Some((proxy, _rule_name, _rule_payload)) = inner.resolve_proxy(&metadata) else {
+    let Some(target) = inner.resolve_proxy(&metadata).await else {
         return;
     };
-    let Ok(conn) = proxy.dial_udp(&metadata).await else {
+    let Ok(conn) = target.adapter.dial_udp(&metadata).await else {
         return;
     };
     if conn.write_packet(&data, &dst_addr).await.is_err() {

@@ -89,7 +89,7 @@ const MIXED_LISTENER_READY_RETRY: Duration = Duration::from_millis(25);
 const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-const MEOW_RS_VERSION: &str = "0.21.2";
+const MEOW_RS_VERSION: &str = "0.22.0";
 const ARKIT_REV: &str = env!("PAWS_ARKIT_REV");
 const RUST_VERSION: &str = "1.89";
 
@@ -191,6 +191,7 @@ struct ControllerStartConfig {
     runtime_path: PathBuf,
     raw_config: RawConfig,
     proxy_providers: HashMap<String, Arc<ProxyProvider>>,
+    provider_dialer_registry: meow_proxy::dialer::ProxyRegistry,
     rule_providers: HashMap<String, Arc<RuleProvider>>,
     listeners: Vec<NamedListener>,
 }
@@ -2798,9 +2799,9 @@ impl CoreHandle {
     }
 
     /// Ensure the active meow tunnel is ready before the platform supplies a
-    /// TUN descriptor. VPN Extension can run this concurrently with native
-    /// `VpnConnection::create`, removing config parsing from the serial start
-    /// path. Returns `true` when a cold config load was required.
+    /// TUN descriptor. The VPN Extension must protect process egress before
+    /// calling this: configuration loading may fetch providers and GeoData.
+    /// Returns `true` when a cold config load was required.
     pub async fn prepare_active_vpn(&self) -> Result<bool, PawsError> {
         let tunnel = {
             let state = self.lock_state()?;
@@ -2884,10 +2885,14 @@ impl CoreHandle {
         let route = tunnel.route_snapshot();
         let mut resolution_attempted = false;
         let mut resolved_ip = None;
-        let matched = match route
-            .compiled_rules
-            .match_rules_lazy(&metadata, route.rules.as_ref())
-        {
+        let matched = match route.compiled_rules.match_rules_lazy(
+            &metadata,
+            route.rules.as_ref(),
+            &RuleLookupTargetProbe {
+                route: &route,
+                metadata: &metadata,
+            },
+        ) {
             LazyMatchOutcome::Matched(matched) => Some((
                 matched.rule_index,
                 matched.rule_type.to_string(),
@@ -2905,7 +2910,14 @@ impl CoreHandle {
                 }
                 route
                     .compiled_rules
-                    .match_rules(&metadata, route.rules.as_ref())
+                    .match_rules(
+                        &metadata,
+                        route.rules.as_ref(),
+                        &RuleLookupTargetProbe {
+                            route: &route,
+                            metadata: &metadata,
+                        },
+                    )
                     .map(|matched| {
                         (
                             matched.rule_index,
@@ -3863,7 +3875,7 @@ impl CoreHandle {
         if require_unattached {
             state.platform_vpn_cleanup_complete = true;
         }
-        state.logs.push(warning_log(format!(
+        state.logs.push(error_log(format!(
             "platform VPN start transaction {attempt_id} failed: {error}"
         )));
         if state.platform_vpn_cleanup_complete {
@@ -4649,6 +4661,25 @@ impl CoreHandle {
     }
 
     async fn reload_config_inner(&self, profile_id: &str) -> Result<(), PawsError> {
+        let started = Instant::now();
+        let result = self.reload_config_unreported(profile_id).await;
+        if let Err(error) = &result {
+            // Config construction can fail before the controller /logs
+            // channel exists. Record directly, independent of tracing setup.
+            let entry = error_log(format!(
+                "config reload failed (profile {profile_id}, meow {MEOW_RS_VERSION}, {} ms): {error}",
+                started.elapsed().as_millis()
+            ));
+            if let Ok(mut state) = self.lock_state() {
+                state.logs.push(entry.clone());
+                self.publish_status_and_resource_change_locked(&mut state);
+            }
+            broadcast_log_entry(&entry);
+        }
+        result
+    }
+
+    async fn reload_config_unreported(&self, profile_id: &str) -> Result<(), PawsError> {
         #[cfg(test)]
         if self.fail_next_config_reload.swap(false, Ordering::AcqRel) {
             return Err(PawsError::Core(
@@ -4717,6 +4748,7 @@ impl CoreHandle {
         let raw_config = config.raw.clone();
         let loaded_rule_lines = raw_config.rules.clone().unwrap_or_default();
         let proxy_provider_registry = config.proxy_providers.clone();
+        let provider_dialer_registry = config.provider_dialer_registry.clone();
         let rule_provider_registry = config.rule_providers.clone();
         let listeners = config.listeners.named.clone();
         let sniffer_config = config.sniffer.clone();
@@ -4729,6 +4761,19 @@ impl CoreHandle {
         };
         let runtime_rules = runtime_rule_summaries(profile_id, &loaded_rule_lines, &editable_rules);
         let tunnel = tunnel_from_config(config, mode);
+        // 0.22 defers provider proxy fetches until the shared dialer registry
+        // is published. Match the mobile embedders' one-shot initial retry.
+        for provider in proxy_provider_registry.values() {
+            if provider.take_deferred_initial() {
+                let provider = Arc::clone(provider);
+                tokio::spawn(async move {
+                    if let Err(error) = provider.acquire_initial().await {
+                        tracing::warn!(target: "paws_core::providers",
+                            "deferred proxy-provider fetch failed for {}: {error}", provider.name);
+                    }
+                });
+            }
+        }
         restore_proxy_selections(&tunnel, &selected_proxies);
         let global_proxy = if mode == RuntimeMode::Global {
             ensure_global_proxy_selected(&tunnel, None)?
@@ -4749,6 +4794,7 @@ impl CoreHandle {
             runtime_path,
             raw_config,
             proxy_providers: proxy_provider_registry,
+            provider_dialer_registry,
             rule_providers: rule_provider_registry,
             listeners,
         };
@@ -6898,6 +6944,7 @@ impl CoreHandle {
             runtime_path,
             raw_config,
             proxy_providers,
+            provider_dialer_registry,
             rule_providers,
             listeners,
         } = config.clone();
@@ -6942,6 +6989,14 @@ impl CoreHandle {
             proxy_provider_map.insert(name, provider);
         }
         let proxy_providers = Arc::new(proxy_provider_map);
+        let rule_providers = Arc::new(parking_lot::RwLock::new(rule_providers));
+        let rule_provider_refresh =
+            Arc::new(meow_config::rule_provider_refresh::RefreshSupervisor::default());
+        rule_provider_refresh.reconcile(&rule_providers);
+        let proxy_provider_refresh = Arc::new(
+            meow_config::proxy_provider_refresh::ProxyProviderRefreshSupervisor::default(),
+        );
+        proxy_provider_refresh.reconcile(&proxy_providers, raw_config.proxy_providers.as_ref());
         let shared_raw_config = Arc::new(parking_lot::RwLock::new(raw_config.clone()));
         let config_revision = Arc::new(AtomicU64::new(0));
         let memory_in_use_bytes = Arc::new(AtomicU64::new(0));
@@ -6949,14 +7004,26 @@ impl CoreHandle {
         let app_state = Arc::new(meow_api::routes::AppState {
             tunnel: tunnel.clone(),
             secret: raw_config.secret.clone(),
-            config_path: runtime_path.to_string_lossy().into_owned(),
+            config_path: Some(
+                runtime_path
+                    .to_str()
+                    .ok_or_else(|| {
+                        PawsError::Core("controller config path is not valid UTF-8".to_owned())
+                    })?
+                    .to_owned(),
+            ),
             raw_config: Arc::clone(&shared_raw_config),
             log_tx,
             proxy_providers: Arc::clone(&proxy_providers),
-            rule_providers: Arc::new(parking_lot::RwLock::new(rule_providers)),
+            provider_dialer_registry,
+            rule_providers,
+            rule_provider_refresh,
+            proxy_provider_refresh,
             listeners,
             external_ui: None,
-            config_mutation_lock: tokio::sync::Mutex::new(()),
+            traffic_feed: meow_api::routes::TrafficFeed::default(),
+            // Paws answers TUN DNS in process; it owns no standalone socket.
+            dns_server: Arc::new(parking_lot::RwLock::new(None)),
         });
         let task_revision = Arc::clone(&config_revision);
         let task = tokio::spawn(async move {
@@ -7789,6 +7856,10 @@ fn apply_platform_failure(state: &mut CoreState, error: String) {
     state.platform_vpn_starting = false;
     state.platform_vpn_running = false;
     state.platform_network_protected = false;
+    state.logs.push(error_log(format!(
+        "platform VPN failed (attempt {}): {error}",
+        state.platform_start_attempt_id
+    )));
     state.platform_network_protect_error = Some(error);
     state.platform_start_outcome = PlatformStartOutcome::Failed;
     state.platform_remote_stale_since = None;

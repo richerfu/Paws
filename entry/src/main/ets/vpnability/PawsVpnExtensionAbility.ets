@@ -440,18 +440,6 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     const connection = vpnExtension.createVpnConnection(this.context);
     this.vpnConnection = connection;
     const startedAt = Date.now();
-    const nativePrepare: Promise<string> = pawsUi.prepareVpn(attemptId)
-      .then((_loaded: boolean): string => '')
-      .catch((err: Error): string => describeError(err) || 'prepare native VPN failed');
-    const nativePrepareBarrier: Promise<void> = nativePrepare.then((_error: string): void => {});
-    this.pendingNativePrepare = nativePrepareBarrier;
-    this.pendingNativePrepareAttemptId = attemptId;
-    nativePrepareBarrier.finally((): void => {
-      if (this.pendingNativePrepare === nativePrepareBarrier) {
-        this.pendingNativePrepare = undefined;
-        this.pendingNativePrepareAttemptId = '';
-      }
-    });
 
     let createOperation: Promise<number>;
     try {
@@ -480,6 +468,21 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       pawsUi.setPlatformNetworkProtected(attemptId, false, message);
       throw new Error(message);
     }
+
+    // Config loading can fetch providers, GeoData and ECH. Start it only
+    // after process egress is protected from the newly installed VPN routes.
+    const nativePrepare: Promise<string> = pawsUi.prepareVpn(attemptId)
+      .then((_loaded: boolean): string => '')
+      .catch((err: Error): string => describeError(err) || 'prepare native VPN failed');
+    const nativePrepareBarrier: Promise<void> = nativePrepare.then((_error: string): void => {});
+    this.pendingNativePrepare = nativePrepareBarrier;
+    this.pendingNativePrepareAttemptId = attemptId;
+    nativePrepareBarrier.finally((): void => {
+      if (this.pendingNativePrepare === nativePrepareBarrier) {
+        this.pendingNativePrepare = undefined;
+        this.pendingNativePrepareAttemptId = '';
+      }
+    });
 
     const prepareError = await this.awaitPlatformOperation(connection, nativePrepare, 'native VPN prepare');
     if (prepareError.length > 0) {

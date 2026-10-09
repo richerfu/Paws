@@ -16,12 +16,36 @@ pub(super) fn warning_log(message: impl Into<String>) -> LogEntry {
     }
 }
 
+pub(super) fn error_log(message: impl Into<String>) -> LogEntry {
+    LogEntry {
+        level: "error".to_owned(),
+        message: message.into(),
+        timestamp: unix_timestamp_string(),
+    }
+}
+
+pub(super) fn broadcast_log_entry(entry: &LogEntry) {
+    if let Ok(senders) = API_LOG_TXS.lock() {
+        for tx in senders.iter() {
+            let _ = tx.send(meow_api::log_stream::LogMessage {
+                level: meow_api::log_stream::LogLevel::Error,
+                payload: entry.message.clone(),
+                time: time::OffsetDateTime::now_utc(),
+            });
+        }
+    }
+}
+
 pub(super) fn install_runtime_log_layer() {
     INSTALL_RUNTIME_LOG_LAYER.call_once(|| {
         let subscriber = tracing_subscriber::registry().with(PawsLogLayer {
             logs: RUNTIME_LOGS.clone(),
         });
-        let _ = tracing::subscriber::set_global_default(subscriber);
+        if let Err(error) = tracing::subscriber::set_global_default(subscriber) {
+            push_runtime_log(&RUNTIME_LOGS, warning_log(format!(
+                "engine tracing subscriber was not installed: {error}; config failures are still recorded directly"
+            )));
+        }
     });
 }
 

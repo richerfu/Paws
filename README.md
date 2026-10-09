@@ -4,9 +4,9 @@ Current release: **1.1.0** (versionCode **1001000**). See the
 [changelog](CHANGELOG.md) for release notes.
 
 Paws is a Clash/mihomo HarmonyOS client with a native ArkUI interface, powered
-by [meow-rs](https://github.com/madeye/meow-rs) and a Rust userspace TUN stack.
+by [meow-rs 0.22.0](https://github.com/meow-rs/meow-rs) and a Rust userspace TUN stack.
 Its product flow follows
-[Meow for Android](https://github.com/madeye/meow), while the HarmonyOS UI,
+[Meow for Android](https://github.com/meow-rs/meow-android), while the HarmonyOS UI,
 VPN lifecycle, native bridge, packaging, and device validation are implemented
 in this repository.
 

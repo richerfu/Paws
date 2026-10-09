@@ -894,6 +894,36 @@ test('a bound pending owner proceeds to platform create while native lifecycle i
   assert.equal(fixture.state().activeAttempt, 'attempt-a');
 });
 
+test('config preparation waits for TUN process protection before loading network resources', async () => {
+  const fixture = extensionFixture();
+  fixture.extension.onCreate(fixture.want('attempt-a', 21));
+  await until(() => fixture.connections.length === 1, 'TUN creation');
+  assert.equal(fixture.calls.some(call => call[0] === 'prepare'), false);
+  const protection = deferred();
+  fixture.connections[0].protectProcessNet = async () => protection.promise;
+  fixture.connections[0].created.resolve(101);
+  await until(() => fixture.extension.tunFd === 101, 'TUN descriptor');
+  assert.equal(fixture.calls.some(call => call[0] === 'prepare'), false);
+  protection.resolve();
+  await until(() => fixture.calls.some(call => call[0] === 'native-start'), 'protected native start');
+  const protectedAt = fixture.calls.findIndex(call => call[0] === 'protected' && call[2] === true);
+  const prepareAt = fixture.calls.findIndex(call => call[0] === 'prepare');
+  assert.ok(protectedAt >= 0 && prepareAt > protectedAt);
+  assert.equal(fixture.calls.filter(call => call[0] === 'prepare').length, 1);
+});
+
+test('failed process protection never starts config preparation', async () => {
+  const fixture = extensionFixture();
+  fixture.extension.onCreate(fixture.want('attempt-a', 21));
+  await until(() => fixture.connections.length === 1, 'TUN creation');
+  fixture.connections[0].protectProcessNet = async () => { throw new Error('protection denied'); };
+  fixture.connections[0].created.resolve(101);
+  await until(() => fixture.calls.some(call => call[0] === 'failed'), 'protection failure');
+  assert.equal(fixture.calls.some(call => call[0] === 'prepare'), false);
+  assert.equal(fixture.calls.some(call => call[0] === 'native-start'), false);
+  fixture.connections[0].destroyed.resolve();
+});
+
 test('a late terminal Want acknowledges exact delivery without attaching or reviving it', async () => {
   const fixture = extensionFixture();
   fixture.markTerminal('attempt-a');
