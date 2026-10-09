@@ -11,6 +11,7 @@ pub(crate) fn settings_page() -> Element {
     let notifications = use_context::<NotificationCenter>();
     let runtime = arkit::use_runtime_handle();
     let current = stores.preferences.read().clone();
+    let has_profiles = !stores.profiles.read().profiles.is_empty();
     let settings = stores.settings.read().clone();
     let initial = settings_baseline(&settings);
     let mut form = use_signal(move || SettingsDraft::new(initial));
@@ -75,12 +76,9 @@ pub(crate) fn settings_page() -> Element {
         .map(mask_controller_secret)
         .unwrap_or_else(|| translate_ui(current.locale, tr::hard_zh_027()));
 
-    let body = rsx! {
+    let settings_form = rsx! {
         column {
             width: "100%",
-            if draft.baseline.profile_id.is_none() {
-                text { content: translate_ui(current.locale, tr::feedback_active_profile_required()), font_color: danger() }
-            }
             if draft.incoming.is_some() {
                 text { content: translate_ui(current.locale, tr::settings_draft_conflict()), font_color: warning() }
                 FlatButton {
@@ -184,6 +182,7 @@ pub(crate) fn settings_page() -> Element {
                         Field {
                             FieldLabel { content: translate_ui(current.locale, tr::page_tr_235()) }
                             Input {
+                                click_to_focus: true,
                                 value: Some(mixed_port_value.clone()),
                                 placeholder: Some("7890".to_owned()),
                                 width: Some("100%".into()),
@@ -206,6 +205,7 @@ pub(crate) fn settings_page() -> Element {
                         Field {
                             FieldLabel { content: translate_ui(current.locale, tr::page_tr_237()) }
                             Input {
+                                click_to_focus: true,
                                 value: Some(controller_port_value.clone()),
                                 placeholder: Some("9090".to_owned()),
                                 width: Some("100%".into()),
@@ -276,6 +276,7 @@ pub(crate) fn settings_page() -> Element {
                         Field {
                             FieldLabel { content: translate_ui(current.locale, tr::page_tr_245()) }
                             Textarea {
+                                click_to_focus: true,
                                 value: Some(dns_servers_value.clone()),
                                 height: Some(92.0),
                                 width: Some("100%".into()),
@@ -286,6 +287,7 @@ pub(crate) fn settings_page() -> Element {
                         Field {
                             FieldLabel { content: translate_ui(current.locale, tr::page_tr_276()) }
                             Textarea {
+                                click_to_focus: true,
                                 value: Some(dns_fallbacks_value.clone()),
                                 height: Some(76.0),
                                 width: Some("100%".into()),
@@ -296,6 +298,7 @@ pub(crate) fn settings_page() -> Element {
                         Field {
                             FieldLabel { content: translate_ui(current.locale, tr::page_tr_246()) }
                             Textarea {
+                                click_to_focus: true,
                                 value: Some(dns_policy_value.clone()),
                                 height: Some(104.0),
                                 width: Some("100%".into()),
@@ -317,7 +320,95 @@ pub(crate) fn settings_page() -> Element {
             )}
         }
     };
+    let body = if draft.baseline.profile_id.is_none() {
+        rsx! { SettingsProfileEmpty { locale: current.locale, has_profiles } }
+    } else {
+        settings_form
+    };
     scaffold(Route::Settings {}, rsx! {}, body)
+}
+
+#[component]
+fn SettingsProfileEmpty(locale: UiLocale, has_profiles: bool) -> Element {
+    let theme = use_theme();
+    let navigator = use_navigator();
+    let mut import_intent = use_context::<ProfileImportIntent>();
+    let title = if has_profiles {
+        tr::settings_profile_inactive_title()
+    } else {
+        tr::settings_profile_missing_title()
+    };
+    let description = if has_profiles {
+        tr::settings_profile_inactive_description()
+    } else {
+        tr::settings_profile_missing_description()
+    };
+    let action = if has_profiles {
+        tr::settings_profile_choose_action()
+    } else {
+        tr::settings_profile_import_action()
+    };
+    rsx! {
+        column {
+            width: "100%",
+            min_height: 248.0,
+            padding: spacing::XXL,
+            border_width: 1.0,
+            border_style: "dashed",
+            border_color: theme.colors.border,
+            border_radius: theme.radii.lg,
+            align_items: "center",
+            justify_content: "center",
+            column {
+                width: "100%",
+                max_width_constraint: 384.0,
+                align_items: "center",
+                row {
+                    width: 40.0,
+                    height: 40.0,
+                    justify_content: "center",
+                    align_items: "center",
+                    background_color: theme.colors.muted,
+                    border_radius: theme.radii.lg,
+                    {arkit::icon("file-plus", 24.0, theme.colors.foreground)}
+                }
+                text {
+                    width: "100%",
+                    margin_top: spacing::LG,
+                    content: translate_ui(locale, title),
+                    font_size: typography::LG,
+                    font_weight: 500,
+                    font_color: theme.colors.foreground,
+                    text_align: "center",
+                    line_height: 26.0,
+                }
+                text {
+                    width: "100%",
+                    margin_top: spacing::SM,
+                    content: translate_ui(locale, description),
+                    font_size: typography::SM,
+                    font_color: theme.colors.muted_foreground,
+                    text_align: "center",
+                    line_height: 21.0,
+                }
+                row {
+                    margin_top: spacing::XXL,
+                    Button {
+                        onclick: move |_| {
+                            import_intent.0.set(!has_profiles);
+                            navigator.push(Route::Profiles {});
+                        },
+                        text {
+                            content: translate_ui(locale, action),
+                            font_size: typography::SM,
+                            font_weight: 500,
+                            font_color: theme.colors.primary_foreground,
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn mask_controller_secret(secret: &str) -> String {

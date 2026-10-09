@@ -169,7 +169,7 @@ pub(crate) fn dashboard_page() -> Element {
                             width: "100%",
                             height: 52.0,
                             padding: 0.0,
-                            background_color: if adaptive.is_pc() && (status_hovering() || status_focused()) {
+                            background_color: if status_hovering() || status_focused() {
                                 theme.colors.accent
                             } else {
                                 0x00000000
@@ -177,12 +177,10 @@ pub(crate) fn dashboard_page() -> Element {
                             border_width: 0.0,
                             border_radius: theme.radii.md,
                             enabled: !disabled,
-                            focusable: adaptive.is_pc() && !disabled,
+                            focusable: !disabled,
                             focus_on_touch: false,
                             onhover: move |event| {
-                                if adaptive.is_pc() {
-                                    status_hovering.set(event.data().is_hovering);
-                                }
+                                status_hovering.set(event.data().is_hovering);
                             },
                             onfocus: move |_| status_focused.set(true),
                             onblur: move |_| status_focused.set(false),

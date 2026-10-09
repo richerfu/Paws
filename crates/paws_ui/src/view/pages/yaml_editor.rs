@@ -84,6 +84,7 @@ pub(super) fn YamlEditorDialog(mut editor: Signal<Option<YamlEditorDraft>>) -> E
                 }
                 row { height: 8.0 }
                 Textarea {
+                    click_to_focus: true,
                     value: Some(current.text.clone()),
                     placeholder: Some(translate_ui(locale, tr::profiles_yaml_content())),
                     height: Some(260.0),

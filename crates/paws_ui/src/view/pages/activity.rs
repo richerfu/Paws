@@ -83,6 +83,7 @@ pub(crate) fn requests_page() -> Element {
             width: "100%",
             height: "100%",
             Input {
+                click_to_focus: true,
                 value: Some(query_value),
                 placeholder: Some(translate_ui(locale, tr::requests_search_placeholder())),
                 width: Some("100%".into()),
@@ -212,6 +213,7 @@ pub(crate) fn connections_page(initial_query: String) -> Element {
             width: "100%",
             height: "100%",
             Input {
+                click_to_focus: true,
                 value: Some(query_value),
                 placeholder: Some(translate_ui(locale, tr::connections_search_placeholder())),
                 width: Some("100%".into()),
@@ -831,6 +833,7 @@ fn ManualRuleDialogContent(local: LocalRuleEditors) -> Element {
             }
             row { height: 10.0 }
             Input {
+                click_to_focus: true,
                 value: Some(editor.value.clone()),
                 placeholder: Some(match editor.match_kind {
                     ManualRuleMatchKind::Domain => translate_ui(locale, tr::page_tr_009()),

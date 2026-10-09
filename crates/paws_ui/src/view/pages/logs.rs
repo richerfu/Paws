@@ -184,6 +184,7 @@ pub(crate) fn logs_page() -> Element {
                 }
             } else {
                 Input {
+                    click_to_focus: true,
                     value: Some(query_value),
                     placeholder: Some(translate_ui(locale, tr::logs_search_placeholder())),
                     width: Some("100%".into()),

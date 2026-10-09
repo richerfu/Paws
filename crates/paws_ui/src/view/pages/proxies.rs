@@ -69,6 +69,7 @@ pub(crate) fn proxies_page() -> Element {
             width: "100%",
             layout_weight: 1.0,
             Input {
+                click_to_focus: true,
                 value: Some(query_value),
                 placeholder: Some(translate_ui(locale, tr::proxies_search_placeholder())),
                 width: Some("100%".into()),

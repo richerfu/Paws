@@ -192,6 +192,7 @@ pub(crate) fn resources_page() -> Element {
             width: "100%",
             height: "100%",
             Input {
+                click_to_focus: true,
                 value: Some(query_value),
                 placeholder: Some(translate_ui(locale, tr::resources_search_placeholder())),
                 width: Some("100%".into()),
@@ -840,6 +841,7 @@ fn RuleLookupDialogContent(local: LocalRuleEditors) -> Element {
         }
         row { height: 14.0 }
         Input {
+            click_to_focus: true,
             value: Some(lookup.query.clone()),
             placeholder: Some("example.com / 203.0.113.1".to_owned()),
             width: Some("100%".into()),
