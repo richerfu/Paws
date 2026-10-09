@@ -1,4 +1,74 @@
-# Arkit upgrade, shadcn alignment and About links
+# Arkit integration, adaptive UI and About links
+
+## Current integration (2026-10-09)
+
+Paws pins Arkit [`903bccc1a7d611e41186531f64d4a7d4b160b8af`](https://github.com/richerfu/arkit/commit/903bccc1a7d611e41186531f64d4a7d4b160b8af).
+This revision combines main `06b2bb2ccf31ea2ab2f96e7f28c8dd32dab6aecd`, the
+rebased `fix/shadcn-style-parity` changes and `fix/paws-button-surface` fixes.
+All 15 resolved Arkit crates use that revision.
+
+Both Rust platform plugins and the ArkTS/C++ Ability host use
+`2b5defdb0a016b841736470f9c32f2929380c448`. The unmodified host source and
+licenses are in `vendor/openharmony-ability`; OHPM resolves both plugins to
+that local host module. Published native binding releases replace the old
+`b278b62` Git patches and sibling-checkout dependencies. Run
+`ohpm install --all` after changing dependencies.
+
+## Resulting behavior
+
+- Live window widths below 840vp use compact navigation; wider windows use
+  the sidebar and bounded page content. Pointer and keyboard focus remain
+  available in narrow windows. All 31 app-owned Input/Textarea fields use
+  click-to-focus, allowing a drag to scroll before the field receives focus.
+- Arkit projects semantic buttons onto styled Stacks, preserving common
+  border radius and explicit button accessibility/focus behavior. Advanced
+  native Button construction remains available. No local renderer override
+  is needed in Paws.
+- CSS-like shadows retain logical lengths until the common native paint
+  boundary. Root and embedded renderers share runtime density; existing
+  shadows repaint on density changes. Native preset enums and the explicit
+  seven-value ArkUI form retain their native unit contract. Shadcn controls
+  use logical elevation tokens; popup surfaces implement both md/lg layers
+  and negative spread with inset underlays.
+- Settings rows keep held feedback until release/cancellation. A drag beyond
+  8vp cancels it for that contact. An inner rounded clip follows the card's
+  border while an unclipped outer surface paints its shadow.
+- Network Settings without an active profile shows an Empty-style state.
+  With no profiles, the primary action opens the existing subscription import
+  dialog; with inactive profiles, it opens the profile list. The editable
+  form appears for an active profile. Both Chinese and English are supported.
+
+References: [shadcn Select](https://github.com/shadcn-ui/ui/blob/main/apps/v4/registry/new-york-v4/ui/select.tsx),
+[DropdownMenu](https://github.com/shadcn-ui/ui/blob/main/apps/v4/registry/new-york-v4/ui/dropdown-menu.tsx),
+[Empty](https://github.com/shadcn-ui/ui/blob/main/apps/v4/registry/new-york-v4/ui/empty.tsx)
+and [Tailwind elevation recipes](https://github.com/tailwindlabs/tailwindcss/blob/main/packages/tailwindcss/theme.css).
+
+## Verification
+
+- Workspace tests passed during the dependency upgrade. The focused Paws
+  checks cover 18 UI contracts and 3 press lifecycle cases; the ArkTS platform
+  suite covers 35 cases. Formatting and whitespace checks pass.
+- Native arm64 and signed debug HAP builds pass. The packaged library matches
+  the freshly SDK-stripped native product. The final HAP was installed and
+  launched on a physical ALN-AL10.
+- Physical-device checks verified the empty state, hidden inactive form and
+  direct import-dialog navigation. Isolated PC-emulator checks verified the
+  active-profile form, bounded Select popup and outside-click dismissal.
+- Tablet input testing scrolled 610px without focus before a normal tap
+  focused the field. A 900×1000px 2in1 window selected compact navigation.
+- Tablet captures are native 1920×1280. The replacement PC set has four native
+  1920×1080 images (16:9), showing a 1600×900 ordinary application window with
+  desktop/taskbar visible. Captures use synthetic data and were reviewed for
+  privacy. Images, archives, build logs and machine-local signing material
+  stay outside the commit.
+- Renderer/component test targets cross-compile for OHOS. Standalone native
+  test execution is restricted by Ark JS runtime library loading, so actual
+  UI acceptance runs through the application host. Pure shadow geometry and
+  density tests execute on the host.
+
+## Previous baseline
+
+The notes below describe the earlier upgrade and its validation.
 
 Base: Paws `8126443`. Arkit is pinned to upstream main commit
 [`1d4163f2168a49aba1a6fd8ea6ca81406212c4e9`](https://github.com/richerfu/arkit/commit/1d4163f2168a49aba1a6fd8ea6ca81406212c4e9),

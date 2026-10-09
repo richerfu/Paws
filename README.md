@@ -51,7 +51,11 @@ Network
 - **Runtime views**: proxy selection and delay test, live traffic, connections,
   requests, logs, resources, and VPN lifecycle diagnostics.
 - **Native UI**: phone, tablet, and 2-in-1 device targets built with
-  [arkit](https://github.com/richerfu/arkit).
+  [arkit](https://github.com/richerfu/arkit). Live window widths below 840vp
+  use bottom navigation; wider tablet and desktop windows use a sidebar and
+  bounded page content. Keyboard and pointer input remain available in split
+  or narrow windows. Text fields focus on click so scrolling does not open
+  the keyboard accidentally.
 - **Localization**: English and Simplified Chinese.
 - **Automation**: workspace tests, local protocol mocks, HAP export checks,
   device/QEMU smoke tests, and a 14-mode positive/negative protocol matrix.
@@ -66,6 +70,11 @@ Network
 - `hvigorw` and `hdc`; the packaging scripts can use the copies bundled with
   DevEco Studio.
 - Signing material configured locally when producing a physical-device HAP.
+
+Run `ohpm install --all` after changing dependencies. Paws includes the
+matching ArkTS Ability host in `vendor/openharmony-ability` so the native
+window and input lifecycle interfaces stay aligned with the pinned Arkit
+commit.
 
 The project targets HarmonyOS 6.1, is compatible with HarmonyOS 6.0.2, and
 exports release packages for `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
