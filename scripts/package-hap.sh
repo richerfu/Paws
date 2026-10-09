@@ -86,7 +86,14 @@ if [ "$NATIVE_PROFILE" = "release" ]; then
 else
   OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH"
 fi
-cp "$SO_SRC" "$SO_DST"
+# Hvigor can hard-link its native intermediates to the input library. Avoid
+# rewriting that inode; install a fresh file atomically instead. A buffered
+# copy also avoids macOS copyfile's slow sparse seeks on large debug ELFs.
+NATIVE_SO_STAGE="$(mktemp "$NATIVE_LIB_DIR/.libpaws_ui.XXXXXX")"
+trap 'rm -f "$NATIVE_SO_STAGE"' EXIT HUP INT TERM
+dd if="$SO_SRC" of="$NATIVE_SO_STAGE" bs=1048576
+chmod 755 "$NATIVE_SO_STAGE"
+mv -f "$NATIVE_SO_STAGE" "$SO_DST"
 cp "$CXX_SHARED_SRC" "$CXX_SHARED_DST"
 "$HVIGORW_BIN" default@PackageHap --mode module -p module=entry@default \
   -p buildMode="$HAP_BUILD_MODE" $HVIGOR_ARGS
