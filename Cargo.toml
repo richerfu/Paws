@@ -14,15 +14,18 @@ paws_profile = { path = "crates/paws_profile" }
 paws_core = { path = "crates/paws_core" }
 paws_vpn = { path = "crates/paws_vpn" }
 
-# arkit mainline; declarative `#[entry(plugins = [...])]` bridge-plugin
-# registration (no hand-written init/render needed).
-arkit = { git = "https://github.com/richerfu/arkit.git", rev = "ca4918e235ed6e84726ddda582c157c5fb568932", features = ["router", "shadcn", "barcode"] }
+# Arkit main + rebased shadow parity + semantic button surface fixes.
+# Declarative `#[entry(plugins = [...])]` bridge-plugin registration.
+arkit = { git = "https://github.com/richerfu/arkit.git", rev = "903bccc1a7d611e41186531f64d4a7d4b160b8af", features = ["router", "shadcn", "barcode"] }
 ohos-ashmem-binding = "0.1.0"
+ohos-fileuri-binding = "0.2.4"
+ohos-fileshare-binding = "0.2.4"
+ohos-resource-manager-binding = "0.3.4"
 
-# Pluginized platform capabilities from openharmony-ability. These published
-# plugin releases resolve to the openharmony-ability version selected by Arkit.
-openharmony-ability-plugin-files = "1.0.0-beta.1"
-openharmony-ability-plugin-url = "1.0.0-beta.1"
+# Keep plugin traits on Arkit's exact Ability source and revision. The matching
+# ArkTS host is vendored under vendor/openharmony-ability/native_ability.
+openharmony-ability-plugin-files = { git = "https://github.com/richerfu/openharmony-ability.git", rev = "2b5defdb0a016b841736470f9c32f2929380c448" }
+openharmony-ability-plugin-url = { git = "https://github.com/richerfu/openharmony-ability.git", rev = "2b5defdb0a016b841736470f9c32f2929380c448" }
 
 meow-api = "0.21.2"
 meow-common = "0.21.2"
@@ -72,12 +75,3 @@ unimplemented = "warn"
 
 [workspace.lints.rust]
 unused_must_use = "warn"
-
-[patch.crates-io]
-# Arkit's PC input support depends on unreleased ArkUI event wrappers. Cargo
-# only honors patches from the consuming workspace, so keep Paws on the exact
-# binding revision used by the pinned Arkit commit.
-ohos-arkui-binding = { git = "https://github.com/ohos-rs/ohos-native-bindings.git", rev = "b278b62617c27065b518541d2941d4bac6996928" }
-ohos-drawing-binding = { git = "https://github.com/ohos-rs/ohos-native-bindings.git", rev = "b278b62617c27065b518541d2941d4bac6996928" }
-ohos-xcomponent-binding = { git = "https://github.com/ohos-rs/ohos-native-bindings.git", rev = "b278b62617c27065b518541d2941d4bac6996928" }
-ohos-xcomponent-sys = { git = "https://github.com/ohos-rs/ohos-native-bindings.git", rev = "b278b62617c27065b518541d2941d4bac6996928" }
