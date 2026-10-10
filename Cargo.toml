@@ -22,9 +22,9 @@ paws_profile = { path = "crates/paws_profile" }
 paws_core = { path = "crates/paws_core" }
 paws_vpn = { path = "crates/paws_vpn" }
 
-# Arkit main + rebased shadow parity + semantic button surface fixes.
+# Arkit main + shadow/button fixes + native bounded panel layout.
 # Declarative `#[entry(plugins = [...])]` bridge-plugin registration.
-arkit = { git = "https://github.com/richerfu/arkit.git", rev = "903bccc1a7d611e41186531f64d4a7d4b160b8af", features = ["router", "shadcn", "barcode"] }
+arkit = { git = "https://github.com/richerfu/arkit.git", rev = "a6fb10ec16f3644d75af9e04e28f435ad6273f4d", features = ["router", "shadcn", "barcode"] }
 ohos-ashmem-binding = "0.1.0"
 ohos-hilog-binding = "0.2.3"
 ohos-fileuri-binding = "0.2.4"

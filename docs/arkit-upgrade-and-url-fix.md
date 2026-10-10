@@ -1,10 +1,11 @@
 # Arkit integration, adaptive UI and About links
 
-## Current integration (2026-10-09)
+## Current integration (2026-10-10)
 
-Paws pins Arkit [`903bccc1a7d611e41186531f64d4a7d4b160b8af`](https://github.com/richerfu/arkit/commit/903bccc1a7d611e41186531f64d4a7d4b160b8af).
-This revision combines main `06b2bb2ccf31ea2ab2f96e7f28c8dd32dab6aecd`, the
-rebased `fix/shadcn-style-parity` changes and `fix/paws-button-surface` fixes.
+Paws pins Arkit [`a6fb10ec16f3644d75af9e04e28f435ad6273f4d`](https://github.com/richerfu/arkit/commit/a6fb10ec16f3644d75af9e04e28f435ad6273f4d).
+This revision adds native bounded-panel layout to `903bccc`, which combines
+main `06b2bb2ccf31ea2ab2f96e7f28c8dd32dab6aecd`, the rebased
+`fix/shadcn-style-parity` changes and `fix/paws-button-surface` fixes.
 All 15 resolved Arkit crates use that revision.
 
 Both Rust platform plugins and the ArkTS/C++ Ability host use
@@ -16,6 +17,12 @@ that local host module. Published native binding releases replace the old
 
 ## Resulting behavior
 
+- Modal and popup viewport heights are sized by native ArkUI Scroll under a
+  maximum-height constraint. There is no estimated content height, layout
+  callback, or subsequent explicit-height rewrite in `PanelViewport`.
+  Native Scroll calculates overflow and automatic scrollbar visibility in
+  its layout pass, so a short phone profile-actions dialog does not start
+  inside an artificially short viewport. Long content remains scrollable.
 - Live window widths below 840vp use compact navigation; wider windows use
   the sidebar and bounded page content. Pointer and keyboard focus remain
   available in narrow windows. All 31 app-owned Input/Textarea fields use
@@ -43,8 +50,30 @@ References: [shadcn Select](https://github.com/shadcn-ui/ui/blob/main/apps/v4/re
 [Empty](https://github.com/shadcn-ui/ui/blob/main/apps/v4/registry/new-york-v4/ui/empty.tsx)
 and [Tailwind elevation recipes](https://github.com/tailwindlabs/tailwindcss/blob/main/packages/tailwindcss/theme.css).
 
+Native sizing references: [ArkUI Scroll measurement](https://github.com/openharmony/arkui_ace_engine/blob/master/frameworks/core/components_ng/pattern/scroll/scroll_layout_algorithm.cpp),
+[Scroll scrollbar behavior](https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/reference/apis-arkui/arkui-ts/ts-container-scroll.md#scrollbar),
+and [layout size constraints](https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/reference/apis-arkui/arkui-ts/ts-universal-attributes-size.md#constraintsize).
+
 ## Verification
 
+- The 2026-10-10 bounded-panel update passes `cargo check -p arkit_shadcn
+  --tests`, the three existing Paws shadcn source contracts, and the OHOS
+  native/signed debug HAP build. The standalone Arkit host test executable
+  cannot link on macOS because the native window-manager library is absent;
+  it is not counted as an executed test suite.
+- A fresh phone emulator with synthetic `Layout Check` data verifies the
+  first-open profile-actions dialog: all four actions are visible, its native
+  Scroll bounds are 1200x1080px, and the captured opening frame has no
+  scrollbar. SDK rotation did not change the app's viewport, so it is not
+  counted as a separate landscape/overflow acceptance case.
+- The signed update was installed over the existing ALN-AL00 app. Emulator
+  and phone HAPs have the same native payload, matching the current SDK strip
+  output. Device data is preserved; diagnostic captures stay outside Git.
+- Cargo's Git-source refresh changes no package versions. It also regenerates
+  existing socket2/windows-sys dependency references from their manifests.
+  All six focused core HTTP tests pass after the refresh, covering private
+  proxy authentication, cookies/user agent, credential redaction, and reset
+  retries without direct-network replay.
 - Workspace tests passed during the dependency upgrade. The focused Paws
   checks cover 18 UI contracts and 3 press lifecycle cases; the ArkTS platform
   suite covers 35 cases. Formatting and whitespace checks pass.
