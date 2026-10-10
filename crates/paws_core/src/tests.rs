@@ -68,6 +68,51 @@ fn core_snapshot_is_json() {
 }
 
 #[test]
+fn notification_speed_snapshot_stays_small_with_large_rule_sets() {
+    let root = std::env::temp_dir().join(format!("paws-speed-test-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    {
+        let mut state = core.lock_state().unwrap();
+        state.traffic.upload_speed = 64;
+        state.traffic.download_speed = 96;
+        state.runtime_rules = (0..9263)
+            .map(|i| paws_model::RuleSummary {
+                id: i.to_string(),
+                profile_id: "private-profile".to_owned(),
+                line: format!("DOMAIN,private-{i}.example,DIRECT"),
+                enabled: true,
+                order: i,
+                source: "profile".to_owned(),
+            })
+            .collect();
+    }
+    let speeds = core.traffic_speed_snapshot().unwrap();
+    assert_eq!(speeds.upload_speed, 64);
+    assert_eq!(speeds.download_speed, 96);
+    let payload = to_json(&speeds).unwrap();
+    assert!(payload.len() < 100);
+    assert!(!payload.contains("private"));
+    drop(core);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn ui_ipc_initialization_keeps_the_users_log_recording_choice() {
+    for enabled in [false, true] {
+        let root =
+            std::env::temp_dir().join(format!("paws-log-choice-{}-{enabled}", now_unix_nanos()));
+        let core = Arc::new(CoreHandle::new_with_profile_root(&root));
+        core.set_log_recording_enabled(enabled).unwrap();
+        // On non-Harmony hosts ashmem may be unavailable. Even a failed IPC
+        // initialization must preserve the explicit recording choice.
+        let _ = core.initialize_platform_shared_memory();
+        assert_eq!(core.log_recording_status().unwrap().enabled, enabled);
+        drop(core);
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+#[test]
 fn proxy_selection_refresh_preserves_the_existing_member_order() {
     let item = |name: &str, selected: bool| ProxyItem {
         name: name.to_owned(),
@@ -1957,6 +2002,7 @@ async fn watchdog_orphan_cleanup_requires_confirmed_stop_and_dead_exact_owner() 
                 running: true,
                 network_protected: true,
                 network_protect_error: None,
+                app_http_proxy: None,
                 updated_at: 7,
             }),
         );
@@ -2494,6 +2540,7 @@ fn older_platform_frame_does_not_refresh_remote_liveness() {
             running: true,
             network_protected: false,
             network_protect_error: None,
+            app_http_proxy: None,
             updated_at: 19,
         }),
     );
@@ -2561,6 +2608,7 @@ fn live_platform_frame_cannot_ack_connection_cleanup() {
             running: true,
             network_protected: true,
             network_protect_error: None,
+            app_http_proxy: None,
             updated_at: 1,
         }),
     );
@@ -2617,6 +2665,7 @@ fn terminal_platform_attempt_cannot_be_revived_by_a_late_running_frame() {
                 running: true,
                 network_protected: true,
                 network_protect_error: None,
+                app_http_proxy: None,
                 updated_at: 1,
             }),
         );
@@ -3485,6 +3534,46 @@ rules: [MATCH,Broken]
         .unwrap();
     assert!(core.prepare_active_vpn().await.unwrap());
     assert!(core.snapshot().unwrap().engine_loaded);
+    drop(core);
+    let _ = fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn config_validation_failure_is_recorded_before_a_vpn_transaction() {
+    let _guard = TEST_LOG_LOCK.lock().unwrap();
+    let root =
+        std::env::temp_dir().join(format!("paws-validation-error-test-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    core.set_log_recording_enabled(true).unwrap();
+    let invalid = "strict: true\nproxies:\n  - name: Invalid\n    type: vless\n    server: localhost\n    port: 443\n    uuid: private-invalid-uuid\nrules:\n  - MATCH,Invalid\n";
+    let error = core
+        .prepare_profile_import_from_content("Invalid", "test", invalid, None)
+        .await
+        .unwrap_err();
+    core.refresh_telemetry().unwrap();
+    let snapshot = core.snapshot().unwrap();
+    assert!(!snapshot.vpn_running);
+    assert!(!error.to_string().contains("private-invalid-uuid"));
+    let entry = snapshot
+        .logs
+        .iter()
+        .find(|entry| {
+            entry.level == "error" && entry.message.contains("configuration load rejected")
+        })
+        .expect("validation error must reach application logs before any VPN transaction");
+    assert!(entry.message.contains("meow 0.22.0"));
+    assert!(entry.message.contains("invalid uuid"));
+    assert!(!entry.message.contains("private-invalid-uuid"));
+    assert!(core
+        .log_recording_status()
+        .unwrap()
+        .archives
+        .iter()
+        .any(|archive| {
+            core.read_log_archive(&archive.file_name)
+                .unwrap()
+                .contains(&entry.message)
+        }));
     drop(core);
     let _ = fs::remove_dir_all(root);
 }

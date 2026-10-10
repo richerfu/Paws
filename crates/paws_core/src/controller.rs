@@ -113,6 +113,26 @@ struct MeowConfigLoader<'a> {
 
 impl MeowConfigLoader<'_> {
     async fn load(self) -> Result<Config, PawsError> {
+        let raw_yaml = self.raw_yaml;
+        let started = Instant::now();
+        let result = self.load_inner().await;
+        if let Err(error) = &result {
+            // Validation before the start transaction also uses this loader.
+            // Record at this boundary so a rejected configuration does not
+            // depend on reaching reload_config's later error handler.
+            push_runtime_log(
+                &RUNTIME_LOGS,
+                error_log(format!(
+                    "configuration load rejected (meow {MEOW_RS_VERSION}, {} ms): {}",
+                    started.elapsed().as_millis(),
+                    config_error_message(raw_yaml, &error.to_string())
+                )),
+            );
+        }
+        result
+    }
+
+    async fn load_inner(self) -> Result<Config, PawsError> {
         validate_transport_contract(self.raw_yaml)?;
         // The engine's public API accepts UTF-8 paths. Never silently change
         // the identity of a file containing non-UTF-8 bytes.

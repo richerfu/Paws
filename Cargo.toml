@@ -8,6 +8,14 @@ edition = "2021"
 license = "MIT"
 rust-version = "1.89"
 
+# Keep debug HAPs debuggable without running the proxy kernel and TLS at -O0.
+[profile.dev]
+opt-level = 1
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [workspace.dependencies]
 paws_model = { path = "crates/paws_model" }
 paws_profile = { path = "crates/paws_profile" }
@@ -18,6 +26,7 @@ paws_vpn = { path = "crates/paws_vpn" }
 # Declarative `#[entry(plugins = [...])]` bridge-plugin registration.
 arkit = { git = "https://github.com/richerfu/arkit.git", rev = "903bccc1a7d611e41186531f64d4a7d4b160b8af", features = ["router", "shadcn", "barcode"] }
 ohos-ashmem-binding = "0.1.0"
+ohos-hilog-binding = "0.2.3"
 ohos-fileuri-binding = "0.2.4"
 ohos-fileshare-binding = "0.2.4"
 ohos-resource-manager-binding = "0.3.4"
@@ -61,7 +70,7 @@ serde_yaml = "0.9"
 shadowsocks = { version = "1.24", default-features = false, features = ["aead-cipher"] }
 thiserror = "2"
 time = { version = "0.3", features = ["formatting"] }
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "net", "fs", "io-util"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
 tracing = "0.1"
 tracing-appender = "0.2.5"

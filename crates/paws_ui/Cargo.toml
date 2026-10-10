@@ -27,6 +27,7 @@ openharmony-ability-plugin-url.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ohos-hilog-binding.workspace = true
 serde_yaml.workspace = true
 time.workspace = true
 tokio.workspace = true

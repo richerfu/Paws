@@ -153,6 +153,8 @@ scripts/harmony-smoke.sh \
   --require-protect-success
 ```
 
+See [VPN app HTTP and debug performance regression](docs/vpn-app-http-regression.md)
+for the private app request path, error diagnostics, and emulator measurements.
 See [HarmonyOS smoke validation](docs/harmony-smoke.md) for profile import,
 automatic VPN startup, traffic probes, and troubleshooting options.
 

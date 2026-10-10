@@ -58,9 +58,6 @@ interface PawsTrafficSnapshot {
   uploadSpeed?: number;
 }
 
-interface PawsRuntimeSnapshot {
-  traffic?: PawsTrafficSnapshot;
-}
 
 interface PawsErrorLike {
   code?: number;
@@ -454,7 +451,9 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     }
     this.tunFd = fd;
     hilog.info(LOG_DOMAIN, LOG_TAG, 'created tun fd %{public}d', fd);
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase create finished in %{public}d ms', Date.now() - startedAt);
 
+    const protectStartedAt = Date.now();
     try {
       await this.awaitPlatformOperation(connection, connection.protectProcessNet(),
         'VpnConnection.protectProcessNet');
@@ -463,6 +462,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
         throw new Error('platform VPN protection result belongs to a stale attempt');
       }
       hilog.info(LOG_DOMAIN, LOG_TAG, 'protected process network');
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase protect finished in %{public}d ms', Date.now() - protectStartedAt);
     } catch (err) {
       const message = describeError(err) || 'protect process network failed';
       pawsUi.setPlatformNetworkProtected(attemptId, false, message);
@@ -471,6 +471,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
 
     // Config loading can fetch providers, GeoData and ECH. Start it only
     // after process egress is protected from the newly installed VPN routes.
+    const prepareStartedAt = Date.now();
     const nativePrepare: Promise<string> = pawsUi.prepareVpn(attemptId)
       .then((_loaded: boolean): string => '')
       .catch((err: Error): string => describeError(err) || 'prepare native VPN failed');
@@ -488,13 +489,16 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     if (prepareError.length > 0) {
       throw new Error(prepareError);
     }
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase config finished in %{public}d ms', Date.now() - prepareStartedAt);
     this.requireCurrentRequest(generation, attemptId, connection);
+    const nativeStartedAt = Date.now();
     await this.awaitPlatformOperation(
       connection,
       pawsUi.startVpn(fd, optionsJson, attemptId),
       'native VPN start',
     );
     this.requireCurrentRequest(generation, attemptId, connection);
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase native finished in %{public}d ms', Date.now() - nativeStartedAt);
     const lifecycle = pawsUi.extensionTick(attemptId);
     if (lifecycle !== 'connected') {
       throw new Error(`native VPN worker entered ${lifecycle}`);
@@ -791,14 +795,14 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       return;
     }
 
-    let snapshot: PawsRuntimeSnapshot;
+    let snapshot: PawsTrafficSnapshot;
     try {
-      snapshot = JSON.parse(pawsUi.querySnapshot()) as PawsRuntimeSnapshot;
+      snapshot = JSON.parse(pawsUi.queryTrafficSpeed()) as PawsTrafficSnapshot;
     } catch (err) {
       hilog.warn(LOG_DOMAIN, LOG_TAG, 'read notification telemetry failed %{public}s', describeError(err));
       return;
     }
-    const text = `↓ ${formatSpeed(snapshot.traffic?.downloadSpeed)}  ·  ↑ ${formatSpeed(snapshot.traffic?.uploadSpeed)}`;
+    const text = `↓ ${formatSpeed(snapshot.downloadSpeed)}  ·  ↑ ${formatSpeed(snapshot.uploadSpeed)}`;
     if (text === this.lastNotificationText) {
       return;
     }

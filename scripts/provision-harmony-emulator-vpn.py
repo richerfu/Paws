@@ -43,7 +43,10 @@ def tool(name: str, fallback: str | None = None) -> str:
 
 
 def assert_stopped(instance: Path, emulator: str, overlay: Path) -> None:
-    listing = json.loads(command(emulator, "-list", "-details", "-instancePath", str(instance.parent)))
+    output = command(emulator, "-list", "-details", "-instancePath", str(instance.parent))
+    # Current SDKs append diagnostics after the JSON inventory. Decode the
+    # complete array while keeping the exact-instance and stopped checks.
+    listing, _ = json.JSONDecoder().raw_decode(output[output.index("["):])
     matches = [item for item in listing if Path(item["instancePath"]).resolve() == instance.resolve()]
     if len(matches) != 1 or str(matches[0]["isRunning"]).lower() != "false":
         raise RuntimeError("the exact DevEco emulator instance must exist and be stopped")

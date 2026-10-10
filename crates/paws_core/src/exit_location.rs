@@ -58,6 +58,7 @@ const EXIT_LOCATION_PROVIDERS: &[ExitLocationProvider] = &[
 struct ExitLocationProbe<'a> {
     client: reqwest::Client,
     route_label: &'a str,
+    proxy_url: &'a str,
     providers: &'a [ExitLocationProvider],
 }
 
@@ -79,25 +80,8 @@ impl<'a> ExitLocationProbe<'a> {
             })?;
         Ok(Self {
             client,
-            route_label: proxy_url,
-            providers,
-        })
-    }
-
-    fn through_system_vpn(providers: &'a [ExitLocationProvider]) -> Result<Self, PawsError> {
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .user_agent(concat!("Paws/", env!("CARGO_PKG_VERSION")))
-            .timeout(EXIT_LOCATION_REQUEST_TIMEOUT)
-            .build()
-            .map_err(|error| {
-                PawsError::Core(format!(
-                    "exit location fallback client setup failed: {error}"
-                ))
-            })?;
-        Ok(Self {
-            client,
-            route_label: "the system VPN",
+            route_label: "the active app proxy",
+            proxy_url,
             providers,
         })
     }
@@ -136,13 +120,22 @@ impl<'a> ExitLocationProbe<'a> {
         &self,
         provider: ExitLocationProvider,
     ) -> Result<ExitLocationSnapshot, String> {
-        let response = self
+        let request = self
             .client
             .get(provider.url)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .send()
-            .await
-            .map_err(|error| format!("{} request failed: {error}", provider.name))?;
+            .header(reqwest::header::ACCEPT, "application/json");
+        let response = super::http_client::send_external_get(
+            request,
+            super::http_client::ExternalHttpRoute::CurrentProxy,
+        )
+        .await
+        .map_err(|error| {
+            format!(
+                "{} request failed: {}",
+                provider.name,
+                super::http_client::request_error_message(error, Some(self.proxy_url))
+            )
+        })?;
         let status = response.status();
         if !status.is_success() {
             return Err(format!("{} returned HTTP {status}", provider.name));
@@ -181,31 +174,19 @@ pub(super) fn exit_ip_service_summaries() -> Vec<ExitIpServiceSummary> {
 }
 
 pub(super) async fn probe_exit_location(
-    mixed_port: u16,
+    proxy_url: &str,
 ) -> Result<ExitLocationSnapshot, PawsError> {
-    let proxy_url = format!("http://127.0.0.1:{mixed_port}");
-    probe_exit_location_through(&proxy_url, EXIT_LOCATION_PROVIDERS).await
+    probe_exit_location_through(proxy_url, EXIT_LOCATION_PROVIDERS).await
 }
 
 async fn probe_exit_location_through(
     proxy_url: &str,
     providers: &[ExitLocationProvider],
 ) -> Result<ExitLocationSnapshot, PawsError> {
-    let proxy_error = match ExitLocationProbe::through_proxy(proxy_url, providers)?
+    // A failed app proxy must not silently report the physical network's IP.
+    ExitLocationProbe::through_proxy(proxy_url, providers)?
         .run()
         .await
-    {
-        Ok(location) => return Ok(location),
-        Err(error) => error,
-    };
-    ExitLocationProbe::through_system_vpn(providers)?
-        .run()
-        .await
-        .map_err(|fallback_error| {
-            PawsError::Core(format!(
-                "mixed proxy path failed ({proxy_error}); system VPN fallback failed ({fallback_error})"
-            ))
-        })
 }
 
 fn parse_ipwho(body: &[u8]) -> Result<ExitLocationSnapshot, String> {
@@ -409,7 +390,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn falls_back_to_the_system_vpn_when_the_local_proxy_is_unavailable() {
+    async fn unavailable_proxy_does_not_report_the_physical_network_ip() {
         let unavailable = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("reserve unavailable proxy address")
@@ -420,21 +401,6 @@ mod tests {
             .await
             .expect("bind direct provider");
         let provider_addr = listener.local_addr().expect("direct provider address");
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept direct request");
-            let mut buffer = [0_u8; 2048];
-            let bytes_read = stream.read(&mut buffer).await.expect("read direct request");
-            assert!(bytes_read > 0, "direct request must not be empty");
-            let body = r#"{"ip":"198.51.100.8","country":"Japan","cc":"JP"}"#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            stream
-                .write_all(response.as_bytes())
-                .await
-                .expect("write direct response");
-        });
 
         let provider_url = Box::leak(format!("http://{provider_addr}/location").into_boxed_str());
         let providers = [ExitLocationProvider {
@@ -443,11 +409,15 @@ mod tests {
             documentation_url: "https://fallback.test/docs",
             parser: parse_my_ip,
         }];
-        let location = probe_exit_location_through(&format!("http://{unavailable}"), &providers)
+        let error = probe_exit_location_through(&format!("http://{unavailable}"), &providers)
             .await
-            .expect("system VPN fallback succeeds");
-
-        assert_eq!(location.ip, "198.51.100.8");
-        assert_eq!(location.provider.as_deref(), Some("direct fallback"));
+            .expect_err("unavailable proxy must fail instead of bypassing it");
+        assert!(error.to_string().contains("active app proxy"));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err(),
+            "no direct fallback connection may be made"
+        );
     }
 }

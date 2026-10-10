@@ -82,9 +82,9 @@ fi
 
 cd "$ROOT_DIR"
 if [ "$NATIVE_PROFILE" = "release" ]; then
-  OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH" --release
+  OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH" --package paws_ui --release
 else
-  OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH"
+  OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH" --package paws_ui
 fi
 # Hvigor can hard-link its native intermediates to the input library. Avoid
 # rewriting that inode; install a fresh file atomically instead. A buffered

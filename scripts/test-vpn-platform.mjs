@@ -195,6 +195,7 @@ function automationFixture(native) {
 
 function entryAbilityFixture(applicationDebug) {
   const automationCalls = [];
+  const vpnCalls = [];
   class NativeAbility {
     context = {
       applicationInfo: { debug: applicationDebug, name: 'com.example.paws' },
@@ -210,6 +211,11 @@ function entryAbilityFixture(applicationDebug) {
     constructor(factory) { this.factory = factory; }
   }
   class EmptyPlugin {}
+  class InstalledVpnPlugin {
+    constructor(installed) { this.installed = installed; }
+    onInstall() { this.installed(); }
+    async requestStartVpn(options) { vpnCalls.push(options); }
+  }
   const { default: EntryAbility } = loadArkts(
     'entry/src/main/ets/entryability/EntryAbility.ets',
     {
@@ -241,11 +247,22 @@ function entryAbilityFixture(applicationDebug) {
       '../plugins/ExportPlugin': { ExportPlugin: EmptyPlugin },
       '../plugins/SafeAreaPlugin': { SafeAreaPlugin: EmptyPlugin },
       '../plugins/ScanPlugin': { ScanPlugin: EmptyPlugin },
-      '../plugins/VpnPlugin': { VpnPlugin: EmptyPlugin },
+      '../plugins/VpnPlugin': { VpnPlugin: InstalledVpnPlugin },
     },
   );
-  return { ability: new EntryAbility(), automationCalls };
+  return { ability: new EntryAbility(), automationCalls, vpnCalls };
 }
+
+test('cold-start debug VPN waits for plugin installation after factory creation', async () => {
+  const fixture = entryAbilityFixture(true);
+  const plugin = fixture.ability.bridgePlugins[2].factory();
+  const start = fixture.ability.requestStartVpn('{}');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.vpnCalls, []);
+  plugin.onInstall();
+  await start;
+  assert.deepEqual(fixture.vpnCalls, ['{}']);
+});
 
 test('protocol negative acceptance cannot count an unexpected success as failure', async () => {
   const api = automationFixture({
@@ -258,6 +275,16 @@ test('protocol negative acceptance cannot count an unexpected success as failure
   await assert.rejects(api.runDebugAutomation({ parameters: {
     pawsEchoProxy: 'proxy', pawsEchoUrl: 'tcp://example.test:1234', pawsExpectEchoFailure: true,
   } }, true, async () => {}), /unexpectedly succeeded/);
+});
+
+test('HTTP regression Want reaches native acceptance only in a debug application', async () => {
+  let checks = 0;
+  const api = automationFixture({ async verifyAppHttpRegression() { checks++; return '{"ipDetected":true}'; } });
+  const want = { parameters: { pawsVerifyAppHttp: 'true' } };
+  await api.runDebugAutomation(want, false, async () => {});
+  assert.equal(checks, 0);
+  await api.runDebugAutomation(want, true, async () => {});
+  assert.equal(checks, 1);
 });
 
 test('automation cannot replace an unreadable runtime configuration with VPN defaults', async () => {
@@ -371,6 +398,7 @@ function extensionFixture() {
     cancelPlatformChangeWait() {},
     syncPlatformChanges() {},
     persistVpnTelemetry() {},
+    queryTrafficSpeed() { calls.push(['speed-snapshot']); return JSON.stringify({ uploadSpeed: 0, downloadSpeed: 0 }); },
     snapshot() { return JSON.stringify({ traffic: { uploadSpeed: 0, downloadSpeed: 0 }, vpnRunning: nativeRunning }); },
     snapshotJson() { return this.snapshot(); },
   };

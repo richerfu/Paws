@@ -9,6 +9,13 @@ pub const DEFAULT_GLOBAL_DNS_POLICY_MATCHER: &str = "geosite:geolocation-!cn";
 pub const DEFAULT_MIXED_PORT: u16 = 7890;
 pub const DEFAULT_CONTROLLER_PORT: u16 = 9090;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrafficSpeedSnapshot {
+    pub upload_speed: u64,
+    pub download_speed: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuntimeMode {
