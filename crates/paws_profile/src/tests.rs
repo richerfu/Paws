@@ -1,4 +1,13 @@
 use super::*;
+
+#[test]
+fn profile_ids_remain_unique_when_the_wall_clock_does_not_advance() {
+    let generator = ProfileIdGenerator {
+        sequence: AtomicU64::new(1),
+    };
+    let ids: HashSet<_> = (0..1000).map(|_| generator.next_at("rule", 1)).collect();
+    assert_eq!(ids.len(), 1000);
+}
 use base64::Engine;
 
 #[test]
