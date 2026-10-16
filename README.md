@@ -1,8 +1,5 @@
 # Paws
 
-Current release: **1.1.0** (versionCode **1001000**). See the
-[changelog](CHANGELOG.md) for release notes.
-
 Paws is a Clash/mihomo HarmonyOS client with a native ArkUI interface, powered
 by [meow-rs 0.22.0](https://github.com/meow-rs/meow-rs) and a Rust userspace TUN stack.
 Its product flow follows
@@ -77,8 +74,8 @@ packages, including the matching files and URL plugins. Third-party
 dependencies resolve from crates.io and the OHPM registry; no local host
 snapshot or sibling checkout is required.
 
-The project targets HarmonyOS 6.1, is compatible with HarmonyOS 6.0.2, and
-exports release packages for `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
+The project targets HarmonyOS 6.1 and is compatible with HarmonyOS 6.0.2.
+The default release package contains `arm64-v8a` native libraries.
 
 ### Verify the source tree
 
@@ -86,8 +83,8 @@ exports release packages for `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
 scripts/verify.sh
 ```
 
-This runs Rust formatting checks, workspace tests, local protocol profile
-generation, and an OpenHarmony `aarch` build.
+This runs Rust formatting checks, workspace tests, ArkTS platform tests,
+local protocol profile generation, and an OpenHarmony `aarch` build.
 
 ### Build an unsigned release HAP
 
@@ -124,8 +121,8 @@ Do not unpack and rebuild a signed HAP with a generic ZIP utility. Doing so can
 change the aligned resource layout and cause application icon or launcher
 problems on physical devices.
 
-See [CI and release checks](docs/ci-and-release.md) and
-[GeoData provisioning](docs/geodata.md) for details.
+See [GeoData provisioning](docs/geodata.md) for rawfile sources and packaging
+requirements.
 
 ## Install and launch
 
@@ -153,11 +150,6 @@ scripts/harmony-smoke.sh \
   --hap entry/build/default/outputs/default/entry-default-release-signed.hap \
   --require-protect-success
 ```
-
-See [VPN app HTTP and debug performance regression](docs/vpn-app-http-regression.md)
-for the private app request path, error diagnostics, and emulator measurements.
-See [HarmonyOS smoke validation](docs/harmony-smoke.md) for profile import,
-automatic VPN startup, traffic probes, and troubleshooting options.
 
 ## OpenHarmony QEMU
 
@@ -218,7 +210,7 @@ scripts/harmony-protocol-matrix.sh \
 
 The matrix covers Direct, HTTP, SOCKS5, Shadowsocks, Trojan, and VLESS,
 including authentication, unavailable-server, bad-password, and bad-UUID
-failure paths. See the [protocol acceptance matrix](docs/app-protocol-acceptance.md).
+failure paths.
 
 ## Project structure
 
@@ -235,7 +227,7 @@ crates/
   paws_model/                 Shared data model
 local-protocol-tests/          Echo servers, mock proxies, and generated profiles
 scripts/                       Build, package, smoke, and regression automation
-docs/                          Release, protocol, GeoData, and validation notes
+docs/                          GeoData provisioning notes
 ```
 
 ## License
