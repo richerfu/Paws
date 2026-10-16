@@ -308,14 +308,6 @@ impl RuntimeLogBuffer {
     }
 }
 
-pub(crate) fn reset_recording(root: &Path) -> Result<(), PawsError> {
-    let marker = recording_marker(root);
-    if marker.try_exists().map_err(io_error)? {
-        fs::remove_file(marker).map_err(io_error)?;
-    }
-    Ok(())
-}
-
 pub(crate) fn set_recording_enabled(root: &Path, enabled: bool) -> Result<(), PawsError> {
     let directory = log_directory(root);
     fs::create_dir_all(&directory).map_err(io_error)?;

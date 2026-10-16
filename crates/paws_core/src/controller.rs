@@ -86,31 +86,145 @@ pub(super) async fn validate_meow_config(
 }
 
 pub(super) async fn load_meow_config(raw_yaml: &str) -> Result<Config, PawsError> {
-    validate_transport_contract(raw_yaml)?;
-    // meow's async loader performs YAML decoding and a substantial part of
-    // proxy construction before its first await. Keep that CPU-heavy work off
-    // the UI/runtime worker that initiated a dashboard bootstrap.
-    let raw_yaml = raw_yaml.to_owned();
-    let runtime = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || {
-        runtime.block_on(meow_config::load_config_from_str(&raw_yaml))
-    })
+    MeowConfigLoader {
+        raw_yaml,
+        path: None,
+    }
+    .load()
     .await
-    .map_err(|err| PawsError::Core(format!("meow config worker failed: {err}")))?
-    .map_err(|err| PawsError::Core(format!("meow config load failed: {err}")))
 }
 
 pub(super) async fn load_meow_config_from_path(
     raw_yaml: &str,
     path: &Path,
 ) -> Result<Config, PawsError> {
-    validate_transport_contract(raw_yaml)?;
-    let path = path.to_string_lossy().into_owned();
-    let runtime = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || runtime.block_on(meow_config::load_config(&path)))
+    MeowConfigLoader {
+        raw_yaml,
+        path: Some(path),
+    }
+    .load()
+    .await
+}
+
+struct MeowConfigLoader<'a> {
+    raw_yaml: &'a str,
+    path: Option<&'a Path>,
+}
+
+impl MeowConfigLoader<'_> {
+    async fn load(self) -> Result<Config, PawsError> {
+        let raw_yaml = self.raw_yaml;
+        let started = Instant::now();
+        let result = self.load_inner().await;
+        if let Err(error) = &result {
+            // Validation before the start transaction also uses this loader.
+            // Record at this boundary so a rejected configuration does not
+            // depend on reaching reload_config's later error handler.
+            push_runtime_log(
+                &RUNTIME_LOGS,
+                error_log(format!(
+                    "configuration load rejected (meow {MEOW_RS_VERSION}, {} ms): {}",
+                    started.elapsed().as_millis(),
+                    config_error_message(raw_yaml, &error.to_string())
+                )),
+            );
+        }
+        result
+    }
+
+    async fn load_inner(self) -> Result<Config, PawsError> {
+        validate_transport_contract(self.raw_yaml)?;
+        // The engine's public API accepts UTF-8 paths. Never silently change
+        // the identity of a file containing non-UTF-8 bytes.
+        let path = self
+            .path
+            .map(|path| {
+                path.to_str().map(str::to_owned).ok_or_else(|| {
+                    PawsError::Core("meow config path is not valid UTF-8".to_owned())
+                })
+            })
+            .transpose()?;
+        let raw_yaml = self.raw_yaml.to_owned();
+        let runtime = tokio::runtime::Handle::current();
+        // YAML decoding/proxy construction must stay off the UI worker.
+        tokio::task::spawn_blocking(move || {
+            runtime.block_on(async {
+                match path {
+                    Some(path) => meow_config::load_config(&path).await,
+                    None => meow_config::load_config_from_str(&raw_yaml).await,
+                }
+            })
+        })
         .await
         .map_err(|err| PawsError::Core(format!("meow config worker failed: {err}")))?
-        .map_err(|err| PawsError::Core(format!("meow config load failed: {err}")))
+        .map_err(|err| {
+            PawsError::Core(format!(
+                "meow config load failed: {}",
+                config_error_message(self.raw_yaml, &format!("{err:#}"))
+            ))
+        })
+    }
+}
+
+// Preserve the engine's cause chain without copying credentials or signed
+// provider URLs into the UI, platform failure state, or exported log archive.
+pub(super) fn config_error_message(raw_yaml: &str, message: &str) -> String {
+    fn collect(value: &serde_yaml::Value, replacements: &mut Vec<(String, String)>) {
+        match value {
+            serde_yaml::Value::Mapping(map) => {
+                for (key, value) in map {
+                    if let (Some(key), Some(secret)) = (key.as_str(), value.as_str()) {
+                        if matches!(
+                            key.to_ascii_lowercase().as_str(),
+                            "password"
+                                | "uuid"
+                                | "psk"
+                                | "private-key"
+                                | "public-key"
+                                | "short-id"
+                                | "username"
+                                | "secret"
+                                | "auth"
+                                | "auth-str"
+                                | "token"
+                                | "authorization"
+                        ) && !secret.is_empty()
+                        {
+                            replacements.push((secret.to_owned(), "[redacted]".to_owned()));
+                        } else if key.eq_ignore_ascii_case("url") {
+                            if let Ok(url) = reqwest::Url::parse(secret) {
+                                replacements.push((
+                                    secret.to_owned(),
+                                    format!(
+                                        "{}://{}/[redacted]",
+                                        url.scheme(),
+                                        url.host_str().unwrap_or("provider")
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                    collect(value, replacements);
+                }
+            }
+            serde_yaml::Value::Sequence(values) => {
+                for value in values {
+                    collect(value, replacements);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut replacements = Vec::new();
+    if let Ok(value) = serde_yaml::from_str(raw_yaml) {
+        collect(&value, &mut replacements);
+    }
+    replacements.sort_by_key(|(secret, _)| std::cmp::Reverse(secret.len()));
+    replacements
+        .into_iter()
+        .fold(message.to_owned(), |message, (secret, replacement)| {
+            message.replace(&secret, &replacement)
+        })
 }
 
 fn validate_transport_contract(raw_yaml: &str) -> Result<(), PawsError> {
@@ -259,11 +373,14 @@ fn safe_proxy_name(name: &str) -> String {
 }
 
 pub(super) fn tunnel_from_config(config: Config, mode: RuntimeMode) -> Tunnel {
-    let tunnel = Tunnel::new(config.dns.resolver.clone());
-    tunnel.update_rules(config.rules);
-    tunnel.update_proxies(config.proxies);
+    let tunnel = Tunnel::new_with_slot(config.dns.resolver_slot.clone());
+    tunnel.set_dialer_registry(config.provider_dialer_registry);
+    tunnel.update_routing(config.proxies, config.rules, config.dialer_registry);
     tunnel.set_mode(mode_to_tunnel(mode));
     tunnel.spawn_background_tasks();
+    tunnel.reconcile_health_checks(&meow_config::extract_health_check_specs(
+        config.raw.proxy_groups.as_deref().unwrap_or(&[]),
+    ));
     tunnel
 }
 

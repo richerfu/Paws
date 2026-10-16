@@ -1,4 +1,103 @@
-# Arkit upgrade, shadcn alignment and About links
+# Arkit integration, adaptive UI and About links
+
+## Current integration (2026-10-10)
+
+Paws pins Arkit [`a6fb10ec16f3644d75af9e04e28f435ad6273f4d`](https://github.com/richerfu/arkit/commit/a6fb10ec16f3644d75af9e04e28f435ad6273f4d).
+This revision adds native bounded-panel layout to `903bccc`, which combines
+main `06b2bb2ccf31ea2ab2f96e7f28c8dd32dab6aecd`, the rebased
+`fix/shadcn-style-parity` changes and `fix/paws-button-surface` fixes.
+All 15 resolved Arkit crates use that revision.
+
+Both Rust platform plugins and the ArkTS/C++ Ability host use
+`2b5defdb0a016b841736470f9c32f2929380c448`. The unmodified host source and
+licenses are in `vendor/openharmony-ability`; OHPM resolves both plugins to
+that local host module. Published native binding releases replace the old
+`b278b62` Git patches and sibling-checkout dependencies. Run
+`ohpm install --all` after changing dependencies.
+
+## Resulting behavior
+
+- Modal and popup viewport heights are sized by native ArkUI Scroll under a
+  maximum-height constraint. There is no estimated content height, layout
+  callback, or subsequent explicit-height rewrite in `PanelViewport`.
+  Native Scroll calculates overflow and automatic scrollbar visibility in
+  its layout pass, so a short phone profile-actions dialog does not start
+  inside an artificially short viewport. Long content remains scrollable.
+- Live window widths below 840vp use compact navigation; wider windows use
+  the sidebar and bounded page content. Pointer and keyboard focus remain
+  available in narrow windows. All 31 app-owned Input/Textarea fields use
+  click-to-focus, allowing a drag to scroll before the field receives focus.
+- Arkit projects semantic buttons onto styled Stacks, preserving common
+  border radius and explicit button accessibility/focus behavior. Advanced
+  native Button construction remains available. No local renderer override
+  is needed in Paws.
+- CSS-like shadows retain logical lengths until the common native paint
+  boundary. Root and embedded renderers share runtime density; existing
+  shadows repaint on density changes. Native preset enums and the explicit
+  seven-value ArkUI form retain their native unit contract. Shadcn controls
+  use logical elevation tokens; popup surfaces implement both md/lg layers
+  and negative spread with inset underlays.
+- Settings rows keep held feedback until release/cancellation. A drag beyond
+  8vp cancels it for that contact. An inner rounded clip follows the card's
+  border while an unclipped outer surface paints its shadow.
+- Network Settings without an active profile shows an Empty-style state.
+  With no profiles, the primary action opens the existing subscription import
+  dialog; with inactive profiles, it opens the profile list. The editable
+  form appears for an active profile. Both Chinese and English are supported.
+
+References: [shadcn Select](https://github.com/shadcn-ui/ui/blob/main/apps/v4/registry/new-york-v4/ui/select.tsx),
+[DropdownMenu](https://github.com/shadcn-ui/ui/blob/main/apps/v4/registry/new-york-v4/ui/dropdown-menu.tsx),
+[Empty](https://github.com/shadcn-ui/ui/blob/main/apps/v4/registry/new-york-v4/ui/empty.tsx)
+and [Tailwind elevation recipes](https://github.com/tailwindlabs/tailwindcss/blob/main/packages/tailwindcss/theme.css).
+
+Native sizing references: [ArkUI Scroll measurement](https://github.com/openharmony/arkui_ace_engine/blob/master/frameworks/core/components_ng/pattern/scroll/scroll_layout_algorithm.cpp),
+[Scroll scrollbar behavior](https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/reference/apis-arkui/arkui-ts/ts-container-scroll.md#scrollbar),
+and [layout size constraints](https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/reference/apis-arkui/arkui-ts/ts-universal-attributes-size.md#constraintsize).
+
+## Verification
+
+- The 2026-10-10 bounded-panel update passes `cargo check -p arkit_shadcn
+  --tests`, the three existing Paws shadcn source contracts, and the OHOS
+  native/signed debug HAP build. The standalone Arkit host test executable
+  cannot link on macOS because the native window-manager library is absent;
+  it is not counted as an executed test suite.
+- A fresh phone emulator with synthetic `Layout Check` data verifies the
+  first-open profile-actions dialog: all four actions are visible, its native
+  Scroll bounds are 1200x1080px, and the captured opening frame has no
+  scrollbar. SDK rotation did not change the app's viewport, so it is not
+  counted as a separate landscape/overflow acceptance case.
+- The signed update was installed over the existing ALN-AL00 app. Emulator
+  and phone HAPs have the same native payload, matching the current SDK strip
+  output. Device data is preserved; diagnostic captures stay outside Git.
+- Cargo's Git-source refresh changes no package versions. It also regenerates
+  existing socket2/windows-sys dependency references from their manifests.
+  All six focused core HTTP tests pass after the refresh, covering private
+  proxy authentication, cookies/user agent, credential redaction, and reset
+  retries without direct-network replay.
+- Workspace tests passed during the dependency upgrade. The focused Paws
+  checks cover 18 UI contracts and 3 press lifecycle cases; the ArkTS platform
+  suite covers 35 cases. Formatting and whitespace checks pass.
+- Native arm64 and signed debug HAP builds pass. The packaged library matches
+  the freshly SDK-stripped native product. The final HAP was installed and
+  launched on a physical ALN-AL10.
+- Physical-device checks verified the empty state, hidden inactive form and
+  direct import-dialog navigation. Isolated PC-emulator checks verified the
+  active-profile form, bounded Select popup and outside-click dismissal.
+- Tablet input testing scrolled 610px without focus before a normal tap
+  focused the field. A 900×1000px 2in1 window selected compact navigation.
+- Tablet captures are native 1920×1280. The replacement PC set has four native
+  1920×1080 images (16:9), showing a 1600×900 ordinary application window with
+  desktop/taskbar visible. Captures use synthetic data and were reviewed for
+  privacy. Images, archives, build logs and machine-local signing material
+  stay outside the commit.
+- Renderer/component test targets cross-compile for OHOS. Standalone native
+  test execution is restricted by Ark JS runtime library loading, so actual
+  UI acceptance runs through the application host. Pure shadow geometry and
+  density tests execute on the host.
+
+## Previous baseline
+
+The notes below describe the earlier upgrade and its validation.
 
 Base: Paws `8126443`. Arkit is pinned to upstream main commit
 [`1d4163f2168a49aba1a6fd8ea6ca81406212c4e9`](https://github.com/richerfu/arkit/commit/1d4163f2168a49aba1a6fd8ea6ca81406212c4e9),

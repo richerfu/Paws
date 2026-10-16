@@ -14,8 +14,10 @@ fn vpn_start_requests_notification_access_without_blocking_vpn() {
 #[test]
 fn vpn_notification_uses_live_download_and_upload_speeds() {
     assert!(VPN_ABILITY.contains("pawsUi.persistVpnTelemetry()"));
-    assert!(VPN_ABILITY.contains("snapshot.traffic?.downloadSpeed"));
-    assert!(VPN_ABILITY.contains("snapshot.traffic?.uploadSpeed"));
+    assert!(VPN_ABILITY.contains("pawsUi.queryTrafficSpeed()"));
+    assert!(!VPN_ABILITY.contains("pawsUi.querySnapshot()"));
+    assert!(VPN_ABILITY.contains("snapshot.downloadSpeed"));
+    assert!(VPN_ABILITY.contains("snapshot.uploadSpeed"));
     assert!(VPN_ABILITY.contains("↓ ${formatSpeed"));
     assert!(VPN_ABILITY.contains("↑ ${formatSpeed"));
 }

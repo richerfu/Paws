@@ -15,8 +15,8 @@ use arkit::shadcn::components::{
     Select, Separator, Spinner, Switch, TabsList, TabsTrigger, Textarea,
 };
 use arkit::shadcn::theme::{
-    control, radius, spacing, typography, use_theme, with_alpha, Theme, ThemeMode, ThemePreset,
-    ThemeProvider,
+    control, radius, shadow, spacing, typography, use_theme, with_alpha, Theme, ThemeMode,
+    ThemePreset, ThemeProvider,
 };
 use std::cell::{Cell, RefCell};
 use std::future::Future;
@@ -24,6 +24,8 @@ use std::rc::Rc;
 
 #[path = "view/pages/mod.rs"]
 mod pages;
+#[path = "view/press.rs"]
+mod press;
 #[path = "view/route.rs"]
 mod route;
 
@@ -32,6 +34,7 @@ use pages::{
     profiles_page, proxies_page, requests_page, resources_page, settings_page,
     subscription_converter_page, tools_page, traffic_page, ManualRuleDialog,
 };
+use press::PressState;
 use route::Route;
 
 const COMPACT_CONTENT_MAX_WIDTH: f32 = 640.0;
@@ -720,8 +723,12 @@ fn use_system_preferences_provider(stores: UiStores, tokio: tokio::runtime::Hand
     );
 }
 
+#[derive(Clone, Copy)]
+struct ProfileImportIntent(Signal<bool>);
+
 #[component]
 fn AppShell() -> Element {
+    use_context_provider(|| ProfileImportIntent(Signal::new(false)));
     let initial_safe_area = use_context::<bridge::InitialSafeArea>().0;
     let window_metrics = arkit::use_window_metrics();
     let adaptive = use_adaptive_layout();
@@ -986,7 +993,7 @@ fn VpnPowerButton(session: SessionProjection, size: f32) -> Element {
     } else {
         theme.colors.primary_foreground
     };
-    let background = if adaptive.is_pc() && !disabled && (hovering() || focused()) {
+    let background = if !disabled && (hovering() || focused()) {
         with_alpha(base_background, 0xE6)
     } else {
         base_background
@@ -1007,11 +1014,11 @@ fn VpnPowerButton(session: SessionProjection, size: f32) -> Element {
             border_radius: corner_radius,
             clip: true,
             enabled: !disabled,
-            focusable: adaptive.is_pc() && !disabled,
+            focusable: !disabled,
             focus_on_touch: false,
             opacity: if disabled { 0.6 } else { 1.0 },
             onhover: move |event| {
-                if adaptive.is_pc() && !disabled {
+                if !disabled {
                     hovering.set(event.data().is_hovering);
                 }
             },
@@ -1026,7 +1033,7 @@ fn VpnPowerButton(session: SessionProjection, size: f32) -> Element {
                 background_color: background,
                 border_radius: corner_radius,
                 clip: true,
-                shadow: if adaptive.is_pc() { "sm" },
+                shadow: if adaptive.is_pc() { shadow::SM },
                 if starting || stopping {
                     Spinner { size: size * 0.4, color: Some(foreground) }
                 } else {

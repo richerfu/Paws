@@ -1,5 +1,42 @@
 # CI and Release Checks
 
+## Release 1.2.0
+
+Application `versionName` and `buildVersion` are `1.2.0`; `versionCode` is
+`1002000`. The five Rust workspace crates, entry manifest, native NAPI package
+manifest and local package lock share version `1.2.0`.
+
+The formal upload artifact is
+`dist/release/1.2.0/Paws-1.2.0-release-signed.app`, with its digest in
+`dist/release/1.2.0/SHA256SUMS`. It contains only arm64-v8a release libraries
+and is signed using the local publishing signing
+configuration and its `release / app_gallery` profile.
+
+Build native libraries using:
+
+```sh
+scripts/ohrs-build.sh --arch aarch --release --package paws_ui
+```
+
+Copy the target's freshly built library and matching NDK `libc++_shared.so`
+to `entry/libs/arm64-v8a/`. The module's `nativeLib.filter.excludes` prevents
+ARM32/x86 libraries from being packaged; other generated ABI directories
+stay outside the packaging inputs. Temporarily select the local publishing
+configuration for the default product, then run DevEco's bundled Hvigor with
+its matching SDK and JBR:
+
+```sh
+hvigorw assembleApp --mode project -p product=default -p buildMode=release --no-daemon
+```
+
+The SDK output is `build/outputs/default/Paws-default-signed.app`. Verify the
+APP itself with `hap-sign-tool.jar verify-app`, then compare the extracted
+profile against the selected publishing profile. HAPs inside this upload
+container are unsigned; they provide the release manifests, native ABIs,
+stored icon resources and GeoData checked during artifact validation.
+The original local signing selection and generated vendor build profile are
+restored after packaging. Signing material stays outside the release commit.
+
 ## Release 1.1.0
 
 Application `versionName` and `buildVersion` are `1.1.0`; `versionCode` is
@@ -91,7 +128,7 @@ whose icon resources are compressed. Its default output is
 - `rust`: runs on GitHub-hosted macOS and checks Rust formatting, workspace tests, and generated local protocol profiles.
 - `harmony`: runs on a self-hosted macOS runner labelled `harmonyos`, builds the aarch debug HAP with `scripts/ohrs-build.sh --arch aarch`, and uploads any generated `.hap` files.
 
-The workspace resolves `meow-*` 0.21.2 from crates.io and pins arkit to a reviewed upstream commit. CI calls `scripts/prepare-ci-cargo.sh` to report that reproducible dependency policy; no machine-local path patches are used.
+The workspace resolves `meow-*` 0.22.0 from crates.io and pins arkit to a reviewed upstream commit. CI calls `scripts/prepare-ci-cargo.sh` to report that reproducible dependency policy; no machine-local path patches are used.
 
 ## Self-Hosted Runner Requirements
 

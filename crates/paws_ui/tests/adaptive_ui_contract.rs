@@ -43,7 +43,7 @@ fn compact_and_desktop_content_have_bounded_shadcn_measures() {
 }
 
 #[test]
-fn desktop_navigation_and_primary_rows_expose_pointer_and_focus_states() {
+fn navigation_and_primary_rows_keep_pointer_and_focus_in_narrow_windows() {
     let dashboard = include_str!("../src/view/pages/dashboard.rs");
     let tools = include_str!("../src/view/pages/tools.rs");
 
@@ -53,8 +53,11 @@ fn desktop_navigation_and_primary_rows_expose_pointer_and_focus_states() {
         assert!(source.contains("onhover:"));
         assert!(source.contains("onfocus:"));
         assert!(source.contains("onblur:"));
-        assert!(source.contains("focusable: adaptive.is_pc()"));
+        assert!(!source.contains("focusable: adaptive.is_pc()"));
+        assert!(!source.contains("if adaptive.is_pc() && ("));
     }
+    assert!(dashboard.contains("focusable: !disabled"));
+    assert!(tools.contains("focusable: true"));
 }
 
 #[test]
@@ -72,7 +75,8 @@ fn paws_owns_the_vpn_action_and_desktop_selection_visuals() {
     assert!(VIEW.contains("theme.colors.sidebar_primary"));
     assert!(VIEW.contains("theme.colors.sidebar_accent_foreground"));
 
-    assert!(tools.contains("padding: spacing::XXS"));
-    assert!(tools.contains("padding_left: spacing::SM"));
-    assert!(tools.contains("padding_right: spacing::SM"));
+    assert!(tools.contains("clip: true"));
+    assert!(tools.contains("press().is_pressed()"));
+    assert!(tools.contains("padding_left: spacing::MD"));
+    assert!(tools.contains("padding_right: spacing::MD"));
 }

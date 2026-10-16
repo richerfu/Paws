@@ -117,11 +117,20 @@ export class VpnPlugin extends AsyncPluginBase {
   private nextBridgeOperationId: number = 0;
   private bridgeOperations: Map<string, VpnOperationRecord> = new Map();
   private requestOperations: Map<string, string> = new Map();
+  private installedCallback?: () => void;
+
+  constructor(installedCallback?: () => void) {
+    super();
+    this.installedCallback = installedCallback;
+  }
 
   onInstall(_context: BridgePluginHookContext): void {
     this.initializePlatformSharedMemory();
     authorizeVpnForEmulatorDebug();
     this.startupVpnPreparation = this.prepareVpnForEmulatorDebug();
+    // Debug callers can be waiting since onCreate, before BridgeHost installs
+    // ability plugins. Publish readiness only after the cleanup barrier exists.
+    this.installedCallback?.();
   }
 
   async invokeAsync(

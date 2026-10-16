@@ -177,6 +177,7 @@ fn direct_mode_tunnel() -> Tunnel {
         DnsMode::Normal,
         DomainTrie::new(),
         true,
+        false,
     ));
     let tunnel = Tunnel::new(resolver);
     tunnel.set_mode(TunnelMode::Direct);

@@ -195,6 +195,7 @@ function automationFixture(native) {
 
 function entryAbilityFixture(applicationDebug) {
   const automationCalls = [];
+  const vpnCalls = [];
   class NativeAbility {
     context = {
       applicationInfo: { debug: applicationDebug, name: 'com.example.paws' },
@@ -210,6 +211,11 @@ function entryAbilityFixture(applicationDebug) {
     constructor(factory) { this.factory = factory; }
   }
   class EmptyPlugin {}
+  class InstalledVpnPlugin {
+    constructor(installed) { this.installed = installed; }
+    onInstall() { this.installed(); }
+    async requestStartVpn(options) { vpnCalls.push(options); }
+  }
   const { default: EntryAbility } = loadArkts(
     'entry/src/main/ets/entryability/EntryAbility.ets',
     {
@@ -241,11 +247,22 @@ function entryAbilityFixture(applicationDebug) {
       '../plugins/ExportPlugin': { ExportPlugin: EmptyPlugin },
       '../plugins/SafeAreaPlugin': { SafeAreaPlugin: EmptyPlugin },
       '../plugins/ScanPlugin': { ScanPlugin: EmptyPlugin },
-      '../plugins/VpnPlugin': { VpnPlugin: EmptyPlugin },
+      '../plugins/VpnPlugin': { VpnPlugin: InstalledVpnPlugin },
     },
   );
-  return { ability: new EntryAbility(), automationCalls };
+  return { ability: new EntryAbility(), automationCalls, vpnCalls };
 }
+
+test('cold-start debug VPN waits for plugin installation after factory creation', async () => {
+  const fixture = entryAbilityFixture(true);
+  const plugin = fixture.ability.bridgePlugins[2].factory();
+  const start = fixture.ability.requestStartVpn('{}');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.vpnCalls, []);
+  plugin.onInstall();
+  await start;
+  assert.deepEqual(fixture.vpnCalls, ['{}']);
+});
 
 test('protocol negative acceptance cannot count an unexpected success as failure', async () => {
   const api = automationFixture({
@@ -258,6 +275,16 @@ test('protocol negative acceptance cannot count an unexpected success as failure
   await assert.rejects(api.runDebugAutomation({ parameters: {
     pawsEchoProxy: 'proxy', pawsEchoUrl: 'tcp://example.test:1234', pawsExpectEchoFailure: true,
   } }, true, async () => {}), /unexpectedly succeeded/);
+});
+
+test('HTTP regression Want reaches native acceptance only in a debug application', async () => {
+  let checks = 0;
+  const api = automationFixture({ async verifyAppHttpRegression() { checks++; return '{"ipDetected":true}'; } });
+  const want = { parameters: { pawsVerifyAppHttp: 'true' } };
+  await api.runDebugAutomation(want, false, async () => {});
+  assert.equal(checks, 0);
+  await api.runDebugAutomation(want, true, async () => {});
+  assert.equal(checks, 1);
 });
 
 test('automation cannot replace an unreadable runtime configuration with VPN defaults', async () => {
@@ -371,6 +398,7 @@ function extensionFixture() {
     cancelPlatformChangeWait() {},
     syncPlatformChanges() {},
     persistVpnTelemetry() {},
+    queryTrafficSpeed() { calls.push(['speed-snapshot']); return JSON.stringify({ uploadSpeed: 0, downloadSpeed: 0 }); },
     snapshot() { return JSON.stringify({ traffic: { uploadSpeed: 0, downloadSpeed: 0 }, vpnRunning: nativeRunning }); },
     snapshotJson() { return this.snapshot(); },
   };
@@ -892,6 +920,36 @@ test('a bound pending owner proceeds to platform create while native lifecycle i
   assert.equal(fixture.calls.filter(call => call[0] === 'create').length, 1);
   assert.equal(fixture.calls.filter(call => call[0] === 'destroy').length, 0);
   assert.equal(fixture.state().activeAttempt, 'attempt-a');
+});
+
+test('config preparation waits for TUN process protection before loading network resources', async () => {
+  const fixture = extensionFixture();
+  fixture.extension.onCreate(fixture.want('attempt-a', 21));
+  await until(() => fixture.connections.length === 1, 'TUN creation');
+  assert.equal(fixture.calls.some(call => call[0] === 'prepare'), false);
+  const protection = deferred();
+  fixture.connections[0].protectProcessNet = async () => protection.promise;
+  fixture.connections[0].created.resolve(101);
+  await until(() => fixture.extension.tunFd === 101, 'TUN descriptor');
+  assert.equal(fixture.calls.some(call => call[0] === 'prepare'), false);
+  protection.resolve();
+  await until(() => fixture.calls.some(call => call[0] === 'native-start'), 'protected native start');
+  const protectedAt = fixture.calls.findIndex(call => call[0] === 'protected' && call[2] === true);
+  const prepareAt = fixture.calls.findIndex(call => call[0] === 'prepare');
+  assert.ok(protectedAt >= 0 && prepareAt > protectedAt);
+  assert.equal(fixture.calls.filter(call => call[0] === 'prepare').length, 1);
+});
+
+test('failed process protection never starts config preparation', async () => {
+  const fixture = extensionFixture();
+  fixture.extension.onCreate(fixture.want('attempt-a', 21));
+  await until(() => fixture.connections.length === 1, 'TUN creation');
+  fixture.connections[0].protectProcessNet = async () => { throw new Error('protection denied'); };
+  fixture.connections[0].created.resolve(101);
+  await until(() => fixture.calls.some(call => call[0] === 'failed'), 'protection failure');
+  assert.equal(fixture.calls.some(call => call[0] === 'prepare'), false);
+  assert.equal(fixture.calls.some(call => call[0] === 'native-start'), false);
+  fixture.connections[0].destroyed.resolve();
 });
 
 test('a late terminal Want acknowledges exact delivery without attaching or reviving it', async () => {

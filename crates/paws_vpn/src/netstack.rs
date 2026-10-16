@@ -284,8 +284,15 @@ pub(super) fn spawn_smoltcp_backend(
     let accept_sniffer = sniffer.clone();
     let accept_flow_tasks = flow_tasks.clone();
     let accept_handle = tokio::spawn(async move {
+        #[cfg(debug_assertions)]
+        let mut logged_tcp_accept = false;
         while let Some((stream, local_addr, remote_addr)) = tcp_listener.next().await {
             accept_stats.tcp_packets.fetch_add(1, Ordering::Relaxed);
+            #[cfg(debug_assertions)]
+            if !logged_tcp_accept {
+                tracing::info!(target: "paws_vpn::tcp", "TUN TCP accepted stack=netstack-smoltcp");
+                logged_tcp_accept = true;
+            }
             let flow_tunnel = accept_tunnel.clone();
             let flow_dns_table = accept_dns_table.clone();
             let flow_sniffer = accept_sniffer.clone();
@@ -378,6 +385,8 @@ pub(super) fn spawn_lwip_backend(
     let driver_egress_tx = egress_tx.clone();
     let driver_udp_reply_tx = udp_reply_tx.clone();
     let driver_handle = tokio::spawn(async move {
+        #[cfg(debug_assertions)]
+        let mut logged_tcp_accept = false;
         loop {
             tokio::select! {
                 pkt = ingress_rx.recv() => {
@@ -400,6 +409,11 @@ pub(super) fn spawn_lwip_backend(
                     let flow_tunnel = tunnel.clone();
                     let flow_dns_table = dns_table.clone();
                     let flow_sniffer = sniffer.clone();
+                    #[cfg(debug_assertions)]
+                    if !logged_tcp_accept {
+                        tracing::info!(target: "paws_vpn::tcp", "TUN TCP accepted stack=lwip");
+                        logged_tcp_accept = true;
+                    }
                     let handle = tokio::spawn(async move {
                         handle_tcp_stream(
                             flow_tunnel,
@@ -564,7 +578,7 @@ where
     };
     if let Some(host) = host {
         metadata.host = host.as_str().into();
-        metadata.sniff_host = host.into();
+        metadata.sniff_host = host;
     }
     prefix
 }
@@ -789,10 +803,10 @@ pub(super) async fn handle_udp_datagram(
         return;
     };
     let dst_addr = SocketAddr::new(dst_ip, metadata.dst_port);
-    let Some((proxy, _rule_name, _rule_payload)) = inner.resolve_proxy(&metadata) else {
+    let Some(target) = inner.resolve_proxy(&metadata).await else {
         return;
     };
-    let Ok(conn) = proxy.dial_udp(&metadata).await else {
+    let Ok(conn) = target.adapter.dial_udp(&metadata).await else {
         return;
     };
     if conn.write_packet(&data, &dst_addr).await.is_err() {

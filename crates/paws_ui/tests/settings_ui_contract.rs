@@ -211,7 +211,7 @@ fn network_ports_are_editable_and_lan_access_requires_a_secret() {
     assert!(model.contains("pub const DEFAULT_MIXED_PORT: u16 = 7890"));
     assert!(model.contains("pub const DEFAULT_CONTROLLER_PORT: u16 = 9090"));
     assert!(core.contains("restart_mixed_listener(tunnel, mixed_port)"));
-    assert!(core.contains("probe_exit_location(mixed_port)"));
+    assert!(core.contains("probe_exit_location(&proxy_url)"));
     assert!(callbacks.contains("pub(crate) async fn copy_text"));
 }
 

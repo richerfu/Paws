@@ -19,14 +19,15 @@ paws_core.workspace = true
 paws_model.workspace = true
 napi-derive-ohos.workspace = true
 napi-ohos.workspace = true
-ohos-fileuri-binding = { path = "../../../../ohos-rs/ohos-native-bindings/crates/fileuri" }
-ohos-fileshare-binding = { path = "../../../../ohos-rs/ohos-native-bindings/crates/fileshare" }
-ohos-resource-manager-binding = { path = "../../../../ohos-rs/ohos-native-bindings/crates/resource_manager" }
+ohos-fileuri-binding.workspace = true
+ohos-fileshare-binding.workspace = true
+ohos-resource-manager-binding.workspace = true
 openharmony-ability-plugin-files.workspace = true
 openharmony-ability-plugin-url.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ohos-hilog-binding.workspace = true
 serde_yaml.workspace = true
 time.workspace = true
 tokio.workspace = true

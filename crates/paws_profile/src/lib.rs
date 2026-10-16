@@ -15,6 +15,7 @@ use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::{Host, Url};
 
@@ -1473,8 +1474,25 @@ fn default_store_root_from_environment() -> Result<PathBuf, PawsError> {
         .map_err(io_error)
 }
 
+struct ProfileIdGenerator {
+    sequence: AtomicU64,
+}
+
+impl ProfileIdGenerator {
+    fn next_at(&self, prefix: &str, timestamp: u128) -> String {
+        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
+        format!("{prefix}-{timestamp}-{}-{sequence}", std::process::id())
+    }
+}
+
+static PROFILE_IDS: ProfileIdGenerator = ProfileIdGenerator {
+    sequence: AtomicU64::new(1),
+};
+
 fn next_id(prefix: &str) -> String {
-    format!("{prefix}-{}", now_nanos())
+    // Wall-clock resolution can be coarser than one import iteration. An
+    // optimized build must not overwrite distinct rules with the same ID.
+    PROFILE_IDS.next_at(prefix, now_nanos())
 }
 
 fn now_string() -> String {

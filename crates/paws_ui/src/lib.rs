@@ -699,6 +699,101 @@ pub fn query_snapshot() -> Result<String> {
         .map_err(to_napi_error)
 }
 
+#[napi]
+pub fn query_traffic_speed() -> Result<String> {
+    let speed = paws_core::shared_core()
+        .traffic_speed_snapshot()
+        .map_err(to_napi_error)?;
+    paws_model::to_json(&speed).map_err(to_napi_error)
+}
+
+/// Debug Want acceptance checks run in the real application's UID and HTTP
+/// routing context. The result contains counts and outcomes, never credentials.
+#[napi]
+pub async fn verify_app_http_regression() -> Result<String> {
+    if !cfg!(debug_assertions) {
+        return Err(Error::new(
+            Status::GenericFailure,
+            "acceptance checks require a debug native build".to_owned(),
+        ));
+    }
+    ohos_hilog_binding::info("PawsHttpQA: acceptance begins");
+    let core = paws_core::shared_core();
+    core.set_log_recording_enabled(true)
+        .map_err(to_napi_error)?;
+    ohos_hilog_binding::info("PawsHttpQA: log recording ready");
+    let before = core.snapshot().map_err(to_napi_error)?;
+    let profile_id = before
+        .active_profile
+        .ok_or_else(|| Error::from_reason("acceptance requires an active profile"))?;
+    if !before.vpn_running {
+        return Err(Error::from_reason("acceptance requires a connected VPN"));
+    }
+    let started = std::time::Instant::now();
+    ohos_hilog_binding::info("PawsHttpQA: subscription refresh begins");
+    core.refresh_profile(&profile_id)
+        .await
+        .map_err(to_napi_error)?;
+    let refresh_ms = started.elapsed().as_millis();
+    ohos_hilog_binding::info(format!(
+        "PawsHttpQA: subscription refresh completed in {refresh_ms} ms"
+    ));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut ip_ok = false;
+    while tokio::time::Instant::now() < deadline {
+        core.refresh_exit_location_if_due()
+            .await
+            .map_err(to_napi_error)?;
+        let snapshot = core.snapshot().map_err(to_napi_error)?;
+        if !snapshot.exit_location.ip.is_empty() {
+            ip_ok = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    if !ip_ok {
+        let error = core
+            .snapshot()
+            .map_err(to_napi_error)?
+            .exit_location
+            .error
+            .unwrap_or_else(|| "exit IP acceptance timed out".to_owned());
+        return Err(Error::from_reason(error));
+    }
+    ohos_hilog_binding::info("PawsHttpQA: exit IP detected");
+    let negative = core
+        .prepare_profile_import_from_url(
+            "http://127.0.0.1:9/qa-private-diagnostic-token",
+            Some("negative HTTP acceptance".to_owned()),
+        )
+        .await;
+    if negative.is_ok() {
+        return Err(Error::from_reason(
+            "negative HTTP acceptance unexpectedly succeeded",
+        ));
+    }
+    let after = core.snapshot().map_err(to_napi_error)?;
+    let error_logged = after.logs.iter().any(|entry| {
+        entry.level == "error"
+            && entry.message.contains("profile download failed")
+            && !entry.message.contains("qa-private-diagnostic-token")
+    });
+    if !error_logged {
+        return Err(Error::from_reason(
+            "HTTP failure was not recorded with redaction",
+        ));
+    }
+    let output = serde_json::json!({
+        "subscriptionRefreshMs": refresh_ms,
+        "ipDetected": ip_ok,
+        "errorLogged": error_logged,
+        "publicMixedEnabled": after.network_ports.mixed_enabled,
+        "rules": after.rules.len(),
+        "meowVersion": after.about.meow_rs_version,
+    });
+    paws_model::to_json(&output).map_err(to_napi_error)
+}
+
 fn to_napi_error(error: paws_model::PawsError) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
 }

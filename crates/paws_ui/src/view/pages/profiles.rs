@@ -8,6 +8,8 @@ pub(crate) fn profiles_page() -> Element {
     let empty_import_services = services.clone();
     let refresh_all_services = services.clone();
     let add_import_services = services.clone();
+    let requested_import_services = services.clone();
+    let mut import_intent = use_context::<ProfileImportIntent>();
     let mut query = use_signal(String::new);
     let mut import_open = use_signal(|| false);
     let mut import_url = use_signal(String::new);
@@ -24,6 +26,14 @@ pub(crate) fn profiles_page() -> Element {
     let operations = use_context::<UiOperationStores>();
     let locale = stores.preferences.read().locale;
     let current = stores.profiles.read();
+
+    use_effect(move || {
+        if (import_intent.0)() {
+            import_intent.0.set(false);
+            requested_import_services.reset_profile_import_feedback();
+            import_open.set(true);
+        }
+    });
 
     use_effect(move || {
         let (succeeded, loading) = {
@@ -215,6 +225,7 @@ pub(crate) fn profiles_page() -> Element {
                 }
             } else {
                 Input {
+                    click_to_focus: true,
                     value: Some(query_value),
                     placeholder: Some(translate_ui(locale, tr::profiles_search_placeholder())),
                     width: Some("100%".into()),
@@ -678,6 +689,7 @@ fn ProfileEditDialog(
             {field_label(translate_ui(locale, tr::page_tr_108()))}
             row { height: spacing::XS }
             Input {
+                click_to_focus: true,
                 value: Some(name()),
                 placeholder: Some(translate_ui(locale, tr::page_tr_109())),
                 width: Some("100%".into()),
@@ -687,6 +699,7 @@ fn ProfileEditDialog(
             {field_label(translate_ui(locale, tr::page_tr_110()))}
             row { height: spacing::XS }
             Input {
+                click_to_focus: true,
                 value: Some(url()),
                 placeholder: Some("https://".to_owned()),
                 width: Some("100%".into()),
@@ -809,6 +822,7 @@ fn ProfileImportDialogBody(
         column {
             width: "100%",
             Input {
+                click_to_focus: true,
                 value: Some(url_value),
                 placeholder: Some(translate_ui(locale, tr::profiles_import_url_label())),
                 width: Some("100%".into()),
@@ -820,6 +834,7 @@ fn ProfileImportDialogBody(
             }
             row { height: 12.0 }
             Input {
+                click_to_focus: true,
                 value: Some(name_value),
                 placeholder: Some(translate_ui(locale, tr::profiles_import_name_placeholder())),
                 width: Some("100%".into()),
