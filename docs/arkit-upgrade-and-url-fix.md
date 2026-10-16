@@ -1,19 +1,51 @@
 # Arkit integration, adaptive UI and About links
 
-## Current integration (2026-10-10)
+## Current integration (2026-10-16)
 
-Paws pins Arkit [`a6fb10ec16f3644d75af9e04e28f435ad6273f4d`](https://github.com/richerfu/arkit/commit/a6fb10ec16f3644d75af9e04e28f435ad6273f4d).
+Paws uses the published Arkit `0.0.1-beta.0` release from crates.io and
+Ability `1.0.0-beta.3` on both the Rust and ArkTS sides. The files and URL
+plugins also use `1.0.0-beta.3` in Cargo and OHPM. The package lockfiles
+record registry sources and checksums; no third-party Git revision or local
+host module is required. Run `ohpm install --all` after updating dependencies.
+
+Arkit requires Rust 1.90. The About snapshot and page report the exact
+published Arkit version from the workspace manifest as `arkitVersion`; the
+Rust requirement comes from Cargo package metadata. The icon regression
+check uses Cargo metadata to locate the resolved published icon package's
+assets rather than reading a sibling repository. It runs on the host without
+linking HarmonyOS renderer libraries.
+
+The local Ability host and its unused C++ demo build have been removed from
+the project modules. Published HAR packages supply the ArkTS host and plugins.
+
+Migration verification:
+
+- Rust workspace: 446 tests passed, with no filtered tests. The icon check now
+  passes without a sibling checkout or native library linking on the host.
+- ArkTS platform tests: 39 passed against the published URL plugin.
+- Formatting, lockfile source checks and library Clippy complete; existing
+  Clippy style warnings remain.
+- The arm64 native Release build and unsigned HAP build pass. The HAP records
+  Ability and both plugins as `1.0.0-beta.3`; its only native libraries are
+  `libpaws_ui.so` and `libc++_shared.so`. The Paws library matches the freshly
+  SDK-stripped build. Version, GeoData, icon storage and unsigned-package
+  checks pass. Device acceptance was not repeated for this migration.
+
+## Previous integration and device acceptance (2026-10-10)
+
+The following records describe the earlier Git-based integration and device
+checks, before the migration to published packages.
+
+Paws pinned Arkit [`a6fb10ec16f3644d75af9e04e28f435ad6273f4d`](https://github.com/richerfu/arkit/commit/a6fb10ec16f3644d75af9e04e28f435ad6273f4d).
 This revision adds native bounded-panel layout to `903bccc`, which combines
 main `06b2bb2ccf31ea2ab2f96e7f28c8dd32dab6aecd`, the rebased
 `fix/shadcn-style-parity` changes and `fix/paws-button-surface` fixes.
-All 15 resolved Arkit crates use that revision.
+All 15 resolved Arkit crates used that revision.
 
-Both Rust platform plugins and the ArkTS/C++ Ability host use
-`2b5defdb0a016b841736470f9c32f2929380c448`. The unmodified host source and
-licenses are in `vendor/openharmony-ability`; OHPM resolves both plugins to
-that local host module. Published native binding releases replace the old
-`b278b62` Git patches and sibling-checkout dependencies. Run
-`ohpm install --all` after changing dependencies.
+Both Rust platform plugins and the ArkTS/C++ Ability host used
+`2b5defdb0a016b841736470f9c32f2929380c448`. At that time, the host was built
+from a local snapshot; published native binding releases replaced the older
+`b278b62` Git patches and sibling-checkout dependencies.
 
 ## Resulting behavior
 

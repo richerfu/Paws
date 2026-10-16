@@ -5,7 +5,7 @@ pub(super) fn about_snapshot() -> AboutSnapshot {
         app_version: APP_VERSION.to_owned(),
         core_version: env!("CARGO_PKG_VERSION").to_owned(),
         meow_rs_version: MEOW_RS_VERSION.to_owned(),
-        arkit_rev: ARKIT_REV.to_owned(),
+        arkit_version: ARKIT_VERSION.to_owned(),
         rust_version: RUST_VERSION.to_owned(),
         privacy_summary: vec![
             "数据控制者：Paws 不要求注册账号，不接入广告、行为分析或远程遥测服务，也没有用于收集用户数据的 Paws 后端。".to_owned(),

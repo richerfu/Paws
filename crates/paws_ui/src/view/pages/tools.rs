@@ -258,7 +258,7 @@ pub(crate) fn about_page() -> Element {
     let stores = use_context::<UiStores>();
     let locale = stores.preferences.read().locale;
     let about = stores.about.read().about.clone();
-    let arkit_revision = middle_truncate_text(&about.arkit_rev, 18);
+    let arkit_version = middle_truncate_text(&about.arkit_version, 18);
     let body = rsx! {
         column {
             width: "100%",
@@ -302,7 +302,7 @@ pub(crate) fn about_page() -> Element {
                         {info_row(translate_ui(locale, tr::page_tr_034()), about.app_version)}
                         {info_row(translate_ui(locale, tr::page_tr_035()), about.core_version)}
                         {info_row("meow-rs", about.meow_rs_version)}
-                        {info_row("arkit", arkit_revision)}
+                        {info_row("arkit", arkit_version)}
                         {info_row("Rust", about.rust_version)}
                     }
                 }

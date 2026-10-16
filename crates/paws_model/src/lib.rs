@@ -574,7 +574,7 @@ pub struct AboutSnapshot {
     pub app_version: String,
     pub core_version: String,
     pub meow_rs_version: String,
-    pub arkit_rev: String,
+    pub arkit_version: String,
     pub rust_version: String,
     pub privacy_summary: Vec<String>,
     #[serde(default)]
@@ -587,7 +587,7 @@ impl Default for AboutSnapshot {
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
             core_version: env!("CARGO_PKG_VERSION").to_owned(),
             meow_rs_version: "unknown".to_owned(),
-            arkit_rev: "unknown".to_owned(),
+            arkit_version: "unknown".to_owned(),
             rust_version: "unknown".to_owned(),
             privacy_summary: Vec::new(),
             exit_ip_services: Vec::new(),

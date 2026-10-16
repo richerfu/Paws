@@ -6,7 +6,7 @@ resolver = "2"
 version = "1.2.0"
 edition = "2021"
 license = "MIT"
-rust-version = "1.89"
+rust-version = "1.90"
 
 # Keep debug HAPs debuggable without running the proxy kernel and TLS at -O0.
 [profile.dev]
@@ -22,19 +22,16 @@ paws_profile = { path = "crates/paws_profile" }
 paws_core = { path = "crates/paws_core" }
 paws_vpn = { path = "crates/paws_vpn" }
 
-# Arkit main + shadow/button fixes + native bounded panel layout.
-# Declarative `#[entry(plugins = [...])]` bridge-plugin registration.
-arkit = { git = "https://github.com/richerfu/arkit.git", rev = "a6fb10ec16f3644d75af9e04e28f435ad6273f4d", features = ["router", "shadcn", "barcode"] }
+# Use published releases for the native UI and its matching Ability bridge.
+arkit = { version = "=0.0.1-beta.0", features = ["router", "shadcn", "barcode"] }
 ohos-ashmem-binding = "0.1.0"
 ohos-hilog-binding = "0.2.3"
 ohos-fileuri-binding = "0.2.4"
 ohos-fileshare-binding = "0.2.4"
 ohos-resource-manager-binding = "0.3.4"
 
-# Keep plugin traits on Arkit's exact Ability source and revision. The matching
-# ArkTS host is vendored under vendor/openharmony-ability/native_ability.
-openharmony-ability-plugin-files = { git = "https://github.com/richerfu/openharmony-ability.git", rev = "2b5defdb0a016b841736470f9c32f2929380c448" }
-openharmony-ability-plugin-url = { git = "https://github.com/richerfu/openharmony-ability.git", rev = "2b5defdb0a016b841736470f9c32f2929380c448" }
+openharmony-ability-plugin-files = "=1.0.0-beta.3"
+openharmony-ability-plugin-url = "=1.0.0-beta.3"
 
 meow-api = "=0.22.0"
 meow-common = "=0.22.0"
@@ -72,6 +69,7 @@ thiserror = "2"
 time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "net", "fs", "io-util"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+toml = "0.9"
 tracing = "0.1"
 tracing-appender = "0.2.5"
 tracing-subscriber = "0.3"

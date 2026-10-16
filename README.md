@@ -65,16 +65,17 @@ Network
 ### Prerequisites
 
 - macOS with DevEco Studio and the HarmonyOS SDK installed.
-- Rust 1.89 or a compatible newer toolchain.
+- Rust 1.90 or a compatible newer toolchain.
 - [`ohrs`](https://github.com/ohos-rs/ohos-rs) available in `PATH`.
 - `hvigorw` and `hdc`; the packaging scripts can use the copies bundled with
   DevEco Studio.
 - Signing material configured locally when producing a physical-device HAP.
 
-Run `ohpm install --all` after changing dependencies. Paws includes the
-matching ArkTS Ability host in `vendor/openharmony-ability` so the native
-window and input lifecycle interfaces stay aligned with the pinned Arkit
-commit.
+Run `ohpm install --all` after changing dependencies. Paws uses the published
+Arkit `0.0.1-beta.0` Rust crates and Ability `1.0.0-beta.3` Rust / OHPM
+packages, including the matching files and URL plugins. Third-party
+dependencies resolve from crates.io and the OHPM registry; no local host
+snapshot or sibling checkout is required.
 
 The project targets HarmonyOS 6.1, is compatible with HarmonyOS 6.0.2, and
 exports release packages for `arm64-v8a`, `armeabi-v7a`, and `x86_64`.

@@ -42,10 +42,6 @@
   },
   "modules": [
     {
-      "name": "native_ability",
-      "srcPath": "./vendor/openharmony-ability/native_ability"
-    },
-    {
       "name": "entry",
       "srcPath": "./entry",
       "targets": [

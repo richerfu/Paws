@@ -34,8 +34,8 @@ APP itself with `hap-sign-tool.jar verify-app`, then compare the extracted
 profile against the selected publishing profile. HAPs inside this upload
 container are unsigned; they provide the release manifests, native ABIs,
 stored icon resources and GeoData checked during artifact validation.
-The original local signing selection and generated vendor build profile are
-restored after packaging. Signing material stays outside the release commit.
+The original local signing selection is restored after packaging. Signing
+material stays outside the release commit.
 
 ## Release 1.1.0
 
@@ -128,7 +128,12 @@ whose icon resources are compressed. Its default output is
 - `rust`: runs on GitHub-hosted macOS and checks Rust formatting, workspace tests, and generated local protocol profiles.
 - `harmony`: runs on a self-hosted macOS runner labelled `harmonyos`, builds the aarch debug HAP with `scripts/ohrs-build.sh --arch aarch`, and uploads any generated `.hap` files.
 
-The workspace resolves `meow-*` 0.22.0 from crates.io and pins arkit to a reviewed upstream commit. CI calls `scripts/prepare-ci-cargo.sh` to report that reproducible dependency policy; no machine-local path patches are used.
+The workspace resolves Meow `0.22.0`, Arkit `0.0.1-beta.0` and Ability
+`1.0.0-beta.3` from crates.io. Ability and its files / URL plugins use the
+matching `1.0.0-beta.3` OHPM packages. Commit both package managers' lockfiles;
+CI calls `scripts/prepare-ci-cargo.sh` to report the published dependency policy.
+No third-party Git pins, vendored host modules or machine-local path patches
+are used.
 
 ## Self-Hosted Runner Requirements
 

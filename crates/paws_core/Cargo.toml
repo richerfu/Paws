@@ -40,3 +40,6 @@ ohos-ashmem-binding.workspace = true
 [dev-dependencies]
 base64.workspace = true
 shadowsocks.workspace = true
+
+[build-dependencies]
+toml.workspace = true

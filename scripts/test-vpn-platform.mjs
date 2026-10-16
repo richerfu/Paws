@@ -63,6 +63,7 @@ function configModule() {
 test('URL capability forwards About links through the actual packaged plugin', async () => {
   const { UrlPlugin } = loadArkts('entry/oh_modules/@ohos-rs/ability-plugin-url/src/main/ets/UrlPlugin.ets', {
     '@ohos-rs/ability': { AsyncPluginBase: class {} },
+    '@kit.AbilityKit': {},
   });
   const plugin = new UrlPlugin();
   assert.equal(plugin.id, 'ohos.url');
