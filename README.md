@@ -68,6 +68,9 @@ Network
   DevEco Studio.
 - Signing material configured locally when producing a physical-device HAP.
 
+If DevEco Studio is installed outside `/Applications/DevEco-Studio.app`, set
+`DEVECO_STUDIO_HOME` to its `Contents` directory before running these scripts.
+
 Run `ohpm install --all` after changing dependencies. Paws uses the published
 Arkit `0.0.1-beta.0` Rust crates and Ability `1.0.0-beta.3` Rust / OHPM
 packages, including the matching files and URL plugins. Third-party
@@ -108,7 +111,7 @@ After configuring a valid HarmonyOS signing profile for the target device:
 
 ```sh
 scripts/fetch-geodata.sh
-scripts/package-signed-hap.sh
+scripts/package-hap.sh --signed
 ```
 
 Output:
@@ -142,8 +145,9 @@ hdc shell aa start -b com.richerfu.paws -a EntryAbility
 
 For a target selected by key, add `-t <target-key>` immediately after `hdc`.
 
-The smoke script builds, validates the native exports inside the HAP, installs
-the app, launches `EntryAbility`, and captures `hilog`:
+The smoke script builds a fresh debug HAP, validates its native exports,
+installs the app, launches `EntryAbility`, and captures `hilog`. Pass `--hap`
+to reuse an already packaged HAP, such as the signed release:
 
 ```sh
 scripts/harmony-smoke.sh \
@@ -165,14 +169,11 @@ hdc tconn 127.0.0.1:5555
 hdc list targets
 ```
 
-Then package and run an automated direct-mode VPN smoke:
+Then build a debug HAP and run an automated direct-mode VPN smoke:
 
 ```sh
-scripts/package-hap.sh
 scripts/harmony-smoke.sh \
-  --no-build \
   --target 127.0.0.1:5555 \
-  --hap entry/build/default/outputs/default/entry-default-unsigned.hap \
   --protocol-mode direct \
   --mock-bind 0.0.0.0 \
   --mock-advertise-host 10.0.2.2 \
@@ -210,7 +211,11 @@ scripts/harmony-protocol-matrix.sh \
 
 The matrix covers Direct, HTTP, SOCKS5, Shadowsocks, Trojan, and VLESS,
 including authentication, unavailable-server, bad-password, and bad-UUID
-failure paths.
+failure paths. It builds and packages one debug HAP before running all modes.
+Set `HAP_PATH` to reuse an existing debug HAP, or pass `--no-build` to reuse
+the default output. Debug Want automation requires `app.debug=true` in the HAP;
+for a signed debug package, use
+`NATIVE_PROFILE=debug HAP_BUILD_MODE=debug scripts/package-hap.sh --signed`.
 
 ## Project structure
 

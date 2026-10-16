@@ -6,13 +6,16 @@ HDC="${HDC:-hdc}"
 OHRS="${OHRS:-ohrs}"
 BUNDLE_NAME="${BUNDLE_NAME:-com.richerfu.paws}"
 ABILITY_NAME="${ABILITY_NAME:-EntryAbility}"
+RUN_BUILD=1
+if [ -n "${HAP_PATH:-}" ]; then
+  RUN_BUILD=0
+fi
 HAP_PATH="${HAP_PATH:-$ROOT_DIR/entry/build/default/outputs/default/entry-default-unsigned.hap}"
 HAP_LIB_PATH="${HAP_LIB_PATH:-libs/arm64-v8a/libpaws_ui.so}"
 NAPI_DTS_PATH="${NAPI_DTS_PATH:-$ROOT_DIR/entry/src/main/cpp/types/libpaws_ui/Index.d.ts}"
 LOG_DIR="${LOG_DIR:-$ROOT_DIR/smoke-logs}"
 HILOG_SECONDS="${HILOG_SECONDS:-20}"
 HDC_TARGET="${HDC_TARGET:-}"
-RUN_BUILD=1
 VERIFY_HAP_EXPORTS=1
 FORCE_STOP_APP=1
 PROFILE_PATH="${PROFILE_PATH:-}"
@@ -41,12 +44,12 @@ usage() {
   cat <<USAGE
 Usage: scripts/harmony-smoke.sh [options]
 
-Builds the aarch HAP, installs it with hdc, starts EntryAbility, and captures
+Builds an arm64 debug HAP, installs it with hdc, starts EntryAbility, and captures
 hilog output for quick HarmonyOS device smoke validation.
 
 Options:
-  --no-build             Skip ohrs build.
-  --hap PATH             Install this HAP instead of the default release HAP.
+  --no-build             Reuse the existing HAP without building or packaging.
+  --hap PATH             Reuse this HAP without building or packaging.
                          Debug Want automation options require a HAP whose
                          module.json reports app.debug=true.
   --skip-hap-export-check
@@ -88,6 +91,7 @@ Options:
 Environment overrides:
   HDC, OHRS, HDC_TARGET, BUNDLE_NAME, ABILITY_NAME, HAP_PATH, LOG_DIR,
   HAP_LIB_PATH, NAPI_DTS_PATH,
+  NATIVE_PROFILE, HAP_BUILD_MODE (both default to debug), DEVECO_STUDIO_HOME,
   HILOG_SECONDS, PROFILE_PATH, PROFILE_URL, PROFILE_NAME, PROTOCOL_MODE,
   MOCK_BIND, MOCK_ADVERTISE_HOST, DELAY_PROXY, DELAY_URL, DELAY_TIMEOUT_MS,
   EXPECT_DELAY_FAILURE, ECHO_PROXY, ECHO_URL, ECHO_PAYLOAD, ECHO_TIMEOUT_MS,
@@ -104,6 +108,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --hap)
       HAP_PATH="${2:?missing HAP path}"
+      RUN_BUILD=0
       shift 2
       ;;
     --skip-hap-export-check)
@@ -402,7 +407,7 @@ start_protocol_lab() {
 
   # A cold Cargo cache can take longer than the server readiness timeout.
   # Complete the build first so the timeout measures only server startup.
-  if ! (cd "$ROOT_DIR" && cargo build --manifest-path local-protocol-tests/Cargo.toml) \
+  if ! (cd "$ROOT_DIR" && cargo build --locked --manifest-path local-protocol-tests/Cargo.toml) \
     >"$PROTOCOL_LOG_PATH" 2>&1; then
     echo "Could not build local-protocol-tests." >&2
     echo "Protocol log saved to: $PROTOCOL_LOG_PATH" >&2
@@ -416,7 +421,7 @@ start_protocol_lab() {
 
   (
     cd "$ROOT_DIR"
-    cargo run --manifest-path local-protocol-tests/Cargo.toml -- "$@"
+    cargo run --locked --manifest-path local-protocol-tests/Cargo.toml -- "$@"
   ) >>"$PROTOCOL_LOG_PATH" 2>&1 &
   PROTOCOL_PID=$!
 
@@ -561,6 +566,11 @@ if [ "$profile_source_count" -gt 1 ]; then
   exit 2
 fi
 
+if [ "$RUN_BUILD" -eq 1 ]; then
+  NATIVE_PROFILE="${NATIVE_PROFILE:-debug}" HAP_BUILD_MODE="${HAP_BUILD_MODE:-debug}" \
+    OHRS="$OHRS" "$ROOT_DIR/scripts/package-hap.sh"
+fi
+
 if [ -n "$PROTOCOL_MODE" ]; then
   start_protocol_lab
 fi
@@ -572,10 +582,6 @@ if [ -n "$PROFILE_PATH" ]; then
     exit 1
   fi
   PROFILE_CONTENT_BASE64="$(base64 <"$PROFILE_PATH" | tr -d '\n')"
-fi
-
-if [ "$RUN_BUILD" -eq 1 ]; then
-  (cd "$ROOT_DIR" && OHRS="$OHRS" scripts/ohrs-build.sh --arch aarch)
 fi
 
 if [ ! -f "$HAP_PATH" ]; then
