@@ -16,7 +16,7 @@ pub(crate) fn dashboard_page() -> Element {
         )
     });
     let preferences = stores.preferences.read();
-    let session = stores.session.read();
+    let session = stores.session.read().clone();
     let profiles = stores.profiles.read();
     let proxies = stores.proxies.read();
     let activity = stores.activity.read();
@@ -149,60 +149,89 @@ pub(crate) fn dashboard_page() -> Element {
     };
 
     let theme = use_theme();
+    let adaptive = use_adaptive_layout();
+    let mut status_hovering = use_signal(|| false);
+    let mut status_focused = use_signal(|| false);
     let body = rsx! {
         column {
             width: "100%",
             layout_weight: 1.0,
             column {
                 width: "100%",
-                button {
-                    button_type: "normal",
+                row {
                     width: "100%",
                     height: 52.0,
-                    padding: 0.0,
-                    background_color: 0x00000000,
-                    border_width: 0.0,
-                    enabled: !disabled,
-                    onclick: move |_| vpn_services.toggle_vpn(),
-                    row {
-                        width: "100%",
+                    align_items: "center",
+                    column {
+                        layout_weight: 1.0,
                         height: 52.0,
-                        align_items: "center",
-                        row {
-                            width: 40.0,
-                            height: 40.0,
-                            align_items: "center",
-                            justify_content: "center",
-                            background_color: muted(),
-                            border_radius: theme.radii.lg,
-                            if transitioning {
-                                Spinner { size: 18.0, color: Some(status_color) }
+                        button {
+                            width: "100%",
+                            height: 52.0,
+                            padding: 0.0,
+                            background_color: if adaptive.is_pc() && (status_hovering() || status_focused()) {
+                                theme.colors.accent
                             } else {
-                                {arkit::icon(status_icon, 18.0, status_color)}
-                            }
-                        }
-                        column {
-                            layout_weight: 1.0,
-                            margin_left: spacing::MD,
-                            align_items: "start",
-                            text {
-                                content: status_label,
-                                font_size: typography::XL,
-                                line_height: 24.0,
-                                font_weight: 600,
-                                font_color: status_color,
-                            }
-                            text {
+                                0x00000000
+                            },
+                            border_width: 0.0,
+                            border_radius: theme.radii.md,
+                            enabled: !disabled,
+                            focusable: adaptive.is_pc() && !disabled,
+                            focus_on_touch: false,
+                            onhover: move |event| {
+                                if adaptive.is_pc() {
+                                    status_hovering.set(event.data().is_hovering);
+                                }
+                            },
+                            onfocus: move |_| status_focused.set(true),
+                            onblur: move |_| status_focused.set(false),
+                            onclick: move |_| vpn_services.toggle_vpn(),
+                            row {
                                 width: "100%",
-                                content: profile,
-                                margin_top: 1.0,
-                                font_size: typography::XS,
-                                line_height: 16.0,
-                                font_color: subtle(),
-                                max_lines: 1,
-                                text_overflow: "ellipsis",
+                                height: 52.0,
+                                align_items: "center",
+                                row {
+                                    width: 40.0,
+                                    height: 40.0,
+                                    align_items: "center",
+                                    justify_content: "center",
+                                    background_color: muted(),
+                                    border_radius: theme.radii.lg,
+                                    if transitioning {
+                                        Spinner { size: 18.0, color: Some(status_color) }
+                                    } else {
+                                        {arkit::icon(status_icon, 18.0, status_color)}
+                                    }
+                                }
+                                column {
+                                    layout_weight: 1.0,
+                                    margin_left: spacing::MD,
+                                    align_items: "start",
+                                    text {
+                                        content: status_label,
+                                        font_size: typography::XL,
+                                        line_height: 24.0,
+                                        font_weight: 600,
+                                        font_color: status_color,
+                                    }
+                                    text {
+                                        width: "100%",
+                                        content: profile,
+                                        margin_top: 1.0,
+                                        font_size: typography::XS,
+                                        line_height: 16.0,
+                                        font_color: subtle(),
+                                        max_lines: 1,
+                                        text_overflow: "ellipsis",
+                                    }
+                                }
                             }
                         }
+                    }
+                    if adaptive.is_pc() {
+                        row { width: spacing::LG }
+                        VpnPowerButton { session: session.clone(), size: 44.0 }
                     }
                 }
                 row { height: 14.0 }

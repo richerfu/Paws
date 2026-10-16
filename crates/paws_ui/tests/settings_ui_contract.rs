@@ -61,8 +61,9 @@ fn settings_route_rows_do_not_inherit_native_button_insets() {
     );
     assert!(
         route_row.contains("background_color: 0x00000000")
-            || route_row.contains("background_color: surface()"),
-        "settings route rows must not paint a competing surface fill"
+            || route_row.contains("background_color: surface()")
+            || (route_row.contains("theme.colors.accent") && route_row.contains("0x00000000")),
+        "settings route rows may only add the shadcn accent for pointer/focus feedback"
     );
 }
 

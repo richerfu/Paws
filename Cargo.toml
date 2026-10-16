@@ -16,7 +16,7 @@ paws_vpn = { path = "crates/paws_vpn" }
 
 # arkit mainline; declarative `#[entry(plugins = [...])]` bridge-plugin
 # registration (no hand-written init/render needed).
-arkit = { git = "https://github.com/richerfu/arkit.git", rev = "1d4163f2168a49aba1a6fd8ea6ca81406212c4e9", features = ["router", "shadcn", "barcode"] }
+arkit = { git = "https://github.com/richerfu/arkit.git", rev = "ca4918e235ed6e84726ddda582c157c5fb568932", features = ["router", "shadcn", "barcode"] }
 ohos-ashmem-binding = "0.1.0"
 
 # Pluginized platform capabilities from openharmony-ability. These published
@@ -72,3 +72,12 @@ unimplemented = "warn"
 
 [workspace.lints.rust]
 unused_must_use = "warn"
+
+[patch.crates-io]
+# Arkit's PC input support depends on unreleased ArkUI event wrappers. Cargo
+# only honors patches from the consuming workspace, so keep Paws on the exact
+# binding revision used by the pinned Arkit commit.
+ohos-arkui-binding = { git = "https://github.com/ohos-rs/ohos-native-bindings.git", rev = "b278b62617c27065b518541d2941d4bac6996928" }
+ohos-drawing-binding = { git = "https://github.com/ohos-rs/ohos-native-bindings.git", rev = "b278b62617c27065b518541d2941d4bac6996928" }
+ohos-xcomponent-binding = { git = "https://github.com/ohos-rs/ohos-native-bindings.git", rev = "b278b62617c27065b518541d2941d4bac6996928" }
+ohos-xcomponent-sys = { git = "https://github.com/ohos-rs/ohos-native-bindings.git", rev = "b278b62617c27065b518541d2941d4bac6996928" }
