@@ -268,6 +268,8 @@ export declare function cancelPlatformVpnStart(attemptId: string): boolean
 
 export declare function claimCurrentPlatformVpnStop(intentEpoch: string): string
 
+export declare function claimPlatformVpnAutoRecovery(): string
+
 export declare function clearLogs(): void
 
 export declare function clearRequestHistory(): void
@@ -354,6 +356,8 @@ export declare function profileRawYaml(profileId: string): string
 export declare function querySnapshot(): string
 
 export declare function queryVpnSpeed(): string
+
+export declare function rearmPlatformVpnAutoRecovery(error: string): void
 
 export declare function receiveAndAttachPlatformVpnHandoff(token: string): Promise<string>
 

@@ -49,6 +49,7 @@ function loadArkts(relativePath, overrides = {}, cache = new Map()) {
       if (name === '@kit.LiveViewKit') return { liveViewManager: { async isLiveViewEnabled() { return false; } } };
       if (name === '@kit.FormKit') return { formBindingData: { createFormBindingData(v) { return v; } }, formProvider: { async updateForm() {} } };
       if (name === '@kit.CoreFileKit') return { fileIo: { statSync() { throw new Error('missing fixture journal'); }, openSync() { throw new Error('fixture filesystem unavailable'); } } };
+      if (name === '@kit.BasicServicesKit') return { commonEventManager: {} };
       if (name.startsWith('.')) {
         return loadArkts(resolve(dirname(filename), `${name}.ets`), overrides, cache);
       }
@@ -303,6 +304,7 @@ function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({ne
     async onCreate() {}
     enqueueLifecycleOperation(label, operation) { this.lifecycleTail = this.lifecycleTail.then(operation); return this.lifecycleTail; }
     onNewWant() {}
+    onForeground() {}
   }
   class LazyPlugin {
     constructor(factory) { this.factory = factory; }
@@ -572,11 +574,19 @@ function pluginFixture({
   const cleanup = deferred();
   const cleanedSessions = new Set();
   let dispatchCount = 0;
+  let pendingAutoRecovery = '';
   const native = {
     initializePlatformSharedMemory() { return '21,22'; },
     preparePlatformVpnHandoff() { return '0123456789abcdef0123456789abcdef'; },
     async sendPlatformVpnHandoff() {},
     currentPlatformVpnSessionId() { return currentSession; },
+    claimPlatformVpnAutoRecovery() {
+      const claimed = pendingAutoRecovery;
+      pendingAutoRecovery = '';
+      if (claimed.length > 0) calls.push(['claim-auto-recovery', claimed]);
+      return claimed;
+    },
+    rearmPlatformVpnAutoRecovery(error) { calls.push(['rearm-auto-recovery', error]); },
     async validateEngineStartup(session) { calls.push(['health-probe',session]); return JSON.stringify(await (healthSequence.shift() ?? {success:true,actualEngine:'mihomo',rollbackToBaseline:false,stage:'return-traffic'})); },
     advancePlatformVpnIntent() { intentEpoch += 1; calls.push(['intent', `${intentEpoch}`]); return `${intentEpoch}`; },
     isPlatformVpnIntentCurrent(expected) { return expected === `${intentEpoch}`; },
@@ -675,7 +685,10 @@ function pluginFixture({
       isVpnEmulatorCompatibilityEnabled() { return false; },
     },
     '../vpnability/VpnContinuousTask': {
-      vpnContinuousTask: { async start() {}, async stop() {} },
+      vpnContinuousTask: {
+        async start() { calls.push(['continuous-start']); },
+        async stop() { calls.push(['continuous-stop']); },
+      },
     },
     'libpaws_ui.so': { default: native },
   });
@@ -732,6 +745,7 @@ function pluginFixture({
     createPlugin,
     advanceIntent() { return native.advancePlatformVpnIntent(); },
     setRevision(value) { revision = value; },
+    setAutoRecovery(value) { pendingAutoRecovery = value; },
   };
 }
 
@@ -1346,4 +1360,17 @@ test('mihomo extension scavenges memory after startup and on system memory press
   fixture.extension.onMemoryLevel(2);
   assert.equal(fixture.calls.filter(call => call[0] === 'force-gc').length, 2);
 });
+
+test('system wakeup claims pending auto-recovery and restarts VPN without dropping continuous task', async () => {
+  const fixture = pluginFixture({ recoverCleanup: true, cooperativeStop: false });
+  await fixture.plugin.requestStartVpn('{}');
+  assert.equal(fixture.calls.filter(call => call[0] === 'begin').length, 1);
+  fixture.setAutoRecovery('{"mtu":1500}');
+  fixture.plugin.onAbilityForeground();
+  await until(() => fixture.calls.filter(call => call[0] === 'begin').length === 2, 'auto-recovered VPN start');
+  assert.equal(fixture.calls.filter(call => call[0] === 'stop-extension').length, 1);
+  assert.equal(fixture.calls.filter(call => call[0] === 'recover-cleanup').length, 1);
+  assert.equal(fixture.calls.filter(call => call[0] === 'continuous-stop').length, 0);
+});
+
 

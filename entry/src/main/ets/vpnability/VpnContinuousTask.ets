@@ -12,7 +12,7 @@ import {
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'PawsBackground';
 const BACKGROUND_MODE: string = 'dataTransfer';
-const PROGRESS_UPDATE_INTERVAL_MS: number = 5 * 60 * 1000;
+const PROGRESS_UPDATE_INTERVAL_MS: number = 30 * 1000;
 const PROGRESS_WINDOW_BYTES: number = 100 * 1024 * 1024;
 
 interface PawsTrafficSnapshot {
@@ -35,10 +35,12 @@ interface PawsRuntimeSnapshot {
 export class VpnContinuousTask {
   private context?: common.UIAbilityContext;
   private taskNotification?: backgroundTaskManager.ContinuousTaskNotification;
+  private wantAgent?: WantAgent;
   private startRequest?: Promise<void>;
   private progressTimer: number = -1;
   private stopping: boolean = false;
   private cancelHandler?: (info: backgroundTaskManager.ContinuousTaskCancelInfo) => void;
+  private tickHandler?: () => void;
 
   private readonly cancellationListener =
     (info: backgroundTaskManager.ContinuousTaskCancelInfo): void => {
@@ -64,10 +66,18 @@ export class VpnContinuousTask {
   start(
     context: common.UIAbilityContext,
     onCancelled: (info: backgroundTaskManager.ContinuousTaskCancelInfo) => void,
+    onTick?: () => void,
   ): Promise<void> {
     this.context = context;
     this.cancelHandler = onCancelled;
+    this.tickHandler = onTick;
     if (this.taskNotification !== undefined) {
+      if (this.wantAgent !== undefined) {
+        this.publishProgress(this.taskNotification, this.wantAgent).catch((err: Error): void => {
+          hilog.warn(LOG_DOMAIN, LOG_TAG,
+            'continuous VPN progress refresh failed %{public}s', String(err));
+        });
+      }
       return Promise.resolve();
     }
     if (this.startRequest !== undefined) {
@@ -105,7 +115,9 @@ export class VpnContinuousTask {
     } finally {
       backgroundTaskManager.off('continuousTaskCancel', this.cancellationListener);
       this.taskNotification = undefined;
+      this.wantAgent = undefined;
       this.cancelHandler = undefined;
+      this.tickHandler = undefined;
       this.context = undefined;
       this.stopping = false;
     }
@@ -122,6 +134,7 @@ export class VpnContinuousTask {
         agent,
       );
       this.taskNotification = task;
+      this.wantAgent = agent;
       await this.publishProgress(task, agent);
       this.progressTimer = setInterval((): void => {
         const currentTask = this.taskNotification;
@@ -130,6 +143,15 @@ export class VpnContinuousTask {
             hilog.warn(LOG_DOMAIN, LOG_TAG,
               'continuous VPN progress update failed %{public}s', String(err));
           });
+        }
+        const tick = this.tickHandler;
+        if (tick !== undefined) {
+          try {
+            tick();
+          } catch (err) {
+            hilog.warn(LOG_DOMAIN, LOG_TAG,
+              'continuous VPN tick handler failed %{public}s', String(err));
+          }
         }
       }, PROGRESS_UPDATE_INTERVAL_MS);
       hilog.info(
@@ -227,6 +249,7 @@ export class VpnContinuousTask {
   private clearLocalState(): void {
     this.clearProgressTimer();
     this.taskNotification = undefined;
+    this.wantAgent = undefined;
     this.context = undefined;
   }
 

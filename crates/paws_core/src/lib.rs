@@ -4239,6 +4239,11 @@ impl CoreHandle {
     pub fn claim_platform_vpn_auto_recovery(&self) -> Result<Option<String>, PawsError> {
         let mut state = self.lock_state()?;
         self.sync_platform_vpn_state_locked(&mut state);
+        if state.platform_vpn_extension_lease.is_none()
+            && self.platform_ipc()?.is_none_or(|platform| platform.is_ui())
+        {
+            self.refresh_platform_vpn_owner_liveness_locked(&mut state)?;
+        }
         if self.vpn.is_running() || state.platform_vpn_running || state.platform_vpn_starting {
             return Ok(None);
         }

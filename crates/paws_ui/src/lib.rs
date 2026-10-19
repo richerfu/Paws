@@ -441,6 +441,19 @@ pub fn claim_current_platform_vpn_stop(intent_epoch: String) -> Result<String> {
 }
 
 #[napi]
+pub fn claim_platform_vpn_auto_recovery() -> Result<String> {
+    Ok(paws_core::shared_core()
+        .claim_platform_vpn_auto_recovery()
+        .map_err(to_napi_error)?
+        .unwrap_or_default())
+}
+
+#[napi]
+pub fn rearm_platform_vpn_auto_recovery(error: String) {
+    paws_core::shared_core().rearm_platform_vpn_auto_recovery(&error);
+}
+
+#[napi]
 pub async fn prepare_vpn(attempt_id: String) -> Result<bool> {
     paws_core::shared_core()
         .prepare_platform_vpn(&attempt_id)

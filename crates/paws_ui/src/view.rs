@@ -423,6 +423,7 @@ pub(crate) fn App(initial_safe_area: bridge::InitialSafeArea) -> Element {
         }
     });
     use_runtime_projection_provider(stores, notifications, runtime.tokio().clone());
+    use_vpn_auto_recovery_provider(runtime.tokio().clone());
     use_system_preferences_provider(stores, runtime.tokio().clone());
 
     rsx! {
@@ -435,6 +436,33 @@ pub(crate) fn App(initial_safe_area: bridge::InitialSafeArea) -> Element {
             NotificationHost { center: notifications }
         }
     }
+}
+
+/// Observes runtime revisions directly on the Tokio runtime without sending
+/// frames through the UI's bounded Vsync channel, ensuring background VPN
+/// auto-recovery still fires when the window is paused in the background.
+fn use_vpn_auto_recovery_provider(tokio: tokio::runtime::Handle) {
+    use_tokio_subscription(
+        tokio,
+        move |_updates: tokio::sync::mpsc::Sender<()>| async move {
+            let core = paws_core::shared_core();
+            let mut revisions = core.subscribe_runtime_revisions();
+            loop {
+                let _ = *revisions.borrow_and_update();
+                if let Some(options_json) = core.claim_platform_vpn_auto_recovery().ok().flatten() {
+                    tokio::spawn(async move {
+                        if let Err(error) = crate::bridge::request_start_vpn(options_json).await {
+                            paws_core::shared_core().rearm_platform_vpn_auto_recovery(&error);
+                        }
+                    });
+                }
+                if revisions.changed().await.is_err() {
+                    break;
+                }
+            }
+        },
+        move |()| {},
+    );
 }
 
 /// Messages cross the Tokio/UI boundary as owned data. Dioxus signals and the
@@ -620,22 +648,6 @@ fn use_runtime_projection_provider(
                             }
                         }
                     }
-                    if core
-                        .claim_platform_vpn_auto_recovery()
-                        .ok()
-                        .flatten()
-                        .map(|options_json| {
-                            tokio::spawn(async move {
-                                if let Err(error) =
-                                    crate::bridge::request_start_vpn(options_json).await
-                                {
-                                    paws_core::shared_core()
-                                        .rearm_platform_vpn_auto_recovery(&error);
-                                }
-                            });
-                        })
-                        .is_some()
-                    {}
                     if failed {
                         tokio::select! {
                             changed = revisions.changed() => {

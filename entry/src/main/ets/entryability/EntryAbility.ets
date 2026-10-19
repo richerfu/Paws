@@ -167,9 +167,16 @@ export default class EntryAbility extends NativeAbility {
   public onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     super.onNewWant(want, launchParam);
     this.systemExitRecorder.drain();
+    this.vpnPlugin?.onAbilityForeground();
     void this.enqueueLifecycleOperation('paws-debug-new-want', async (): Promise<void> => {
       this.runOptionalDebugAutomation(want);
     });
+  }
+
+  public onForeground(): void {
+    super.onForeground();
+    this.systemExitRecorder.drain();
+    this.vpnPlugin?.onAbilityForeground();
   }
 
   public onConfigurationUpdate(newConfig: Configuration): void {
