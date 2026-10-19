@@ -58,7 +58,7 @@ fn notification_permission_is_deferred_until_after_the_vpn_ability_launches() {
         .expect("deferred notification permission");
 
     assert!(launch < permission);
-    assert!(request.contains("if (this.vpnStartRequest)"));
+    assert!(request.contains("if (this.vpnStartRequest && this.vpnStartOptions === optionsJson)"));
 }
 
 #[test]
@@ -216,16 +216,20 @@ fn native_profile_prepare_overlaps_tun_creation() {
 
 #[test]
 fn dashboard_mount_does_not_wait_for_profile_parsing() {
-    let create = section(ENTRY_ABILITY, "public async onCreate", "public onNewWant");
+    let create = section(ENTRY_ABILITY, "public onCreate", "public onNewWant");
     assert!(create.contains("this.configureNativeHome()"));
     assert!(create.contains(
         "throw new Error(describeError(err) || 'critical native initialization failed')"
     ));
     let critical = create.find("this.configureNativeHome()").unwrap();
     let optional = create.find("this.configureNativeLocale()").unwrap();
-    let native_create = create.find("await super.onCreate").unwrap();
+    let native_create = create.find("super.onCreate").unwrap();
     assert!(critical < optional);
     assert!(optional < native_create);
+    // HarmonyOS does not await lifecycle callbacks: register the framework
+    // synchronously before waiting for physical-network discovery.
+    assert!(native_create < create.find("getPhysicalNetwork().then").unwrap());
+    assert!(!create.contains("await getPhysicalNetwork"));
     assert!(create.contains("this.runOptionalDebugAutomation(want)"));
     assert!(ENTRY_ABILITY.contains("private runOptionalDebugAutomation"));
     assert!(ENTRY_ABILITY.contains("debug automation terminated"));
@@ -283,7 +287,9 @@ fn vpn_restart_is_an_owned_revision_checked_platform_transaction() {
     assert!(PLATFORM_CALLBACKS.contains("options_json,"));
     assert!(PLATFORM_CALLBACKS.contains("\"stop-vpn\""));
     assert!(PLATFORM_CALLBACKS.contains("VpnStopRequest"));
-    assert!(VPN_ABILITY.contains("new PawsVpnConfig(options)"));
+    assert!(
+        VPN_ABILITY.contains("new PawsVpnConfig(options, engine === 'meow' ? undefined : 9000)")
+    );
     assert!(!VPN_ABILITY.contains("trustedApplications"));
     assert!(!VPN_ABILITY.contains("blockedApplications"));
 }

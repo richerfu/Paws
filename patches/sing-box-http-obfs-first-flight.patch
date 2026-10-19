@@ -1,0 +1,60 @@
+diff --git a/protocol/shadowsocks/outbound.go b/protocol/shadowsocks/outbound.go
+--- a/protocol/shadowsocks/outbound.go
++++ b/protocol/shadowsocks/outbound.go
+@@ -150,20 +150,42 @@
+ 	metadata.Destination = destination
+ 	switch N.NetworkName(network) {
+ 	case N.NetworkTCP:
+-		var outConn net.Conn
+-		var err error
+-		if h.plugin != nil {
+-			outConn, err = h.plugin.DialContext(ctx)
+-		} else {
+-			outConn, err = h.dialer.DialContext(ctx, N.NetworkTCP, h.serverAddr)
+-		}
+-		if err != nil {
+-			return nil, err
+-		}
+-		if eager, ok := h.plugin.(interface{ RequiresEagerShadowsocksHandshake() bool }); ok && eager.RequiresEagerShadowsocksHandshake() {
+-			return h.method.DialConn(outConn, destination)
+-		}
+-		return h.method.DialEarlyConn(outConn, destination), nil
++		dialOnce := func(attemptCtx context.Context) (net.Conn, error) {
++			var outConn net.Conn
++			var err error
++			if h.plugin != nil {
++				outConn, err = h.plugin.DialContext(attemptCtx)
++			} else {
++				outConn, err = h.dialer.DialContext(attemptCtx, N.NetworkTCP, h.serverAddr)
++			}
++			if err != nil {
++				return nil, err
++			}
++			if eager, ok := h.plugin.(interface{ RequiresEagerShadowsocksHandshake() bool }); ok && eager.RequiresEagerShadowsocksHandshake() {
++				handshake := func() (net.Conn, error) { return h.method.DialConn(outConn, destination) }
++				if guarded, ok := h.plugin.(interface {
++					DialHandshakeContext(context.Context, net.Conn, func() (net.Conn, error)) (net.Conn, error)
++				}); ok {
++					return guarded.DialHandshakeContext(attemptCtx, outConn, handshake)
++				}
++				conn, err := handshake()
++				if err != nil {
++					_ = outConn.Close()
++				}
++				return conn, err
++			}
++			return h.method.DialEarlyConn(outConn, destination), nil
++		}
++		conn, err := dialOnce(ctx)
++		if err != nil {
++			return nil, err
++		}
++		if wrapper, ok := h.plugin.(interface {
++			WrapFirstFlight(context.Context, net.Conn, func(context.Context) (net.Conn, error)) net.Conn
++		}); ok {
++			return wrapper.WrapFirstFlight(ctx, conn, dialOnce), nil
++		}
++		return conn, nil
+ 	case N.NetworkUDP:
+ 		outConn, err := h.dialer.DialContext(ctx, N.NetworkUDP, h.serverAddr)
+ 		if err != nil {

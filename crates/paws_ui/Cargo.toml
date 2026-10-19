@@ -19,9 +19,9 @@ paws_core.workspace = true
 paws_model.workspace = true
 napi-derive-ohos.workspace = true
 napi-ohos.workspace = true
-ohos-fileuri-binding = { path = "../../../../ohos-rs/ohos-native-bindings/crates/fileuri" }
-ohos-fileshare-binding = { path = "../../../../ohos-rs/ohos-native-bindings/crates/fileshare" }
-ohos-resource-manager-binding = { path = "../../../../ohos-rs/ohos-native-bindings/crates/resource_manager" }
+ohos-fileuri-binding = { git = "https://github.com/ohos-rs/ohos-native-bindings.git", rev = "37af3ace3a5970bf601096a1d1c858f4390f752a" }
+ohos-fileshare-binding = { git = "https://github.com/ohos-rs/ohos-native-bindings.git", rev = "37af3ace3a5970bf601096a1d1c858f4390f752a" }
+ohos-resource-manager-binding = { git = "https://github.com/ohos-rs/ohos-native-bindings.git", rev = "37af3ace3a5970bf601096a1d1c858f4390f752a" }
 openharmony-ability-plugin-files.workspace = true
 openharmony-ability-plugin-url.workspace = true
 reqwest.workspace = true

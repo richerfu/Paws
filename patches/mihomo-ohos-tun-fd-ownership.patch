@@ -1,0 +1,47 @@
+diff --git a/core/tun/tun.go b/core/tun/tun.go
+index 78b77cb..7d07301 100644
+--- a/core/tun/tun.go
++++ b/core/tun/tun.go
+@@ -16,8 +16,13 @@ import (
+ 	"github.com/metacubex/mihomo/tunnel"
+ )
+ 
+-// Start takes ownership of fd. dupFd is handed to sing_tun.New, which only
+-// takes ownership of it once tunNew succeeds inside New; from that point
++// Start borrows fd from the platform VPN connection. HarmonyOS keeps ownership
++// of the descriptor returned by VpnConnection.create(), and DestroyVpn closes
++// it later. Closing that descriptor here makes NetworkVpnClient::DestroyVpn
++// close an already-owned fd and is fatal under HarmonyOS FDSAN.
++//
++// dupFd is handed to sing_tun.New, which only takes ownership of it once
++// tunNew succeeds inside New; from that point
+ // Listener.Close (run by New's own deferred cleanup on error) closes dupFd,
+ // so this must never close dupFd itself. New's error alone can't say
+ // whether tunNew was reached; the options built below never enable the
+@@ -38,7 +43,6 @@ func Start(fd int, stack string, address, dns string) *sing_tun.Listener {
+ 		prefix, err := netip.ParsePrefix(a)
+ 		if err != nil {
+ 			log.Errorln("TUN: %v", err)
+-			_ = syscall.Close(fd)
+ 			return nil
+ 		}
+ 		if prefix.Addr().Is4() {
+@@ -57,7 +61,6 @@ func Start(fd int, stack string, address, dns string) *sing_tun.Listener {
+ 		hijack := net.JoinHostPort(d, "53")
+ 		if _, err := netip.ParseAddrPort(hijack); err != nil {
+ 			log.Errorln("TUN: %v", err)
+-			_ = syscall.Close(fd)
+ 			return nil
+ 		}
+ 		dnsHijack = append(dnsHijack, hijack)
+@@ -66,10 +69,8 @@ func Start(fd int, stack string, address, dns string) *sing_tun.Listener {
+ 	dupFd, err := syscall.Dup(fd)
+ 	if err != nil {
+ 		log.Errorln("TUN: %v", err)
+-		_ = syscall.Close(fd)
+ 		return nil
+ 	}
+-	defer func() { _ = syscall.Close(fd) }()
+ 
+ 	options := LC.Tun{
+ 		Enable:              true,

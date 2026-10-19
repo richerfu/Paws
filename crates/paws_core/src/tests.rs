@@ -5,6 +5,37 @@ use futures::StreamExt;
 static TEST_LOG_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 const PLATFORM_RECOVERY_OWNER_CHILD_MARKER: &str = "PAWS_PLATFORM_RECOVERY_OWNER_CHILD_MARKER";
 
+#[test]
+fn mihomo_geodata_refresh_preserves_the_inode_seen_by_live_readers() {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let root = std::env::temp_dir().join(format!("paws-mmdb-atomic-{}", now_unix_nanos()));
+    let source = root.join("geodata/Country.mmdb");
+    let destination = root.join("mihomo/Country.mmdb");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::create_dir_all(destination.parent().unwrap()).unwrap();
+    fs::write(&source, b"replacement-mmdb").unwrap();
+    fs::write(&destination, b"live-mapped-mmdb").unwrap();
+
+    let mut live_reader = fs::File::open(&destination).unwrap();
+    copy_atomic_file(&source, &destination).unwrap();
+
+    let mut old_contents = Vec::new();
+    live_reader.seek(SeekFrom::Start(0)).unwrap();
+    live_reader.read_to_end(&mut old_contents).unwrap();
+    assert_eq!(old_contents, b"live-mapped-mmdb");
+    assert_eq!(fs::read(&destination).unwrap(), b"replacement-mmdb");
+    assert!(fs::read_dir(destination.parent().unwrap())
+        .unwrap()
+        .all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("tmp-copy")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
 fn track_test_connection(tunnel: &Tunnel, host: &str) -> String {
     tunnel
         .statistics()
@@ -21,6 +52,29 @@ fn track_test_connection(tunnel: &Tunnel, host: &str) -> String {
             std::iter::once(Arc::<str>::from("DIRECT")).collect(),
         )
         .to_string()
+}
+
+#[test]
+fn vpn_speed_projection_is_small_and_has_no_configuration_or_logs() {
+    let root = std::env::temp_dir().join(format!("paws-speed-projection-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    {
+        let mut state = core.lock_state().unwrap();
+        state.traffic.upload_bytes = 4096;
+        state.traffic.download_bytes = 8192;
+        state.traffic.upload_speed = 1024;
+        state.traffic.download_speed = 2048;
+    }
+    let text = core.vpn_speed_json().unwrap();
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(value.as_object().unwrap().len(), 1);
+    assert_eq!(value["traffic"].as_object().unwrap().len(), 4);
+    assert_eq!(value["traffic"]["uploadBytes"], 4096);
+    assert_eq!(value["traffic"]["downloadBytes"], 8192);
+    assert_eq!(value["traffic"]["uploadSpeed"], 1024);
+    assert_eq!(value["traffic"]["downloadSpeed"], 2048);
+    assert!(text.len() < 160);
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -3849,20 +3903,12 @@ async fn direct_proxy_delay_reaches_local_tcp_listener() {
         .unwrap();
     core.reload_config(&profile_id).await.unwrap();
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let accept_handle = tokio::spawn(async move {
-        let _ = listener.accept().await;
-    });
-
+    let health_url = spawn_healthcheck_http_server().await;
     let delay = core
-        .test_proxy_delay("DIRECT", Some(&format!("http://{addr}")), Some(1000))
+        .test_proxy_delay("DIRECT", Some(&health_url), Some(1000))
         .await
         .unwrap();
     assert!(delay < 1000);
-    accept_handle.await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -6117,8 +6163,9 @@ async fn shadowsocks_proxy_echo_roundtrip_and_bad_password_fails() {
         .unwrap();
     core.reload_config(&good_id).await.unwrap();
 
+    let health_url = spawn_healthcheck_http_server().await;
     let delay = core
-        .test_proxy_delay("SS-MOCK", Some(&format!("http://{echo_addr}")), Some(1000))
+        .test_proxy_delay("SS-MOCK", Some(&health_url), Some(1000))
         .await
         .unwrap();
     assert!(delay < 1000);
@@ -6182,14 +6229,11 @@ async fn http_and_socks5_auth_echo_roundtrip_and_bad_credentials_fail() {
         .await
         .unwrap();
     core.reload_config(&http_id).await.unwrap();
+    let http_health_url = spawn_healthcheck_http_server().await;
     assert!(
-        core.test_proxy_delay(
-            "HTTP-AUTH-MOCK",
-            Some(&format!("http://{echo_addr}")),
-            Some(1000)
-        )
-        .await
-        .unwrap()
+        core.test_proxy_delay("HTTP-AUTH-MOCK", Some(&http_health_url), Some(1000))
+            .await
+            .unwrap()
             < 1000
     );
     assert_eq!(
@@ -6238,14 +6282,11 @@ async fn http_and_socks5_auth_echo_roundtrip_and_bad_credentials_fail() {
         .await
         .unwrap();
     core.reload_config(&socks_id).await.unwrap();
+    let socks_health_url = spawn_healthcheck_http_server().await;
     assert!(
-        core.test_proxy_delay(
-            "SOCKS5-AUTH-MOCK",
-            Some(&format!("http://{echo_addr}")),
-            Some(1000)
-        )
-        .await
-        .unwrap()
+        core.test_proxy_delay("SOCKS5-AUTH-MOCK", Some(&socks_health_url), Some(1000))
+            .await
+            .unwrap()
             < 1000
     );
     assert_eq!(
@@ -6862,4 +6903,365 @@ async fn spawn_subscription_metadata_comment_http_server(body: String) -> String
         let _ = stream.write_all(response.as_bytes()).await;
     });
     format!("http://{addr}/sub.yaml")
+}
+
+#[tokio::test]
+async fn route_switch_cancels_existing_connections_but_same_mode_preserves_them() {
+    let root = std::env::temp_dir().join(format!("paws-route-switch-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(root);
+    let profile_id = core
+        .import_profile_from_content(
+            "Direct",
+            "test",
+            &paws_profile::default_runtime_yaml()
+                .replace("      - DIRECT", "      - DIRECT\n      - REJECT"),
+            None,
+        )
+        .await
+        .unwrap();
+    core.reload_config(&profile_id).await.unwrap();
+    let tunnel = core.lock_state().unwrap().tunnel.clone().unwrap();
+    track_test_connection(&tunnel, "old.example");
+    core.set_mode(RuntimeMode::Direct).unwrap();
+    assert_eq!(tunnel.statistics().active_connection_count(), 0);
+    track_test_connection(&tunnel, "new.example");
+    core.set_mode(RuntimeMode::Direct).unwrap();
+    assert_eq!(tunnel.statistics().active_connection_count(), 1);
+    core.select_proxy("Proxy", "REJECT").await.unwrap();
+    assert_eq!(tunnel.statistics().active_connection_count(), 0);
+    track_test_connection(&tunnel, "platform.example");
+    {
+        let mut state = core.lock_state().unwrap();
+        core.sync_platform_vpn_control_locked(
+            &mut state,
+            PlatformVpnControl {
+                mode: RuntimeMode::Rule,
+                global_proxy: None,
+                active_profile: Some(profile_id),
+                proxy_selections: BTreeMap::new(),
+                updated_at: now_unix_nanos(),
+            },
+        );
+    }
+    assert_eq!(tunnel.statistics().active_connection_count(), 0);
+}
+
+#[tokio::test]
+async fn tinypaws_diagnostic_excludes_credentials_and_backup_restores_copies() {
+    let root = std::env::temp_dir().join(format!("tinypaws-delivery-{}", now_unix_nanos()));
+    let mut store = ProfileStore::open(&root).unwrap();
+    let id = store
+        .import_profile_content(
+            "Tiny test",
+            "local",
+            "proxies: []\nproxy-groups: []\nrules: []\nsecret: PRIVATE_TEST_MARKER\n",
+            Some("https://example.com/sub?token=PRIVATE_TEST_MARKER".into()),
+        )
+        .unwrap();
+    store.set_active(&id).unwrap();
+    let core = CoreHandle::new_with_profile_root(&root);
+    let report = core.diagnostic_report().unwrap();
+    assert!(!report.contains("PRIVATE_TEST_MARKER"));
+    assert!(!report.contains("example.com/sub"));
+    let backup = core.export_portable_backup().unwrap();
+    assert!(backup.contains("PRIVATE_TEST_MARKER"));
+    assert_eq!(core.restore_portable_backup(&backup).await.unwrap(), 1);
+    let projection = core.config_projection().unwrap();
+    assert_eq!(projection.profiles.len(), 2);
+    assert_eq!(projection.active_profile.as_deref(), Some(id.as_str()));
+    assert!(core
+        .restore_portable_backup("{\"format\":\"bad\",\"profiles\":[]}")
+        .await
+        .is_err());
+    assert_eq!(core.config_projection().unwrap().profiles.len(), 2);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn automatic_engine_prefers_mihomo_for_plugin_proxies() {
+    let plugin_profile = r#"
+proxies:
+  - name: obfs
+    type: ss
+    server: 127.0.0.1
+    port: 443
+    cipher: aes-128-gcm
+    password: test
+    plugin: obfs
+    plugin-opts:
+      mode: http
+"#;
+    assert!(profile_requires_mihomo(plugin_profile).unwrap());
+    assert!(!profile_requires_mihomo("proxies: []\n").unwrap());
+    assert!(profile_requires_mihomo(
+        "proxy-providers:\n  remote:\n    type: http\n    url: https://example.test/provider\nproxies: []\n"
+    )
+    .unwrap());
+    assert!(!profile_requires_mihomo("proxy-providers: {}\nproxies: []\n").unwrap());
+}
+
+#[tokio::test]
+async fn automatic_engine_keeps_production_baseline_without_inline_plugins() {
+    let root = std::env::temp_dir().join(format!("paws-auto-engine-baseline-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    core.import_profile_from_content(
+        "standard",
+        "local",
+        &paws_profile::default_runtime_yaml(),
+        None,
+    )
+    .await
+    .unwrap();
+    let mut options = VpnOptions::default();
+    options.engine = VpnEngine::Auto;
+    assert_eq!(
+        core.resolve_vpn_engine(&to_json(&options).unwrap())
+            .unwrap(),
+        "mihomo"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn manual_candidate_engines_fall_back_for_profiles_requiring_mihomo() {
+    let root = std::env::temp_dir().join(format!(
+        "paws-candidate-engine-capability-fallback-{}",
+        now_unix_nanos()
+    ));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let profile = r#"
+proxies:
+  - name: obfs
+    type: ss
+    server: 127.0.0.1
+    port: 443
+    cipher: aes-128-gcm
+    password: test
+    plugin: obfs
+    plugin-opts: { mode: http, host: example.test }
+proxy-groups:
+  - name: GLOBAL
+    type: select
+    proxies: [obfs]
+rules: [MATCH,GLOBAL]
+"#;
+    core.import_profile_from_content("obfs", "local", profile, None)
+        .await
+        .unwrap();
+    for engine in [VpnEngine::Meow, VpnEngine::SingBox] {
+        let mut options = VpnOptions::default();
+        options.engine = engine;
+        let options = to_json(&options).unwrap();
+        assert_eq!(core.resolve_vpn_engine(&options).unwrap(), "mihomo");
+    }
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn mihomo_runtime_disables_internal_tun_and_uses_loopback_controller() {
+    let rendered = render_mihomo_runtime_yaml(
+        "tun:\n  enable: true\n  stack: netstack-smoltcp\nexternal-controller: 127.0.0.1:9090\nsecret: hidden\npaws:\n  engine: auto\ngeodata:\n  mmdb-path: private\ngeo-auto-update: true\ngeo-update-interval: 1\ndns:\n  nameserver-policy:\n    +.x.com: [TAGSS, https://1.1.1.1/dns-query]\nproxies: []\nproxy-groups:\n  - name: 🙂 TAGSS\n    type: select\n    proxies: [DIRECT]\n",
+    )
+    .unwrap();
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&rendered).unwrap();
+    let root = yaml.as_mapping().unwrap();
+    let key = |name: &str| serde_yaml::Value::String(name.to_owned());
+    assert_eq!(
+        root.get(key("geo-auto-update"))
+            .and_then(serde_yaml::Value::as_bool),
+        Some(false)
+    );
+    assert!(!root.contains_key(key("geo-update-interval")));
+    assert_eq!(
+        root.get(key("tun"))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|tun| tun.get(key("enable")))
+            .and_then(serde_yaml::Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        root.get(key("external-controller"))
+            .and_then(serde_yaml::Value::as_str),
+        Some("127.0.0.1:9090")
+    );
+    assert!(!root.contains_key(key("secret")));
+    assert!(!root.contains_key(key("paws")));
+    assert!(!root.contains_key(key("geodata")));
+    assert_eq!(
+        root.get(key("dns"))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|dns| dns.get(key("nameserver-policy")))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|policy| policy.get(key("+.x.com")))
+            .and_then(serde_yaml::Value::as_sequence)
+            .and_then(|servers| servers.first())
+            .and_then(serde_yaml::Value::as_str),
+        Some("https://1.1.1.1/dns-query#RULES")
+    );
+    assert_eq!(
+        root.get(key("dns"))
+            .and_then(serde_yaml::Value::as_mapping)
+            .and_then(|dns| dns.get(key("respect-rules")))
+            .and_then(serde_yaml::Value::as_bool),
+        Some(true)
+    );
+}
+
+#[test]
+fn sing_box_runtime_translates_obfs_groups_and_rules() {
+    let profile = r#"
+proxies:
+  - name: node-a
+    type: ss
+    server: example.test
+    port: 443
+    cipher: aes-128-gcm
+    password: test
+    plugin: obfs
+    plugin-opts:
+      mode: http
+      host: cdn.example.test
+proxy-groups:
+  - name: main
+    type: select
+    proxies: [node-a, DIRECT]
+rules:
+  - DOMAIN-SUFFIX,x.com,main
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - PROCESS-NAME,unsupported.exe,main
+  - MATCH,main
+"#;
+    let selections = BTreeMap::from([("main".to_owned(), "node-a".to_owned())]);
+    let rendered = render_sing_box_runtime_json(
+        profile,
+        RuntimeMode::Rule,
+        &selections,
+        &VpnOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(rendered.proxy_count, 1);
+    assert_eq!(rendered.group_count, 1);
+    assert_eq!(rendered.rule_count, 2);
+    assert_eq!(rendered.skipped_rule_count, 1);
+    let value: serde_json::Value = serde_json::from_str(&rendered.config_json).unwrap();
+    assert_eq!(value["inbounds"][0]["stack"], "mixed");
+    assert_eq!(value["inbounds"][1]["type"], "mixed");
+    assert_eq!(value["inbounds"][1]["listen"], "127.0.0.1");
+    assert_eq!(value["inbounds"][1]["listen_port"], 7890);
+    assert_eq!(value["route"]["auto_detect_interface"], true);
+    assert_eq!(value["route"]["rules"][1]["port"], 53);
+    assert_eq!(value["route"]["rules"][1]["action"], "hijack-dns");
+    assert_eq!(value["route"]["final"], "main");
+    assert_eq!(value["dns"]["final"], "dns-local");
+    assert_eq!(value["route"]["default_domain_resolver"], "dns-local");
+    assert_eq!(value["outbounds"][0]["domain_resolver"], "dns-local");
+    assert_eq!(value["outbounds"][0]["plugin"], "obfs-local");
+    assert_eq!(
+        value["outbounds"][0]["plugin_opts"],
+        "obfs=http;obfs-host=cdn.example.test"
+    );
+}
+
+#[test]
+#[ignore = "requires PAWS_LIVE_PROFILE and PAWS_SING_BOX_OUTPUT"]
+fn render_live_sing_box_profile() {
+    let profile_path = std::env::var("PAWS_LIVE_PROFILE").expect("PAWS_LIVE_PROFILE");
+    let output_path = std::env::var("PAWS_SING_BOX_OUTPUT").expect("PAWS_SING_BOX_OUTPUT");
+    let profile = std::fs::read_to_string(profile_path).expect("read live profile");
+    let mut selections = BTreeMap::new();
+    if let Ok(global) = std::env::var("PAWS_LIVE_PROXY") {
+        selections.insert("GLOBAL".to_owned(), global);
+    }
+    if let (Ok(group), Ok(proxy)) = (
+        std::env::var("PAWS_LIVE_GROUP"),
+        std::env::var("PAWS_LIVE_GROUP_PROXY"),
+    ) {
+        selections.insert(group, proxy);
+    }
+    let mode = if std::env::var("PAWS_LIVE_MODE").as_deref() == Ok("global") {
+        RuntimeMode::Global
+    } else {
+        RuntimeMode::Rule
+    };
+    let rendered =
+        render_sing_box_runtime_json(&profile, mode, &selections, &VpnOptions::default())
+            .expect("render sing-box config");
+    std::fs::write(output_path, rendered.config_json).expect("write sing-box config");
+    assert_eq!(rendered.proxy_count, 226);
+    assert!(rendered.group_count >= 10);
+    assert!(rendered.rule_count >= 4000);
+}
+
+/// Manual compatibility probe for a real subscription node.
+///
+/// The profile path and proxy name are supplied at runtime so credentials are
+/// never committed to the repository. Keep this ignored in normal test runs.
+#[tokio::test]
+#[ignore = "requires PAWS_LIVE_PROFILE and PAWS_LIVE_PROXY"]
+async fn live_proxy_compatibility_probe() {
+    let profile_path = std::env::var("PAWS_LIVE_PROFILE").expect("PAWS_LIVE_PROFILE");
+    let proxy_name = std::env::var("PAWS_LIVE_PROXY").expect("PAWS_LIVE_PROXY");
+    let target = std::env::var("PAWS_LIVE_TARGET")
+        .unwrap_or_else(|_| "https://www.gstatic.com/generate_204".to_owned());
+    let raw_yaml = std::fs::read_to_string(profile_path).expect("read live profile");
+    let root = std::env::temp_dir().join(format!("paws-live-probe-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let profile_id = core
+        .import_profile_from_content("Live probe", "local", &raw_yaml, None)
+        .await
+        .expect("import live profile");
+    core.reload_config(&profile_id)
+        .await
+        .expect("load live profile");
+    let delay = core
+        .test_proxy_delay(&proxy_name, Some(&target), Some(10_000))
+        .await
+        .expect("live proxy probe");
+    assert!(delay > 0);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn auto_recovery_claims_unexpectedly_killed_connected_session_and_skips_user_stops() {
+    let root = std::env::temp_dir().join(format!("paws-auto-recovery-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    let profile_id = core
+        .import_profile_from_content(
+            "Auto recovery",
+            "local",
+            "mixed-port: 7890\nrules:\n  - MATCH,DIRECT\n",
+            None,
+        )
+        .await
+        .expect("import profile");
+    core.reload_config(&profile_id).await.expect("load profile");
+
+    let attempt_id = core.begin_platform_vpn_start().expect("begin start");
+    core.bind_platform_vpn_start(&attempt_id)
+        .expect("bind start");
+    core.set_platform_vpn_running(true).expect("set running");
+    {
+        let mut state = core.lock_state().expect("lock state");
+        state.platform_vpn_extension_lease = None;
+        core.refresh_platform_vpn_owner_liveness_locked(&mut state)
+            .expect("refresh liveness");
+    }
+    assert!(
+        !core
+            .request_platform_vpn_stop(&attempt_id)
+            .expect("dead extension skips cooperative stop wait"),
+        "a failed/dead extension must not block recovery on cooperative stop"
+    );
+    let claimed = core
+        .claim_platform_vpn_auto_recovery()
+        .expect("claim auto recovery");
+    assert!(claimed.is_some(), "expected auto-recovery options JSON");
+    assert!(
+        core.claim_platform_vpn_auto_recovery()
+            .expect("second claim without rearm")
+            .is_none(),
+        "same attempt must not be claimed twice without explicit rearm"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
 }

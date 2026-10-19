@@ -1,3 +1,5 @@
+mod backup;
+pub use backup::{PortableBackup, PortableProfile};
 use base64::Engine;
 use ipnet::IpNet;
 use paws_model::{
@@ -43,6 +45,8 @@ pub struct ProfileDocument {
     pub name: String,
     pub source: String,
     pub raw_yaml_path: String,
+    #[serde(default)]
+    pub user_overrides: BTreeMap<String, Value>,
     #[serde(default)]
     pub yaml_backup_path: Option<String>,
     pub subscription_url: Option<String>,
@@ -537,6 +541,7 @@ impl ProfileStore {
         staged.profiles.insert(
             id.clone(),
             ProfileDocument {
+                user_overrides: BTreeMap::new(),
                 id: id.clone(),
                 name: name.into(),
                 source: source.into(),
@@ -887,14 +892,161 @@ impl ProfileStore {
         }
         root.insert(dns_key, Value::Mapping(dns));
 
-        let raw_yaml =
-            serde_yaml::to_string(&value).map_err(|err| PawsError::Core(err.to_string()))?;
-        self.update_profile_content(profile_id, raw_yaml)
+        self.save_settings_overlay(profile_id, &value, &["dns"])
+    }
+
+    pub fn set_profile_vpn_config_with_apps(
+        &mut self,
+        profile_id: &str,
+        system_proxy: bool,
+        dns_hijacking: bool,
+        allow_bypass: bool,
+        stack: String,
+        trusted: Vec<String>,
+        blocked: Vec<String>,
+    ) -> Result<(), PawsError> {
+        let engine = self
+            .vpn_options_for_profile(profile_id)?
+            .engine
+            .as_str()
+            .to_owned();
+        self.set_profile_vpn_config_with_apps_and_engine(
+            profile_id,
+            engine,
+            system_proxy,
+            dns_hijacking,
+            allow_bypass,
+            stack,
+            trusted,
+            blocked,
+        )
+    }
+
+    pub fn set_profile_vpn_config_with_apps_and_engine(
+        &mut self,
+        profile_id: &str,
+        engine: String,
+        system_proxy: bool,
+        dns_hijacking: bool,
+        allow_bypass: bool,
+        stack: String,
+        trusted: Vec<String>,
+        blocked: Vec<String>,
+    ) -> Result<(), PawsError> {
+        if !trusted.is_empty() && !blocked.is_empty() {
+            return Err(PawsError::Core(
+                "Choose either VPN trustlist or blocklist".into(),
+            ));
+        }
+        for app in trusted.iter().chain(blocked.iter()) {
+            if app.len() > 255
+                || !app.contains('.')
+                || !app
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_')
+            {
+                return Err(PawsError::Core("Invalid application bundle name".into()));
+            }
+        }
+        self.set_profile_vpn_config_with_engine(
+            profile_id,
+            engine,
+            system_proxy,
+            dns_hijacking,
+            allow_bypass,
+            stack,
+        )?;
+        let raw = self.raw_yaml(profile_id)?;
+        let mut value: Value =
+            serde_yaml::from_str(&raw).map_err(|e| PawsError::Core(e.to_string()))?;
+        let root = value
+            .as_mapping_mut()
+            .ok_or_else(|| PawsError::Core("Invalid profile".into()))?;
+        let mut paws = root
+            .get(value_key("paws"))
+            .and_then(Value::as_mapping)
+            .cloned()
+            .unwrap_or_default();
+        put_string_sequence(&mut paws, "trusted-applications", trusted);
+        put_string_sequence(&mut paws, "blocked-applications", blocked);
+        root.insert(value_key("paws"), Value::Mapping(paws));
+        self.save_settings_overlay(profile_id, &value, &["paws"])
+    }
+
+    fn save_settings_overlay(
+        &mut self,
+        profile_id: &str,
+        value: &Value,
+        keys: &[&str],
+    ) -> Result<(), PawsError> {
+        self.ensure_available()?;
+        let mut staged = self.clone();
+        let profile = staged
+            .profiles
+            .get_mut(profile_id)
+            .ok_or_else(|| PawsError::ProfileNotFound(profile_id.into()))?;
+        for key in keys {
+            if let Some(v) = value.get(*key) {
+                let fields: &[&str] = match *key {
+                    "dns" => &["nameserver", "fallback", "nameserver-policy"],
+                    "tun" => &["stack", "dns-hijack"],
+                    "paws" => &[
+                        "engine",
+                        "system-proxy",
+                        "allow-bypass",
+                        "trusted-applications",
+                        "blocked-applications",
+                        "mixed-port",
+                        "mixed-enabled",
+                        "controller-port",
+                        "controller-enabled",
+                        "controller-allow-lan",
+                        "controller-secret",
+                    ],
+                    _ => &[],
+                };
+                let mut patch = Mapping::new();
+                for field in fields {
+                    patch.insert(
+                        value_key(field),
+                        v.get(*field).cloned().unwrap_or(Value::Null),
+                    );
+                }
+                profile
+                    .user_overrides
+                    .insert((*key).into(), Value::Mapping(patch));
+            }
+        }
+        self.commit_staged_with_files(staged, Vec::new())
     }
 
     pub fn set_profile_vpn_config(
         &mut self,
         profile_id: &str,
+        system_proxy: bool,
+        dns_hijacking: bool,
+        allow_bypass: bool,
+        stack: String,
+    ) -> Result<(), PawsError> {
+        let engine = self
+            .vpn_options_for_profile(profile_id)?
+            .engine
+            .as_str()
+            .to_owned();
+        self.set_profile_vpn_config_with_engine(
+            profile_id,
+            engine,
+            system_proxy,
+            dns_hijacking,
+            allow_bypass,
+            stack,
+        )
+    }
+
+    pub fn set_profile_vpn_config_with_engine(
+        &mut self,
+        profile_id: &str,
+        engine: String,
         system_proxy: bool,
         dns_hijacking: bool,
         allow_bypass: bool,
@@ -914,6 +1066,10 @@ impl ProfileStore {
             .remove(&paws_key)
             .and_then(|value| value.as_mapping().cloned())
             .unwrap_or_default();
+        let engine = paws_model::VpnEngine::try_from(engine.as_str())?
+            .as_str()
+            .to_owned();
+        put_string(&mut paws, "engine", &engine);
         put_bool(&mut paws, "system-proxy", system_proxy);
         put_bool(&mut paws, "allow-bypass", allow_bypass);
         root.insert(paws_key, Value::Mapping(paws));
@@ -935,9 +1091,7 @@ impl ProfileStore {
         }
         root.insert(tun_key, Value::Mapping(tun));
 
-        let raw_yaml =
-            serde_yaml::to_string(&value).map_err(|err| PawsError::Core(err.to_string()))?;
-        self.update_profile_content(profile_id, raw_yaml)
+        self.save_settings_overlay(profile_id, &value, &["paws", "tun"])
     }
 
     pub fn set_profile_network_config(
@@ -985,9 +1139,7 @@ impl ProfileStore {
         }
         root.insert(paws_key, Value::Mapping(paws));
 
-        let raw_yaml =
-            serde_yaml::to_string(&value).map_err(|err| PawsError::Core(err.to_string()))?;
-        self.update_profile_content(profile_id, raw_yaml)?;
+        self.save_settings_overlay(profile_id, &value, &["paws"])?;
         Ok((network_ports, ControllerAccessConfig { allow_lan, secret }))
     }
 
@@ -1042,7 +1194,35 @@ impl ProfileStore {
 
     pub fn raw_yaml(&self, profile_id: &str) -> Result<String, PawsError> {
         let profile = self.profile(profile_id)?;
-        fs::read_to_string(self.root.join(&profile.raw_yaml_path)).map_err(io_error)
+        let raw = fs::read_to_string(self.root.join(&profile.raw_yaml_path)).map_err(io_error)?;
+        if profile.user_overrides.is_empty() {
+            return Ok(raw);
+        }
+        let mut value: Value =
+            serde_yaml::from_str(&raw).map_err(|e| PawsError::Core(e.to_string()))?;
+        let root = value
+            .as_mapping_mut()
+            .ok_or_else(|| PawsError::Core("Invalid profile root".into()))?;
+        for (key, overlay) in &profile.user_overrides {
+            if let Some(patch) = overlay.as_mapping() {
+                let mut base = root
+                    .get(value_key(key))
+                    .and_then(Value::as_mapping)
+                    .cloned()
+                    .unwrap_or_default();
+                for (k, v) in patch {
+                    if v.is_null() {
+                        base.remove(k);
+                    } else {
+                        base.insert(k.clone(), v.clone());
+                    }
+                }
+                root.insert(value_key(key), Value::Mapping(base));
+            } else {
+                root.insert(value_key(key), overlay.clone());
+            }
+        }
+        serde_yaml::to_string(&value).map_err(|e| PawsError::Core(e.to_string()))
     }
 
     pub fn active_raw_yaml(&self) -> Result<String, PawsError> {
@@ -1429,6 +1609,7 @@ impl ProfileStore {
         self.profiles.insert(
             id.clone(),
             ProfileDocument {
+                user_overrides: BTreeMap::new(),
                 id: id.clone(),
                 name: "Default".to_owned(),
                 source: "local".to_owned(),

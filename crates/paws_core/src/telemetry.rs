@@ -370,6 +370,18 @@ pub(super) fn platform_ipc_error(error: platform_ipc::PlatformIpcError) -> PawsE
     PawsError::Core(error.to_string())
 }
 
+// Apply cancellation on the process that owns the tunnel as well as the UI
+// process. Existing TCP/UDP sessions retain their original outbound otherwise.
+pub(super) fn close_connections_after_route_change(state: &mut CoreState, reason: &str) {
+    if let Some(tunnel) = &state.tunnel {
+        let count = tunnel.statistics().active_connection_count();
+        tunnel.statistics().close_all_connections();
+        state.logs.push(info_log(format!(
+            "route change ({reason}): closed {count} existing connections"
+        )));
+    }
+}
+
 pub(super) fn apply_platform_proxy_selections(state: &mut CoreState, control: &PlatformVpnControl) {
     let current_profile = state.profiles.active_profile();
     if control
@@ -410,6 +422,7 @@ pub(super) fn apply_platform_proxy_selections(state: &mut CoreState, control: &P
     }
     drop(route);
     if changed {
+        close_connections_after_route_change(state, "platform proxy synchronization");
         refresh_proxy_groups_preserving_order(state, &tunnel);
         state.logs.push(info_log(
             "proxy selections synchronized from platform control",

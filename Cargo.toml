@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "vendor/meow-tunnel", "vendor/meow-common"]
+exclude = ["vendor/meow-proxy", "vendor/meow-anytls", "vendor/meow-listener"]
 resolver = "2"
 
 [workspace.package]
@@ -54,6 +55,7 @@ percent-encoding = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "cookies", "gzip", "brotli", "json", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 serde_yaml = "0.9"
 shadowsocks = { version = "1.24", default-features = false, features = ["aead-cipher"] }
 thiserror = "2"
@@ -72,3 +74,10 @@ unimplemented = "warn"
 
 [workspace.lints.rust]
 unused_must_use = "warn"
+
+[patch.crates-io]
+meow-listener = { path = "vendor/meow-listener" }
+meow-common = { path = "vendor/meow-common" }
+meow-anytls = { path = "vendor/meow-anytls" }
+meow-proxy = { path = "vendor/meow-proxy" }
+meow-tunnel = { path = "vendor/meow-tunnel" }

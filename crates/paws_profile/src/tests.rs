@@ -2825,22 +2825,11 @@ paws:
 }
 
 #[test]
-fn legacy_per_app_yaml_does_not_enter_vpn_options() {
-    let options = vpn_options_from_yaml(
-        r#"
-paws:
-  per-app-mode: bypass
-  trusted-applications:
-    - com.example.browser
-  blocked-applications:
-    - com.example.video
-"#,
-    )
-    .unwrap();
-    let json = serde_json::to_string(&options).unwrap();
-    assert!(!json.contains("perAppMode"));
-    assert!(!json.contains("trustedApplications"));
-    assert!(!json.contains("blockedApplications"));
+fn per_app_policy_accepts_one_list_and_rejects_ambiguous_legacy_lists() {
+    let options =
+        vpn_options_from_yaml("paws:\n  blocked-applications: [com.example.video]\n").unwrap();
+    assert_eq!(options.blocked_applications, vec!["com.example.video"]);
+    assert!(vpn_options_from_yaml("paws:\n  trusted-applications: [com.example.browser]\n  blocked-applications: [com.example.video]\n").is_err());
 }
 
 #[test]
@@ -3445,4 +3434,80 @@ rules: []
     assert!(dns.get(&value_key("fake-ip-range")).is_none());
     assert!(dns.get(&value_key("fake-ip-filter")).is_none());
     assert!(dns.get(&value_key("fallback-filter")).is_none());
+}
+
+#[test]
+fn managed_dns_removes_subscription_self_references_but_keeps_external_resolvers() {
+    for (servers, expected) in [
+        ("[udp://127.0.0.1:7874]", Vec::<String>::new()),
+        (
+            "[tcp://localhost:7874, https://223.5.5.5/dns-query]",
+            vec!["https://223.5.5.5/dns-query".to_owned()],
+        ),
+        (
+            "[udp://127.0.0.1:5353]",
+            vec!["udp://127.0.0.1:5353".to_owned()],
+        ),
+    ] {
+        let mut root = serde_yaml::from_str::<Value>(&format!(
+            "dns:\n  listen: 0.0.0.0:7874\n  proxy-server-nameserver: {servers}\n"
+        ))
+        .unwrap()
+        .as_mapping()
+        .unwrap()
+        .clone();
+        patch_dns(&mut root, &VpnOptions::default());
+        let dns = root.get(&value_key("dns")).unwrap().as_mapping().unwrap();
+        assert_eq!(get_string_list(dns, "proxy-server-nameserver"), expected);
+        assert_eq!(get_string(dns, "listen").as_deref(), Some("127.0.0.1:1053"));
+    }
+}
+
+#[test]
+fn tinypaws_overrides_survive_subscription_refresh_without_rewriting_source() {
+    let root = std::env::temp_dir().join(format!("tinypaws-overrides-{}", next_id("seed")));
+    let mut store = ProfileStore::open(root.clone()).unwrap();
+    let id = store
+        .import_profile_content(
+            "Tiny",
+            "local",
+            "proxies: []\nproxy-groups: []\nrules: []\ndns:\n  nameserver: [223.5.5.5]\n",
+            None,
+        )
+        .unwrap();
+    let source_path = root.join(&store.profile(&id).unwrap().raw_yaml_path);
+    let original = std::fs::read_to_string(&source_path).unwrap();
+    store
+        .set_profile_dns_config(
+            &id,
+            vec!["https://1.1.1.1/dns-query".into()],
+            vec![],
+            BTreeMap::new(),
+        )
+        .unwrap();
+    store
+        .set_profile_vpn_config_with_apps(
+            &id,
+            false,
+            true,
+            false,
+            "lwip".into(),
+            vec![],
+            vec!["com.example.bank".into()],
+        )
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&source_path).unwrap(), original);
+    store.replace_profile_content(&id, "proxies: []\nproxy-groups: []\nrules: []\ndns:\n  nameserver: [8.8.8.8]\n  respect-rules: true\n").unwrap();
+    let reopened = ProfileStore::open(root).unwrap();
+    let options = reopened.vpn_options_for_profile(&id).unwrap();
+    assert_eq!(options.dns_servers, vec!["https://1.1.1.1/dns-query"]);
+    assert_eq!(options.blocked_applications, vec!["com.example.bank"]);
+    assert!(reopened
+        .raw_yaml(&id)
+        .unwrap()
+        .contains("respect-rules: true"));
+    assert!(vpn_options_from_yaml(
+        "paws:\n  trusted-applications: [com.example.a]\n  blocked-applications: [com.example.b]\n"
+    )
+    .is_err());
 }

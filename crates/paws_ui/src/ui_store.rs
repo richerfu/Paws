@@ -5,6 +5,7 @@ use std::rc::Rc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PreferencesProjection {
+    pub advanced: bool,
     pub locale: UiLocale,
     pub language: LanguagePreference,
     pub theme: ThemePreference,
@@ -368,6 +369,7 @@ fn load_initial_ui_state(notifications: NotificationCenter) -> InitialUiState {
     };
     let system = crate::system_preferences::current();
     let preferences = PreferencesProjection {
+        advanced: saved_preferences.advanced,
         locale: saved_preferences.language.resolve(&system.locale),
         language: saved_preferences.language,
         theme: saved_preferences.theme,

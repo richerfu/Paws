@@ -55,6 +55,7 @@ impl ThemePreference {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub(crate) struct UiPreferences {
+    pub(crate) advanced: bool,
     pub(crate) language: LanguagePreference,
     pub(crate) theme: ThemePreference,
 }

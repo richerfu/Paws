@@ -1,4 +1,5 @@
 use super::*;
+use paws_model::VpnEngine;
 
 pub const CONTROLLER_LOOPBACK_HOST: &str = "127.0.0.1";
 pub const CONTROLLER_LAN_HOST: &str = "0.0.0.0";
@@ -300,6 +301,18 @@ pub fn vpn_options_from_yaml(raw_yaml: &str) -> Result<VpnOptions, PawsError> {
     }
 
     if let Some(paws) = optional_mapping(root, "paws")? {
+        if let Some(engine) = aliased_field(paws, "engine", "vpnEngine", strict_string)? {
+            options.engine = VpnEngine::try_from(engine.as_str())?;
+        }
+        options.trusted_applications =
+            strict_string_list(paws, "trusted-applications")?.unwrap_or_default();
+        options.blocked_applications =
+            strict_string_list(paws, "blocked-applications")?.unwrap_or_default();
+        if !options.trusted_applications.is_empty() && !options.blocked_applications.is_empty() {
+            return Err(PawsError::Core(
+                "VPN trustlist and blocklist cannot both be set".to_owned(),
+            ));
+        }
         if let Some(system_proxy) = aliased_field(paws, "system-proxy", "systemProxy", strict_bool)?
         {
             options.system_proxy = system_proxy;
@@ -440,6 +453,34 @@ pub(super) fn patch_dns(root: &mut Mapping, options: &VpnOptions) {
         .remove(&key)
         .and_then(|value| value.as_mapping().cloned())
         .unwrap_or_default();
+    // Subscription DNS may point proxy-server-nameserver at its own listener.
+    // Paws replaces that listener, so retaining the old endpoint makes every
+    // proxy hostname lookup fail. Use the managed main resolver for those
+    // entries instead; keep explicitly configured external resolvers intact.
+    let original_port = get_string(&dns, "listen")
+        .and_then(|listen| listen.rsplit(':').next()?.parse::<u16>().ok());
+    if let Some(Value::Sequence(servers)) = dns.get_mut(&value_key("proxy-server-nameserver")) {
+        servers.retain(|server| {
+            let Some(server) = server.as_str() else {
+                return true;
+            };
+            let endpoint = server
+                .strip_prefix("udp://")
+                .or_else(|| server.strip_prefix("tcp://"))
+                .unwrap_or(server);
+            let Some((host, port)) = endpoint.rsplit_once(':') else {
+                return true;
+            };
+            let Ok(port) = port.parse::<u16>() else {
+                return true;
+            };
+            !(matches!(host, "127.0.0.1" | "localhost" | "[::1]" | "0.0.0.0")
+                && (Some(port) == original_port || port == 1053))
+        });
+        if servers.is_empty() {
+            dns.remove(&value_key("proxy-server-nameserver"));
+        }
+    }
     put_bool(&mut dns, "enable", true);
     put_string(&mut dns, "listen", "127.0.0.1:1053");
     dns.insert(

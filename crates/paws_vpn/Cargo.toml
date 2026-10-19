@@ -17,6 +17,7 @@ meow-trie.workspace = true
 meow-tunnel.workspace = true
 netstack-smoltcp.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true

@@ -13,6 +13,9 @@ fn baseline(profile: &str, revision: u64) -> SettingsBaseline {
                 policy: String::new(),
             },
             vpn: VpnDraft {
+                engine: "auto".into(),
+                trusted: String::new(),
+                blocked: String::new(),
                 system_proxy: false,
                 dns_hijacking: true,
                 allow_bypass: false,

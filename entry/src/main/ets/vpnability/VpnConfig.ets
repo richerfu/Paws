@@ -55,6 +55,9 @@ export class RouteInfo {
 }
 
 export interface VpnOptions {
+  engine?: string;
+  trustedApplications?: string[];
+  blockedApplications?: string[];
   addresses?: string[];
   mtu?: number;
   ipv6?: boolean;
@@ -74,7 +77,17 @@ const DEFAULT_DNS_NAMESERVER_POLICY: Record<string, string[]> = {
   'geosite:geolocation-!cn': ['1.1.1.1', '8.8.8.8'],
 };
 
+// Applications installed inside Huawei's ANCO/出境易 container use virtual
+// package identities which the public VPN allow-list API cannot resolve. When
+// either container host is selected, use the device-wide route so the ANCO
+// bridge can attach its data sockets to the VPN as well as its DNS broker.
+const ANCO_HOST_PACKAGES: string[] = [
+  'com.easy.hmos.abroad',
+  'com.huawei.shell_assistant',
+];
+
 const DEFAULT_OPTIONS: VpnOptions = {
+  engine: 'auto',
   addresses: ['172.19.0.1/30'],
   mtu: 1500,
   ipv6: false,
@@ -92,6 +105,8 @@ const DEFAULT_OPTIONS: VpnOptions = {
 export const DEFAULT_OPTIONS_JSON: string = JSON.stringify(DEFAULT_OPTIONS);
 
 export class PawsVpnConfig {
+  public trustedApplications?: string[];
+  public blockedApplications?: string[];
   public addresses: LinkAddress[];
   public routes: RouteInfo[];
   public dnsAddresses: string[];
@@ -100,8 +115,23 @@ export class PawsVpnConfig {
   public isIPv6Accepted: boolean;
   public isBlocking: boolean;
 
-  constructor(options: VpnOptions) {
+  constructor(options: VpnOptions, mtuOverride?: number) {
     validateOptions(options);
+    if (options.trustedApplications?.length) {
+      const trusted = [...options.trustedApplications];
+      const useAncoCompatibilityRoute = trusted.some((bundleName: string): boolean =>
+        ANCO_HOST_PACKAGES.includes(bundleName));
+      // Do not materialize an own property with value `undefined`. The
+      // HarmonyOS VPN binder validates every present field and reports an
+      // undefined optional property as "is not array". ANCO container apps
+      // still require the device-wide route, so omit the allow-list entirely.
+      if (!useAncoCompatibilityRoute) {
+        this.trustedApplications = trusted;
+      }
+    }
+    if (options.blockedApplications?.length) {
+      this.blockedApplications = [...options.blockedApplications];
+    }
     if (options.systemProxy === true) {
       // VpnExtension.VpnConfig exposes no HTTP/system proxy field. Paws also
       // does not hold the privileged SettingsData authority needed to mutate
@@ -122,7 +152,7 @@ export class PawsVpnConfig {
       return new RouteInfo(route, route.prefixLength === 0);
     });
     this.dnsAddresses = options.dnsAddresses?.length ? options.dnsAddresses : ['172.19.0.2'];
-    this.mtu = options.mtu ?? 1500;
+    this.mtu = mtuOverride ?? options.mtu ?? 1500;
     this.isIPv4Accepted = this.addresses.some((address: LinkAddress) => address.address.family === 1) ||
       this.routes.some((route: RouteInfo) => route.destination.address.family === 1);
     this.isIPv6Accepted = (options.ipv6 ?? false) ||
@@ -292,6 +322,11 @@ export function parseOptions(optionsJson: string): VpnOptions {
 }
 
 function validateOptions(options: VpnOptions): void {
+  validateOptionalStringArray('trustedApplications', options.trustedApplications);
+  validateOptionalStringArray('blockedApplications', options.blockedApplications);
+  if (options.trustedApplications?.length && options.blockedApplications?.length) {
+    throw new Error('Choose either VPN trustlist or blocklist, not both');
+  }
   validateOptionalStringArray('addresses', options.addresses);
   validateOptionalStringArray('routes', options.routes);
   validateOptionalStringArray('dnsAddresses', options.dnsAddresses);

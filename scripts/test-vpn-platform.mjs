@@ -46,6 +46,9 @@ function loadArkts(relativePath, overrides = {}, cache = new Map()) {
     ...overrides.globals,
     require(name) {
       if (Object.hasOwn(overrides, name)) return overrides[name];
+      if (name === '@kit.LiveViewKit') return { liveViewManager: { async isLiveViewEnabled() { return false; } } };
+      if (name === '@kit.FormKit') return { formBindingData: { createFormBindingData(v) { return v; } }, formProvider: { async updateForm() {} } };
+      if (name === '@kit.CoreFileKit') return { fileIo: { statSync() { throw new Error('missing fixture journal'); }, openSync() { throw new Error('fixture filesystem unavailable'); } } };
       if (name.startsWith('.')) {
         return loadArkts(resolve(dirname(filename), `${name}.ets`), overrides, cache);
       }
@@ -93,6 +96,23 @@ test('default application VPN options survive the ArkTS configuration boundary',
   assert.equal(config.mtu, 1500);
 });
 
+test('ANCO container selection uses the device-wide compatibility route', () => {
+  const api = configModule();
+  const regular = new api.PawsVpnConfig({
+    ...api.parseOptions(api.DEFAULT_OPTIONS_JSON),
+    trustedApplications: ['com.example.browser'],
+  });
+  assert.deepEqual(Array.from(regular.trustedApplications), ['com.example.browser']);
+
+  for (const bundleName of ['com.easy.hmos.abroad', 'com.huawei.shell_assistant']) {
+    const anco = new api.PawsVpnConfig({
+      ...api.parseOptions(api.DEFAULT_OPTIONS_JSON),
+      trustedApplications: [bundleName],
+    });
+    assert.equal(anco.trustedApplications, undefined);
+  }
+});
+
 test('corrupted or non-object JSON cannot silently become a default-route VPN', () => {
   const api = configModule();
   for (const input of ['bad-json', 'null', '[]', '1', '"vpn"']) {
@@ -135,6 +155,82 @@ function deferred() {
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
+
+test('VPN data transfer task publishes real progress without owning VPN lifetime', async () => {
+  const events = [];
+  let cancellationListener;
+  let timerCleared = false;
+  const backgroundTaskManager = {
+    on(type, listener) { events.push(['on', type]); cancellationListener = listener; },
+    off(type) { events.push(['off', type]); },
+    async startBackgroundRunning(context, modes, agent) {
+      events.push(['start', context, modes, agent]);
+      return { notificationId: 17043, continuousTaskId: 23, slotType: 4, contentType: 5 };
+    },
+    async stopBackgroundRunning(context) { events.push(['stop', context]); },
+  };
+  const published = [];
+  const { VpnContinuousTask } = loadArkts(
+    'entry/src/main/ets/vpnability/VpnContinuousTask.ets', {
+      globals: {
+        setInterval() { return 71; },
+        clearInterval(id) { if (id === 71) timerCleared = true; },
+      },
+      '@kit.AbilityKit': {
+        common: {},
+        wantAgent: {
+          OperationType: { START_ABILITY: 1 },
+          WantAgentFlags: { UPDATE_PRESENT_FLAG: 2 },
+          async getWantAgent(info) { return { info }; },
+        },
+      },
+      '@kit.BackgroundTasksKit': { backgroundTaskManager },
+      '@kit.NotificationKit': {
+        notificationManager: {
+          SlotType: { LIVE_VIEW: 4 },
+          ContentType: { NOTIFICATION_CONTENT_SYSTEM_LIVE_VIEW: 5 },
+          async publish(request) { published.push(request); },
+        },
+      },
+      '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} } },
+      'libpaws_ui.so': { default: { queryVpnSpeed() { return JSON.stringify({ traffic: {
+        downloadBytes: 20 * 1024 * 1024,
+        uploadBytes: 5 * 1024 * 1024,
+        downloadSpeed: 2048,
+        uploadSpeed: 1024,
+      } }); } } },
+      './VpnConfig': {
+        currentPawsBundleName() { return 'com.example.paws'; },
+        PAWS_ENTRY_ABILITY: 'EntryAbility',
+        PAWS_MODULE_NAME: 'entry',
+      },
+    },
+  );
+  const task = new VpnContinuousTask();
+  const cancellations = [];
+  const context = { abilityInfo: { name: 'EntryAbility' } };
+  await task.start(context, info => { cancellations.push(info); });
+  assert.deepEqual(Array.from(events.find(event => event[0] === 'start')[2]), ['dataTransfer']);
+  assert.equal(published.length, 1);
+  assert.equal(published[0].id, 17043);
+  assert.equal(published[0].notificationSlotType, 4);
+  assert.equal(published[0].content.systemLiveView.typeCode, 8);
+  assert.equal(published[0].template.name, 'downloadTemplate');
+  assert.equal(published[0].template.data.progressValue, 25);
+  cancellationListener({ id: 999, reason: 1 });
+  assert.equal(cancellations.length, 0, 'another continuous task cannot affect this VPN');
+  cancellationListener({ id: 23, reason: 4, detailedReason: 4 });
+  assert.deepEqual(cancellations, [{ id: 23, reason: 4, detailedReason: 4 }]);
+  assert.equal(timerCleared, true);
+
+  const pluginSource = readFileSync(resolve(root, 'entry/src/main/ets/plugins/VpnPlugin.ets'), 'utf8');
+  assert.match(pluginSource, /continuous task protection ended; VPN remains active/);
+  assert.doesNotMatch(pluginSource, /system cancelled continuous VPN task; stopping VPN/);
+
+  const manifest = readFileSync(resolve(root, 'entry/src/main/module.json5'), 'utf8');
+  assert.match(manifest, /"backgroundModes"\s*:\s*\[\s*"dataTransfer"\s*\]/);
+  assert.match(manifest, /"ohos\.permission\.KEEP_BACKGROUND_RUNNING"/);
+});
 
 test('first VPN authorization hands off descriptors while system start is pending', async () => {
   const systemStart = deferred();
@@ -193,7 +289,7 @@ function automationFixture(native) {
   });
 }
 
-function entryAbilityFixture(applicationDebug) {
+function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({netId:1})) {
   const automationCalls = [];
   class NativeAbility {
     context = {
@@ -203,7 +299,9 @@ function entryAbilityFixture(applicationDebug) {
       resourceManager: {},
     };
 
+    lifecycleTail = Promise.resolve();
     async onCreate() {}
+    enqueueLifecycleOperation(label, operation) { this.lifecycleTail = this.lifecycleTail.then(operation); return this.lifecycleTail; }
     onNewWant() {}
   }
   class LazyPlugin {
@@ -217,19 +315,21 @@ function entryAbilityFixture(applicationDebug) {
         ConfigurationConstant: { ColorMode: { COLOR_MODE_NOT_SET: -1 } },
       },
       '@kit.LocalizationKit': { i18n: { System: { getSystemLanguage() { return 'en-US'; } } } },
-      '@kit.PerformanceAnalysisKit': { hilog: { info() {}, error() {} } },
+      '@kit.PerformanceAnalysisKit': { hilog: { info() {}, error() {}, warn() {} } },
       '@ohos-rs/ability': { LazyPlugin, NativeAbility },
       '@ohos-rs/ability-plugin-files': { FilesPlugin: EmptyPlugin },
       '@ohos-rs/ability-plugin-url': { UrlPlugin: EmptyPlugin },
       '@ohos.window': {},
       'libpaws_ui.so': { default: {
         configureAppHome() {},
+        setPhysicalNetwork() {},
         configureUiLocale() {},
         configureSystemColorMode() {},
         seedGeodataFromRawfiles() { return 0; },
       } },
       '../common/Errors': { describeError(error) { return String(error); } },
       '../vpnability/VpnConfig': { setPawsBundleName() {} },
+      '../vpnability/UnderlyingNetwork': { getPhysicalNetwork: physicalLookup },
       '../automation/DebugAutomation': {
         runDebugAutomation(want, debug) {
           automationCalls.push({ want, debug });
@@ -321,7 +421,7 @@ async function until(predicate, description) {
   assert.fail(`Async operation did not reach ${description}`);
 }
 
-function extensionFixture() {
+function extensionFixture({ clock, engine = 'meow' } = {}) {
   const calls = [];
   const connections = [];
   let latestAttempt = 'attempt-a';
@@ -332,6 +432,8 @@ function extensionFixture() {
   const pendingEvents = deferred();
   const native = {
     configureAppHome() {},
+    setPhysicalNetwork(netId) { calls.push(["physical-network",netId]); },
+    async persistEngineSession() {},
     attachPlatformSharedMemory(ashmem, notification) { calls.push(['attach', ashmem, notification]); },
     validatePlatformVpnStartRequest(_ashmem, _notification, attempt) {
       calls.push(['validate', attempt]);
@@ -352,6 +454,9 @@ function extensionFixture() {
     setPlatformNetworkProtected(attempt, protectedValue) { if (attempt === activeAttempt) protectedNetwork = protectedValue; calls.push(['protected', attempt, protectedValue]); return attempt === activeAttempt; },
     setPlatformVpnFailed(attempt, error) { if (attempt === activeAttempt) nativeRunning = false; calls.push(['failed', attempt, error]); },
     async prepareVpn(...args) { calls.push(['prepare', ...args]); return true; },
+    prepareMihomoVpn(...args) { calls.push(['prepare-mihomo', ...args]); return JSON.stringify({ initParams: '{}', setupParams: '{}' }); },
+    resolveVpnEngine() { return engine; },
+    startExternalVpn(...args) { nativeRunning = true; calls.push(['external-start', ...args]); },
     async startVpn(fd, _options, ...args) {
       nativeRunning = true;
       calls.push(['native-start', activeAttempt, fd, ...args]);
@@ -371,13 +476,18 @@ function extensionFixture() {
     cancelPlatformChangeWait() {},
     syncPlatformChanges() {},
     persistVpnTelemetry() {},
+    queryVpnSpeed() { calls.push(['speed-only']); return JSON.stringify({ traffic: { uploadSpeed: 1024, downloadSpeed: 2048 } }); },
     snapshot() { return JSON.stringify({ traffic: { uploadSpeed: 0, downloadSpeed: 0 }, vpnRunning: nativeRunning }); },
     snapshotJson() { return this.snapshot(); },
   };
   const logging = Object.fromEntries(['info', 'warn', 'error', 'debug'].map(level => [level, (...args) => calls.push([level, ...args])]));
   const overrides = {
-    '@kit.AbilityKit': { wantAgent: { getWantAgent: async () => ({}) } },
+    '@kit.AbilityKit': {
+      bundleManager: { getBundleNameByUidSync() { return ''; } },
+      wantAgent: { getWantAgent: async () => ({}), OperationType: { START_ABILITY: 1 }, WantAgentFlags: { UPDATE_PRESENT_FLAG: 1 } },
+    },
     '@kit.NetworkKit': {
+      connection: { getConnectOwnerUidSync() { return -1; }, async getDefaultNet() { return {netId:1}; }, async getNetCapabilities() { return {networkCap:[12,15]}; }, async getAllNets(){ return [{netId:1}]; }, NetCap:{NET_CAPABILITY_INTERNET:12,NET_CAPABILITY_NOT_VPN:15}, createNetConnection() { return { on() {}, register(cb) { if (cb) cb(); }, unregister(cb) { if (cb) cb(); } }; } },
       VpnExtensionAbility: class { onCreate() {} },
       vpnExtension: {
         createVpnConnection() {
@@ -389,6 +499,7 @@ function extensionFixture() {
             destroyed,
             async create(config) { calls.push(['create', id, config]); return created.promise; },
             async protectProcessNet() { calls.push(['protect', id]); },
+            async protect() {},
             async destroy() { calls.push(['destroy', id]); return destroyed.promise; },
           };
           connections.push(connection);
@@ -397,11 +508,19 @@ function extensionFixture() {
       },
     },
     '@kit.NotificationKit': {
-      notificationManager: { publish: async () => {}, cancel: async () => {}, isNotificationEnabled: async () => false },
+      notificationManager: { SlotType: { SERVICE_INFORMATION: 1 }, ContentType: { NOTIFICATION_CONTENT_BASIC_TEXT: 1 }, publish: async (request) => { calls.push(['notification', request]); }, cancel: async () => {}, isNotificationEnabled: async () => false },
     },
     '@kit.PerformanceAnalysisKit': { hilog: logging },
     'libpaws_ui.so': { default: native },
-    globals: { setInterval: () => 1, clearInterval() {}, setTimeout: () => 2, clearTimeout() {} },
+    'libcore.so': {
+      quickSetup(callback) { callback(''); },
+      startTUN() { return true; },
+      stopTun() {},
+      forceGC() { calls.push(['force-gc']); },
+      getTraffic() { return '{"up":0,"down":0}'; },
+      getTotalTraffic() { return '{"up":0,"down":0}'; },
+    },
+    globals: { setInterval: () => 1, clearInterval() {}, setTimeout: () => 2, clearTimeout() {}, Date: class extends Date { static now() { return clock ? clock() : Date.now(); } } },
   };
   const Extension = loadArkts('entry/src/main/ets/vpnability/PawsVpnExtensionAbility.ets', overrides).default;
   const extension = new Extension();
@@ -416,6 +535,20 @@ function extensionFixture() {
   };
 }
 
+test('VPN extension telemetry never publishes a second system notification', () => {
+  const fixture = extensionFixture();
+  fixture.extension.persistTelemetry();
+  assert.equal(fixture.calls.filter(c => c[0] === 'speed-only').length, 0);
+  assert.equal(fixture.calls.filter(c => c[0] === 'notification').length, 0);
+});
+
+test('repeated background telemetry cannot call notification services', () => {
+  const fixture = extensionFixture();
+  for (let i = 0; i < 120; i++) fixture.extension.persistTelemetry();
+  assert.equal(fixture.calls.filter(c => c[0] === 'speed-only').length, 0);
+  assert.equal(fixture.calls.filter(c => c[0] === 'notification').length, 0);
+});
+
 function pluginFixture({
   startBarrier,
   deferStartNumber = 1,
@@ -424,6 +557,7 @@ function pluginFixture({
   startOutcome = 'connected',
   startCompletionBarrier,
   cooperativeStop = true,
+  healthSequence = [],
 } = {}) {
   const calls = [];
   let currentSession = '';
@@ -443,6 +577,7 @@ function pluginFixture({
     preparePlatformVpnHandoff() { return '0123456789abcdef0123456789abcdef'; },
     async sendPlatformVpnHandoff() {},
     currentPlatformVpnSessionId() { return currentSession; },
+    async validateEngineStartup(session) { calls.push(['health-probe',session]); return JSON.stringify(await (healthSequence.shift() ?? {success:true,actualEngine:'mihomo',rollbackToBaseline:false,stage:'return-traffic'})); },
     advancePlatformVpnIntent() { intentEpoch += 1; calls.push(['intent', `${intentEpoch}`]); return `${intentEpoch}`; },
     isPlatformVpnIntentCurrent(expected) { return expected === `${intentEpoch}`; },
     claimCurrentPlatformVpnStop(expected) {
@@ -538,6 +673,9 @@ function pluginFixture({
       authorizeVpnForEmulatorDebug() {},
       canRecoverRejectedEmulatorStop() { return false; },
       isVpnEmulatorCompatibilityEnabled() { return false; },
+    },
+    '../vpnability/VpnContinuousTask': {
+      vpnContinuousTask: { async start() {}, async stop() {} },
     },
     'libpaws_ui.so': { default: native },
   });
@@ -992,3 +1130,220 @@ test('a failed platform destroy prevents replacement from creating another tunne
   assert.equal(fixture.connections.length, 1, 'failed cleanup must retain the replacement barrier');
   assert.equal(fixture.calls.filter(call => call[0] === 'native-start' && call[1] === 'attempt-b').length, 0);
 });
+
+test('per-app policy reaches the system VPN config and rejects conflicting lists', () => {
+  const api = configModule();
+  const opts = { ...JSON.parse(api.DEFAULT_OPTIONS_JSON), blockedApplications: ['com.example.bank'] };
+  assert.deepEqual(Array.from(new api.PawsVpnConfig(opts).blockedApplications), ['com.example.bank']);
+  assert.throws(() => new api.PawsVpnConfig({ ...opts, trustedApplications: ['com.example.browser'] }), /either/);
+});
+
+test('journal detects unclean sessions and caps retained event history', () => {
+  const files = new Map([['/files/paws/lifecycle.json', JSON.stringify({ active: true, events: [] })]]);
+  const io = {
+    OpenMode: { WRITE_ONLY: 1, CREATE: 2, TRUNC: 4 },
+    statSync(path) { return { size: files.get(path).length }; },
+    readTextSync(path) { return files.get(path); },
+    openSync(path) { return { fd: path }; },
+    writeSync(fd, value) { files.set(fd, value); }, fsyncSync() {}, closeSync() {},
+    renameSync(from, to) { files.set(to, files.get(from)); files.delete(from); },
+  };
+  const { LifecycleJournal } = loadArkts('entry/src/main/ets/vpnability/LifecycleJournal.ets', {
+    '@kit.CoreFileKit': { fileIo: io }, '@kit.PerformanceAnalysisKit': { hilog: { warn() {} } },
+  });
+  const journal = new LifecycleJournal(); journal.open('/files');
+  assert.match(files.get('/files/paws/lifecycle.json'), /cause-unknown/);
+  for (let i = 0; i < 80; i++) journal.record('vpn-connected', true);
+  assert.equal(JSON.parse(files.get('/files/paws/lifecycle.json')).events.length, 32);
+  journal.record('vpn-cleanup-complete', false);
+  assert.equal(JSON.parse(files.get('/files/paws/lifecycle.json')).active, false);
+});
+
+test('OS exit recorder preserves reported causes without exporting arbitrary event payloads', () => {
+  const files = new Map(); let watcher;
+  const io = {
+    OpenMode: { WRITE_ONLY: 1, CREATE: 2, TRUNC: 4 },
+    statSync(path) { if (!files.has(path)) throw Error('missing'); return { size: files.get(path).length }; },
+    readTextSync(path) { return files.get(path); }, openSync(path) { return { fd: path }; },
+    writeSync(fd, value) { files.set(fd, value); }, fsyncSync() {}, closeSync() {},
+    renameSync(from, to) { files.set(to, files.get(from)); files.delete(from); },
+  };
+  const { SystemExitRecorder } = loadArkts('entry/src/main/ets/vpnability/SystemExitRecorder.ets', {
+    globals: { setTimeout() { return 0; } },
+    '@kit.AbilityKit': {}, '@kit.CoreFileKit': { fileIo: io },
+    '@kit.PerformanceAnalysisKit': {
+      hilog: { info() {}, warn() {} },
+      hiAppEvent: { event: { APP_KILLED: 'APP_KILLED', APP_CRASH: 'APP_CRASH', APP_FREEZE: 'APP_FREEZE', RESOURCE_OVERLIMIT: 'RESOURCE_OVERLIMIT' },
+        addWatcher(w) { watcher = w; return { setSize() {}, takeNext() { return null; } }; } },
+    },
+  });
+  new SystemExitRecorder().start('/files', { lastExitReason: 7, lastExitMessage: 'Memory Pressure' });
+  assert.equal(watcher.appEventFilters[0].domain, 'OS');
+  watcher.onReceive('OS', [{ appEventInfos: [{ name: 'APP_KILLED', params: {
+    reason: 'ResourceLeak(FDLeak)', time: 123, pid: 54723, secret: 'private-test-marker', external_log: '/private/log',
+  } }] }]);
+  const records = JSON.parse(files.get('/files/paws/system-exits.json'));
+  assert.equal(records.at(-1).reason, 'ResourceLeak(FDLeak)');
+  assert.equal(records.at(-1).pid, '54723');
+  assert.doesNotMatch(JSON.stringify(records), /private-test-marker|external_log/);
+  for (let i = 0; i < 100; i++) watcher.onReceive('OS', [{ appEventInfos: [{ name: 'APP_KILLED', params: { reason: 'test' } }] }]);
+  assert.equal(JSON.parse(files.get('/files/paws/system-exits.json')).length, 64);
+});
+
+test('VPN recorder drains historical events into a separate capped file and deduplicates callbacks', () => {
+  const files = new Map(); let watcher; let pending = true; let bound;
+  const event = { name: 'APP_KILLED', params: { reason: 'Memory Pressure', time: 42, pid: 6632 } };
+  const io = {
+    OpenMode: { WRITE_ONLY: 1, CREATE: 2, TRUNC: 4 },
+    statSync() { throw Error('missing'); }, readTextSync() { throw Error('missing'); },
+    openSync(path) { return { fd: path }; }, writeSync(fd, value) { files.set(fd, value); }, fsyncSync() {}, closeSync() {},
+    renameSync(from, to) { files.set(to, files.get(from)); files.delete(from); },
+  };
+  const { SystemExitRecorder } = loadArkts('entry/src/main/ets/vpnability/SystemExitRecorder.ets', {
+    globals: { setTimeout() { return 0; } }, '@kit.AbilityKit': {}, '@kit.CoreFileKit': { fileIo: io },
+    '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} },
+      hiAppEvent: { event: { APP_KILLED: 'APP_KILLED', APP_CRASH: 'APP_CRASH', APP_FREEZE: 'APP_FREEZE', RESOURCE_OVERLIMIT: 'RESOURCE_OVERLIMIT' },
+        addWatcher(w) { watcher = w; return { setSize(n) { bound = n; }, takeNext() { if (!pending) return null; pending = false; return { appEventInfos: [event] }; } }; } },
+    },
+  });
+  new SystemExitRecorder().start('/files', undefined, true);
+  assert.equal(watcher.name, 'TinyPawsVpnExit'); assert.equal(bound, 65536);
+  assert.ok(watcher.appEventFilters[0].names.includes('RESOURCE_OVERLIMIT'));
+  assert.equal(files.has('/files/paws/system-exits.json'), false);
+  watcher.onReceive('OS', [{ appEventInfos: [event] }]);
+  const records = JSON.parse(files.get('/files/paws/system-exits-vpn.json'));
+  assert.equal(records.length, 1); assert.equal(records[0].pid, '6632'); assert.equal(records[0].reason, 'Memory Pressure');
+});
+
+
+test('failed candidate health rolls back exactly once after cleaning its session', async () => {
+  const fixture = pluginFixture({healthSequence:[{success:false,actualEngine:'sing-box',rollbackToBaseline:true,stage:'https'}]});
+  fixture.cleanup.resolve();
+  await fixture.plugin.requestStartVpn('{}');
+  assert.equal(fixture.calls.filter(c=>c[0]==='begin').length,2);
+  assert.equal(fixture.calls.filter(c=>c[0]==='stop-extension').length,1);
+  assert.equal(fixture.calls.filter(c=>c[0]==='health-probe').length,2);
+  const cleanup=fixture.calls.findIndex(c=>c[0]==='complete-os-stop');
+  const replacement=fixture.calls.findIndex(c=>c[0]==='begin'&&c[1]==='session-2');
+  assert.ok(cleanup>=0&&replacement>cleanup);
+});
+
+test('user stop during candidate probe prevents the older probe from reconnecting', async () => {
+  const health = deferred();
+  const fixture = pluginFixture({healthSequence:[health.promise]});
+  const started = fixture.plugin.requestStartVpn('{}');
+  await until(()=>fixture.calls.some(c=>c[0]==='health-probe'),'candidate probe');
+  fixture.cleanup.resolve();
+  await fixture.plugin.requestStopVpn();
+  health.resolve({success:false,actualEngine:'sing-box',rollbackToBaseline:true,stage:'https'});
+  await started;
+  assert.equal(fixture.calls.filter(c=>c[0]==='begin').length,1);
+});
+
+test('physical egress discovery never selects the VPN network', async()=>{
+  const api=loadArkts('entry/src/main/ets/vpnability/UnderlyingNetwork.ets',{'@kit.NetworkKit':{connection:{NetCap:{NET_CAPABILITY_NOT_VPN:15,NET_CAPABILITY_INTERNET:12},async getDefaultNet(){return {netId:9}},async getAllNets(){return [{netId:9},{netId:4}]},async getNetCapabilities(net){return {networkCap:net.netId===9?[12]:[12,15]}}}}});
+  assert.equal((await api.getPhysicalNetwork()).netId,4);
+});
+
+test('changing engine during an older health probe supersedes it without rolling back the new session', async () => {
+  const health = deferred();
+  const fixture = pluginFixture({healthSequence:[health.promise]});
+  const original = fixture.plugin.requestStartVpn('{"engine":"singbox"}');
+  await until(()=>fixture.calls.some(c=>c[0]==='health-probe'),'first health probe');
+  fixture.cleanup.resolve();
+  await fixture.plugin.requestStartVpn('{"engine":"mihomo"}');
+  health.reject(new Error('old engine session replaced'));
+  await original;
+  assert.equal(fixture.calls.filter(c=>c[0]==='begin').length,2);
+  assert.equal(fixture.calls.filter(c=>c[0]==='health-probe').length,2);
+});
+
+
+test('pending physical-network discovery never blocks the Ability lifecycle queue', async () => {
+  const network = deferred();
+  const fixture = entryAbilityFixture(true, () => network.promise);
+  fixture.ability.onCreate({parameters:{pawsAutoStartVpn:true}},{});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(fixture.automationCalls.length,1);
+  network.resolve({netId:4});
+});
+
+
+test('diagnostic mode is validated and committed before VPN start; release ignores it', async () => {
+  const calls = [];
+  const api = automationFixture({
+    async setMode(mode) { calls.push(mode); },
+    querySnapshot() { calls.push('snapshot'); return JSON.stringify({vpnOptions:{}}); },
+  });
+  const want = {parameters:{pawsMode:'global',pawsAutoStartVpn:true,pawsWaitForVpnBeforeProbes:true}};
+  await api.runDebugAutomation(want,false,async()=>calls.push('start'));
+  assert.deepEqual(calls,[]);
+  await api.runDebugAutomation(want,true,async()=>calls.push('start'));
+  assert.deepEqual(calls,['global','snapshot','start']);
+  await assert.rejects(api.runDebugAutomation({parameters:{pawsMode:'bad',pawsAutoStartVpn:true}},true,async()=>calls.push('bad-start')),/invalid diagnostic mode/);
+  assert.equal(calls.includes('bad-start'),false);
+});
+
+test('diagnostic proxy selection awaits the persistent native API before reading options and starting VPN', async () => {
+  const calls = [];
+  const selection = deferred();
+  const api = automationFixture({
+    async importProfileFromContentAndActivate() { calls.push('import'); return 'local-profile'; },
+    async setMode(mode) { calls.push(`mode:${mode}`); },
+    async selectProxy(group, proxy) {
+      assert.equal(group, 'GLOBAL');
+      assert.equal(proxy, 'fixture-node');
+      calls.push('select');
+      await selection.promise;
+    },
+    querySnapshot() { calls.push('snapshot'); return JSON.stringify({vpnOptions:{}}); },
+  });
+  const want = {parameters:{pawsProfileContent:'rules: [MATCH,DIRECT]', pawsMode:'global',
+    pawsSelectGroup:'GLOBAL', pawsSelectProxy:'fixture-node', pawsAutoStartVpn:true,
+    pawsWaitForVpnBeforeProbes:true}};
+  const pending = api.runDebugAutomation(want,true,async()=>calls.push('start'));
+  await until(()=>calls.includes('select'),'persistent selection');
+  assert.deepEqual(calls,['import','mode:global','select']);
+  selection.resolve();
+  await pending;
+  assert.deepEqual(calls,['import','mode:global','select','snapshot','start']);
+  calls.length = 0;
+  await api.runDebugAutomation({parameters:{pawsSelectGroup:'GLOBAL',pawsSelectProxy:'fixture-node'}},
+    true,async()=>calls.push('unexpected-start'));
+  assert.deepEqual(calls,['select'],'selection-only Want must not be discarded or start VPN');
+});
+
+test('proxy selection Wants are inert in release and invalid or failed selections never start VPN', async () => {
+  const calls = [];
+  const api = automationFixture({
+    async selectProxy() { calls.push('select'); throw new Error('fixture selection failed'); },
+    querySnapshot() { calls.push('snapshot'); return JSON.stringify({vpnOptions:{}}); },
+    async setMode() { calls.push('mode'); },
+  });
+  const start = async()=>calls.push('start');
+  const valid = {pawsSelectGroup:'GLOBAL',pawsSelectProxy:'fixture-node',pawsAutoStartVpn:true};
+  await api.runDebugAutomation({parameters:valid},false,start);
+  assert.deepEqual(calls,[]);
+  for (const parameters of [{pawsSelectGroup:'GLOBAL'}, {pawsSelectProxy:'fixture-node'},
+    {pawsSelectGroup:'GLOBAL',pawsSelectProxy:''}, {pawsSelectGroup:' ',pawsSelectProxy:'fixture-node'},
+    {pawsSelectGroup:true,pawsSelectProxy:true}]) {
+    const want = {parameters:{...parameters,pawsMode:'global',pawsAutoStartVpn:true}};
+    await api.runDebugAutomation(want,false,start);
+    await assert.rejects(api.runDebugAutomation(want,true,start),/requires both pawsSelectGroup and pawsSelectProxy/);
+    assert.deepEqual(calls,[],'invalid pair must fail before mode changes or native selection');
+  }
+  await assert.rejects(api.runDebugAutomation({parameters:valid},true,start),/fixture selection failed/);
+  assert.deepEqual(calls,['select'],'a rejected selection must not read options or start VPN');
+});
+
+test('mihomo extension scavenges memory after startup and on system memory pressure', async () => {
+  const fixture = extensionFixture({ engine: 'mihomo' });
+  fixture.extension.onCreate(fixture.want('attempt-a', 21));
+  await until(() => fixture.connections.length === 1, 'mihomo platform connection');
+  fixture.connections[0].created.resolve(50);
+  await until(() => fixture.calls.some(call => call[0] === 'external-start'), 'mihomo external start');
+  assert.equal(fixture.calls.filter(call => call[0] === 'force-gc').length, 1);
+  fixture.extension.onMemoryLevel(2);
+  assert.equal(fixture.calls.filter(call => call[0] === 'force-gc').length, 2);
+});
+

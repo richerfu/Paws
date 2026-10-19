@@ -8,6 +8,9 @@ pub(crate) struct DnsDraft {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VpnDraft {
+    pub engine: String,
+    pub trusted: String,
+    pub blocked: String,
     pub system_proxy: bool,
     pub dns_hijacking: bool,
     pub allow_bypass: bool,

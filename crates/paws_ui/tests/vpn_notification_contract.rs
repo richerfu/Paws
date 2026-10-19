@@ -1,6 +1,8 @@
 const VPN_PLUGIN: &str = include_str!("../../../entry/src/main/ets/plugins/VpnPlugin.ets");
 const VPN_ABILITY: &str =
     include_str!("../../../entry/src/main/ets/vpnability/PawsVpnExtensionAbility.ets");
+const CONTINUOUS_TASK: &str =
+    include_str!("../../../entry/src/main/ets/vpnability/VpnContinuousTask.ets");
 
 #[test]
 fn vpn_start_requests_notification_access_without_blocking_vpn() {
@@ -14,37 +16,31 @@ fn vpn_start_requests_notification_access_without_blocking_vpn() {
 #[test]
 fn vpn_notification_uses_live_download_and_upload_speeds() {
     assert!(VPN_ABILITY.contains("pawsUi.persistVpnTelemetry()"));
-    assert!(VPN_ABILITY.contains("snapshot.traffic?.downloadSpeed"));
-    assert!(VPN_ABILITY.contains("snapshot.traffic?.uploadSpeed"));
-    assert!(VPN_ABILITY.contains("↓ ${formatSpeed"));
-    assert!(VPN_ABILITY.contains("↑ ${formatSpeed"));
+    assert!(CONTINUOUS_TASK.contains("traffic.downloadSpeed"));
+    assert!(CONTINUOUS_TASK.contains("traffic.uploadSpeed"));
+    assert!(CONTINUOUS_TASK.contains("↓ ${formatSpeed"));
+    assert!(CONTINUOUS_TASK.contains("↑ ${formatSpeed"));
+    assert!(CONTINUOUS_TASK.contains("pawsUi.queryVpnSpeed()"));
 }
 
 #[test]
-fn vpn_notification_is_updated_in_place_and_removed_on_stop() {
-    assert!(VPN_ABILITY.contains("id: VPN_SPEED_NOTIFICATION_ID"));
-    assert!(VPN_ABILITY.contains("isOngoing: true"));
-    assert!(VPN_ABILITY.contains("isUnremovable: true"));
-    assert!(VPN_ABILITY.contains("notificationManager.publish(request)"));
-    assert!(VPN_ABILITY.contains("notificationManager.cancel(VPN_SPEED_NOTIFICATION_ID)"));
-    assert!(VPN_ABILITY.contains("this.stopSpeedNotification()"));
-    assert!(VPN_ABILITY.contains("this.stopTelemetry();\n    this.stopSpeedNotification();"));
-    assert!(VPN_ABILITY.contains("this.notificationGeneration += 1"));
-    assert!(
-        VPN_ABILITY
-            .matches("generation !== this.notificationGeneration")
-            .count()
-            >= 2,
-        "a late async notification publish must be rejected both before and after platform publish"
-    );
+fn vpn_has_one_system_owned_background_notification_path() {
+    assert!(!VPN_ABILITY.contains("@kit.NotificationKit"));
+    assert!(!VPN_ABILITY.contains("notificationManager.publish"));
+    assert!(CONTINUOUS_TASK.contains("id: task.notificationId"));
+    assert!(CONTINUOUS_TASK.contains("isOngoing: true"));
+    assert!(CONTINUOUS_TASK.contains("notificationManager.publish(request)"));
+    assert!(CONTINUOUS_TASK.contains("stopBackgroundRunning(context)"));
+    assert!(VPN_PLUGIN.contains("continuous task protection ended; VPN remains active"));
+    assert!(!VPN_PLUGIN.contains("system cancelled continuous VPN task; stopping VPN"));
 }
 
 #[test]
 fn vpn_notification_click_opens_the_entry_ability() {
-    assert!(VPN_ABILITY.contains("wantAgent.getWantAgent"));
-    assert!(VPN_ABILITY.contains("actionType: wantAgent.OperationType.START_ABILITY"));
-    assert!(VPN_ABILITY.contains("moduleName: PAWS_MODULE_NAME"));
-    assert!(VPN_ABILITY.contains("abilityName: PAWS_ENTRY_ABILITY"));
-    assert!(VPN_ABILITY.contains("wantAgent: notificationWantAgent"));
-    assert!(VPN_ABILITY.contains("WantAgentFlags.UPDATE_PRESENT_FLAG"));
+    assert!(CONTINUOUS_TASK.contains("wantAgent.getWantAgent"));
+    assert!(CONTINUOUS_TASK.contains("actionType: wantAgent.OperationType.START_ABILITY"));
+    assert!(CONTINUOUS_TASK.contains("moduleName: PAWS_MODULE_NAME"));
+    assert!(CONTINUOUS_TASK.contains("abilityName: PAWS_ENTRY_ABILITY"));
+    assert!(CONTINUOUS_TASK.contains("wantAgent: agent"));
+    assert!(CONTINUOUS_TASK.contains("WantAgentFlags.UPDATE_PRESENT_FLAG"));
 }

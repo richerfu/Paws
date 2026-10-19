@@ -1,24 +1,9 @@
 {
   "app": {
-    "signingConfigs": [
-      {
-        "name": "default",
-        "type": "HarmonyOS",
-        "material": {
-          "certpath": "/Users/ranger/.ohos/config/default_Paws_G4F6yQMhlo-Y56Kq6WcAV5ZPgQjz6aR-bBvPKUqxgNY=.cer",
-          "keyAlias": "debugKey",
-          "keyPassword": "0000001BD6DE1AA192B74C64F8D08BD4993E2D311CC8A6917778E9DAD38E0A8E6816C06A4A2D67B3131CA1",
-          "profile": "/Users/ranger/.ohos/config/default_Paws_G4F6yQMhlo-Y56Kq6WcAV5ZPgQjz6aR-bBvPKUqxgNY=.p7b",
-          "signAlg": "SHA256withECDSA",
-          "storeFile": "/Users/ranger/.ohos/config/default_Paws_G4F6yQMhlo-Y56Kq6WcAV5ZPgQjz6aR-bBvPKUqxgNY=.p12",
-          "storePassword": "0000001BA2B5530CB4C16000184BC3735F773194EE64E9E1D4851A4E832E4A3271B45300E2F861B27C98D8"
-        }
-      }
-    ],
+    "signingConfigs": [],
     "products": [
       {
         "name": "default",
-        "signingConfig": "default",
         "targetSdkVersion": "6.1.1(24)",
         "compatibleSdkVersion": "6.0.2(22)",
         "runtimeOS": "HarmonyOS",
@@ -33,7 +18,7 @@
     ],
     "buildModeSet": [
       {
-        "name": "debug",
+        "name": "debug"
       },
       {
         "name": "release"

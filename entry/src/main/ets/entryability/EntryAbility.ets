@@ -15,6 +15,9 @@ import { ExportPlugin } from '../plugins/ExportPlugin';
 import { SafeAreaPlugin } from '../plugins/SafeAreaPlugin';
 import { ScanPlugin } from '../plugins/ScanPlugin';
 import { VpnPlugin } from '../plugins/VpnPlugin';
+import { SystemExitRecorder } from '../vpnability/SystemExitRecorder';
+
+import { getPhysicalNetwork } from '../vpnability/UnderlyingNetwork';
 
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'PawsEntry';
@@ -31,6 +34,7 @@ export default class EntryAbility extends NativeAbility {
 
   private vpnPlugin?: VpnPlugin;
   private safeAreaPlugin?: SafeAreaPlugin;
+  private systemExitRecorder: SystemExitRecorder = new SystemExitRecorder();
 
   public bridgePlugins = [
     new LazyPlugin(() => new FilesPlugin()),
@@ -131,7 +135,7 @@ export default class EntryAbility extends NativeAbility {
       });
   }
 
-  public async onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): Promise<void> {
+  public onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     try {
       setPawsBundleName(this.context.applicationInfo.name);
       this.configureNativeHome();
@@ -141,16 +145,31 @@ export default class EntryAbility extends NativeAbility {
     }
     // These enrich the initialized runtime but are independently optional;
     // each helper records its own precise platform failure.
+    try { this.systemExitRecorder.start(this.context.filesDir, launchParam); }
+    catch (_) { hilog.warn(LOG_DOMAIN, LOG_TAG, 'system exit recorder unavailable'); }
     this.configureNativeLocale();
     this.configureNativeAppearance();
     this.seedGeodataFromRawfiles();
-    await super.onCreate(want, launchParam);
-    this.runOptionalDebugAutomation(want);
+    super.onCreate(want, launchParam);
+    // NativeAbility attaches lazy plugins on its lifecycle queue. Never await
+    // before super.onCreate, or race debug automation against that attachment.
+    void this.enqueueLifecycleOperation('paws-network-ready', async (): Promise<void> => {
+      // Network discovery must never hold up the WindowStage queue.
+      getPhysicalNetwork().then((physical): void => {
+        pawsUi.setPhysicalNetwork(physical.netId);
+      }).catch((err: Error): void => {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'physical network initialization deferred %{public}s', describeError(err));
+      });
+      this.runOptionalDebugAutomation(want);
+    });
   }
 
   public onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     super.onNewWant(want, launchParam);
-    this.runOptionalDebugAutomation(want);
+    this.systemExitRecorder.drain();
+    void this.enqueueLifecycleOperation('paws-debug-new-want', async (): Promise<void> => {
+      this.runOptionalDebugAutomation(want);
+    });
   }
 
   public onConfigurationUpdate(newConfig: Configuration): void {

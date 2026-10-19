@@ -176,7 +176,8 @@ pub(crate) fn connections_page(initial_query: String) -> Element {
                 destination_ip: connection.destination_ip.clone(),
                 // Same density as request rows: one muted meta line.
                 metadata: format!(
-                    "{} · {} · {} · {}",
+                    "{} · {} · {} · {} · {}",
+                    connection.domain_source,
                     connection.network.to_ascii_uppercase(),
                     truncate_text(&connection.proxy, 24),
                     truncate_text(&connection.rule, 24),

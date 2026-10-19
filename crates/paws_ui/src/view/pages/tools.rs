@@ -3,45 +3,155 @@ use super::super::*;
 pub(crate) fn tools_page() -> Element {
     let stores = use_context::<UiStores>();
     let locale = stores.preferences.read().locale;
+    let advanced = stores.preferences.read().advanced;
+    let mode_services = use_context::<UiServices>();
     let about = stores.about.read().about.clone();
+    let settings = stores.settings.read().clone();
+    let theme = use_theme();
+    let engine_badge = match settings.vpn.engine {
+        paws_model::VpnEngine::Auto => match locale {
+            UiLocale::ZhCn => "默认内核：mihomo（自动兼容）",
+            UiLocale::En => "Default engine: mihomo (Auto)",
+        },
+        paws_model::VpnEngine::Mihomo => match locale {
+            UiLocale::ZhCn => "当前内核：mihomo（兼容内核）",
+            UiLocale::En => "Active engine: mihomo",
+        },
+        paws_model::VpnEngine::SingBox => match locale {
+            UiLocale::ZhCn => "当前内核：sing-box（前沿内核）",
+            UiLocale::En => "Active engine: sing-box",
+        },
+        paws_model::VpnEngine::Meow => match locale {
+            UiLocale::ZhCn => "当前内核：meow-rs（Rust 内核）",
+            UiLocale::En => "Active engine: meow-rs",
+        },
+    };
+    let diagnostics_subtitle = match locale {
+        UiLocale::ZhCn => "连通性探测、自动故障恢复、配置备份与脱敏诊断报告",
+        UiLocale::En => "Connectivity probe, auto-failover, backup & diagnostic report",
+    };
+    let advanced_title = match locale {
+        UiLocale::ZhCn => "开发者与抓包观测工具",
+        UiLocale::En => "Developer & Traffic Inspection Tools",
+    };
+    let advanced_subtitle = match locale {
+        UiLocale::ZhCn => {
+            if advanced {
+                "已展开连接明细、请求记录、规则与运行日志"
+            } else {
+                "展开实时请求、连接明细、Geo 资源与底层日志"
+            }
+        }
+        UiLocale::En => {
+            if advanced {
+                "Showing live requests, active connections, rules, and logs"
+            } else {
+                "Show live requests, active connections, resources, and logs"
+            }
+        }
+    };
+    let mut observation_rows = vec![rsx! {
+        row {
+            width: "100%",
+            height: 60.0,
+            padding_right: spacing::XS,
+            align_items: "center",
+            row {
+                width: 34.0,
+                height: 34.0,
+                align_items: "center",
+                justify_content: "center",
+                background_color: theme.colors.muted,
+                border_radius: theme.radii.md,
+                {arkit::icon("toggle-right", 17.0, theme.colors.foreground)}
+            }
+            column {
+                layout_weight: 1.0,
+                margin_left: spacing::MD,
+                align_items: "start",
+                text {
+                    content: advanced_title,
+                    font_size: typography::SM,
+                    font_weight: 600,
+                    font_color: theme.colors.foreground,
+                }
+                text {
+                    content: advanced_subtitle,
+                    margin_top: 3.0,
+                    font_size: typography::XS,
+                    font_color: theme.colors.muted_foreground,
+                    max_lines: 1,
+                    text_overflow: "ellipsis",
+                }
+            }
+            Switch {
+                checked: Some(advanced),
+                on_change: move |value| mode_services.set_advanced(value),
+            }
+        }
+    }];
+    if advanced {
+        observation_rows.push(settings_route_row(
+            Route::Requests {},
+            locale,
+            translate_ui(locale, tr::page_tr_027()),
+        ));
+        observation_rows.push(settings_route_row(
+            Route::Connections {
+                query: String::new(),
+            },
+            locale,
+            translate_ui(locale, tr::page_tr_028()),
+        ));
+        observation_rows.push(settings_route_row(
+            Route::Resources {},
+            locale,
+            translate_ui(locale, tr::page_tr_029()),
+        ));
+        observation_rows.push(settings_route_row(
+            Route::Logs {},
+            locale,
+            translate_ui(locale, tr::page_tr_030()),
+        ));
+    }
     let body = rsx! {
         column {
             width: "100%",
             {settings_section(
-                translate_ui(locale, tr::page_tr_022()),
-                vec![settings_route_row(
-                    Route::Appearance {},
-                    locale,
-                    translate_ui(locale, tr::page_tr_023()),
-                )],
-            )}
-            row { height: spacing::LG }
-            {settings_section(
                 translate_ui(locale, tr::page_tr_024()),
-                vec![settings_route_row(
-                    Route::Settings {},
-                    locale,
-                    translate_ui(locale, tr::page_tr_025()),
-                )],
+                vec![
+                    settings_route_row(
+                        Route::Settings {},
+                        locale,
+                        format!("{} · {}", engine_badge, translate_ui(locale, tr::page_tr_025())),
+                    ),
+                    settings_route_row(
+                        Route::Diagnostics {},
+                        locale,
+                        diagnostics_subtitle,
+                    ),
+                ],
             )}
             row { height: spacing::LG }
             {settings_section(
                 translate_ui(locale, tr::page_tr_272()),
-                vec![settings_route_row(
-                    Route::SubscriptionConverter {},
-                    locale,
-                    translate_ui(locale, tr::hard_zh_023()),
-                )],
+                vec![
+                    settings_route_row(
+                        Route::SubscriptionConverter {},
+                        locale,
+                        translate_ui(locale, tr::hard_zh_023()),
+                    ),
+                    settings_route_row(
+                        Route::Appearance {},
+                        locale,
+                        translate_ui(locale, tr::page_tr_023()),
+                    ),
+                ],
             )}
             row { height: spacing::LG }
             {settings_section(
                 translate_ui(locale, tr::page_tr_026()),
-                vec![
-                    settings_route_row(Route::Requests {}, locale, translate_ui(locale, tr::page_tr_027())),
-                    settings_route_row(Route::Connections { query: String::new() }, locale, translate_ui(locale, tr::page_tr_028())),
-                    settings_route_row(Route::Resources {}, locale, translate_ui(locale, tr::page_tr_029())),
-                    settings_route_row(Route::Logs {}, locale, translate_ui(locale, tr::page_tr_030())),
-                ],
+                observation_rows,
             )}
             row { height: spacing::LG }
             {settings_section(
@@ -58,9 +168,9 @@ pub(crate) fn tools_page() -> Element {
                 justify_content: "center",
                 text {
                     content: format!(
-                        "Paws {} · meow-rs {}",
+                        "TinyPaws {} · {}",
                         about.app_version,
-                        about.meow_rs_version
+                        engine_badge
                     ),
                     font_size: typography::XS,
                     font_color: subtle(),
@@ -229,7 +339,7 @@ pub(crate) fn about_page() -> Element {
                     {arkit::icon("paw-print", 26.0, text_color())}
                 }
                 text {
-                    content: "Paws",
+                    content: "TinyPaws",
                     margin_top: spacing::MD,
                     font_size: typography::XL,
                     line_height: 28.0,

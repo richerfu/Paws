@@ -27,8 +27,8 @@ mod pages;
 mod route;
 
 use pages::{
-    about_page, appearance_page, connections_page, dashboard_page, logs_page, privacy_page,
-    profiles_page, proxies_page, requests_page, resources_page, settings_page,
+    about_page, appearance_page, connections_page, dashboard_page, diagnostics_page, logs_page,
+    privacy_page, profiles_page, proxies_page, requests_page, resources_page, settings_page,
     subscription_converter_page, tools_page, traffic_page, ManualRuleDialog,
 };
 use route::Route;
@@ -620,6 +620,22 @@ fn use_runtime_projection_provider(
                             }
                         }
                     }
+                    if core
+                        .claim_platform_vpn_auto_recovery()
+                        .ok()
+                        .flatten()
+                        .map(|options_json| {
+                            tokio::spawn(async move {
+                                if let Err(error) =
+                                    crate::bridge::request_start_vpn(options_json).await
+                                {
+                                    paws_core::shared_core()
+                                        .rearm_platform_vpn_auto_recovery(&error);
+                                }
+                            });
+                        })
+                        .is_some()
+                    {}
                     if failed {
                         tokio::select! {
                             changed = revisions.changed() => {

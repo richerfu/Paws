@@ -33,6 +33,84 @@ export interface FileDialogResponse {
   filter: number
 }
 
+export interface AbilityInitContext {
+  basePath?: string
+  prefPath?: string
+  preferredLocales?: string
+  moduleName?: string
+}
+
+export interface ApplicationLifecycle {
+  bridgePlugins: Array<BridgePluginDeclaration>
+  environmentCallback: EnvironmentCallback
+  windowStageEventCallback: WindowStageEventCallback
+  keyboardEventCallback: KeyboardCallback
+}
+
+/**
+  * Structural declaration exported to ArkTS after the native module has configured its Rust
+  * plugin registry. The host uses this to select the matching factory automatically and to
+  * validate the parts of the contract that affect scheduling. Request and response ABI identity
+  * remains pinned by each named N-API type.
+  */
+export interface BridgePluginDeclaration {
+  id: string
+  execution: string
+  requires: Array<string>
+}
+
+export interface EnvironmentCallback {
+  onConfigurationUpdated: () => void
+  onMemoryLevel: (arg: number) => void
+}
+
+export interface KeyboardCallback {
+  onKeyboardHeightChange: (arg: number) => void
+}
+
+export interface NodeAcknowledgement {
+  accepted: boolean
+}
+
+/** Appends the node of `child_handle` under the node of `parent_handle`. */
+export interface NodeAppendChildRequest {
+  parentHandle: number
+  childHandle: number
+}
+
+/** Request marker for `create-container`: the response carries the new handle. */
+export interface NodeCreateContainerRequest {
+
+}
+
+/** Detaches a handle-owned node from its parent and disposes it. */
+export interface NodeDisposeRequest {
+  handle: number
+}
+
+/** Opaque handle of a container `FrameNode` created in ArkTS. */
+export interface NodeHandleResponse {
+  handle: number
+}
+
+/** Appends a handle-owned node to this module's component root. */
+export interface NodeMountIntoRootRequest {
+  handle: number
+}
+
+export interface WindowStageEventCallback {
+  onWindowStageCreate: () => void
+  onWindowStageDestroy: () => void
+  onAbilityCreate: (arg: string) => void
+  onAbilityDestroy: () => void
+  onAbilitySaveState: () => void
+  onAbilityRestoreState: () => void
+  onWindowStageEvent: (arg: number) => void
+  onWindowSizeChange: (arg: object) => void
+  onWindowRectChange: (arg: object) => void
+  onAvoidAreaChange: (arg: object) => void
+}
+
 export interface ClipboardSetRequest {
   text: string
 }
@@ -47,6 +125,15 @@ export interface ColorModeRequest {
 }
 
 export interface ColorModeResponse {
+
+}
+
+export interface ExportImageRequest {
+  suggestedName: string
+  pngBase64: string
+}
+
+export interface ExportImageResponse {
 
 }
 
@@ -73,57 +160,15 @@ export interface ScanResponse {
   content: string
 }
 
-export interface VpnStartRequest {
-  /** Rust-process-scoped idempotency key used to recover a lost submit receipt. */
-  requestId: string
-  /** Serialized `VpnOptions` JSON for the extension Want. */
-  optionsJson: string
-}
-
-export interface VpnStartResponse {
-  operationId: string
-}
-
-export interface VpnStopRequest {
-  /** Rust-process-scoped idempotency key used to recover a lost submit receipt. */
-  requestId: string
-}
-
-export interface VpnStopResponse {
-  operationId: string
-}
-
-export interface VpnOwnedStopRequest {
-  /** Rust-process-scoped idempotency key used to recover a lost submit receipt. */
-  requestId: string
-  expectedSessionId: string
-  /** Decimal u64 captured from the checked configuration mutation receipt. */
-  expectedConfigRevision: string
-}
-
-export interface VpnOwnedStopResponse {
-  operationId: string
-}
-
-export interface VpnRestartRequest {
-  /** Rust-process-scoped idempotency key used to recover a lost submit receipt. */
-  requestId: string
-  expectedSessionId: string
-  /** Decimal u64 captured from the checked settings mutation receipt. */
-  expectedConfigRevision: string
-  optionsJson: string
-}
-
-export interface VpnRestartResponse {
-  operationId: string
-}
-
 export interface VpnOperationLookupRequest {
   requestId: string
 }
 
 export interface VpnOperationLookupResponse {
-  /** `found` or `unknown-session`; unknown never proves that an earlier submit was not accepted. */
+  /**
+    * `found` or `unknown-session`. An unknown request is never evidence
+    * that an earlier submit did not reach a previous Ability session.
+    */
   status: string
   operationId: string
   /** `pending`, `succeeded`, `failed`, or `unknown`. */
@@ -134,66 +179,93 @@ export interface VpnOperationLookupResponse {
 
 export interface VpnOperationWaitRequest {
   operationId: string
-  /** One bounded long-poll slice, no greater than 45 seconds. */
+  /**
+    * One bounded long-poll slice. The ArkTS plugin resolves `pending`
+    * before the transport's fixed 60-second maximum.
+    */
   waitMs: number
 }
 
 export interface VpnOperationWaitResponse {
   /** `pending`, `succeeded`, `failed`, or `unavailable`. */
   status: string
+  /**
+    * Meaningful for the owned-stop/restart result; true for ordinary
+    * start/stop completion.
+    */
   result: boolean
   error: string
 }
 
-export declare function attachPlatformSharedMemory(ashmemFd: number, notificationFd: number): void
+export interface VpnOwnedStopRequest {
+  requestId: string
+  expectedSessionId: string
+  /** Decimal u64, without loss through a JavaScript number. */
+  expectedConfigRevision: string
+}
 
-export declare function preparePlatformVpnHandoff(attemptId: string): string
+export interface VpnOwnedStopResponse {
+  operationId: string
+}
 
-export declare function sendPlatformVpnHandoff(ashmemFd: number, notificationFd: number, attemptId: string, optionsJson: string): Promise<void>
+export interface VpnRestartRequest {
+  requestId: string
+  expectedSessionId: string
+  /** Decimal u64, without loss through a JavaScript number. */
+  expectedConfigRevision: string
+  optionsJson: string
+}
 
-export declare function receiveAndAttachPlatformVpnHandoff(token: string): Promise<string>
+export interface VpnRestartResponse {
+  operationId: string
+}
 
-export declare function awaitPlatformVpnStart(attemptId: string): Promise<string>
+export interface VpnStartRequest {
+  /**
+    * Rust-process-scoped idempotency key. It lets the caller recover the
+    * operation receipt if the submit response is lost.
+    */
+  requestId: string
+  /** Serialized `VpnOptions` JSON for the extension Want. */
+  optionsJson: string
+}
+
+export interface VpnStartResponse {
+  /**
+    * Ability-session-scoped identifier used to observe this one submitted
+    * operation without ever submitting it a second time.
+    */
+  operationId: string
+}
+
+export interface VpnStopRequest {
+  requestId: string
+}
+
+export interface VpnStopResponse {
+  operationId: string
+}
 
 export declare function acknowledgeTerminalPlatformVpnStartDelivery(ashmemFd: number, notificationFd: number, attemptId: string): boolean
 
-export declare function awaitPlatformVpnStop(attemptId: string): Promise<boolean>
-
-/**
-  * Called only after HarmonyOS `stopVpnExtensionAbility` resolves. Recovery
-  * additionally requires proof that the exact journaled owner no longer
-  * exists (or that the fenced terminal request never attached).
-  */
-export declare function recoverPlatformVpnCleanupAfterConfirmedStop(attemptId: string): Promise<boolean>
-
-export declare function completePlatformVpnCleanup(attemptId: string): boolean
-
-export declare function currentPlatformVpnSessionId(): string
-
 export declare function advancePlatformVpnIntent(): string
 
-export declare function isPlatformVpnIntentCurrent(intentEpoch: string): boolean
+export declare function attachPlatformSharedMemory(ashmemFd: number, notificationFd: number): void
 
-export declare function isPlatformVpnStopCurrent(intentEpoch: string, attemptId: string): boolean
+export declare function awaitPlatformVpnStart(attemptId: string): Promise<string>
+
+export declare function awaitPlatformVpnStop(attemptId: string): Promise<boolean>
 
 export declare function beginPlatformVpnOsStop(intentEpoch: string, attemptId: string): boolean
 
-export declare function completePlatformVpnOsStop(intentEpoch: string, attemptId: string): boolean
-
-export declare function failPlatformVpnOsStop(intentEpoch: string, attemptId: string): boolean
-
 export declare function beginPlatformVpnStartForIntent(intentEpoch: string): string
 
-/** Returns the fenced Extension process identity as `pid:starttime`. */
 export declare function bindPlatformVpnStart(attemptId: string): string
 
 export declare function cancelPlatformChangeWait(): void
 
 export declare function cancelPlatformVpnStart(attemptId: string): boolean
 
-export declare function requestPlatformVpnStop(attemptId: string): boolean
-
-/** Atomically fences and returns the exact owner that still owes cleanup. */
 export declare function claimCurrentPlatformVpnStop(intentEpoch: string): string
 
 export declare function clearLogs(): void
@@ -204,13 +276,33 @@ export declare function closeAllConnections(): void
 
 export declare function closeConnection(id: string): void
 
+export declare function completePlatformVpnCleanup(attemptId: string): boolean
+
+export declare function completePlatformVpnOsStop(intentEpoch: string, attemptId: string): boolean
+
 export declare function configureAppHome(homeDir: string): void
 
 export declare function configureSystemColorMode(colorMode: number): void
 
 export declare function configureUiLocale(locale: string): void
 
-export declare function destroy(): void
+export declare function currentPlatformVpnSessionId(): string
+
+export declare function disposeAllRenders(): void
+
+/**
+  * r" Releases only the matching Ability-session transport. A stale
+  * r" owner cannot clear endpoints installed for a later session.
+  */
+export declare function disposeBridge(bridgeOwner: string): void
+
+export declare function disposeRender(renderOwner: string): void
+
+export declare function engineDecision(optionsJson: string): string
+
+export declare function extensionTick(attemptId: string): string
+
+export declare function failPlatformVpnOsStop(intentEpoch: string, attemptId: string): boolean
 
 export declare function failPlatformVpnStart(attemptId: string, error: string): boolean
 
@@ -220,19 +312,40 @@ export declare function importProfileFromContentAndActivate(name: string, source
 
 export declare function importProfileFromUrlAndActivate(url: string, name?: string | undefined | null): Promise<string>
 
-export declare function init(context?: AbilityInitContext): ApplicationLifecycle
+export declare function init(bindings: object, bridgeOwner: string, context?: AbilityInitContext): ApplicationLifecycle
 
 export declare function initializePlatformSharedMemory(): string
 
+export declare function isPlatformVpnIntentCurrent(intentEpoch: string): boolean
+
+export declare function isPlatformVpnSessionCurrent(sessionId: string, expectedConfigRevision: string): boolean
+
+export declare function isPlatformVpnStopCurrent(intentEpoch: string, attemptId: string): boolean
+
+export declare function isRuntimeConfigRevisionCurrent(expectedConfigRevision: string): boolean
+
 export declare function onBackPressIntercept(): boolean
 
-/** ArkTS-only lifecycle transitions, currently UI-context readiness. */
+/** r" ArkTS-only lifecycle transitions, currently UI-context readiness. */
 export declare function onBridgeLifecycle(kind: string): void
 
-/** Synchronous ArkTS platform callback -> Rust plugin decision port. */
+/**
+  * r" Synchronous ArkTS platform callback -> Rust plugin decision port.
+  * r"
+  * r" The N-API value is scoped to this call; the returned value is
+  * r" produced before ArkTS resumes the originating platform callback.
+  */
 export declare function onBridgeSyncEvent(pluginId: string, event: string, requestTypeName: string, responseTypeName: string, value: unknown): unknown
 
+export declare function persistEngineSession(session: string, engine: string, netId: number): Promise<void>
+
 export declare function persistVpnTelemetry(): void
+
+export declare function prepareMihomoVpn(optionsJson: string, attemptId: string): string
+
+export declare function preparePlatformVpnHandoff(attemptId: string): string
+
+export declare function prepareSingBoxVpn(optionsJson: string, attemptId: string): string
 
 export declare function prepareVpn(attemptId: string): Promise<boolean>
 
@@ -240,19 +353,43 @@ export declare function profileRawYaml(profileId: string): string
 
 export declare function querySnapshot(): string
 
+export declare function queryVpnSpeed(): string
+
+export declare function receiveAndAttachPlatformVpnHandoff(token: string): Promise<string>
+
+export declare function recordEngineHealth(session: string, success: boolean, stage: string): void
+
+export declare function recordEngineQualification(text: string): void
+
+/**
+  * Called only after ArkTS has awaited HarmonyOS
+  * `stopVpnExtensionAbility`. Core still requires release of the exact owner
+  * lease (or proof the terminal Want never attached) before releasing an
+  * orphaned cleanup barrier.
+  */
+export declare function recoverPlatformVpnCleanupAfterConfirmedStop(attemptId: string): Promise<boolean>
+
 export declare function refreshAllProviders(): Promise<void>
 
 export declare function refreshProvider(providerName: string): Promise<void>
 
 export declare function refreshProviderOfType(providerType: string, providerName: string): Promise<void>
 
-export declare function render(bindings: object, slot: NodeContent): void
+export declare function render(slot: NodeContent, renderOwner: string): void
+
+export declare function requestPlatformVpnStop(attemptId: string): boolean
+
+export declare function resolveVpnEngine(optionsJson: string): string
 
 export declare function seedGeodataFromRawfiles(resourceManager: resourceManager.ResourceManager): number
 
 export declare function selectProxy(group: string, proxy: string): Promise<void>
 
+export declare function sendPlatformVpnHandoff(ashmemFd: number, notificationFd: number, attemptId: string, optionsJson: string): Promise<void>
+
 export declare function setMode(mode: string): Promise<void>
+
+export declare function setPhysicalNetwork(netId: number): void
 
 export declare function setPlatformNetworkProtected(attemptId: string, protected: boolean, error?: string | undefined | null): boolean
 
@@ -260,17 +397,19 @@ export declare function setPlatformVpnFailed(attemptId: string, error: string): 
 
 export declare function setPlatformVpnStarting(attemptId: string, starting: boolean): boolean
 
+export declare function singBoxRuntimeLog(): string
+
+export declare function singBoxVersion(): string
+
+export declare function startExternalVpn(optionsJson: string, attemptId: string): void
+
+export declare function startSingBox(tunFd: number, underlyingNetId: number, configJson: string, workDir: string): void
+
 export declare function startVpn(fd: number, optionsJson: string, attemptId: string): Promise<void>
 
+export declare function stopSingBox(): void
+
 export declare function stopVpn(attemptId: string): Promise<boolean>
-
-export declare function extensionTick(attemptId: string): string
-
-export declare function isPlatformVpnSessionCurrent(sessionId: string, expectedConfigRevision: string): boolean
-
-export declare function isRuntimeConfigRevisionCurrent(expectedConfigRevision: string): boolean
-
-export declare function validatePlatformVpnStartRequest(ashmemFd: number, notificationFd: number, attemptId: string): void
 
 export declare function syncPlatformChanges(): void
 
@@ -280,78 +419,12 @@ export declare function testProxyEcho(proxyName: string, url: string, payload: s
 
 export declare function unfixProxy(group: string): Promise<void>
 
+export declare function updateExternalVpnTraffic(trafficJson: string): void
+
+export declare function validateEngineStartup(session: string): Promise<string>
+
+export declare function validatePlatformVpnStartRequest(ashmemFd: number, notificationFd: number, attemptId: string): void
+
 export declare function validateProfileContent(rawYaml: string): Promise<void>
 
 export declare function waitForPlatformChangeEvent(): Promise<boolean>
-
-export interface AbilityInitContext {
-  basePath?: string
-  prefPath?: string
-  preferredLocales?: string
-  moduleName?: string
-}
-
-export interface ApplicationLifecycle {
-  environmentCallback: EnvironmentCallback
-  windowStageEventCallback: WindowStageEventCallback
-  keyboardEventCallback: KeyboardCallback
-}
-
-export interface EnvironmentCallback {
-  onConfigurationUpdated: () => void
-  onMemoryLevel: (arg: number) => void
-}
-
-export interface KeyboardCallback {
-  onKeyboardHeightChange: (arg: number) => void
-}
-
-export interface NodeAcknowledgement {
-  accepted: boolean
-}
-
-/** Appends the node of `child_handle` under the node of `parent_handle`. */
-export interface NodeAppendChildRequest {
-  parentHandle: number
-  childHandle: number
-  /** Window surface key; defaults to `"main"`. Parent and child must share the same window. */
-  windowKey?: string
-}
-
-/** Window-scoped request marker for `create-container`: the response carries the new handle. */
-export interface NodeCreateContainerRequest {
-  /** Window surface key; defaults to `"main"`. */
-  windowKey?: string
-}
-
-/** Detaches a handle-owned node from its parent and disposes it. */
-export interface NodeDisposeRequest {
-  handle: number
-  /** Window surface key; defaults to `"main"`. */
-  windowKey?: string
-}
-
-/** Opaque handle of a container `FrameNode` created in ArkTS. */
-export interface NodeHandleResponse {
-  handle: number
-}
-
-/** Appends a handle-owned node to the window root. */
-export interface NodeMountIntoRootRequest {
-  handle: number
-  /** Window surface key; defaults to `"main"`. */
-  windowKey?: string
-}
-
-export interface WindowStageEventCallback {
-  onWindowStageCreate: () => void
-  onWindowStageDestroy: () => void
-  onAbilityCreate: (arg: string) => void
-  onAbilityDestroy: () => void
-  onAbilitySaveState: () => void
-  onAbilityRestoreState: () => void
-  onWindowStageEvent: (arg: number) => void
-  onWindowSizeChange: (arg: object) => void
-  onWindowRectChange: (arg: object) => void
-  onAvoidAreaChange: (arg: object) => void
-}
