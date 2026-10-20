@@ -12,6 +12,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
 const compilerCandidates = [
   process.env.PAWS_TYPESCRIPT_PATH,
+  process.env.DEVECO_STUDIO_HOME && resolve(process.env.DEVECO_STUDIO_HOME, 'sdk/default/openharmony/ets/build-tools/ets-loader/node_modules/typescript'),
   process.env.OHOS_NDK_HOME && resolve(process.env.OHOS_NDK_HOME, 'ets/build-tools/ets-loader/node_modules/typescript'),
   process.env.DEVECO_SDK_HOME && resolve(process.env.DEVECO_SDK_HOME, 'default/openharmony/ets/build-tools/ets-loader/node_modules/typescript'),
   '/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/ets/build-tools/ets-loader/node_modules/typescript',
@@ -63,6 +64,7 @@ function configModule() {
 test('URL capability forwards About links through the actual packaged plugin', async () => {
   const { UrlPlugin } = loadArkts('entry/oh_modules/@ohos-rs/ability-plugin-url/src/main/ets/UrlPlugin.ets', {
     '@ohos-rs/ability': { AsyncPluginBase: class {} },
+    '@kit.AbilityKit': {},
   });
   const plugin = new UrlPlugin();
   assert.equal(plugin.id, 'ohos.url');

@@ -142,8 +142,9 @@ dependencies = [
 
 [[package]]
 name = "arkit"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0941cf66c420e055c1790bc33b6b300a4765c3f4520f799efb8cbe8972087fff"
 dependencies = [
  "arkit_animation",
  "arkit_arkui",
@@ -164,8 +165,9 @@ dependencies = [
 
 [[package]]
 name = "arkit_animation"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67148698741032d43b5edff43ae8ae888a8e5a12611ffc1f88e267cb4f624c2c"
 dependencies = [
  "arkit_animation_core",
  "arkit_arkui",
@@ -179,8 +181,9 @@ dependencies = [
 
 [[package]]
 name = "arkit_animation_core"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c381c0c7796ad221c877f0bfad133cce2ff05819afd245846fbdbeed2718ae29"
 dependencies = [
  "oxc_index",
  "rustc-hash",
@@ -189,8 +192,9 @@ dependencies = [
 
 [[package]]
 name = "arkit_arkui"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8892e06107a61af47e773b124d9a429c392cb354ed0b1657310d59ca56e80cfc"
 dependencies = [
  "arkit_elements",
  "dioxus-core",
@@ -203,8 +207,9 @@ dependencies = [
 
 [[package]]
 name = "arkit_barcode"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ef674a49cbdf621834d5c7e4a0f0290fcd1fb191ec5df469112d971965985d7"
 dependencies = [
  "arkit_arkui",
  "arkit_prelude",
@@ -217,8 +222,9 @@ dependencies = [
 
 [[package]]
 name = "arkit_derive"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bf05c9e50f9927b01ecb09dc65e66d3f438ff3931b4b2430e0f7edaffbb1a99"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -228,16 +234,18 @@ dependencies = [
 
 [[package]]
 name = "arkit_elements"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84b385b0aa525c1c1c7c2b26586842f3977539fbb23eb34d10ee413423e86f7f"
 dependencies = [
  "dioxus-core",
 ]
 
 [[package]]
 name = "arkit_hooks"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a885a81665550846415a51fbd835c1c65c629bd1707df6bbe8c1391b6ee35998"
 dependencies = [
  "arkit_arkui",
  "arkit_prelude",
@@ -248,8 +256,9 @@ dependencies = [
 
 [[package]]
 name = "arkit_i18n"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fed4a7196a87ed7a64fb72cda8035d86632aa95560d21d8ceac5328c7d49c6cf"
 dependencies = [
  "arkit_i18n_macros",
  "dioxus-core",
@@ -263,8 +272,9 @@ dependencies = [
 
 [[package]]
 name = "arkit_i18n_macros"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a15f026e1fa554786f62347d44f03f9ad73801f898e4fe68dfd9a3ab91d2959"
 dependencies = [
  "fluent-syntax",
  "proc-macro-crate",
@@ -276,8 +286,9 @@ dependencies = [
 
 [[package]]
 name = "arkit_icon"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8854f6c54373ef47de3163933002361e1940db885e1c1fa1513db580aef23995"
 dependencies = [
  "arkit_arkui",
  "arkit_prelude",
@@ -288,8 +299,9 @@ dependencies = [
 
 [[package]]
 name = "arkit_prelude"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9bd56a43452650b14d027da73523243b135ba9e8cafa0ccc8102dd9e14a750dd"
 dependencies = [
  "arkit_elements",
  "dioxus-core",
@@ -300,8 +312,9 @@ dependencies = [
 
 [[package]]
 name = "arkit_router"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "090c22792806576dfcbf8d23d5e7aea754ab87a1c3b8a2c7137bc074b92e0893"
 dependencies = [
  "arkit_animation",
  "arkit_prelude",
@@ -313,8 +326,9 @@ dependencies = [
 
 [[package]]
 name = "arkit_runtime"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6f243daafbdbe45124308da9e8709300b7786a9d9973c22eb57f51b46f498be"
 dependencies = [
  "arkit_arkui",
  "arkit_elements",
@@ -328,8 +342,9 @@ dependencies = [
 
 [[package]]
 name = "arkit_shadcn"
-version = "1.0.0-beta.0"
-source = "git+https://github.com/richerfu/arkit.git?rev=a6fb10ec16f3644d75af9e04e28f435ad6273f4d#a6fb10ec16f3644d75af9e04e28f435ad6273f4d"
+version = "0.0.1-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eec112067b8edfbd2798e9f41c1162d4a1607724e61e76a3e60eacc064bc1b7b"
 dependencies = [
  "arkit_animation",
  "arkit_arkui",
@@ -1596,7 +1611,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2146,7 +2161,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tokio",
  "tower-service",
  "tracing",
@@ -3195,7 +3210,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3284,9 +3299,9 @@ checksum = "4d59d30d3ad7f7e1c9a66e51c9cb71ae1c794b28ffe7053fd785defb0d180069"
 
 [[package]]
 name = "ohos-accessibility-binding"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e176d82e38287e08e6a5e78e9e3a03f26fa5717502f7b166baff4bafa3a93a44"
+checksum = "87d05c58a5626a4749a02e42fd62b771740fbdd2daebbf969ee3b38fce475e3d"
 dependencies = [
  "bitflags 2.13.1",
  "ohos-accessibility-sys",
@@ -3296,18 +3311,18 @@ dependencies = [
 
 [[package]]
 name = "ohos-accessibility-sys"
-version = "0.0.6"
+version = "0.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "250230e3db5e480b40a142fd660df469942ba4a4397ef2e682d38874c6bfaa03"
+checksum = "2b0c98fcf8ba4538109d272a1136c39ecb5e71fffaeed85a9c03f0a6636a1c68"
 dependencies = [
  "ohos-arkui-input-sys",
 ]
 
 [[package]]
 name = "ohos-arkui-binding"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41ae9d3961587448a504a805be3aa2eeed827320decb0c1318dd6e0dd4359491"
+checksum = "ac97b4bb4f61e68f4da9b256a8fdf53f732835c6f1d26ce6ccbcd7a936e9d467"
 dependencies = [
  "bitflags 2.13.1",
  "libloading 0.8.9",
@@ -3327,9 +3342,9 @@ dependencies = [
 
 [[package]]
 name = "ohos-arkui-input-binding"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09a9a9ba811e1c0edac2f873caebf339542926429de802fc7a085edd59a0e0f1"
+checksum = "efd9080257b8ad912f3cf3ddaea08bb102009201891a5ea6f642973e700981f4"
 dependencies = [
  "ohos-arkui-input-sys",
  "ohos-enum-derive",
@@ -3337,15 +3352,15 @@ dependencies = [
 
 [[package]]
 name = "ohos-arkui-input-sys"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b1187085dd5ab734411a154bc547b71e07ac4033c643d27a7faa836fdc45602"
+checksum = "22d658c88d3692ded92e2dc17912483950b8f3abee189c8a215a8e6e63dbdf29"
 
 [[package]]
 name = "ohos-arkui-sys"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c957ced0219717fabb4d481fc9768d06f29a87bb7048cc2f9dc8398c22ece4d"
+checksum = "aa8a200be1eb81f819e39945a8df8c168e5aff82b8e80598692b7d0e7024a467"
 dependencies = [
  "napi-sys-ohos",
  "ohos-arkui-input-sys",
@@ -3621,9 +3636,9 @@ dependencies = [
 
 [[package]]
 name = "ohos-xcomponent-binding"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a383a4037bed1de01f5a5be68893e44abe0d48fce985d17013a62268090c266"
+checksum = "231702006a9d66afc68081dee7e0fe371355dcdcdf65fb4f18d30fc16aa60641"
 dependencies = [
  "napi-derive-ohos",
  "napi-ohos",
@@ -3637,9 +3652,9 @@ dependencies = [
 
 [[package]]
 name = "ohos-xcomponent-sys"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "718a03274dc8d3a8cfd45d6328d9eed25a73867a4a9257ad15cf886dca95dcde"
+checksum = "8b56ebe8ef4e75fa04b9bf5c6a187555aa01ebb11783f827b9d59b8c6dcd88c1"
 dependencies = [
  "ohos-accessibility-sys",
  "ohos-arkui-input-sys",
@@ -3664,8 +3679,9 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openharmony-ability"
-version = "1.0.0-beta.2"
-source = "git+https://github.com/richerfu/openharmony-ability.git?rev=2b5defdb0a016b841736470f9c32f2929380c448#2b5defdb0a016b841736470f9c32f2929380c448"
+version = "1.0.0-beta.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0c87a7bc4c23b9e845cf7338ba472a49c59c91ceb5570ccae1d9c3714f6802d"
 dependencies = [
  "futures-channel",
  "log",
@@ -3686,8 +3702,9 @@ dependencies = [
 
 [[package]]
 name = "openharmony-ability-plugin-files"
-version = "1.0.0-beta.1"
-source = "git+https://github.com/richerfu/openharmony-ability.git?rev=2b5defdb0a016b841736470f9c32f2929380c448#2b5defdb0a016b841736470f9c32f2929380c448"
+version = "1.0.0-beta.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bad0340e22cc4f24396294d1cec90db7f7fd42d5907ad7d13e15d1aa3d44008"
 dependencies = [
  "napi-derive-ohos",
  "napi-ohos",
@@ -3696,8 +3713,9 @@ dependencies = [
 
 [[package]]
 name = "openharmony-ability-plugin-url"
-version = "1.0.0-beta.1"
-source = "git+https://github.com/richerfu/openharmony-ability.git?rev=2b5defdb0a016b841736470f9c32f2929380c448#2b5defdb0a016b841736470f9c32f2929380c448"
+version = "1.0.0-beta.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "124336a1a3436a884e53b4c500acb26ac102f082fa37cc4c1f62419f83e9b3f1"
 dependencies = [
  "napi-derive-ohos",
  "napi-ohos",
@@ -3787,6 +3805,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-tungstenite 0.24.0",
+ "toml",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
@@ -4146,7 +4165,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -4184,9 +4203,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4503,7 +4522,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4689,6 +4708,15 @@ checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
 dependencies = [
  "itoa",
  "serde",
+ "serde_core",
+]
+
+[[package]]
+name = "serde_spanned"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
+dependencies = [
  "serde_core",
 ]
 
@@ -4950,7 +4978,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5324,6 +5352,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml"
+version = "0.9.12+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
+dependencies = [
+ "indexmap",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "0.7.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
 name = "toml_datetime"
 version = "1.1.1+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5339,9 +5391,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
 dependencies = [
  "indexmap",
- "toml_datetime",
+ "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
- "winnow",
+ "winnow 1.0.4",
 ]
 
 [[package]]
@@ -5350,8 +5402,14 @@ version = "1.1.3+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
 dependencies = [
- "winnow",
+ "winnow 1.0.4",
 ]
+
+[[package]]
+name = "toml_writer"
+version = "1.1.3+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "tower"
@@ -5937,7 +5995,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6169,6 +6227,12 @@ name = "windows_x86_64_msvc"
 version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
+
+[[package]]
+name = "winnow"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 
 [[package]]
 name = "winnow"

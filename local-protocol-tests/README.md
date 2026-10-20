@@ -70,9 +70,6 @@ cargo run --manifest-path local-protocol-tests/Cargo.toml -- http --keepalive-ms
 
 ## Manual App Flow
 
-The full App-side acceptance matrix lives in
-`docs/app-protocol-acceptance.md`.
-
 1. Run one mode, for example `http`.
 2. Import `local-protocol-tests/generated/http.yaml` into the app.
 3. Activate the imported profile.

@@ -81,7 +81,7 @@ fn about_page_constrains_long_values_and_aligns_repositories() {
     let page = fs::read_to_string("src/view/pages/tools.rs").unwrap();
     let view = fs::read_to_string("src/view.rs").unwrap();
 
-    assert!(page.contains("middle_truncate_text(&about.arkit_rev, 18)"));
+    assert!(page.contains("middle_truncate_text(&about.arkit_version, 18)"));
     assert!(page.matches("width: Some(\"46%\".into())").count() >= 2);
     assert!(page.matches("width: 18.0").count() >= 2);
     assert!(page.contains("layout_weight: 1.0"));

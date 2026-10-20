@@ -1,8 +1,5 @@
 # Paws
 
-Current release: **1.1.0** (versionCode **1001000**). See the
-[changelog](CHANGELOG.md) for release notes.
-
 Paws is a Clash/mihomo HarmonyOS client with a native ArkUI interface, powered
 by [meow-rs 0.22.0](https://github.com/meow-rs/meow-rs) and a Rust userspace TUN stack.
 Its product flow follows
@@ -65,19 +62,23 @@ Network
 ### Prerequisites
 
 - macOS with DevEco Studio and the HarmonyOS SDK installed.
-- Rust 1.89 or a compatible newer toolchain.
+- Rust 1.90 or a compatible newer toolchain.
 - [`ohrs`](https://github.com/ohos-rs/ohos-rs) available in `PATH`.
 - `hvigorw` and `hdc`; the packaging scripts can use the copies bundled with
   DevEco Studio.
 - Signing material configured locally when producing a physical-device HAP.
 
-Run `ohpm install --all` after changing dependencies. Paws includes the
-matching ArkTS Ability host in `vendor/openharmony-ability` so the native
-window and input lifecycle interfaces stay aligned with the pinned Arkit
-commit.
+If DevEco Studio is installed outside `/Applications/DevEco-Studio.app`, set
+`DEVECO_STUDIO_HOME` to its `Contents` directory before running these scripts.
 
-The project targets HarmonyOS 6.1, is compatible with HarmonyOS 6.0.2, and
-exports release packages for `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
+Run `ohpm install --all` after changing dependencies. Paws uses the published
+Arkit `0.0.1-beta.0` Rust crates and Ability `1.0.0-beta.3` Rust / OHPM
+packages, including the matching files and URL plugins. Third-party
+dependencies resolve from crates.io and the OHPM registry; no local host
+snapshot or sibling checkout is required.
+
+The project targets HarmonyOS 6.1 and is compatible with HarmonyOS 6.0.2.
+The default release package contains `arm64-v8a` native libraries.
 
 ### Verify the source tree
 
@@ -85,8 +86,8 @@ exports release packages for `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
 scripts/verify.sh
 ```
 
-This runs Rust formatting checks, workspace tests, local protocol profile
-generation, and an OpenHarmony `aarch` build.
+This runs Rust formatting checks, workspace tests, ArkTS platform tests,
+local protocol profile generation, and an OpenHarmony `aarch` build.
 
 ### Build an unsigned release HAP
 
@@ -110,7 +111,7 @@ After configuring a valid HarmonyOS signing profile for the target device:
 
 ```sh
 scripts/fetch-geodata.sh
-scripts/package-signed-hap.sh
+scripts/package-hap.sh --signed
 ```
 
 Output:
@@ -123,8 +124,8 @@ Do not unpack and rebuild a signed HAP with a generic ZIP utility. Doing so can
 change the aligned resource layout and cause application icon or launcher
 problems on physical devices.
 
-See [CI and release checks](docs/ci-and-release.md) and
-[GeoData provisioning](docs/geodata.md) for details.
+See [GeoData provisioning](docs/geodata.md) for rawfile sources and packaging
+requirements.
 
 ## Install and launch
 
@@ -144,19 +145,15 @@ hdc shell aa start -b com.richerfu.paws -a EntryAbility
 
 For a target selected by key, add `-t <target-key>` immediately after `hdc`.
 
-The smoke script builds, validates the native exports inside the HAP, installs
-the app, launches `EntryAbility`, and captures `hilog`:
+The smoke script builds a fresh debug HAP, validates its native exports,
+installs the app, launches `EntryAbility`, and captures `hilog`. Pass `--hap`
+to reuse an already packaged HAP, such as the signed release:
 
 ```sh
 scripts/harmony-smoke.sh \
   --hap entry/build/default/outputs/default/entry-default-release-signed.hap \
   --require-protect-success
 ```
-
-See [VPN app HTTP and debug performance regression](docs/vpn-app-http-regression.md)
-for the private app request path, error diagnostics, and emulator measurements.
-See [HarmonyOS smoke validation](docs/harmony-smoke.md) for profile import,
-automatic VPN startup, traffic probes, and troubleshooting options.
 
 ## OpenHarmony QEMU
 
@@ -172,14 +169,11 @@ hdc tconn 127.0.0.1:5555
 hdc list targets
 ```
 
-Then package and run an automated direct-mode VPN smoke:
+Then build a debug HAP and run an automated direct-mode VPN smoke:
 
 ```sh
-scripts/package-hap.sh
 scripts/harmony-smoke.sh \
-  --no-build \
   --target 127.0.0.1:5555 \
-  --hap entry/build/default/outputs/default/entry-default-unsigned.hap \
   --protocol-mode direct \
   --mock-bind 0.0.0.0 \
   --mock-advertise-host 10.0.2.2 \
@@ -217,7 +211,11 @@ scripts/harmony-protocol-matrix.sh \
 
 The matrix covers Direct, HTTP, SOCKS5, Shadowsocks, Trojan, and VLESS,
 including authentication, unavailable-server, bad-password, and bad-UUID
-failure paths. See the [protocol acceptance matrix](docs/app-protocol-acceptance.md).
+failure paths. It builds and packages one debug HAP before running all modes.
+Set `HAP_PATH` to reuse an existing debug HAP, or pass `--no-build` to reuse
+the default output. Debug Want automation requires `app.debug=true` in the HAP;
+for a signed debug package, use
+`NATIVE_PROFILE=debug HAP_BUILD_MODE=debug scripts/package-hap.sh --signed`.
 
 ## Project structure
 
@@ -234,7 +232,7 @@ crates/
   paws_model/                 Shared data model
 local-protocol-tests/          Echo servers, mock proxies, and generated profiles
 scripts/                       Build, package, smoke, and regression automation
-docs/                          Release, protocol, GeoData, and validation notes
+docs/                          GeoData provisioning notes
 ```
 
 ## License

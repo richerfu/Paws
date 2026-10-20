@@ -47,7 +47,7 @@ fn core_snapshot_is_json() {
         .any(|file| file.path.ends_with("geosite.dat")));
     assert_eq!(snapshot.about.app_version, APP_VERSION);
     assert_eq!(snapshot.about.meow_rs_version, MEOW_RS_VERSION);
-    assert_eq!(snapshot.about.arkit_rev, ARKIT_REV);
+    assert_eq!(snapshot.about.arkit_version, ARKIT_VERSION);
     assert!(!snapshot.about.privacy_summary.is_empty());
     assert!(snapshot.about.privacy_summary.iter().any(|note| {
         note.contains("HTTPS 服务")

@@ -2,13 +2,14 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$ROOT_DIR"
 OHRS_BIN=${OHRS:-ohrs}
 OHRS_LOG=$(mktemp "${TMPDIR:-/tmp}/paws-ohrs-build.XXXXXX")
 OHRS_PATHS=$(mktemp "${TMPDIR:-/tmp}/paws-ohrs-paths.XXXXXX")
 trap 'rm -f "$OHRS_LOG" "$OHRS_PATHS"' EXIT HUP INT TERM
 
-# ohrs 1.4.2 canonicalizes every native search path emitted by build scripts.
-# boring-sys 5.1 emits build/{lib,crypto,ssl} even when CMake places both
+# Some ohrs versions canonicalize every native search path from build scripts.
+# boring-sys can emit build/{lib,crypto,ssl} even when CMake places both
 # archives directly in build/, so a fresh target directory can make ohrs
 # panic after Cargo has successfully built BoringSSL. Repair only those known
 # generated directories and retry the incremental build.

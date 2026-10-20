@@ -92,8 +92,8 @@ const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const MEOW_RS_VERSION: &str = "0.22.0";
-const ARKIT_REV: &str = env!("PAWS_ARKIT_REV");
-const RUST_VERSION: &str = "1.89";
+const ARKIT_VERSION: &str = env!("PAWS_ARKIT_VERSION");
+const RUST_VERSION: &str = env!("CARGO_PKG_RUST_VERSION");
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
