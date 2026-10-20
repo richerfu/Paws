@@ -17,6 +17,7 @@ pub(crate) fn dashboard_page() -> Element {
     });
     let preferences = stores.preferences.read();
     let session = stores.session.read().clone();
+    let preferred_engine = stores.settings.read().vpn.engine;
     let profiles = stores.profiles.read();
     let proxies = stores.proxies.read();
     let activity = stores.activity.read();
@@ -307,12 +308,7 @@ pub(crate) fn dashboard_page() -> Element {
                         margin_left: spacing::SM,
                         text {
                             width: "100%",
-                            content: match (s, connected) {
-                                (UiLocale::ZhCn, true) => "VPN 隧道已建立 · 检测真实连通性、自动自愈与备份",
-                                (UiLocale::ZhCn, false) => "联网诊断、故障自愈与配置备份",
-                                (UiLocale::En, true) => "VPN tunnel active · Probe connectivity, failover & backups",
-                                (UiLocale::En, false) => "Connectivity diagnostics, auto-failover & backup",
-                            },
+                            content: engine_status_label(&session, preferred_engine, s),
                             font_size: typography::XS,
                             font_weight: 500,
                             font_color: text_color(),

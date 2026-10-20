@@ -1,6 +1,38 @@
 use std::fs;
 
 #[test]
+fn scrollable_editors_wait_for_a_click_before_requesting_focus() {
+    let mut pages = fs::read_dir("src/view/pages")
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .collect::<Vec<_>>();
+    pages.sort();
+    let mut editors = 0;
+    for page in pages {
+        let source = fs::read_to_string(&page).unwrap();
+        for widget in ["Input {", "Textarea {"] {
+            for (offset, _) in source.match_indices(widget) {
+                editors += 1;
+                // ArkUI's default focus-on-touch steals focus as a drag starts.
+                // Keep this explicit on every editor, including new feature pages.
+                assert!(
+                    source[offset + widget.len()..]
+                        .trim_start()
+                        .starts_with("click_to_focus: true,"),
+                    "{}: editor must wait for a completed click",
+                    page.display()
+                );
+            }
+        }
+    }
+    assert!(
+        editors > 0,
+        "the editor inventory must not silently become empty"
+    );
+}
+
+#[test]
 fn application_root_keeps_overlays_edge_to_edge_and_insets_only_app_layout() {
     let source = fs::read_to_string("src/view.rs").unwrap();
     let ability =

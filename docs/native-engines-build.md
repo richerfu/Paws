@@ -1,13 +1,13 @@
 # Building the native engines
 
-TinyPaws packages Rust/Meow, Mihomo and sing-box in an arm64 HAP. The Go bridges
+Paws packages Rust/Meow, Mihomo and sing-box in an arm64 HAP. The Go bridges
 and N-API wrapper are in `vendor/`; the two upstream engine checkouts are pinned
 by the build scripts. A FlClash application checkout or its precompiled libraries
 are not required.
 
 ## Source checkouts
 
-Run from the TinyPaws repository root:
+Run from the Paws repository root:
 
 ```sh
 mkdir -p target/engine-sources
@@ -24,7 +24,7 @@ Both scripts apply the repository's engine patches to these working copies.
 Mihomo's gVisor module is copied into an isolated staging directory and patched
 with `patch -p1 -F 0`; it does not change the shared Go module cache. This avoids
 `git apply` silently skipping files inside an untracked directory of the parent
-TinyPaws repository. The gVisor patch targets `IsSocketFD` at the pinned module
+Paws repository. The gVisor patch targets `IsSocketFD` at the pinned module
 revision, and the vendored TUN bridge retains HarmonyOS's ownership of the fd.
 
 ## OHOS Go compiler
@@ -34,7 +34,7 @@ Linux x86-64 compiler cannot execute on an Apple Silicon Mac. sing-box 1.13.21
 also requires Go 1.24.7. Use the distribution's source to build a host compiler:
 
 ```sh
-export GO_OHOS_ROOT=/Users/ranger/Downloads/go1.24.5.ohosv1r1
+export GO_OHOS_ROOT="$HOME/Downloads/go1.24.5.ohosv1r1"
 # Set this to a native host Go installation >= 1.22.6 on a fresh machine.
 export GOROOT_BOOTSTRAP=/path/to/native/go
 scripts/prepare-go-ohos.sh "$GO_OHOS_ROOT"
@@ -81,7 +81,7 @@ The engine builds produce `entry/libs/arm64-v8a/libclash.so`, `libcore.so` and
 `libsingbox.so`. Packaging rebuilds repository-owned Go outputs when bridge or
 patch inputs are newer, builds the Rust release library and assembles
 `entry/build/default/outputs/default/entry-default-unsigned.hap`.
-`dist/TinyPaws-build-manifest.json` records the build fingerprint, HAP hash and
+`dist/Paws-build-manifest.json` records the build fingerprint, HAP hash and
 comparison of each packaged ELF's loaded segments with its compiled library.
 
 Signing requires a configured local HarmonyOS profile; use

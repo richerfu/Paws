@@ -198,7 +198,7 @@ class ManifestTests(unittest.TestCase):
         for extra in ([], ['--hap-path', str(self.hap), '--signed-hap-path', str(self.signed)]):
             with patch.object(build, 'ROOT', self.root), patch.object(build, 'build_manifest', return_value=copy.deepcopy(manifest)):
                 self.assertEqual(build.main(['--hap-mode', 'release', '--native-profile', 'release', *extra]), 0)
-            output = json.loads((self.root / 'dist/TinyPaws-build-manifest.json').read_text())
+            output = json.loads((self.root / 'dist/Paws-build-manifest.json').read_text())
             self.assertEqual('unsignedHapSha256' in output, bool(extra))
             self.assertFalse(output['wireCapture'])
             self.assertFalse(output['diagnosticPeerPinned'])

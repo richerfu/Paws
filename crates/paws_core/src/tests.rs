@@ -6,6 +6,65 @@ static TEST_LOG_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 const PLATFORM_RECOVERY_OWNER_CHILD_MARKER: &str = "PAWS_PLATFORM_RECOVERY_OWNER_CHILD_MARKER";
 
 #[test]
+fn active_engine_projection_uses_session_ownership_instead_of_next_connection_preference() {
+    let root = std::env::temp_dir().join(format!("paws-active-engine-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    {
+        let mut state = core.lock_state().unwrap();
+        state.vpn_options.engine = VpnEngine::Auto;
+        state.platform_start_attempt_id = "active".to_owned();
+        state.platform_start_outcome = PlatformStartOutcome::Connected;
+        state.platform_extension_attached = true;
+        state.platform_vpn_running = true;
+        state.platform_vpn_engine = Some(VpnEngine::SingBox);
+    }
+    assert_eq!(
+        core.runtime_status_projection().unwrap().active_engine,
+        Some(VpnEngine::SingBox)
+    );
+    {
+        let mut state = core.lock_state().unwrap();
+        state.vpn_options.engine = VpnEngine::Mihomo;
+    }
+    assert_eq!(
+        core.runtime_status_projection().unwrap().active_engine,
+        Some(VpnEngine::SingBox)
+    );
+    {
+        let mut state = core.lock_state().unwrap();
+        let revision = state.status_revision;
+        core.apply_platform_envelope_locked(
+            &mut state,
+            true,
+            None,
+            Some(PlatformVpnState {
+                start_attempt_id: "active".to_owned(),
+                start_outcome: PlatformStartOutcome::Connected,
+                extension_attached: true,
+                running: true,
+                engine: Some(VpnEngine::Meow),
+                updated_at: 1,
+                ..PlatformVpnState::default()
+            }),
+        );
+        assert!(
+            state.status_revision > revision,
+            "engine ownership changes must notify the UI"
+        );
+    }
+    assert_eq!(
+        core.runtime_status_projection().unwrap().active_engine,
+        Some(VpnEngine::Meow)
+    );
+    core.lock_state().unwrap().platform_vpn_running = false;
+    assert_eq!(
+        core.runtime_status_projection().unwrap().active_engine,
+        None
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn mihomo_geodata_refresh_preserves_the_inode_seen_by_live_readers() {
     use std::io::{Read, Seek, SeekFrom};
 

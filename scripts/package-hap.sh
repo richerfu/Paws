@@ -158,12 +158,12 @@ if [ "$mihomo_stale" -eq 1 ]; then
   "$ROOT_DIR/scripts/build-mihomo-ohos.sh"
 fi
 if [ ! -f "$MIHOMO_WRAPPER_SRC" ] || [ ! -f "$MIHOMO_CORE_SRC" ]; then
-  echo "TinyPaws mihomo engine libraries were not found ($MIHOMO_CORE_SRC, $MIHOMO_WRAPPER_SRC)" >&2
+  echo "Paws mihomo engine libraries were not found ($MIHOMO_CORE_SRC, $MIHOMO_WRAPPER_SRC)" >&2
   echo "Run scripts/build-mihomo-ohos.sh or set MIHOMO_WRAPPER_SRC and MIHOMO_CORE_SRC." >&2
   exit 1
 fi
 if [ ! -f "$MIHOMO_TUN_SRC" ]; then
-  echo "TinyPaws mihomo TUN source was not found: $MIHOMO_TUN_SRC" >&2
+  echo "Paws mihomo TUN source was not found: $MIHOMO_TUN_SRC" >&2
   exit 1
 fi
 if grep -Fq '_ = syscall.Close(fd)' "$MIHOMO_TUN_SRC"; then

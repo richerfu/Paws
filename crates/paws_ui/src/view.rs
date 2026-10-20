@@ -288,6 +288,102 @@ fn FlatSegmented(props: FlatSegmentedProps) -> Element {
     }
 }
 
+fn engine_choice_label(engine: paws_model::VpnEngine, locale: UiLocale) -> String {
+    match engine {
+        paws_model::VpnEngine::Auto => translate_ui(locale, tr::engine_auto()),
+        _ => engine.as_str().to_owned(),
+    }
+}
+
+fn engine_status_label(
+    session: &SessionProjection,
+    preferred: paws_model::VpnEngine,
+    locale: UiLocale,
+) -> String {
+    match session.active_engine.filter(|_| session.vpn_running) {
+        Some(engine) => translate_ui(locale, tr::engine_active(engine.as_str())),
+        None if session.vpn_running => translate_ui(locale, tr::engine_active_unknown()),
+        None => translate_ui(
+            locale,
+            tr::engine_preferred(engine_choice_label(preferred, locale)),
+        ),
+    }
+}
+
+#[component]
+fn ConnectionStages(
+    session: SessionProjection,
+    health: Option<paws_core::StartupHealth>,
+    locale: UiLocale,
+) -> Element {
+    use paws_core::StartupCheck;
+    let health = health.filter(|health| {
+        session.vpn_running
+            && session.vpn_session_id.as_deref() == Some(health.session.as_str())
+            && session.active_engine == Some(health.engine)
+    });
+    let ready = |passed| {
+        if passed {
+            StartupCheck::Passed
+        } else {
+            StartupCheck::NotTested
+        }
+    };
+    let stages = [
+        (
+            translate_ui(locale, tr::connection_config()),
+            ready(session.engine_loaded),
+        ),
+        (
+            translate_ui(locale, tr::connection_protect()),
+            if session.network_protect_error.is_some() {
+                StartupCheck::Failed
+            } else {
+                ready(session.network_protected)
+            },
+        ),
+        (
+            translate_ui(locale, tr::connection_dns()),
+            health.as_ref().map_or(StartupCheck::NotTested, |h| h.dns),
+        ),
+        (
+            translate_ui(locale, tr::connection_tcp()),
+            health
+                .as_ref()
+                .map_or(StartupCheck::NotTested, |h| h.node_tcp),
+        ),
+        (
+            translate_ui(locale, tr::connection_https()),
+            health.as_ref().map_or(StartupCheck::NotTested, |h| h.https),
+        ),
+    ];
+    rsx! {
+        row {
+            width: "100%",
+            for (label, state) in stages {
+                column {
+                    layout_weight: 1.0,
+                    align_items: "center",
+                    row {
+                        width: 24.0,
+                        height: 24.0,
+                        align_items: "center",
+                        justify_content: "center",
+                        {arkit::icon(match state { StartupCheck::Passed => "check", StartupCheck::Failed => "x", StartupCheck::NotApplicable => "minus", StartupCheck::NotTested => "circle" }, 13.0, match state { StartupCheck::Passed => success(), StartupCheck::Failed => danger(), _ => subtle() })}
+                    }
+                    text { content: label, font_size: typography::XS, font_color: subtle(), max_lines: 1, text_overflow: "ellipsis" }
+                    text {
+                        content: translate_ui(locale, match state { StartupCheck::Passed => tr::connection_passed(), StartupCheck::Failed => tr::connection_failed(), StartupCheck::NotTested => tr::connection_pending(), StartupCheck::NotApplicable => tr::connection_skipped() }),
+                        font_size: 10.0,
+                        font_color: match state { StartupCheck::Passed => success(), StartupCheck::Failed => danger(), _ => subtle() },
+                        max_lines: 1,
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[derive(Props, Clone, PartialEq)]
 struct FlatDialogProps {
     open: bool,

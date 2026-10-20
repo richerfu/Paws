@@ -206,7 +206,7 @@ export class VpnContinuousTask {
           notificationManager.ContentType.NOTIFICATION_CONTENT_SYSTEM_LIVE_VIEW,
         systemLiveView: {
           typeCode: 8,
-          title: 'TinyPaws · VPN 正在传输数据',
+          title: 'Paws · VPN 正在传输数据',
           text: `${text} · ${totalText}`,
           progress: {
             maxValue: 100,
@@ -218,7 +218,7 @@ export class VpnContinuousTask {
       template: {
         name: 'downloadTemplate',
         data: {
-          title: 'TinyPaws · VPN 正在运行',
+          title: 'Paws · VPN 正在运行',
           fileName: `${text} · ${totalText}`,
           progressValue: progress,
         },

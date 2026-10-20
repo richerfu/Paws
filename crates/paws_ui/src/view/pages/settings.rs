@@ -40,20 +40,19 @@ pub(crate) fn settings_page() -> Element {
     let controller_enabled_value = draft.values.network.controller_enabled;
     let mixed_port_value = draft.values.network.mixed_port.clone();
     let controller_port_value = draft.values.network.controller_port.clone();
-    let vpn_engine_label_value =
-        match paws_model::VpnEngine::try_from(draft.values.vpn.engine.as_str()) {
-            Ok(paws_model::VpnEngine::Auto) => "自动（推荐 · 默认 mihomo 兼容内核）".to_owned(),
-            Ok(paws_model::VpnEngine::Mihomo) => "兼容内核（mihomo · 完整 Clash 能力）".to_owned(),
-            Ok(paws_model::VpnEngine::SingBox) => "前沿内核（sing-box · 现代协议栈）".to_owned(),
-            Ok(paws_model::VpnEngine::Meow) => "Rust 内核（meow-rs · 轻量原生）".to_owned(),
-            Err(_) => draft.values.vpn.engine.clone(),
-        };
-    let engine_options = vec![
-        "自动（推荐 · 默认 mihomo 兼容内核）".to_owned(),
-        "兼容内核（mihomo · 完整 Clash 能力）".to_owned(),
-        "前沿内核（sing-box · 现代协议栈）".to_owned(),
-        "Rust 内核（meow-rs · 轻量原生）".to_owned(),
+    let engine_choices = [
+        paws_model::VpnEngine::Auto,
+        paws_model::VpnEngine::Mihomo,
+        paws_model::VpnEngine::SingBox,
+        paws_model::VpnEngine::Meow,
     ];
+    let vpn_engine_label_value = engine_choice_label(
+        paws_model::VpnEngine::try_from(draft.values.vpn.engine.as_str()).unwrap_or_default(),
+        current.locale,
+    );
+    let engine_options = engine_choices
+        .map(|engine| engine_choice_label(engine, current.locale))
+        .to_vec();
     let engine_selected_label = vpn_engine_label_value.clone();
     let vpn_stack_label_value =
         match paws_model::VpnStack::try_from(draft.values.vpn.stack.as_str()) {
@@ -93,27 +92,59 @@ pub(crate) fn settings_page() -> Element {
         .map(mask_controller_secret)
         .unwrap_or_else(|| translate_ui(current.locale, tr::hard_zh_027()));
 
-    let mut engine_probe_options = paws_model::VpnOptions::default();
-    engine_probe_options.engine =
-        paws_model::VpnEngine::try_from(draft.values.vpn.engine.as_str()).unwrap_or_default();
-    let engine_summary = paws_core::shared_core()
-        .engine_decision(&serde_json::to_string(&engine_probe_options).unwrap_or_default())
-        .ok()
-        .map(|decision| {
-            let selected = decision["selected"].as_str().unwrap_or("mihomo");
-            let reasons = decision["reasons"]
-                .as_array()
-                .map(|v| {
-                    v.iter()
-                        .take(3)
-                        .filter_map(serde_json::Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join("；")
-                })
-                .unwrap_or_default();
-            format!("本次连接将使用 {selected} 内核。{reasons}")
-        })
-        .unwrap_or_else(|| "配置兼容性将在连接前自动校验，默认使用 mihomo 兼容内核。".into());
+    let engine_tasks = use_page_tasks();
+    let mut engine_preview = use_signal(|| None::<Result<(String, String), String>>);
+    let engine_request = use_memo(move || {
+        (
+            form.read().values.vpn.engine.clone(),
+            stores.settings.read().config_revision,
+        )
+    });
+    use_effect(move || {
+        let (selected_engine, revision) = engine_request.read().clone();
+        let mut options = stores.settings.peek().vpn.clone();
+        options.engine =
+            paws_model::VpnEngine::try_from(selected_engine.as_str()).unwrap_or_default();
+        engine_preview.set(None);
+        engine_tasks.query(
+            async move {
+                let decision = paws_core::shared_core()
+                    .engine_decision(&serde_json::to_string(&options).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+                let selected = decision["selected"].as_str().unwrap_or("mihomo").to_owned();
+                let reasons = decision["reasons"]
+                    .as_array()
+                    .map(|reasons| {
+                        reasons
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    })
+                    .unwrap_or_default();
+                Ok((selected, reasons))
+            },
+            move |result| {
+                if form.peek().values.vpn.engine == selected_engine
+                    && stores.settings.peek().config_revision == revision
+                {
+                    engine_preview.set(Some(result));
+                }
+            },
+        );
+    });
+    let preview = match engine_preview() {
+        None => translate_ui(current.locale, tr::engine_preview_loading()),
+        Some(Ok((engine, reasons))) => {
+            translate_ui(current.locale, tr::engine_preview(engine, reasons))
+        }
+        Some(Err(error)) => error,
+    };
+    let engine_summary = format!(
+        "{} {preview}",
+        translate_ui(current.locale, tr::engine_next())
+    );
     let theme = use_theme();
     let settings_form = rsx! {
         column {
@@ -222,12 +253,9 @@ pub(crate) fn settings_page() -> Element {
                                 default_open: false,
                                 on_select: move |label: String| {
                                     if !busy {
-                                        form.write().values.vpn.engine = match label.as_str() {
-                                            "Rust 内核（meow-rs · 轻量原生）" | "Rust 内核（meow-rs）" => "meow",
-                                            "兼容内核（mihomo · 完整 Clash 能力）" | "兼容内核（mihomo）" => "mihomo",
-                                            "前沿内核（sing-box · 现代协议栈）" | "前沿内核（sing-box）" => "sing-box",
-                                            _ => "auto",
-                                        }.to_owned();
+                                        if let Some(engine) = engine_choices.into_iter().find(|engine| engine_choice_label(*engine, current.locale) == label) {
+                                            form.write().values.vpn.engine = engine.as_str().to_owned();
+                                        }
                                     }
                                 },
                             }
@@ -263,6 +291,7 @@ pub(crate) fn settings_page() -> Element {
                                 inset: true,
                             }
                             Input {
+                                click_to_focus: true,
                                 value: Some(draft.values.vpn.trusted.clone()),
                                 placeholder: Some("例如：com.easy.hmos.abroad".to_owned()),
                                 disabled: busy,
@@ -273,6 +302,7 @@ pub(crate) fn settings_page() -> Element {
                         Field {
                             FieldLabel { content: "这些应用绕过 VPN（黑名单，与白名单二选一）" }
                             Input {
+                                click_to_focus: true,
                                 value: Some(draft.values.vpn.blocked.clone()),
                                 placeholder: Some("例如：com.huawei.hmos.browser".to_owned()),
                                 disabled: busy,

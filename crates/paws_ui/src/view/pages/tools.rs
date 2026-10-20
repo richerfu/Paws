@@ -8,24 +8,7 @@ pub(crate) fn tools_page() -> Element {
     let about = stores.about.read().about.clone();
     let settings = stores.settings.read().clone();
     let theme = use_theme();
-    let engine_badge = match settings.vpn.engine {
-        paws_model::VpnEngine::Auto => match locale {
-            UiLocale::ZhCn => "默认内核：mihomo（自动兼容）",
-            UiLocale::En => "Default engine: mihomo (Auto)",
-        },
-        paws_model::VpnEngine::Mihomo => match locale {
-            UiLocale::ZhCn => "当前内核：mihomo（兼容内核）",
-            UiLocale::En => "Active engine: mihomo",
-        },
-        paws_model::VpnEngine::SingBox => match locale {
-            UiLocale::ZhCn => "当前内核：sing-box（前沿内核）",
-            UiLocale::En => "Active engine: sing-box",
-        },
-        paws_model::VpnEngine::Meow => match locale {
-            UiLocale::ZhCn => "当前内核：meow-rs（Rust 内核）",
-            UiLocale::En => "Active engine: meow-rs",
-        },
-    };
+    let engine_badge = engine_status_label(&stores.session.read(), settings.vpn.engine, locale);
     let diagnostics_subtitle = match locale {
         UiLocale::ZhCn => "连通性探测、自动故障恢复、配置备份与脱敏诊断报告",
         UiLocale::En => "Connectivity probe, auto-failover, backup & diagnostic report",
@@ -168,7 +151,7 @@ pub(crate) fn tools_page() -> Element {
                 justify_content: "center",
                 text {
                     content: format!(
-                        "TinyPaws {} · {}",
+                        "Paws {} · {}",
                         about.app_version,
                         engine_badge
                     ),
@@ -387,7 +370,7 @@ pub(crate) fn about_page() -> Element {
                     {arkit::icon("paw-print", 26.0, text_color())}
                 }
                 text {
-                    content: "TinyPaws",
+                    content: "Paws",
                     margin_top: spacing::MD,
                     font_size: typography::XL,
                     line_height: 28.0,

@@ -1,10 +1,6 @@
-# TinyPaws
+# Paws
 
-Current device release: **1.2.7-tiny** (versionCode **1002007**). See the
-[changelog](CHANGELOG.md) for release notes and the
-[delivery record](docs/TinyPaws-1.2.7-delivery.md) for physical-device evidence.
-
-TinyPaws is a Clash/mihomo HarmonyOS client with a native ArkUI interface,
+Paws is a Clash/mihomo HarmonyOS client with a native ArkUI interface,
 powered by [meow-rs 0.22.0](https://github.com/meow-rs/meow-rs), a Rust userspace TUN
 stack, and optional mihomo and sing-box compatibility engines.
 Profiles that use plugin transports are resolved through the route-validated
@@ -25,7 +21,7 @@ HarmonyOS abilities (ArkTS)
     |  EntryAbility + VpnExtensionAbility
     |  VpnConnection TUN + protectProcessNet()
     v
-TinyPaws Rust runtime
+Paws Rust runtime
     |  paws_core + paws_profile
     |  paws_vpn + netstack-smoltcp/lwIP
     v
