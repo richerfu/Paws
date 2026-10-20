@@ -19,3 +19,25 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Third-party components
+======================
+
+The MIT license above applies to Paws-authored source code. Third-party
+components retain their own licenses and are not relicensed by that grant.
+
+Mihomo 1.10.0 (Clash.Meta, source revision
+8597778c7df410ebe88c57e59eaab32d203156df):
+  License: GNU General Public License, version 3 (GPL-3.0).
+  Full upstream license: LICENSES/mihomo/LICENSE.
+
+sing-box 1.13.21 (source revision
+628cb31ffa79cffffd34c2f9cde6cae044e4fc12):
+  License: GNU General Public License, version 3 or later
+  (GPL-3.0-or-later), with the upstream additional notice retained.
+  Copyright and upstream notice: LICENSES/sing-box/LICENSE.
+  Full GNU GPL version 3 text: LICENSES/sing-box/COPYING.
+
+See THIRD_PARTY_NOTICES.md and LICENSES/README.md for the source locations,
+local adaptations, and other third-party acknowledgments. The MIT license
+above is not a blanket license for every component in a packaged HAP.

@@ -10,10 +10,14 @@ license links; these are not claims about the latest upstream releases.
   commit `8597778c7df410ebe88c57e59eaab32d203156df` with
   `patches/mihomo-openharmony.patch` and `patches/gvisor-fstat.patch`):
   [GPL-3.0](https://github.com/chen08209/Clash.Meta/blob/8597778c7df410ebe88c57e59eaab32d203156df/LICENSE).
+- The unmodified upstream license text is included at
+  [LICENSES/mihomo/LICENSE](LICENSES/mihomo/LICENSE).
 - The packaged `libcore.so` and `libclash.so` are compiled via `scripts/build-mihomo-ohos.sh` from `vendor/mihomo-bridge` and commit `8597778c` (2026-10-01).
 
-The corresponding source and license texts are included in the Paws source
-delivery. When redistributing a HAP containing these libraries, distribute the
+The bridge sources, adaptation patches, and complete upstream license texts are
+included in this repository. The pinned upstream source links and build
+instructions identify the corresponding engine sources. When redistributing a
+HAP containing these libraries, distribute the
 matching source and GPL-3.0 notices with it.
 
 Paws also packages an independent sing-box engine for comparative and
@@ -22,6 +26,10 @@ advanced-protocol use.
 - [sing-box 1.13.21](https://github.com/SagerNet/sing-box/tree/628cb31ffa79cffffd34c2f9cde6cae044e4fc12),
   commit `628cb31f`,
   [GPL-3.0-or-later](https://github.com/SagerNet/sing-box/blob/628cb31ffa79cffffd34c2f9cde6cae044e4fc12/LICENSE).
+- The unmodified upstream copyright, license notice, and additional
+  naming/association notice are included at
+  [LICENSES/sing-box/LICENSE](LICENSES/sing-box/LICENSE). The complete GNU GPL v3
+  text is included at [LICENSES/sing-box/COPYING](LICENSES/sing-box/COPYING).
 - OpenHarmony Go bridge source: `vendor/sing-box-bridge/main.go`.
 - The packaged `libsingbox.so` is compiled for `openharmony/arm64` with the
   OpenHarmony SIG Go 1.24 toolchain and the DevEco OpenHarmony clang/sysroot.

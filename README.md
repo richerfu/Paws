@@ -1,8 +1,8 @@
 # Paws
 
-Paws is a Clash/mihomo HarmonyOS client with a native ArkUI interface,
-powered by [meow-rs 0.22.0](https://github.com/meow-rs/meow-rs), a Rust userspace TUN
-stack, and optional mihomo and sing-box compatibility engines.
+Paws is a native HarmonyOS proxy client with an ArkUI interface and three
+integrated proxy engines: Mihomo, sing-box, and
+[meow-rs 0.22.0](https://github.com/meow-rs/meow-rs).
 Profiles that use plugin transports are resolved through the route-validated
 mihomo engine even when a candidate engine is selected, so a compatibility
 preference cannot produce a false Connected state.
@@ -271,4 +271,13 @@ docs/                          GeoData provisioning notes
 
 ## License
 
-[MIT](LICENSE).
+Paws-authored source code uses the [MIT license](LICENSE). Bundled components
+retain their own upstream licenses:
+
+- **Mihomo**: [GPL-3.0, full license text](LICENSES/mihomo/LICENSE).
+- **sing-box**: [GPL-3.0-or-later and upstream notices](LICENSES/sing-box/LICENSE),
+  with the [full GNU GPL v3 text](LICENSES/sing-box/COPYING).
+
+See [third-party notices](THIRD_PARTY_NOTICES.md) and the
+[license index](LICENSES/README.md) for pinned source revisions and adaptations.
+The Paws MIT grant does not relicense these components or every library in a HAP.
