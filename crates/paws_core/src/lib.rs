@@ -110,7 +110,7 @@ const MIXED_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const MIXED_LISTENER_READY_RETRY: Duration = Duration::from_millis(25);
 const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
-const APP_VERSION: &str = "1.2.0";
+const APP_VERSION: &str = "1.3.0";
 const MEOW_RS_VERSION: &str = "0.22.0";
 // Versions of the source revisions pinned by scripts/build-*-ohos.sh.
 const MIHOMO_VERSION: &str = "1.10.0";
