@@ -9,10 +9,11 @@ use arkit::router::{
     use_back_handler, use_navigator, use_route, AnimatedOutlet, RouteProvider, Router,
 };
 use arkit::shadcn::components::{
-    BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant, Card,
-    CardDescription, CardTitle, Dialog, DialogFooter, DialogHeader, Field, FieldContent,
-    FieldDescription, FieldGroup, FieldLabel, FieldOrientation, FieldTitle, Input, RadioGroup,
-    Select, Separator, Spinner, Switch, TabsList, TabsTrigger, Textarea,
+    Alert, AlertDescription, AlertTitle, AlertVariant, Badge, BadgeVariant, BottomNavigation,
+    BottomNavigationItem, Button, ButtonSize, ButtonVariant, Card, CardDescription, CardTitle,
+    Dialog, DialogFooter, DialogHeader, Field, FieldContent, FieldDescription, FieldError,
+    FieldGroup, FieldLabel, FieldOrientation, FieldTitle, Input, RadioGroup, Select, Separator,
+    Spinner, Switch, TabsList, TabsTrigger, Textarea,
 };
 use arkit::shadcn::theme::{
     control, radius, shadow, spacing, typography, use_theme, with_alpha, Theme, ThemeMode,
@@ -30,9 +31,10 @@ mod press;
 mod route;
 
 use pages::{
-    about_page, appearance_page, connections_page, dashboard_page, diagnostics_page, logs_page,
-    privacy_page, profiles_page, proxies_page, requests_page, resources_page, settings_page,
-    subscription_converter_page, tools_page, traffic_page, ManualRuleDialog,
+    about_page, advanced_diagnostics_page, appearance_page, backups_page, connections_page,
+    dashboard_page, diagnostics_page, logs_page, privacy_page, profiles_page, proxies_page,
+    requests_page, resources_page, settings_page, subscription_converter_page, tools_page,
+    traffic_page, ManualRuleDialog,
 };
 use press::PressState;
 use route::Route;
@@ -311,7 +313,7 @@ fn engine_status_label(
 }
 
 #[component]
-fn ConnectionStages(
+fn ConnectionChecks(
     session: SessionProjection,
     health: Option<paws_core::StartupHealth>,
     locale: UiLocale,
@@ -358,28 +360,79 @@ fn ConnectionStages(
         ),
     ];
     rsx! {
-        row {
-            width: "100%",
+        FieldGroup {
             for (label, state) in stages {
-                column {
-                    layout_weight: 1.0,
-                    align_items: "center",
-                    row {
-                        width: 24.0,
-                        height: 24.0,
-                        align_items: "center",
-                        justify_content: "center",
-                        {arkit::icon(match state { StartupCheck::Passed => "check", StartupCheck::Failed => "x", StartupCheck::NotApplicable => "minus", StartupCheck::NotTested => "circle" }, 13.0, match state { StartupCheck::Passed => success(), StartupCheck::Failed => danger(), _ => subtle() })}
+                Field {
+                    orientation: FieldOrientation::Horizontal,
+                    FieldContent {
+                        FieldTitle { content: label }
                     }
-                    text { content: label, font_size: typography::XS, font_color: subtle(), max_lines: 1, text_overflow: "ellipsis" }
-                    text {
+                    Badge {
                         content: translate_ui(locale, match state { StartupCheck::Passed => tr::connection_passed(), StartupCheck::Failed => tr::connection_failed(), StartupCheck::NotTested => tr::connection_pending(), StartupCheck::NotApplicable => tr::connection_skipped() }),
-                        font_size: 10.0,
-                        font_color: match state { StartupCheck::Passed => success(), StartupCheck::Failed => danger(), _ => subtle() },
-                        max_lines: 1,
+                        variant: match state { StartupCheck::Passed => BadgeVariant::Secondary, StartupCheck::Failed => BadgeVariant::Destructive, _ => BadgeVariant::Outline },
                     }
                 }
             }
+        }
+    }
+}
+
+/// Only composes the upstream Button and Spinner; focus, keyboard, pointer,
+/// disabled styling and sizing stay owned by the shadcn primitive.
+#[component]
+fn OperationButton(
+    label: String,
+    icon: &'static str,
+    #[props(default)] variant: ButtonVariant,
+    #[props(default)] loading: bool,
+    #[props(default)] disabled: bool,
+    onclick: EventHandler<()>,
+) -> Element {
+    let color = match variant {
+        ButtonVariant::Default => primary_text(),
+        ButtonVariant::Destructive => destructive_text(),
+        _ => text_color(),
+    };
+    rsx! {
+        Button {
+            variant,
+            width: Some("100%".into()),
+            accessibility_label: Some(label.clone()),
+            disabled: Some(disabled || loading),
+            onclick: move |_| onclick.call(()),
+            if loading {
+                Spinner { size: spacing::LG, color: Some(color) }
+            } else {
+                {arkit::icon(icon, spacing::LG, color)}
+            }
+            text { content: label, margin_left: spacing::SM, font_size: typography::SM, font_weight: 500, font_color: color }
+        }
+    }
+}
+
+#[component]
+fn OperationNotice(result: Option<Result<String, String>>, locale: UiLocale) -> Element {
+    let Some(result) = result else { return rsx! {} };
+    let (message, variant, title, icon) = match result {
+        Ok(message) => (
+            message,
+            AlertVariant::Default,
+            tr::operation_done(),
+            "check",
+        ),
+        Err(error) => (
+            error,
+            AlertVariant::Destructive,
+            tr::operation_failed(),
+            "circle-alert",
+        ),
+    };
+    rsx! {
+        Alert {
+            icon: icon.to_owned(),
+            variant,
+            AlertTitle { content: translate_ui(locale, title), variant }
+            AlertDescription { content: message, variant }
         }
     }
 }

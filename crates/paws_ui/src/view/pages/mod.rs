@@ -1,6 +1,9 @@
 mod activity;
+mod advanced_diagnostics;
 mod appearance;
+mod backups;
 mod dashboard;
+mod diagnostics;
 mod logs;
 mod profiles;
 mod proxies;
@@ -12,8 +15,11 @@ mod traffic;
 mod yaml_editor;
 
 pub(super) use activity::{connections_page, requests_page, ManualRuleDialog};
+pub(super) use advanced_diagnostics::advanced_diagnostics_page;
 pub(super) use appearance::appearance_page;
+pub(super) use backups::backups_page;
 pub(super) use dashboard::dashboard_page;
+pub(super) use diagnostics::diagnostics_page;
 pub(super) use logs::logs_page;
 pub(super) use profiles::profiles_page;
 pub(super) use proxies::{proxies_page, VirtualProxyGroupList, VirtualProxyPalette};
@@ -22,6 +28,3 @@ pub(super) use settings::settings_page;
 pub(super) use subscription_converter::subscription_converter_page;
 pub(super) use tools::{about_page, privacy_page, tools_page};
 pub(super) use traffic::traffic_page;
-
-mod diagnostics;
-pub(super) use diagnostics::diagnostics_page;

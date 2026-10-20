@@ -203,7 +203,7 @@ fn network_stack_is_a_bounded_selector_with_two_real_backends() {
         .split("tr::page_tr_231()")
         .nth(1)
         .expect("network stack field")
-        .split("FieldLabel { content: \"仅这些应用")
+        .split("tr::vpn_apps_trusted()")
         .next()
         .unwrap();
 

@@ -17,7 +17,6 @@ pub(crate) fn dashboard_page() -> Element {
     });
     let preferences = stores.preferences.read();
     let session = stores.session.read().clone();
-    let preferred_engine = stores.settings.read().vpn.engine;
     let profiles = stores.profiles.read();
     let proxies = stores.proxies.read();
     let activity = stores.activity.read();
@@ -149,7 +148,6 @@ pub(crate) fn dashboard_page() -> Element {
         "power"
     };
 
-    let health_navigator = navigator.clone();
     let theme = use_theme();
     let adaptive = use_adaptive_layout();
     let mut status_hovering = use_signal(|| false);
@@ -283,43 +281,7 @@ pub(crate) fn dashboard_page() -> Element {
                     }
                 }
             }
-            row { height: 8.0 }
-            button {
-                button_type: "normal",
-                width: "100%",
-                height: 36.0,
-                padding: 0.0,
-                background_color: 0x00000000,
-                border_width: 0.0,
-                onclick: move |_| {
-                    health_navigator.push(Route::Diagnostics {});
-                },
-                row {
-                    width: "100%",
-                    height: 36.0,
-                    padding_left: spacing::MD,
-                    padding_right: spacing::MD,
-                    align_items: "center",
-                    background_color: muted(),
-                    border_radius: theme.radii.md,
-                    {arkit::icon(if connected { "shield-check" } else { "activity" }, 14.0, if connected { success() } else { subtle() })}
-                    row {
-                        layout_weight: 1.0,
-                        margin_left: spacing::SM,
-                        text {
-                            width: "100%",
-                            content: engine_status_label(&session, preferred_engine, s),
-                            font_size: typography::XS,
-                            font_weight: 500,
-                            font_color: text_color(),
-                            max_lines: 1,
-                            text_overflow: "ellipsis",
-                        }
-                    }
-                    {arkit::icon("chevron-right", 14.0, subtle())}
-                }
-            }
-            row { height: 10.0 }
+            row { height: 14.0 }
             row {
                 width: "100%",
                 align_items: "center",
