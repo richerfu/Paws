@@ -927,6 +927,7 @@ backup-webdav-url = 备份文件地址
 backup-webdav-url-hint = 填写完整的 HTTPS 文件地址。上传会创建新的备份，下载会恢复配置副本。
 backup-webdav-user = 用户名
 backup-webdav-password = 密码或应用专用密码
+backup-password-toggle = 显示或隐藏密码
 backup-upload = 上传备份
 backup-uploaded = WebDAV 新备份上传成功。
 backup-download = 下载并恢复

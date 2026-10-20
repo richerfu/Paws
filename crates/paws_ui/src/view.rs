@@ -394,18 +394,22 @@ fn OperationButton(
         _ => text_color(),
     };
     rsx! {
-        Button {
-            variant,
-            width: Some("100%".into()),
-            accessibility_label: Some(label.clone()),
-            disabled: Some(disabled || loading),
-            onclick: move |_| onclick.call(()),
-            if loading {
-                Spinner { size: spacing::LG, color: Some(color) }
-            } else {
-                {arkit::icon(icon, spacing::LG, color)}
+        column {
+            width: "100%",
+            margin_bottom: spacing::MD,
+            Button {
+                variant,
+                width: Some("100%".into()),
+                accessibility_label: Some(label.clone()),
+                disabled: Some(disabled || loading),
+                onclick: move |_| onclick.call(()),
+                if loading {
+                    Spinner { size: spacing::LG, color: Some(color) }
+                } else {
+                    {arkit::icon(icon, spacing::LG, color)}
+                }
+                text { content: label, margin_left: spacing::SM, font_size: typography::SM, font_weight: 500, font_color: color }
             }
-            text { content: label, margin_left: spacing::SM, font_size: typography::SM, font_weight: 500, font_color: color }
         }
     }
 }

@@ -101,9 +101,12 @@ pub(crate) fn backups_page() -> Element {
             {card(translate_ui(locale, tr::backup_webdav_title()), Some(translate_ui(locale, tr::backup_webdav_description())), rsx! {
                 FieldGroup {
                     Field {
+                        invalid: !dav_url().is_empty() && invalid_url,
                         FieldLabel { content: translate_ui(locale, tr::backup_webdav_url()) }
                         Input {
                             click_to_focus: true,
+                            accessibility_label: Some(translate_ui(locale, tr::backup_webdav_url())),
+                            invalid: !dav_url().is_empty() && invalid_url,
                             value: Some(dav_url()),
                             placeholder: Some("https://example.com/backups/Paws-backup.json".into()),
                             disabled: busy,
@@ -119,6 +122,7 @@ pub(crate) fn backups_page() -> Element {
                         FieldLabel { content: translate_ui(locale, tr::backup_webdav_user()) }
                         Input {
                             click_to_focus: true,
+                            accessibility_label: Some(translate_ui(locale, tr::backup_webdav_user())),
                             value: Some(dav_user()),
                             disabled: busy,
                             width: Some("100%".into()),
@@ -129,6 +133,8 @@ pub(crate) fn backups_page() -> Element {
                         FieldLabel { content: translate_ui(locale, tr::backup_webdav_password()) }
                         Input {
                             click_to_focus: true,
+                            accessibility_label: Some(translate_ui(locale, tr::backup_webdav_password())),
+                            password_toggle_label: translate_ui(locale, tr::backup_password_toggle()),
                             value: Some(dav_password()),
                             mode: arkit::shadcn::components::InputMode::Password,
                             disabled: busy,

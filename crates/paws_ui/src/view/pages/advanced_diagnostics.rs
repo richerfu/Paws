@@ -43,6 +43,7 @@ pub(crate) fn advanced_diagnostics_page() -> Element {
                         FieldLabel { content: translate_ui(locale, tr::diagnostics_group()) }
                         Select {
                             options,
+                            accessibility_label: Some(translate_ui(locale, tr::diagnostics_group())),
                             selected: Some(group.clone()),
                             default_selected: group.clone(),
                             default_open: false,
@@ -57,6 +58,7 @@ pub(crate) fn advanced_diagnostics_page() -> Element {
                         FieldLabel { content: translate_ui(locale, tr::service_dns_domains()) }
                         Input {
                             click_to_focus: true,
+                            accessibility_label: Some(translate_ui(locale, tr::service_dns_domains())),
                             value: Some(domains()),
                             placeholder: Some("example.com, example.net".into()),
                             width: Some("100%".into()),

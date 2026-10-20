@@ -927,6 +927,7 @@ backup-webdav-url = Backup file URL
 backup-webdav-url-hint = Enter the full HTTPS file URL. Upload creates a new backup; download restores configuration copies.
 backup-webdav-user = Username
 backup-webdav-password = Password or app password
+backup-password-toggle = Show or hide password
 backup-upload = Upload backup
 backup-uploaded = New WebDAV backup uploaded.
 backup-download = Download and restore

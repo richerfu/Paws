@@ -134,6 +134,7 @@ pub(crate) fn diagnostics_page() -> Element {
                         FieldLabel { content: translate_ui(locale, tr::diagnostics_group()) }
                         Select {
                             options,
+                            accessibility_label: Some(translate_ui(locale, tr::diagnostics_group())),
                             selected: Some(group.clone()),
                             default_selected: group.clone(),
                             default_open: false,
@@ -148,6 +149,7 @@ pub(crate) fn diagnostics_page() -> Element {
                         FieldLabel { content: translate_ui(locale, tr::probe_preset()) }
                         Select {
                             options: preset_options,
+                            accessibility_label: Some(translate_ui(locale, tr::probe_preset())),
                             selected: Some(selected_preset.clone()),
                             default_selected: selected_preset,
                             default_open: false,
@@ -160,9 +162,12 @@ pub(crate) fn diagnostics_page() -> Element {
                         }
                     }
                     Field {
+                        invalid: invalid_url,
                         FieldLabel { content: translate_ui(locale, tr::probe_url()) }
                         Input {
                             click_to_focus: true,
+                            accessibility_label: Some(translate_ui(locale, tr::probe_url())),
+                            invalid: invalid_url,
                             value: Some(target()),
                             width: Some("100%".into()),
                             disabled: busy,
@@ -214,6 +219,7 @@ pub(crate) fn diagnostics_page() -> Element {
                             FieldDescription { content: translate_ui(locale, tr::watch_switch_hint()), inset: true }
                         }
                         Switch {
+                            accessibility_label: Some(translate_ui(locale, tr::watch_enable())),
                             checked: Some(watch.enabled),
                             disabled: busy || (!watch.enabled && (!selector || invalid_url)),
                             on_change: move |enabled| {

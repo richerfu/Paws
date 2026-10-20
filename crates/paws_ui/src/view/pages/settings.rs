@@ -247,6 +247,7 @@ pub(crate) fn settings_page() -> Element {
                             FieldLabel { content: translate_ui(current.locale, tr::vpn_engine_label()) }
                             Select {
                                 options: engine_options,
+                                accessibility_label: Some(translate_ui(current.locale, tr::vpn_engine_label())),
                                 disabled: busy,
                                 selected: Some(vpn_engine_label_value.clone()),
                                 default_selected: engine_selected_label.clone(),
@@ -284,6 +285,7 @@ pub(crate) fn settings_page() -> Element {
                         }
                         Separator {}
                         Field {
+                            invalid: per_app_conflict,
                             FieldLabel { content: translate_ui(current.locale, tr::vpn_apps_trusted()) }
                             FieldDescription {
                                 content: translate_ui(current.locale, tr::vpn_apps_trusted_hint()),
@@ -291,6 +293,8 @@ pub(crate) fn settings_page() -> Element {
                             }
                             Input {
                                 click_to_focus: true,
+                                accessibility_label: Some(translate_ui(current.locale, tr::vpn_apps_trusted())),
+                                invalid: per_app_conflict,
                                 value: Some(draft.values.vpn.trusted.clone()),
                                 placeholder: Some("com.easy.hmos.abroad".to_owned()),
                                 disabled: busy,
@@ -299,9 +303,12 @@ pub(crate) fn settings_page() -> Element {
                             }
                         }
                         Field {
+                            invalid: per_app_conflict,
                             FieldLabel { content: translate_ui(current.locale, tr::vpn_apps_blocked()) }
                             Input {
                                 click_to_focus: true,
+                                accessibility_label: Some(translate_ui(current.locale, tr::vpn_apps_blocked())),
+                                invalid: per_app_conflict,
                                 value: Some(draft.values.vpn.blocked.clone()),
                                 placeholder: Some("com.huawei.hmos.browser".to_owned()),
                                 disabled: busy,
