@@ -295,6 +295,7 @@ function automationFixture(native) {
 function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({netId:1})) {
   const automationCalls = [];
   const vpnCalls = [];
+  const foregroundCalls = [];
   class NativeAbility {
     context = {
       applicationInfo: { debug: applicationDebug, name: 'com.example.paws' },
@@ -316,6 +317,7 @@ function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({ne
   class InstalledVpnPlugin {
     constructor(installed) { this.installed = installed; }
     onInstall() { this.installed(); }
+    onAbilityForeground() { foregroundCalls.push(this); }
     async requestStartVpn(options) { vpnCalls.push(options); }
   }
   const { default: EntryAbility } = loadArkts(
@@ -354,7 +356,7 @@ function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({ne
       '../plugins/VpnPlugin': { VpnPlugin: InstalledVpnPlugin },
     },
   );
-  return { ability: new EntryAbility(), automationCalls, vpnCalls };
+  return { ability: new EntryAbility(), automationCalls, vpnCalls, foregroundCalls };
 }
 
 test('cold-start debug VPN waits for plugin installation after factory creation', async () => {
@@ -366,6 +368,23 @@ test('cold-start debug VPN waits for plugin installation after factory creation'
   plugin.onInstall();
   await start;
   assert.deepEqual(fixture.vpnCalls, ['{}']);
+});
+
+test('foreground and new Want wakeups reach the current VPN plugin instance', async () => {
+  const fixture = entryAbilityFixture(false);
+  fixture.ability.onForeground();
+  assert.deepEqual(fixture.foregroundCalls, []);
+
+  const initial = fixture.ability.bridgePlugins[2].factory();
+  initial.onInstall();
+  fixture.ability.onForeground();
+  fixture.ability.onNewWant({}, {});
+  await fixture.ability.lifecycleTail;
+
+  const replacement = fixture.ability.bridgePlugins[2].factory();
+  replacement.onInstall();
+  fixture.ability.onForeground();
+  assert.deepEqual(fixture.foregroundCalls, [initial, initial, replacement]);
 });
 
 test('protocol negative acceptance cannot count an unexpected success as failure', async () => {

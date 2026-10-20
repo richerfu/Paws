@@ -207,9 +207,9 @@ PY_BUILD
 )"
 export PAWS_ENGINE_BUILD_ID
 if [ "$NATIVE_PROFILE" = "release" ]; then
-  OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH" --package paws_ui --release -- --locked
+  OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH" --package paws_ui --dist "$ROOT_DIR/crates/paws_ui/dist" --release -- --locked
 else
-  OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH" --package paws_ui -- --locked
+  OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH" --package paws_ui --dist "$ROOT_DIR/crates/paws_ui/dist" -- --locked
 fi
 # Hvigor can hard-link its native intermediates to the input library. Avoid
 # rewriting that inode; install a fresh file atomically instead. A buffered

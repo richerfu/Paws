@@ -36,6 +36,7 @@ export default class EntryAbility extends NativeAbility {
   private vpnPluginReady: Promise<VpnPlugin> = new Promise((resolve): void => {
     this.resolveVpnPluginReady = resolve;
   });
+  private vpnPlugin?: VpnPlugin;
   private safeAreaPlugin?: SafeAreaPlugin;
   private systemExitRecorder: SystemExitRecorder = new SystemExitRecorder();
 
@@ -56,6 +57,7 @@ export default class EntryAbility extends NativeAbility {
     const plugin = new VpnPlugin((): void => {
       this.resolveVpnPluginReady?.(plugin);
     });
+    this.vpnPlugin = plugin;
     return plugin;
   }
 
