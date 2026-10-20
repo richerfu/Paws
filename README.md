@@ -105,8 +105,11 @@ local protocol profile generation, and an OpenHarmony `aarch` build.
 ### Build an unsigned release HAP
 
 Prepare the Go engines from the vendored bridges and pinned upstream sources;
-see [Native engine builds](docs/native-engines-build.md) for the OHOS Go
-toolchain and patch setup. A separate FlClash checkout is no longer required.
+follow [Building Mihomo and sing-box with patched OpenHarmony Go](docs/native-engines-build.md)
+for first-time compiler preparation, reusing patched Go 1.24.7, engine patches,
+explicit library paths, and release/debug packaging. Keep that guide's exported
+environment when running the commands below. A separate FlClash checkout is
+no longer required.
 
 Provision the GeoData files required by GEOIP, GEOSITE, and ASN rules, then
 package the app:
