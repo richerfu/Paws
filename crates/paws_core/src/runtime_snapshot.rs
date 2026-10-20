@@ -5,6 +5,8 @@ pub(super) fn about_snapshot() -> AboutSnapshot {
         app_version: APP_VERSION.to_owned(),
         core_version: env!("CARGO_PKG_VERSION").to_owned(),
         meow_rs_version: MEOW_RS_VERSION.to_owned(),
+        mihomo_version: MIHOMO_VERSION.to_owned(),
+        sing_box_version: SING_BOX_VERSION.to_owned(),
         arkit_version: ARKIT_VERSION.to_owned(),
         rust_version: RUST_VERSION.to_owned(),
         privacy_summary: vec![

@@ -114,8 +114,21 @@ fn about_page_constrains_long_values_and_aligns_repositories() {
     let view = fs::read_to_string("src/view.rs").unwrap();
 
     assert!(page.contains("middle_truncate_text(&about.arkit_version, 18)"));
-    assert!(page.matches("width: Some(\"46%\".into())").count() >= 2);
-    assert!(page.matches("width: 18.0").count() >= 2);
+    let about = page
+        .split("pub(crate) fn about_page")
+        .nth(1)
+        .unwrap()
+        .split("pub(crate) fn privacy_page")
+        .next()
+        .unwrap();
+    for version in ["mihomo_version", "sing_box_version", "meow_rs_version"] {
+        assert!(about.contains(&format!("version: about.{version}")));
+    }
+    assert!(about.contains("source_url:"));
+    assert!(about.contains("license_url:"));
+    assert!(about.contains("ButtonVariant::Outline"));
+    assert!(about.contains("accessibility_label:"));
+    assert!(!about.contains("46%"));
     assert!(page.contains("layout_weight: 1.0"));
     assert!(view.contains("fn middle_truncate_text"));
     assert!(view.contains("max_lines: 1"));

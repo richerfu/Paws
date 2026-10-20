@@ -627,6 +627,10 @@ pub struct AboutSnapshot {
     pub app_version: String,
     pub core_version: String,
     pub meow_rs_version: String,
+    #[serde(default)]
+    pub mihomo_version: String,
+    #[serde(default)]
+    pub sing_box_version: String,
     pub arkit_version: String,
     pub rust_version: String,
     pub privacy_summary: Vec<String>,
@@ -640,6 +644,8 @@ impl Default for AboutSnapshot {
             app_version: env!("CARGO_PKG_VERSION").to_owned(),
             core_version: env!("CARGO_PKG_VERSION").to_owned(),
             meow_rs_version: "unknown".to_owned(),
+            mihomo_version: "unknown".to_owned(),
+            sing_box_version: "unknown".to_owned(),
             arkit_version: "unknown".to_owned(),
             rust_version: "unknown".to_owned(),
             privacy_summary: Vec::new(),

@@ -112,6 +112,9 @@ const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = "1.2.0";
 const MEOW_RS_VERSION: &str = "0.22.0";
+// Versions of the source revisions pinned by scripts/build-*-ohos.sh.
+const MIHOMO_VERSION: &str = "1.10.0";
+const SING_BOX_VERSION: &str = "1.13.21";
 const ARKIT_VERSION: &str = env!("PAWS_ARKIT_VERSION");
 const RUST_VERSION: &str = env!("CARGO_PKG_RUST_VERSION");
 const MIHOMO_OHOS_SDK_VERSION: u32 = 24;

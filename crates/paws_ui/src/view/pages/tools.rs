@@ -58,11 +58,7 @@ pub(crate) fn tools_page() -> Element {
                 width: "100%",
                 justify_content: "center",
                 text {
-                    content: format!(
-                        "Paws {} · meow-rs {}",
-                        about.app_version,
-                        about.meow_rs_version
-                    ),
+                    content: format!("Paws {}", about.app_version),
                     font_size: typography::XS,
                     font_color: subtle(),
                 }
@@ -258,8 +254,6 @@ fn settings_value_row(
 }
 
 pub(crate) fn about_page() -> Element {
-    let services = use_context::<UiServices>();
-    let meow_services = services.clone();
     let stores = use_context::<UiStores>();
     let locale = stores.preferences.read().locale;
     let about = stores.about.read().about.clone();
@@ -306,13 +300,81 @@ pub(crate) fn about_page() -> Element {
                         width: "100%",
                         {info_row(translate_ui(locale, tr::page_tr_034()), about.app_version)}
                         {info_row(translate_ui(locale, tr::page_tr_035()), about.core_version)}
-                        {info_row("meow-rs", about.meow_rs_version)}
                         {info_row("arkit", arkit_version)}
                         {info_row("Rust", about.rust_version)}
                     }
                 }
             )}
-            row { height: 12.0 }
+            row { height: spacing::LG }
+            {card(
+                translate_ui(locale, tr::about_engines_title()),
+                Some(translate_ui(locale, tr::about_engines_description())),
+                rsx! {
+                    FieldGroup {
+                        AboutComponent {
+                            name: "Mihomo",
+                            version: about.mihomo_version,
+                            license: "GPL-3.0",
+                            source_url: "https://github.com/chen08209/Clash.Meta/tree/8597778c7df410ebe88c57e59eaab32d203156df",
+                            license_url: "https://github.com/chen08209/Clash.Meta/blob/8597778c7df410ebe88c57e59eaab32d203156df/LICENSE",
+                            locale,
+                        }
+                        FieldSeparator {}
+                        AboutComponent {
+                            name: "sing-box",
+                            version: about.sing_box_version,
+                            license: "GPL-3.0-or-later",
+                            source_url: "https://github.com/SagerNet/sing-box/tree/628cb31ffa79cffffd34c2f9cde6cae044e4fc12",
+                            license_url: "https://github.com/SagerNet/sing-box/blob/628cb31ffa79cffffd34c2f9cde6cae044e4fc12/LICENSE",
+                            locale,
+                        }
+                        FieldSeparator {}
+                        AboutComponent {
+                            name: "meow-rs",
+                            version: about.meow_rs_version,
+                            license: "MIT",
+                            source_url: "https://github.com/meow-rs/meow-rs",
+                            license_url: "https://github.com/meow-rs/meow-rs/blob/main/LICENSE",
+                            locale,
+                        }
+                    }
+                }
+            )}
+            row { height: spacing::LG }
+            {card(
+                translate_ui(locale, tr::about_open_source_title()),
+                Some(translate_ui(locale, tr::about_open_source_description())),
+                rsx! {
+                    FieldGroup {
+                        AboutComponent {
+                            name: "arkit",
+                            version: about.arkit_version,
+                            license: "MIT OR Apache-2.0",
+                            source_url: "https://github.com/richerfu/arkit",
+                            license_url: "https://github.com/richerfu/arkit#license",
+                            locale,
+                        }
+                        Field {
+                            FieldDescription { content: translate_ui(locale, tr::about_bridge_credit()), inset: false }
+                        }
+                        column {
+                            width: "100%",
+                            margin_bottom: spacing::MD,
+                            AboutSourceLink {
+                                name: "FlClash",
+                                label: translate_ui(locale, tr::about_source()),
+                                url: "https://github.com/chen08209/FlClash",
+                            }
+                        }
+                        AboutSourceLink {
+                            name: "Paws",
+                            label: translate_ui(locale, tr::about_third_party_notices()),
+                            url: "https://github.com/richerfu/Paws/blob/main/THIRD_PARTY_NOTICES.md",
+                        }
+                    }
+                }
+            )}
+            row { height: spacing::LG }
             {settings_section(
                 translate_ui(locale, tr::page_tr_036()),
                 vec![settings_route_row(
@@ -321,43 +383,65 @@ pub(crate) fn about_page() -> Element {
                     translate_ui(locale, tr::hard_zh_024()),
                 )],
             )}
-            row { height: 10.0 }
-            row {
-                width: "100%",
-                justify_content: "center",
-                FlatButton {
-                    variant: FlatButtonVariant::Link,
-                    size: ButtonSize::Sm,
-                    width: Some("46%".into()),
-                    onclick: move |_| meow_services.open_external_url("https://github.com/madeye/meow-rs".to_owned()),
-                    row {
-                        width: 18.0,
-                        height: 20.0,
-                        align_items: "center",
-                        justify_content: "center",
-                        {arkit::icon("github", 16.0, text_color())}
-                    }
-                    text { content: "meow-rs", margin_left: spacing::SM, font_size: typography::SM, line_height: 20.0, font_weight: 600, font_color: text_color() }
-                }
-                row { width: spacing::SM }
-                FlatButton {
-                    variant: FlatButtonVariant::Link,
-                    size: ButtonSize::Sm,
-                    width: Some("46%".into()),
-                    onclick: move |_| services.open_external_url("https://github.com/richerfu/arkit".to_owned()),
-                    row {
-                        width: 18.0,
-                        height: 20.0,
-                        align_items: "center",
-                        justify_content: "center",
-                        {arkit::icon("github", 16.0, text_color())}
-                    }
-                    text { content: "arkit", margin_left: spacing::SM, font_size: typography::SM, line_height: 20.0, font_weight: 600, font_color: text_color() }
-                }
-            }
         }
     };
     scaffold(Route::About {}, rsx! {}, body)
+}
+
+#[component]
+fn AboutComponent(
+    name: String,
+    version: String,
+    license: String,
+    source_url: String,
+    license_url: String,
+    locale: UiLocale,
+) -> Element {
+    let version = if version.is_empty() || version == "unknown" {
+        translate_ui(locale, tr::about_version_unknown())
+    } else {
+        version
+    };
+    rsx! {
+        Field {
+            row {
+                width: "100%",
+                align_items: "center",
+                FieldContent { FieldTitle { content: name.clone() } }
+                Badge { content: version, variant: BadgeVariant::Secondary }
+            }
+            FieldDescription { content: license.clone(), inset: true }
+            row {
+                width: "100%",
+                margin_top: spacing::MD,
+                column {
+                    layout_weight: 1.0,
+                    AboutSourceLink { name: name.clone(), label: translate_ui(locale, tr::about_source()), url: source_url }
+                }
+                row { width: spacing::MD }
+                column {
+                    layout_weight: 1.0,
+                    AboutSourceLink { name, label: translate_ui(locale, tr::about_license()), url: license_url }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn AboutSourceLink(name: String, label: String, url: String) -> Element {
+    let services = use_context::<UiServices>();
+    rsx! {
+        Button {
+            variant: ButtonVariant::Outline,
+            size: ButtonSize::Sm,
+            width: Some("100%".into()),
+            accessibility_label: Some(format!("{name} · {label}")),
+            onclick: move |_| services.open_external_url(url.clone()),
+            {arkit::icon("external-link", spacing::LG, text_color())}
+            text { content: label, margin_left: spacing::SM, font_size: typography::SM, font_color: text_color() }
+        }
+    }
 }
 
 pub(crate) fn privacy_page() -> Element {
