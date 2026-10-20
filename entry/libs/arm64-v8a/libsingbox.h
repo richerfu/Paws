@@ -22,6 +22,7 @@ typedef struct { const char *p; ptrdiff_t n; } _GoString_;
 #line 3 "main.go"
 
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <network/netmanager/net_connection.h>
@@ -89,6 +90,7 @@ extern "C" {
 
 extern char* TinyPawsSingVersion();
 extern int TinyPawsSingStart(int tunFD, int netID, char* configJSON, char* workDir);
+extern int TinyPawsSingTraffic(uint64_t* uploadSpeed, uint64_t* downloadSpeed, uint64_t* uploadTotal, uint64_t* downloadTotal);
 extern size_t TinyPawsSingCopyLog(char* destination, size_t capacity);
 extern int TinyPawsSingStop();
 extern size_t TinyPawsSingCopyLastError(char* destination, size_t capacity);

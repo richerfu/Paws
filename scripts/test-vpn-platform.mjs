@@ -530,6 +530,8 @@ function extensionFixture({ clock, engine = 'meow' } = {}) {
     cancelPlatformChangeWait() {},
     syncPlatformChanges() {},
     persistVpnTelemetry() {},
+    updateSingBoxVpnTraffic() { calls.push(['sing-box-traffic']); },
+    updateExternalVpnTraffic(frame) { calls.push(['external-traffic', JSON.parse(frame)]); },
     queryVpnSpeed() { calls.push(['speed-only']); return JSON.stringify({ traffic: { uploadSpeed: 1024, downloadSpeed: 2048 } }); },
     queryTrafficSpeed() { calls.push(['speed-snapshot']); return JSON.stringify({ uploadSpeed: 0, downloadSpeed: 0 }); },
     snapshot() { return JSON.stringify({ traffic: { uploadSpeed: 0, downloadSpeed: 0 }, vpnRunning: nativeRunning }); },
@@ -584,6 +586,7 @@ function extensionFixture({ clock, engine = 'meow' } = {}) {
   const want = (attempt, fd) => config.buildVpnWant(config.DEFAULT_OPTIONS_JSON, { ashmemFd: fd, notificationFd: fd + 1 }, attempt);
   return {
     extension, connections, calls, want, native,
+    mihomo: overrides['libcore.so'],
     emitPlatformEvent() { pendingEvents.resolve(true); },
     setLatestAttempt(attempt) { latestAttempt = attempt; },
     markTerminal(attempt) { terminalAttempts.add(attempt); },
@@ -596,6 +599,31 @@ test('VPN extension telemetry never publishes a second system notification', () 
   fixture.extension.persistTelemetry();
   assert.equal(fixture.calls.filter(c => c[0] === 'speed-only').length, 0);
   assert.equal(fixture.calls.filter(c => c[0] === 'notification').length, 0);
+});
+
+test('sing-box telemetry samples native counters on every tick', () => {
+  const fixture = extensionFixture({ engine: 'sing-box' });
+  fixture.extension.activeEngine = 'sing-box';
+  for (let i = 0; i < 3; i++) fixture.extension.persistTelemetry();
+  assert.equal(fixture.calls.filter(c => c[0] === 'sing-box-traffic').length, 3);
+  assert.equal(fixture.calls.filter(c => c[0] === 'external-traffic').length, 0);
+  fixture.native.updateSingBoxVpnTraffic = () => { throw new Error('counter unavailable'); };
+  fixture.extension.persistTelemetry();
+  assert.ok(fixture.calls.some(c => c[0] === 'warn' && c.some(value => String(value).includes('counter unavailable'))));
+});
+
+test('mihomo telemetry forwards native rates and totals, including idle samples', () => {
+  const fixture = extensionFixture({ engine: 'mihomo' });
+  fixture.extension.activeEngine = 'mihomo';
+  fixture.mihomo.getTraffic = () => '{"up":1024,"down":4096}';
+  fixture.mihomo.getTotalTraffic = () => '{"up":8192,"down":65536}';
+  fixture.extension.persistTelemetry();
+  fixture.mihomo.getTraffic = () => '{"up":0,"down":0}';
+  fixture.extension.persistTelemetry();
+  assert.deepEqual(fixture.calls.filter(c => c[0] === 'external-traffic').map(c => c[1]), [
+    { uploadSpeed: 1024, downloadSpeed: 4096, uploadTotal: 8192, downloadTotal: 65536 },
+    { uploadSpeed: 0, downloadSpeed: 0, uploadTotal: 8192, downloadTotal: 65536 },
+  ]);
 });
 
 test('repeated background telemetry cannot call notification services', () => {

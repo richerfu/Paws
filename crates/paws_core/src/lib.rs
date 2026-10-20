@@ -2909,6 +2909,7 @@ impl CoreHandle {
         state.platform_vpn_running = true;
         state.platform_vpn_engine = Some(resolved_engine);
         state.platform_start_outcome = PlatformStartOutcome::Connected;
+        state.traffic = TrafficSnapshot::default();
         state.last_traffic_sample = None;
         state.logs.push(info_log(format!(
             "{} VPN data plane started",
@@ -2940,6 +2941,8 @@ impl CoreHandle {
         state.traffic.tun_download_speed = download_speed;
         state.traffic.tun_upload_bytes = upload_total;
         state.traffic.tun_download_bytes = download_total;
+        record_traffic_history(&mut state);
+        self.publish_runtime_change_locked(&mut state, false, true);
         drop(state);
         self.persist_vpn_telemetry()
     }
@@ -7485,9 +7488,17 @@ impl CoreHandle {
         } else {
             state.platform_logs = None;
             state.platform_profile_traffic = None;
+            // External engines own their counters and history cadence. They
+            // have no Rust TUN, and a loaded Meow tunnel is not their data plane.
+            let external_traffic = tun_stats.is_none()
+                && state.platform_vpn_running
+                && matches!(
+                    state.platform_vpn_engine,
+                    Some(VpnEngine::Mihomo | VpnEngine::SingBox)
+                );
             if let Some(stats) = &tun_stats {
                 apply_traffic_sample(&mut state, stats)?;
-            } else {
+            } else if !external_traffic {
                 state.traffic.upload_speed = 0;
                 state.traffic.download_speed = 0;
                 state.traffic.tun_upload_speed = 0;
@@ -7495,7 +7506,11 @@ impl CoreHandle {
                 state.last_traffic_sample = None;
             }
             let connections = if let Some(tunnel) = state.tunnel.clone() {
-                apply_meow_traffic_sample(&mut state, &tunnel, tun_stats.is_none())?;
+                apply_meow_traffic_sample(
+                    &mut state,
+                    &tunnel,
+                    tun_stats.is_none() && !external_traffic,
+                )?;
                 active_connections_from_tunnel(&tunnel)
             } else {
                 state.traffic.meow_upload_speed = 0;
@@ -7504,7 +7519,9 @@ impl CoreHandle {
                 Vec::new()
             };
             record_request_history(&mut state, &connections);
-            record_traffic_history(&mut state);
+            if !external_traffic {
+                record_traffic_history(&mut state);
+            }
             state.connections = connections;
             state.dns = dns_snapshot(&state.vpn_options, tun_stats.as_ref());
         }

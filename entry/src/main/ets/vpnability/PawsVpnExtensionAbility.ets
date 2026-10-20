@@ -1166,12 +1166,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
           downloadTotal: Math.max(0, total.down),
         }));
       } else if (this.activeEngine === 'sing-box') {
-        pawsUi.updateExternalVpnTraffic(JSON.stringify({
-          uploadSpeed: 0,
-          downloadSpeed: 0,
-          uploadTotal: 0,
-          downloadTotal: 0,
-        }));
+        pawsUi.updateSingBoxVpnTraffic();
       } else {
         pawsUi.persistVpnTelemetry();
       }
