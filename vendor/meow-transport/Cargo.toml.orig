@@ -1,0 +1,263 @@
+[package]
+name = "meow-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+description = "Reusable composable stream-transport layers (TLS, WS, gRPC, H2, HTTPUpgrade) for meow-rs"
+
+# ADR-0001 + ADR-0009: this crate is a leaf — no dep on any other workspace crate
+# (meow-common, meow-proxy, meow-dns, meow-config).
+# `cargo tree -p meow-transport` must show no meow-* crates.
+
+[features]
+default = ["tls", "ws"]
+# tls: the `TlsLayer` client transport, backed by BoringSSL (boring +
+# tokio-boring; boring-sys vendors and builds BoringSSL, so cmake 3.22+ and a
+# C++ compiler are required at build time — Ubuntu 20.04/Debian 11 ship older
+# cmake and need Kitware's apt repo or `pip install cmake`). Plain TLS, uTLS fingerprint
+# shaping, ECH (with server retry_configs self-healing), mTLS and ALPN are all
+# native here. There is no rustls backend: the hysteria2 outbound (meow-proxy)
+# runs quiche on the same vendored BoringSSL, and rustls is linked only by the
+# loopback test servers under [dev-dependencies].
+tls = [
+    "dep:boring",
+    "dep:tokio-boring",
+    "dep:boring-sys",
+    "dep:foreign-types",
+    "dep:rand",
+    "dep:webpki-root-certs",
+]
+# boring-tls: compatibility alias for `tls` (+ `reality`, which it always
+# implied) so existing `--features boring-tls` invocations and downstream
+# manifests keep building. New code should enable `tls`.
+boring-tls = ["tls", "reality"]
+# reality: xray REALITY client handshake (issue #377). The record layer, the
+# X25519 / HKDF / AEAD crypto and the browser-shaped ClientHello builder
+# (`reality_hello.rs`, issue #708) are all in-tree (`reality_tls.rs`) on top
+# of the always-present aes-gcm/hmac/sha2 deps; chacha20poly1305 covers the
+# third TLS 1.3 suite a browser hello offers. BoringSSL is used only to mint
+# the decoy P-256 key share of the `firefox` profile.
+reality = [
+    "tls",
+    "dep:rand",
+    "dep:x25519-dalek",
+    "dep:chacha20poly1305",
+]
+ws = [
+    "dep:tokio-tungstenite",
+    "dep:futures-util",
+    "dep:base64",
+]
+grpc = [
+    "dep:h2",
+    "dep:http",
+    "dep:rand",
+]
+h2 = [
+    "dep:h2",
+    "dep:http",
+    "dep:rand",
+]
+httpupgrade = [
+    "dep:httparse",
+]
+xhttp = [
+    "dep:h2",
+    "dep:http",
+    "dep:rand",
+]
+# simple-obfs (SIP004): a stream-wrapper codec that frames shadowsocks traffic
+# as fake HTTP / TLS so a passive observer sees plain web traffic. Used by both
+# the outbound SS/Snell adapters (client side, here as `simple_obfs::client`)
+# and — in a follow-up — the inbound shadowsocks listener (server side). The
+# client and server share the same fake-TLS record / ClientHello framing, so
+# keeping them in one module lets a single round-trip test guard both halves
+# against framing drift.
+simple-obfs = ["dep:base64", "dep:rand"]
+# shadow-tls client transport (v1/v2/v3) — a real cover TLS handshake over
+# a sniffer/patcher shim, then record-framed data. Dedicated feature so
+# `tls`-only consumers (meow-dns et al.) don't compile ~1.7k lines they
+# can't use; sha1/subtle are its deps alone (hmac/sha2 stay unconditional
+# for the REALITY backend).
+shadow-tls = ["tls", "dep:sha1", "dep:subtle"]
+# restls client transport — a record-level TLS client whose session_id
+# authenticates the relay and whose post-handshake records carry blake3
+# MACs + masks; `tls` supplies BoringSSL for the cover-handshake
+# primitives; blake3/x25519-dalek/rand are its deps alone.
+restls = [
+    "tls",
+    "dep:subtle",
+    "dep:blake3",
+    "dep:x25519-dalek",
+    "dep:rand",
+    "dep:chacha20poly1305",
+]
+# jls client transport — record-level TLS 1.3 built on restls's shared
+# `tls13` driver (hello-random credential auth, plain appdata records).
+jls = ["restls"]
+
+# kcptun: the kcptun SS-plugin transport (issue #533) — a kcp-go wire-compatible
+# KCP-over-UDP stream: the ARQ core is vendored in `kcptun/kcp_go.rs` (kcp
+# 0.6.0 reworked to upstream kcp-go v5.6.72 retransmission/Input semantics),
+# the crypt/FEC/snappy layers are in-tree against the exact upstream packet
+# formats. aes stays on the cipher-0.5 line (0.9.x) to share the RustCrypto
+# traits with the exotic crypts (blowfish/cast5/twofish/des); vmess's `aes`
+# 0.8 in meow-proxy is unaffected — the two majors coexist in the lockfile.
+kcptun = [
+    "dep:reed-solomon-erasure",
+    "dep:crc32fast",
+    "dep:pbkdf2",
+    "dep:sha1",
+    "dep:rand",
+    "dep:aes",
+    "dep:aes-gcm11",
+    "dep:salsa20",
+    "dep:blowfish",
+    "dep:byteorder",
+    "dep:cast5",
+    "dep:des",
+    "dep:cipher",
+    "dep:twofish",
+    "dep:tokio-snappy",
+    "dep:socket2",
+]
+
+[dependencies]
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+aes-gcm = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+sha1 = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
+# restls keyed hashing (TLS 1.3 session-id auth tag + per-record MAC/mask)
+blake3 = { workspace = true, optional = true }
+# restls offers CHACHA20-POLY1305 alongside AES-GCM for cover-parity
+chacha20poly1305 = { workspace = true, optional = true }
+
+# ws feature
+tokio-tungstenite = { workspace = true, optional = true }
+futures-util      = { workspace = true, optional = true }
+base64            = { workspace = true, optional = true }
+
+# grpc + h2 features (share the h2 crate; see ADR-0001 §5 note on intentional dep sharing)
+h2   = { version = "0.4", optional = true }
+http = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+
+# httpupgrade feature
+httparse = { version = "1", optional = true }
+
+# reality feature — pure-Rust X25519 for the REALITY handshake.
+x25519-dalek = { workspace = true, optional = true }
+
+# kcptun feature — see the `kcptun` feature comment above for why aes is pinned
+# to the cipher-0.5 line while vmess's aes stays on 0.8.
+# `default-features = false` drops the `std` feature, whose only payload is
+# `parking_lot` (unmaintained dep `instant`, RUSTSEC-2024-0384) for the
+# internal decode-matrix cache mutex — `spin::Mutex` is already the no_std
+# fallback and the cache is per-session, so the lock is never contended.
+# Error paths in kcptun/fec.rs use `.ok()`/`.is_ok()`, not `?`, so losing
+# the `std::error::Error` impl is invisible.
+reed-solomon-erasure = { version = "6", optional = true, default-features = false }
+crc32fast = { workspace = true, optional = true }
+# pbkdf2 0.12 pairs with the digest-0.10 sha1 the workspace already pins
+# (0.13 moved to digest 0.11 and would pull a second sha1).
+pbkdf2 = { version = "0.12", optional = true }
+aes = { version = "0.9", optional = true }
+aes-gcm11 = { package = "aes-gcm", version = "0.11", optional = true }
+salsa20 = { version = "0.11", optional = true }
+blowfish = { version = "0.10", optional = true }
+# blowfish is generic over byte order; Go's blowfish is big-endian.
+byteorder = { version = "1", optional = true }
+cast5 = { version = "0.12", optional = true }
+des = { version = "0.9", optional = true }
+cipher = { version = "0.5", optional = true }
+twofish = { version = "0.8", optional = true }
+# Snappy framed-stream codec for kcptun's `nocomp=false` data path —
+# `tokio-snappy` wraps `snap`'s frame format (wire-identical to golang/snappy's
+# Writer/Reader) over a bidirectional tokio stream. 185 lines, MIT.
+tokio-snappy = { version = "0.2", optional = true }
+# `SO_RCVBUF`/`SO_SNDBUF`/`TOS` on the kcptun UDP socket (`sockbuf`/`dscp`).
+socket2 = { workspace = true, optional = true }
+
+# tls feature (BoringSSL)
+boring             = { workspace = true, optional = true }
+tokio-boring       = { workspace = true, optional = true }
+boring-sys         = { workspace = true, optional = true }
+foreign-types      = { workspace = true, optional = true }
+# Mozilla CA bundle for boring's X509Store. The BoringSSL connector
+# starts with an *empty* trust store; sandboxed runtimes (iOS
+# NetworkExtension, sealed app extensions) don't pick up system roots
+# the way `boring-sys`'s vendored BoringSSL falls back to on a plain
+# macOS process, so peer-cert verification fails with
+# `unable to get local issuer certificate` for every proxy that uses
+# TLS (ech-tls-tunnel, trojan, vless+tls, ss-plugin v2ray, …).
+# Seeding the same Mozilla root list rustls uses gives the boring path
+# parity with rustls and makes verification work uniformly across
+# platforms. Adds ~150 KB of DER blobs to the .rlib.
+webpki-root-certs  = { version = "1", optional = true }
+
+[dev-dependencies]
+# `test-util` enables paused-time tests (start_paused / time::advance) —
+# not part of tokio's `full` set.
+tokio        = { workspace = true, features = ["test-util"] }
+# Test-only: the loopback TLS *servers* in tests/ (SNI/ALPN/mTLS capture) are
+# rustls-based. Not linked into any binary.
+tokio-rustls = { workspace = true }
+rustls       = { workspace = true }
+rcgen        = "0.13"
+md5          = "0.8"
+# Log-capture strategy: home-rolled MakeWriter in tests/support/log_capture.rs using
+# tracing_subscriber scoped subscribers, documented there.  tracing-test is NOT used
+# because it installs a process-global subscriber that cross-contaminates parallel test
+# binaries (each test file in tests/ is a separate binary).
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+regex = { workspace = true }
+base64 = { workspace = true }
+blake3 = { workspace = true }
+
+[[test]]
+name = "boring_tls_test"
+required-features = ["tls"]
+
+[[test]]
+name = "jls_e2e"
+required-features = ["jls"]
+
+[[test]]
+name = "grpc_test"
+required-features = ["grpc"]
+
+[[test]]
+name = "grpc_unbounded_test"
+required-features = ["grpc"]
+
+[[test]]
+name = "h2_test"
+required-features = ["h2"]
+
+[[test]]
+name = "httpupgrade_test"
+required-features = ["httpupgrade"]
+
+[[test]]
+name = "shadow_tls_test"
+required-features = ["shadow-tls"]
+
+[[test]]
+name = "restls_e2e"
+required-features = ["restls"]
+
+[[test]]
+name = "xhttp_test"
+required-features = ["xhttp"]
+
+[lints]
+workspace = true

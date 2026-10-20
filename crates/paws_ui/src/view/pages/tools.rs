@@ -184,6 +184,7 @@ pub(crate) fn tools_page() -> Element {
 fn settings_section(title: impl Into<String>, rows: Vec<Element>) -> Element {
     let title = title.into();
     let theme = use_theme();
+    let shadow = use_adaptive_layout().is_pc();
     let count = rows.len();
     let rows = rows.into_iter().enumerate().map(|(index, row)| {
         rsx! {
@@ -203,13 +204,22 @@ fn settings_section(title: impl Into<String>, rows: Vec<Element>) -> Element {
                 font_weight: 600,
                 font_color: theme.colors.muted_foreground,
             }
-            Card {
-                shadow: Some(false),
+            column {
+                width: "100%",
+                border_radius: theme.radii.lg,
+                clip: false,
+                shadow: if shadow { shadow::SM },
                 column {
                     width: "100%",
-                    padding_left: spacing::MD,
-                    padding_right: spacing::SM,
-                    {rows}
+                    border_radius: theme.radii.lg,
+                    clip: true,
+                    Card {
+                        shadow: Some(false),
+                        column {
+                            width: "100%",
+                            {rows}
+                        }
+                    }
                 }
             }
         }
@@ -219,6 +229,10 @@ fn settings_section(title: impl Into<String>, rows: Vec<Element>) -> Element {
 fn settings_route_row(page: Route, locale: UiLocale, subtitle: impl Into<String>) -> Element {
     let theme = use_theme();
     let navigator = use_navigator();
+    let mut hovering = use_signal(|| false);
+    let mut focused = use_signal(|| false);
+    let mut press = use_signal(PressState::default);
+    let drag_slop = spacing::SM * arkit::use_window_metrics().scale;
     let target = page.clone();
     let subtitle = subtitle.into();
     rsx! {
@@ -227,14 +241,48 @@ fn settings_route_row(page: Route, locale: UiLocale, subtitle: impl Into<String>
             width: "100%",
             height: 60.0,
             padding: 0.0,
-            background_color: 0x00000000,
+            background_color: if press().is_pressed() || hovering() || focused() {
+                theme.colors.accent
+            } else {
+                0x00000000
+            },
             border_width: 0.0,
+            // The section owns the outer corners. Every row fills that clipped
+            // surface, including the first and last row in a group.
+            border_radius: 0.0,
+            clip: true,
+            focusable: true,
+            focus_on_touch: false,
+            onhover: move |event| {
+                hovering.set(event.data().is_hovering);
+            },
+            onfocus: move |_| focused.set(true),
+            onblur: move |_| {
+                focused.set(false);
+                press.set(PressState::default());
+            },
+            ontouch: move |event| {
+                use dioxus_elements::event::PointerAction;
+                let Some(pointer) = event.data().pointer else { return };
+                let mut next = press();
+                match pointer.action {
+                    PointerAction::Down => next.begin(pointer.pointer_id, pointer.window_x, pointer.window_y),
+                    PointerAction::Move => next.move_to(pointer.pointer_id, pointer.window_x, pointer.window_y, drag_slop),
+                    PointerAction::Up => next.end(pointer.pointer_id),
+                    PointerAction::Cancel => next = PressState::default(),
+                    PointerAction::Unknown => return,
+                }
+                if next != press() {
+                    press.set(next);
+                }
+            },
             onclick: move |_| {
                 navigator.push(target.clone());
             },
             row {
                 width: "100%",
-                padding_right: spacing::XS,
+                padding_left: spacing::MD,
+                padding_right: spacing::MD,
                 align_items: "center",
                 row {
                     width: 34.0,
@@ -320,7 +368,7 @@ pub(crate) fn about_page() -> Element {
     let stores = use_context::<UiStores>();
     let locale = stores.preferences.read().locale;
     let about = stores.about.read().about.clone();
-    let arkit_revision = middle_truncate_text(&about.arkit_rev, 18);
+    let arkit_version = middle_truncate_text(&about.arkit_version, 18);
     let body = rsx! {
         column {
             width: "100%",
@@ -364,7 +412,7 @@ pub(crate) fn about_page() -> Element {
                         {info_row(translate_ui(locale, tr::page_tr_034()), about.app_version)}
                         {info_row(translate_ui(locale, tr::page_tr_035()), about.core_version)}
                         {info_row("meow-rs", about.meow_rs_version)}
-                        {info_row("arkit", arkit_revision)}
+                        {info_row("arkit", arkit_version)}
                         {info_row("Rust", about.rust_version)}
                     }
                 }

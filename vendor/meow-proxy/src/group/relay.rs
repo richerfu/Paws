@@ -11,12 +11,37 @@
 //! - `proxy[N-1]`: `connect_over(stream, final_target)` — final hop connects to
 //!   the actual target.
 //!
-//! Nested relay-of-relay works transparently: `RelayGroup` implements
-//! `ProxyAdapter`, so its `connect_over` runs the inner chain starting from the
-//! passed stream.  No special casing needed — architect-confirmed 2026-04-11.
+//! Nested relay-of-relay works at any chain position: `flatten_hops` splices
+//! a nested `RelayGroup`'s resolved members into the outer chain in place, so
+//! the preceding hop dials the inner chain's entry point and each inner member
+//! runs `connect_over` like any other hop.
+//!
+//! # UDP
+//!
+//! UDP does not chain yet. `ProxyAdapter` has no way to hand a hop a dialer
+//! at dial time (upstream's `ListenPacketWithDialer`), so the relay cannot
+//! run the exit's datagram protocol through the hops before it; only
+//! `dialer-proxy` injects a dialer, and it does so when the config is
+//! parsed. After flattening, DIRECT/COMPATIBLE hops are dropped as upstream
+//! does, and the proxy hops that remain decide where UDP goes:
+//!
+//! - none: the chain is a direct path, and a DIRECT hop sends the UDP;
+//! - one: that hop is the exit and sends the UDP itself, so
+//!   `[DIRECT, ss]` exits at `ss` exactly like its TCP;
+//! - two or more: `dial_udp` fails closed with `UdpNotSupported`. UDP must
+//!   never leave through any hop other than the exit.
+//!
+//! `support_udp` gives the same answer from a non-touching peek, so the rule
+//! engine skips a UDP rule that targets an unchainable relay, as upstream's
+//! `SupportUDP` check does. Chaining UDP across several proxy hops is a
+//! follow-up. Until then, `dialer-proxy` on the exit node chains its UDP:
+//! Shadowsocks and SOCKS5 open their association through the front's own
+//! UDP relay, and Trojan, VLESS, Snell and mux sessions carry UDP inside the
+//! chained TCP stream.
 //!
 //! upstream: adapter/outbound/relay.go
 
+use super::dialer_proxy::DialerProxyAdapter;
 use async_trait::async_trait;
 use meow_common::{
     AdapterType, MeowError, Metadata, Proxy, ProxyAdapter, ProxyConn, ProxyHealth, ProxyPacketConn,
@@ -36,25 +61,59 @@ use tracing::debug;
 /// Note: `rfind(':')` is intentional — it correctly handles IPv6 literal
 /// addresses (e.g. `[2001:db8::1]:1080`) by splitting at the *last* colon,
 /// so the port is always the suffix after the rightmost colon.
-fn metadata_for_proxy(proxy: &Arc<dyn Proxy>) -> Metadata {
+fn metadata_for_proxy(proxy: &Arc<dyn Proxy>, internal: bool) -> Metadata {
     let addr = proxy.addr();
-    if let Some(colon) = addr.rfind(':') {
-        let host = &addr[..colon];
-        let port = addr[colon + 1..].parse::<u16>().unwrap_or(0);
-        Metadata {
-            host: host.into(),
-            dst_port: port,
-            ..Default::default()
-        }
+    // IP literals land in `dst_ip` so the preceding hop encodes a typed
+    // address (ATYP 1/4, SocksAddr::Ip) rather than a domain name that
+    // happens to look like one.  `conn_type` is explicit `Inner`:
+    // `Metadata::default()` yields `ConnType::Http`, but this is an internal
+    // chained dial — rules, /connections, and stats must not classify it as
+    // an HTTP inbound.  Same rule `ProxyDialer::dial` applies (review B2).
+    //
+    // `internal` carries the connection's usage-accounting marker through
+    // the rebuild — when hop N is itself `dialer-proxy`-chained to a lazy
+    // front hop, a housekeeping relay (probe/fetch) must not count as use
+    // of that group.
+    let (host, port) = if let Some(colon) = addr.rfind(':') {
+        (
+            &addr[..colon],
+            addr[colon + 1..].parse::<u16>().unwrap_or(0),
+        )
     } else {
         // Addr with no port (e.g. DIRECT ""). Relay treats it as port 0;
         // DIRECT's connect_over ignores the metadata anyway.
-        Metadata {
-            host: addr.into(),
-            dst_port: 0,
+        (addr, 0)
+    };
+    // `metadata_ip_literal` also folds the bracketed form so
+    // `[2001:db8::1]` parses as an IpAddr too (issue #701).
+    match meow_common::metadata_ip_literal(host) {
+        Some(ip) => Metadata {
+            network: meow_common::Network::Tcp,
+            conn_type: meow_common::ConnType::Inner,
+            dst_ip: Some(ip),
+            dst_port: port,
+            internal,
             ..Default::default()
-        }
+        },
+        None => Metadata {
+            network: meow_common::Network::Tcp,
+            conn_type: meow_common::ConnType::Inner,
+            host: host.into(),
+            dst_port: port,
+            internal,
+            ..Default::default()
+        },
     }
+}
+
+/// DIRECT and COMPATIBLE hops add nothing to a chain: they pass the
+/// preceding hop's stream through unchanged. Upstream `relay.go` drops
+/// `C.Direct`/`C.Compatible` from the chain for the same reason.
+fn is_transparent_hop(proxy: &Arc<dyn Proxy>) -> bool {
+    matches!(
+        proxy.adapter_type(),
+        AdapterType::Direct | AdapterType::Compatible
+    )
 }
 
 /// Resolve a group hop to the concrete proxy selected for this connection.
@@ -63,8 +122,12 @@ fn metadata_for_proxy(proxy: &Arc<dyn Proxy>) -> Metadata {
 /// adapter without an active member) is reached.  Resolve once before dialing
 /// so stateful selectors such as load-balance use the same member for both the
 /// preceding hop's target and their own `connect_over` call.
-fn resolve_proxy(mut proxy: Arc<dyn Proxy>, metadata: &Metadata) -> Arc<dyn Proxy> {
-    while let Some(selected) = proxy.unwrap_proxy(metadata) {
+///
+/// `touch` is passed to `unwrap_proxy`: `true` on the dial path, `false` for
+/// the `support_udp` peek, which must not advance round-robin counters or
+/// record usage.
+fn resolve_proxy(mut proxy: Arc<dyn Proxy>, metadata: &Metadata, touch: bool) -> Arc<dyn Proxy> {
+    while let Some(selected) = proxy.unwrap_proxy(metadata, touch) {
         if Arc::ptr_eq(&proxy, &selected) {
             break;
         }
@@ -73,8 +136,167 @@ fn resolve_proxy(mut proxy: Arc<dyn Proxy>, metadata: &Metadata) -> Arc<dyn Prox
     proxy
 }
 
-/// Return the target for a hop, skipping later DIRECT hops because they are
-/// transparent no-ops inside an already-established relay stream.
+/// Resolve every hop once and splice nested relay groups' resolved members
+/// into the chain in place.
+///
+/// `resolve_proxy` cannot see through a nested `RelayGroup` (it is a leaf to
+/// `unwrap_proxy`), and a group hop has no `addr()` of its own — the address
+/// the preceding hop must dial is the *entry point* of the inner chain.  By
+/// flattening, `outer = [X, inner[p, q], Y]` becomes `[X, p, q, Y]`: X dials
+/// p's server, then each hop runs `connect_over` in order — exactly mihomo's
+/// composed-dialer semantics.  Resolving members here (once) also keeps
+/// stateful selectors coherent: the member the preceding hop dials is the
+/// same member whose `connect_over` runs.
+///
+/// A `dialer-proxy` hop whose inner adapter is itself a `RelayGroup` is
+/// flattened the same way at a non-first position — inside a chain the
+/// per-outbound dialer is ignored by design
+/// (`DialerProxyAdapter::connect_over` delegates to the inner adapter), so
+/// the member effectively *is* the inner chain.  At the *global* first hop
+/// the wrapper is kept: its own `dial_tcp` is what applies the configured
+/// front dialer.
+///
+/// Flattening also fails the dial up front on terminal hops — members that
+/// are not a transparent `DIRECT` and have no dialable address (`REJECT`,
+/// an unresolvable group, …).  Their `connect_over` would error anyway, so
+/// failing here is equivalent — except it happens *before* the preceding
+/// hop is told to open a real connection to whatever comes after them.
+///
+/// `touch` is forwarded to [`resolve_proxy`]: dials pass `true`, and the
+/// `support_udp` peek passes `false`.
+fn flatten_hops(
+    proxies: &[Arc<dyn Proxy>],
+    metadata: &Metadata,
+    touch: bool,
+) -> Result<Vec<Arc<dyn Proxy>>> {
+    let mut out = Vec::with_capacity(proxies.len());
+    flatten_hops_at(proxies, metadata, touch, 0, &mut out)?;
+    Ok(out)
+}
+
+/// Recursion bound for [`flatten_hops`]: expansion past this depth is a hard
+/// error — far beyond any sane config (config resolution already guarantees
+/// the group graph is a DAG; the bound stops pathological hand-built graphs).
+const MAX_FLATTEN_DEPTH: usize = 16;
+
+/// `RelayHopFailed` for a hop that can never act as a dial target, raised
+/// during flattening — before any hop performs network I/O.
+fn undialable_hop_error(hop: usize, proxy: &Arc<dyn Proxy>) -> MeowError {
+    let name = proxy.name();
+    MeowError::RelayHopFailed {
+        hop,
+        source: Box::new(MeowError::Proxy(format!(
+            "relay: {name} has no dialable address"
+        ))),
+    }
+}
+
+/// `out` is threaded through the recursion (rather than collected per
+/// level) so `out.is_empty()` means "no hop emitted anywhere yet" — i.e.
+/// this member lands at the *global* first position, even when reached
+/// through nested-relay splicing.
+fn flatten_hops_at(
+    proxies: &[Arc<dyn Proxy>],
+    metadata: &Metadata,
+    touch: bool,
+    depth: usize,
+    out: &mut Vec<Arc<dyn Proxy>>,
+) -> Result<()> {
+    for proxy in proxies {
+        // A `DialerProxyAdapter` at the global first hop must keep its
+        // wrapper, so do not run `resolve_proxy` on it: `unwrap_proxy`
+        // delegates to the inner adapter and would strip the wrapper (and
+        // its front dialer) whenever the inner is resolvable.
+        //
+        // Known limitation: this inspects the raw member only. A DPA
+        // reached *through* a resolvable group (e.g. Selector whose member
+        // is `DPA(group)`) is still unwrapped — parsed configs can only
+        // wrap leaf outbounds, so that shape is hand-built-only.
+        let resolved = if out.is_empty()
+            && proxy
+                .as_any()
+                .and_then(|a| a.downcast_ref::<DialerProxyAdapter>())
+                .is_some()
+        {
+            Arc::clone(proxy)
+        } else {
+            resolve_proxy(Arc::clone(proxy), metadata, touch)
+        };
+        if let Some(relay) = resolved
+            .as_any()
+            .and_then(|a| a.downcast_ref::<RelayGroup>())
+        {
+            if depth >= MAX_FLATTEN_DEPTH {
+                return Err(MeowError::Proxy(format!(
+                    "relay: group expansion exceeds depth {MAX_FLATTEN_DEPTH}"
+                )));
+            }
+            flatten_hops_at(&relay.proxies, metadata, touch, depth + 1, out)?;
+            continue;
+        }
+        if out.is_empty() {
+            // Global first hop: it self-dials, so a preserved
+            // `DialerProxyAdapter` is valid here.  Anything else that is
+            // not a transparent DIRECT hop and has no dialable address is
+            // terminal — fail now rather than letting its black-hole
+            // `dial_tcp` (e.g. REJECT-DROP's sleep) burn the dial timeout.
+            if !is_transparent_hop(&resolved)
+                && resolved.addr().is_empty()
+                && resolved
+                    .as_any()
+                    .and_then(|a| a.downcast_ref::<DialerProxyAdapter>())
+                    .is_none()
+            {
+                return Err(undialable_hop_error(0, &resolved));
+            }
+            out.push(resolved);
+            continue;
+        }
+        // Non-first hop: peel `DialerProxyAdapter` layers to reach an inner
+        // `RelayGroup` (DPA(DPA(relay)) …).  Each `resolve_proxy` call
+        // re-enters the unwrap chain because a DPA delegates `unwrap_proxy`
+        // to its inner; a peel that lands on a leaf keeps the ORIGINAL
+        // member below.  Not reachable from parsed configs — the
+        // dialer-proxy pass always wraps a leaf — but keeps hand-built
+        // graphs consistent.
+        let mut peeled = Arc::clone(&resolved);
+        while let Some(inner) = peeled
+            .as_any()
+            .and_then(|a| a.downcast_ref::<DialerProxyAdapter>())
+            .map(|dpa| Arc::clone(dpa.inner()))
+        {
+            peeled = resolve_proxy(inner, metadata, touch);
+        }
+        if let Some(relay) = peeled.as_any().and_then(|a| a.downcast_ref::<RelayGroup>()) {
+            if depth >= MAX_FLATTEN_DEPTH {
+                return Err(MeowError::Proxy(format!(
+                    "relay: group expansion exceeds depth {MAX_FLATTEN_DEPTH}"
+                )));
+            }
+            flatten_hops_at(&relay.proxies, metadata, touch, depth + 1, out)?;
+            continue;
+        }
+        // A non-DIRECT member with no dialable address (REJECT, an
+        // unresolvable group, …) is terminal, but `metadata_for_next_hop`
+        // would skip it and hand the preceding hop the *next* real target —
+        // `[entry, REJECT]` would make `entry` connect to the final
+        // destination before the reject fires.  Fail before any I/O.
+        if !is_transparent_hop(&peeled) && peeled.addr().is_empty() {
+            return Err(undialable_hop_error(out.len(), &peeled));
+        }
+        out.push(resolved);
+    }
+    Ok(())
+}
+
+/// Return the target for a hop, skipping later DIRECT/COMPATIBLE hops —
+/// they are transparent no-ops inside an already-established relay stream
+/// (upstream `relay.go` removes `C.Direct`/`C.Compatible` hops from the
+/// target chain the same way).  Members with no dialable address
+/// (`addr() == ""`, e.g. REJECT or an unresolvable group) can no longer
+/// reach this point — `flatten_hops_at` rejects them before any hop
+/// performs I/O; the `!addr().is_empty()` predicate stays as
+/// defence-in-depth should the invariant ever break.
 fn metadata_for_next_hop(
     proxies: &[Arc<dyn Proxy>],
     start: usize,
@@ -82,8 +304,11 @@ fn metadata_for_next_hop(
 ) -> Metadata {
     proxies[start..]
         .iter()
-        .find(|proxy| proxy.adapter_type() != AdapterType::Direct)
-        .map_or_else(|| final_target.clone(), metadata_for_proxy)
+        .find(|proxy| !is_transparent_hop(proxy) && !proxy.addr().is_empty())
+        .map_or_else(
+            || final_target.clone(),
+            |proxy| metadata_for_proxy(proxy, final_target.is_internal()),
+        )
 }
 
 // ─── Core relay functions ─────────────────────────────────────────────────────
@@ -101,11 +326,13 @@ pub(crate) async fn relay_tcp(
         "relay chain must have at least 2 proxies"
     );
 
-    let proxies: Vec<_> = proxies
-        .iter()
-        .cloned()
-        .map(|proxy| resolve_proxy(proxy, final_target))
-        .collect();
+    let proxies = flatten_hops(proxies, final_target, true)?;
+    if proxies.len() < 2 {
+        return Err(MeowError::Proxy(format!(
+            "relay: chain resolved to fewer than 2 hops ({})",
+            proxies.len()
+        )));
+    }
 
     // proxy[0]: real TCP connect; target = the next non-DIRECT proxy's
     // server:port, or the final destination if only DIRECT hops remain.
@@ -163,24 +390,51 @@ pub(crate) async fn relay_tcp(
     Ok(conn)
 }
 
-/// Establish a UDP relay chain.
+/// The hop that sends a flattened chain's UDP, or `None` when UDP cannot be
+/// sent without chaining it (see the module docs).
 ///
-/// All chain members must support UDP (`support_udp() == true`) — enforced
-/// before calling this function by the caller.
+/// With no proxy hops the chain is a direct path, and its first DIRECT hop
+/// sends the UDP. With one proxy hop, that hop is the exit. With two or
+/// more, UDP would have to be chained, which no adapter supports yet.
+/// Upstream `relay.go` makes the same split before `ListenPacketWithDialer`.
+fn udp_exit(hops: &[Arc<dyn Proxy>]) -> Option<&Arc<dyn Proxy>> {
+    let mut proxied = hops.iter().filter(|hop| !is_transparent_hop(hop));
+    match (proxied.next(), proxied.next()) {
+        (None, _) => hops.first(),
+        (Some(exit), None) => Some(exit),
+        (Some(_), Some(_)) => None,
+    }
+}
+
+/// Open a relay chain's UDP association on the chain's exit hop.
 ///
-/// upstream: adapter/outbound/relay.go — `DialUDP` chains through the same
-/// proxies as TCP.  In M1 only `DirectAdapter` implements real UDP; for other
-/// proxy types this falls through to their `dial_udp` error.
+/// Fails closed with `UdpNotSupported` when two or more proxy hops remain
+/// after flattening, or when the exit does not support UDP. No hop's
+/// `dial_udp` runs in either case: any hop other than the exit would send
+/// the datagrams out of the wrong place.
+///
+/// upstream: adapter/outbound/relay.go — `ListenPacketContext`
 async fn relay_udp(
     proxies: &[Arc<dyn Proxy>],
     metadata: &Metadata,
 ) -> Result<Box<dyn ProxyPacketConn>> {
-    // For UDP relay we route through the first proxy in the chain.
-    // True UDP-over-proxy chaining (e.g. SOCKS5 UDP ASSOCIATE through SS)
-    // requires per-protocol UDP framing — deferred to post-M1.
-    // For M1, if all hops support UDP the simplest contract is to delegate
-    // to the first proxy's dial_udp (Direct adapter, which binds a raw socket).
-    proxies[0].dial_udp(metadata).await
+    let hops = flatten_hops(proxies, metadata, true)?;
+    let Some(exit) = udp_exit(&hops) else {
+        debug!(
+            relay.hops = hops.len(),
+            "relay: UDP across more than one proxy hop is not supported"
+        );
+        return Err(MeowError::UdpNotSupported);
+    };
+    if !exit.support_udp() {
+        return Err(MeowError::UdpNotSupported);
+    }
+    debug!(
+        relay.proxy = exit.name(),
+        relay.target = %metadata.remote_address(),
+        "relay: dial_udp on the exit hop"
+    );
+    exit.dial_udp(metadata).await
 }
 
 // ─── RelayGroup ───────────────────────────────────────────────────────────────
@@ -228,61 +482,43 @@ impl ProxyAdapter for RelayGroup {
         ""
     }
 
-    /// Returns `true` only if every chain member supports UDP.
+    /// Whether `dial_udp` would open an association: the exit hop's own
+    /// answer, `false` when two or more proxy hops remain after flattening,
+    /// and `true` for an all-DIRECT chain (see the module docs).
     ///
-    /// upstream: relay.go — same check.
-    /// NOT just the first hop — partial UDP support is a Class A divergence;
-    /// we surface `UdpNotSupported` rather than returning a non-functional conn.
+    /// The flattening here is a peek (`touch = false`), so it changes no
+    /// usage counters. Groups resolve with no destination, so a
+    /// destination-keyed pick (consistent-hashing load-balance) may differ
+    /// from the one a dial makes. `dial_udp` checks again and fails closed.
+    ///
+    /// upstream: relay.go — `SupportUDP`, minus the dialer-chained branch
+    /// meow cannot take yet.
     fn support_udp(&self) -> bool {
-        self.proxies.iter().all(|p| p.support_udp())
+        let peek = Metadata {
+            network: meow_common::Network::Udp,
+            ..Default::default()
+        };
+        flatten_hops(&self.proxies, &peek, false)
+            .is_ok_and(|hops| udp_exit(&hops).is_some_and(|exit| exit.support_udp()))
     }
 
     async fn dial_tcp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyConn>> {
         relay_tcp(&self.proxies, metadata).await
     }
 
-    /// Returns `Err(UdpNotSupported)` if any chain member lacks UDP support.
+    /// Sends UDP from the chain's exit hop, or fails closed with
+    /// `UdpNotSupported`; see `relay_udp`.
     ///
-    /// upstream: relay.go — silently returns a non-functional conn.
-    /// NOT a silent failure — Class A ADR-0002.
+    /// upstream: relay.go — `ListenPacketContext`.
     async fn dial_udp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyPacketConn>> {
-        if !self.support_udp() {
-            return Err(MeowError::UdpNotSupported);
-        }
         relay_udp(&self.proxies, metadata).await
     }
 
-    /// Run the relay chain over an already-established stream.
-    ///
-    /// Used when this `RelayGroup` itself appears as a hop inside another
-    /// relay chain (relay-of-relay).  All hops use `connect_over` — there is
-    /// no fresh `dial_tcp` because the outer stream already exists.
-    async fn connect_over(
-        &self,
-        stream: Box<dyn ProxyConn>,
-        final_target: &Metadata,
-    ) -> Result<Box<dyn ProxyConn>> {
-        debug_assert!(self.proxies.len() >= 2);
-        let mut conn = stream;
-
-        // All hops use connect_over (stream already established by outer relay).
-        for (i, proxy) in self.proxies.iter().enumerate() {
-            let meta = if i < self.proxies.len() - 1 {
-                metadata_for_proxy(&self.proxies[i + 1])
-            } else {
-                final_target.clone()
-            };
-            conn =
-                proxy
-                    .connect_over(conn, &meta)
-                    .await
-                    .map_err(|e| MeowError::RelayHopFailed {
-                        hop: i,
-                        source: Box::new(e),
-                    })?;
-        }
-        Ok(conn)
-    }
+    // No `connect_over` override: after `flatten_hops` no `RelayGroup` can
+    // legitimately appear at a non-first hop (nested relays are spliced in
+    // place and over-depth expansion is a hard error), so the trait's
+    // default `NotSupported` is the correct failure for any group that
+    // still reaches this point — loud, and attributed to its own hop index.
 
     fn health(&self) -> &ProxyHealth {
         &self.health
@@ -290,6 +526,14 @@ impl ProxyAdapter for RelayGroup {
 }
 
 impl Proxy for RelayGroup {
+    // Deliberately no `unwrap_proxy` override: a relay resolves its hops
+    // lazily per-dial (metadata may differ per connection), so a
+    // match-time peek cannot name "the" member. Upstream `Relay` likewise
+    // never overrode `Unwrap` — a PASS hop deep in a chain surfaces as a
+    // loud `RelayHopFailed` at dial (flattening rejects nop hops) rather
+    // than a silent rule skip. Match-time `unwraps_to(Pass)` therefore
+    // sees a relay group as opaque — the rule materializes and fails
+    // closed at dial.
     fn alive(&self) -> bool {
         self.health.alive()
     }
@@ -310,8 +554,18 @@ impl Proxy for RelayGroup {
         self.health.delay_history()
     }
 
+    /// Lets `flatten_hops` downcast a nested relay hop and splice this
+    /// group's resolved members into the outer chain.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn members(&self) -> Option<Vec<String>> {
         Some(self.proxies.iter().map(|p| p.name().to_string()).collect())
+    }
+
+    fn member_proxies(&self) -> Option<Vec<Arc<dyn Proxy>>> {
+        Some(self.proxies.clone())
     }
 }
 
@@ -320,7 +574,7 @@ impl Proxy for RelayGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SelectorGroup;
+    use crate::{LbStrategy, LoadBalanceGroup, SelectorGroup};
     use meow_common::{DelayHistory, MeowError, ProxyConn, ProxyHealth, ProxyPacketConn};
     use std::net::SocketAddr;
     use std::sync::Arc;
@@ -350,6 +604,18 @@ mod tests {
         fail_with: Arc<parking_lot::Mutex<Option<MeowError>>>,
         /// If `Some`, `dial_tcp` returns this error.
         dial_fail_with: Arc<parking_lot::Mutex<Option<MeowError>>>,
+        /// Each `dial_udp` call records its target host here.
+        udp_dials: Arc<parking_lot::Mutex<Vec<String>>>,
+    }
+
+    /// Recorded dial target: `host` for domains, `dst_ip` for IP literals —
+    /// `metadata_for_proxy` types IP-literal servers as `dst_ip`.
+    fn recorded_host(metadata: &Metadata) -> String {
+        if metadata.host.is_empty() {
+            metadata.dst_ip.map(|ip| ip.to_string()).unwrap_or_default()
+        } else {
+            metadata.host.to_string()
+        }
     }
 
     impl MockProxy {
@@ -365,6 +631,7 @@ mod tests {
                 last_dial_host: Arc::new(parking_lot::Mutex::new(None)),
                 fail_with: Arc::new(parking_lot::Mutex::new(None)),
                 dial_fail_with: Arc::new(parking_lot::Mutex::new(None)),
+                udp_dials: Arc::new(parking_lot::Mutex::new(Vec::new())),
             })
         }
 
@@ -379,11 +646,31 @@ mod tests {
             Self::new(name, server, port, marker) // udp defaults to false
         }
 
+        /// UDP-capable like the real `DirectAdapter`.
         fn direct() -> Arc<Self> {
             let proxy = Self::new("DIRECT", "", 0, 0);
             let inner = Arc::try_unwrap(proxy).ok().unwrap();
             Arc::new(Self {
                 adapter_type: AdapterType::Direct,
+                addr_str: String::new(),
+                udp: true,
+                ..inner
+            })
+        }
+
+        /// A terminal hop with no dialable address — the shape relay sees
+        /// for a `RejectAdapter` member (`adapter_type != Direct`,
+        /// `addr() == ""`; leaf adapters reach relay chains through the
+        /// config's `Proxy` wrapper).
+        fn reject(drop: bool) -> Arc<Self> {
+            let proxy = Self::new(if drop { "REJECT-DROP" } else { "REJECT" }, "", 0, 0);
+            let inner = Arc::try_unwrap(proxy).ok().unwrap();
+            Arc::new(Self {
+                adapter_type: if drop {
+                    AdapterType::RejectDrop
+                } else {
+                    AdapterType::Reject
+                },
                 addr_str: String::new(),
                 ..inner
             })
@@ -482,14 +769,15 @@ mod tests {
         }
 
         async fn dial_tcp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyConn>> {
-            *self.last_dial_host.lock() = Some(metadata.host.to_string());
+            *self.last_dial_host.lock() = Some(recorded_host(metadata));
             if let Some(err) = self.dial_fail_with.lock().take() {
                 return Err(err);
             }
             Ok(Box::new(NopConn))
         }
 
-        async fn dial_udp(&self, _metadata: &Metadata) -> Result<Box<dyn ProxyPacketConn>> {
+        async fn dial_udp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyPacketConn>> {
+            self.udp_dials.lock().push(recorded_host(metadata));
             if self.udp {
                 Ok(Box::new(NopPacketConn))
             } else {
@@ -502,7 +790,7 @@ mod tests {
             stream: Box<dyn ProxyConn>,
             metadata: &Metadata,
         ) -> Result<Box<dyn ProxyConn>> {
-            *self.last_dial_host.lock() = Some(metadata.host.to_string());
+            *self.last_dial_host.lock() = Some(recorded_host(metadata));
             self.visits.lock().push(self.marker);
             if let Some(err) = self.fail_with.lock().take() {
                 return Err(err);
@@ -715,6 +1003,267 @@ mod tests {
         assert_eq!(*exit_visits.lock(), vec![2]);
     }
 
+    /// `metadata_for_proxy` must type IP-literal server addrs as `dst_ip`
+    /// (ATYP 1/4 / SocksAddr::Ip for the preceding hop's CONNECT) rather
+    /// than stuffing them into `host` as pseudo-domains.
+    #[test]
+    fn metadata_for_proxy_types_ip_literals_as_dst_ip() {
+        let p: Arc<dyn Proxy> = MockProxy::new("ip-hop", "203.0.113.7", 8443, 1);
+        let m = metadata_for_proxy(&p, false);
+        assert_eq!(m.dst_ip, Some("203.0.113.7".parse().expect("v4")));
+        assert!(m.host.is_empty());
+        assert_eq!(m.dst_port, 8443);
+        assert_eq!(m.network, meow_common::Network::Tcp);
+        // Internal chained dial, not an HTTP inbound.
+        assert_eq!(m.conn_type, meow_common::ConnType::Inner);
+    }
+
+    #[test]
+    fn metadata_for_proxy_strips_ipv6_brackets_into_dst_ip() {
+        let p: Arc<dyn Proxy> = MockProxy::new("v6-hop", "[2001:db8::1]", 1080, 1);
+        let m = metadata_for_proxy(&p, false);
+        assert_eq!(m.dst_ip, Some("2001:db8::1".parse().expect("v6")));
+        assert_eq!(m.dst_port, 1080);
+    }
+
+    /// `addr()` is always `format!("{server}:{port}")`, so even an
+    /// unbracketed IPv6 server like `"2001:db8::1"` yields
+    /// `"2001:db8::1:1080"` — `rfind(':')` still isolates the true port and
+    /// the remainder parses as an `IpAddr`.  Pin that invariant.
+    #[test]
+    fn metadata_for_proxy_unbracketed_ipv6_server() {
+        let p: Arc<dyn Proxy> = MockProxy::new("v6-bare", "2001:db8::1", 1080, 1);
+        let m = metadata_for_proxy(&p, false);
+        assert_eq!(m.dst_ip, Some("2001:db8::1".parse().expect("v6")));
+        assert_eq!(m.dst_port, 1080);
+        assert!(m.host.is_empty());
+    }
+
+    #[test]
+    fn metadata_for_proxy_keeps_domains_in_host() {
+        let p: Arc<dyn Proxy> = MockProxy::new("dns-hop", "example.com", 443, 1);
+        let m = metadata_for_proxy(&p, false);
+        assert_eq!(m.host.as_str(), "example.com");
+        assert!(m.dst_ip.is_none());
+        assert_eq!(m.dst_port, 443);
+    }
+
+    /// #555: the next-hop rebuild must carry the connection's `internal`
+    /// marker — a relay hop that is itself `dialer-proxy`-chained to a lazy
+    /// front hop must not count housekeeping relays as use.  Both arms of
+    /// `metadata_for_next_hop` (rebuild and `final_target` clone) must agree.
+    #[test]
+    fn metadata_for_next_hop_carries_internal_marker() {
+        let p: Arc<dyn Proxy> = MockProxy::new("hop", "example.com", 443, 1);
+        let proxies = vec![p];
+        let internal_target = Metadata {
+            internal: true,
+            ..Metadata::default()
+        };
+        let user_target = Metadata::default();
+
+        let m = metadata_for_next_hop(&proxies, 0, &internal_target);
+        assert!(m.is_internal(), "rebuilt next-hop meta keeps the marker");
+        let m = metadata_for_next_hop(&proxies, 0, &user_target);
+        assert!(!m.is_internal(), "user relay stays user-classed");
+
+        // The `final_target.clone()` arm (no dialable next hop) preserves
+        // the whole metadata — internal included — by construction.
+        let undialable: Arc<dyn Proxy> = MockProxy::reject(false);
+        // `find` skips empty addr → falls back to the clone arm.
+        let m = metadata_for_next_hop(&[undialable], 0, &internal_target);
+        assert!(m.is_internal());
+    }
+
+    /// A nested relay whose members include a selector must resolve that
+    /// selector to its leaf before calling `connect_over`, and the nested
+    /// group must be *flattened* into the outer chain: `outer = [a,
+    /// inner[sel→b, c]]` runs as `[a, b, c]` so that `a` dials the inner
+    /// chain's entry point (b's server) rather than the group's own empty
+    /// `addr()`.
+    #[tokio::test]
+    async fn nested_connect_over_resolves_group_members() {
+        let a = MockProxy::new("a", "10.0.0.1", 1080, 1);
+        let b = MockProxy::new("b", "10.0.0.2", 1081, 2);
+        let c = MockProxy::new("c", "10.0.0.3", 1082, 3);
+        let a_host = Arc::clone(&a.last_dial_host);
+        let b_visits = Arc::clone(&b.visits);
+        let b_host = Arc::clone(&b.last_dial_host);
+        let c_visits = Arc::clone(&c.visits);
+        let c_host = Arc::clone(&c.last_dial_host);
+        let sel: Arc<dyn Proxy> = Arc::new(SelectorGroup::new("sel", vec![b]));
+        let inner: Arc<dyn Proxy> = Arc::new(RelayGroup::new("inner", vec![sel, c]));
+        let outer = RelayGroup::new("outer", vec![a, inner]);
+        let target = Metadata {
+            host: "t.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        outer.dial_tcp(&target).await.expect("nested relay");
+
+        // `a` dials the inner chain's entry point — b's server, not the
+        // relay group's empty addr().
+        assert_eq!(*a_host.lock(), Some("10.0.0.2".into()));
+        // Inner chain ran sel→b (resolved) as a connect_over hop aimed at
+        // c's server, then c as the final hop aimed at the target.
+        assert_eq!(*b_visits.lock(), vec![2]);
+        assert_eq!(*b_host.lock(), Some("10.0.0.3".into()));
+        assert_eq!(*c_visits.lock(), vec![3]);
+        assert_eq!(*c_host.lock(), Some("t.example".into()));
+    }
+
+    /// A `dialer-proxy` member whose inner outbound is itself a relay group
+    /// flattens the same way: `outer = [a, dpa[inner=[p,q]]]` runs as
+    /// `[a, p, q]`, so `a` dials the inner chain's entry point (p's server)
+    /// rather than the group's empty `addr()`.  The per-outbound dialer is
+    /// deliberately unresolvable here — inside a relay chain it must never
+    /// be consulted.
+    #[tokio::test]
+    async fn nested_dialer_proxy_relay_member_flattens_inner_chain() {
+        let a = MockProxy::new("a", "10.0.0.1", 1080, 1);
+        let p = MockProxy::new("p", "10.0.0.2", 1081, 2);
+        let q = MockProxy::new("q", "10.0.0.3", 1082, 3);
+        let a_host = Arc::clone(&a.last_dial_host);
+        let p_visits = Arc::clone(&p.visits);
+        let p_host = Arc::clone(&p.last_dial_host);
+        let q_host = Arc::clone(&q.last_dial_host);
+
+        let inner_relay: Arc<dyn Proxy> = Arc::new(RelayGroup::new("inner", vec![p, q]));
+        let dpa: Arc<dyn Proxy> = Arc::new(DialerProxyAdapter::new(
+            inner_relay,
+            crate::dialer::DialerTarget::new(
+                "never-resolved",
+                &crate::dialer::ProxyRegistry::default(),
+            ),
+        ));
+        let outer = RelayGroup::new("outer", vec![a, dpa]);
+        let target = Metadata {
+            host: "t.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        outer
+            .dial_tcp(&target)
+            .await
+            .expect("dpa-wrapped relay member");
+
+        assert_eq!(*a_host.lock(), Some("10.0.0.2".into()));
+        assert_eq!(*p_visits.lock(), vec![2]);
+        assert_eq!(*p_host.lock(), Some("10.0.0.3".into()));
+        assert_eq!(*q_host.lock(), Some("t.example".into()));
+    }
+
+    /// `DPA(DPA(relay))` must peel both wrapper layers — a single-level peel
+    /// would retain the outer DPA (empty `addr()`), silently misrouting the
+    /// preceding hop's dial to the *next* member's server.
+    #[tokio::test]
+    async fn nested_dialer_proxy_layers_all_peel_to_inner_relay() {
+        let a = MockProxy::new("a", "10.0.0.1", 1080, 1);
+        let p = MockProxy::new("p", "10.0.0.2", 1081, 2);
+        let q = MockProxy::new("q", "10.0.0.3", 1082, 3);
+        let a_host = Arc::clone(&a.last_dial_host);
+        let p_visits = Arc::clone(&p.visits);
+        let q_host = Arc::clone(&q.last_dial_host);
+
+        let dead = || {
+            crate::dialer::DialerTarget::new(
+                "never-resolved",
+                &crate::dialer::ProxyRegistry::default(),
+            )
+        };
+        let relay: Arc<dyn Proxy> = Arc::new(RelayGroup::new("inner", vec![p, q]));
+        let dpa_inner: Arc<dyn Proxy> = Arc::new(DialerProxyAdapter::new(relay, dead()));
+        let dpa_outer: Arc<dyn Proxy> = Arc::new(DialerProxyAdapter::new(dpa_inner, dead()));
+        let outer = RelayGroup::new("outer", vec![a, dpa_outer]);
+        let target = Metadata {
+            host: "t.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        outer
+            .dial_tcp(&target)
+            .await
+            .expect("doubly-wrapped relay member");
+
+        assert_eq!(*a_host.lock(), Some("10.0.0.2".into()));
+        assert_eq!(*p_visits.lock(), vec![2]);
+        assert_eq!(*q_host.lock(), Some("t.example".into()));
+    }
+
+    /// A `dialer-proxy` member at hop 0 must NOT be peeled — its `dial_tcp`
+    /// preserves the configured front dialer. With an unresolvable dialer
+    /// the dial must fail loudly, not silently splice the inner chain.
+    #[tokio::test]
+    async fn dialer_proxy_at_hop0_keeps_its_front_dialer() {
+        let p = MockProxy::new("p", "10.0.0.2", 1081, 2);
+        let q = MockProxy::new("q", "10.0.0.3", 1082, 3);
+        let x = MockProxy::new("x", "10.0.0.4", 1083, 4);
+        let p_visits = Arc::clone(&p.visits);
+
+        let relay: Arc<dyn Proxy> = Arc::new(RelayGroup::new("inner", vec![p, q]));
+        let dpa: Arc<dyn Proxy> = Arc::new(DialerProxyAdapter::new(
+            relay,
+            crate::dialer::DialerTarget::new(
+                "never-resolved",
+                &crate::dialer::ProxyRegistry::default(),
+            ),
+        ));
+        let outer = RelayGroup::new("outer", vec![dpa, x]);
+        let target = Metadata {
+            host: "t.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        let err = outer
+            .dial_tcp(&target)
+            .await
+            .err()
+            .expect("hop-0 DPA must run its own dial_tcp and fail on the unresolvable dialer");
+        assert!(
+            err.to_string().contains("never-resolved") || err.to_string().contains("dialer"),
+            "error must name the missing dialer, got: {err}"
+        );
+        // Peeling would have spliced the inner chain and run `p` — visits
+        // must stay empty to prove no splice happened.
+        assert!(p_visits.lock().is_empty(), "hop-0 DPA must not be peeled");
+    }
+
+    /// Expansion deeper than `MAX_FLATTEN_DEPTH` is a hard error — a
+    /// hand-constructed cyclic or absurdly deep group graph must fail the
+    /// dial outright, not silently retain an unexpanded relay mid-chain
+    /// (which would misroute the preceding hop to the next member's server).
+    #[tokio::test]
+    async fn flatten_beyond_max_depth_is_a_hard_error() {
+        fn leaf(name: &str) -> Arc<dyn Proxy> {
+            MockProxy::new(name, "10.0.0.9", 1090, 9)
+        }
+        // 20-deep nesting exceeds MAX_FLATTEN_DEPTH (16).
+        let mut inner: Arc<dyn Proxy> = leaf("leaf0");
+        for i in 0..20 {
+            inner = Arc::new(RelayGroup::new("r", vec![inner, leaf(&format!("leaf{i}"))]));
+        }
+        let outer = RelayGroup::new("outer", vec![leaf("a"), inner]);
+        let target = Metadata {
+            host: "t.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        let err = outer
+            .dial_tcp(&target)
+            .await
+            .err()
+            .expect("over-depth expansion must fail");
+        assert!(
+            err.to_string().contains("depth"),
+            "error must name the depth bound, got: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn relay_skips_direct_when_choosing_next_hop_target() {
         let entry = MockProxy::new("entry", "10.0.0.1", 1080, 1);
@@ -767,109 +1316,240 @@ mod tests {
     // See G2 for the grep-based guard-rail.
 
     // ─── C. UDP relay ─────────────────────────────────────────────────────
+    //
+    // UDP does not chain (see the module docs). It leaves from the one
+    // proxy hop that remains after DIRECT hops are dropped, or fails closed.
 
-    // C1: all chain members support UDP → dial_udp succeeds; support_udp() = true
-    #[tokio::test]
-    async fn relay_udp_all_support_udp_succeeds() {
-        let a = MockProxy::new_udp("A", "10.0.0.1", 1080, 1);
-        let b = MockProxy::new_udp("B", "10.0.0.2", 1080, 2);
-
-        let proxies: Vec<Arc<dyn Proxy>> = vec![a, b];
-        let group = RelayGroup::new("udp-all", proxies);
-
-        assert!(
-            group.support_udp(),
-            "support_udp must be true when all hops support UDP"
-        );
-
-        let meta = Metadata {
+    fn udp_target() -> Metadata {
+        Metadata {
+            network: meow_common::Network::Udp,
             host: "target.example".into(),
             dst_port: 53,
             ..Default::default()
-        };
-        group.dial_udp(&meta).await.expect("dial_udp must succeed");
+        }
     }
 
-    // C2: proxy at position 0 lacks UDP → Err(UdpNotSupported)
-    // upstream: relay.go — silently returns a non-functional conn.
-    // NOT a silent failure. ADR-0002 Class A.
+    // C1: `[DIRECT, B]` exits at B, like its TCP. Hop 0 used to send the
+    // UDP here, so it left straight from the host.
     #[tokio::test]
-    async fn relay_udp_hop0_lacks_udp_returns_error() {
-        let a = MockProxy::no_udp("A", "10.0.0.1", 1080, 1); // no UDP
+    async fn relay_udp_direct_then_proxy_exits_at_proxy() {
+        let direct = MockProxy::direct();
         let b = MockProxy::new_udp("B", "10.0.0.2", 1080, 2);
+        let direct_udp = Arc::clone(&direct.udp_dials);
+        let b_udp = Arc::clone(&b.udp_dials);
 
-        let proxies: Vec<Arc<dyn Proxy>> = vec![a, b];
-        let group = RelayGroup::new("udp-hop0-no-udp", proxies);
+        let group = RelayGroup::new("udp-direct-b", vec![direct, b]);
 
-        let meta = Metadata {
-            host: "target.example".into(),
-            dst_port: 53,
-            ..Default::default()
-        };
-        let err = group.dial_udp(&meta).await.err().expect("must error");
+        assert!(group.support_udp(), "B is the exit and supports UDP");
+        group.dial_udp(&udp_target()).await.expect("dial_udp via B");
+        assert_eq!(*b_udp.lock(), vec!["target.example".to_string()]);
+        assert!(direct_udp.lock().is_empty(), "DIRECT must not send the UDP");
+    }
+
+    // C2: two proxy hops would need chained UDP, so the dial fails closed
+    // before any hop runs. Hop 0 used to send the UDP here, so it left
+    // from A instead of B.
+    #[tokio::test]
+    async fn relay_udp_two_proxy_hops_fail_closed() {
+        let a = MockProxy::new_udp("A", "10.0.0.1", 1080, 1);
+        let b = MockProxy::new_udp("B", "10.0.0.2", 1080, 2);
+        let a_udp = Arc::clone(&a.udp_dials);
+        let b_udp = Arc::clone(&b.udp_dials);
+        let a_host = Arc::clone(&a.last_dial_host);
+        let b_visits = Arc::clone(&b.visits);
+
+        let group = RelayGroup::new("udp-a-b", vec![a, b]);
+
+        assert!(!group.support_udp());
+        let err = group
+            .dial_udp(&udp_target())
+            .await
+            .err()
+            .expect("must fail closed");
         assert!(
             matches!(err, MeowError::UdpNotSupported),
             "must be UdpNotSupported; got {err:?}"
         );
+        assert!(a_udp.lock().is_empty(), "A.dial_udp must not run");
+        assert!(b_udp.lock().is_empty(), "B.dial_udp must not run");
+        assert!(a_host.lock().is_none(), "A must not dial TCP either");
+        assert!(b_visits.lock().is_empty(), "B must not connect_over either");
     }
 
-    // C3: middle hop lacks UDP → Err(UdpNotSupported)
+    // C3: a DIRECT hop between two proxies does not reduce the count, and
+    // once two proxy hops remain, their own UDP support does not matter.
     #[tokio::test]
-    async fn relay_udp_middle_hop_lacks_udp_returns_error() {
-        let a = MockProxy::new_udp("A", "10.0.0.1", 1080, 1);
-        let b = MockProxy::no_udp("B", "10.0.0.2", 1080, 2); // no UDP
+    async fn relay_udp_multi_hop_fails_closed_for_every_shape() {
+        fn hop(name: &str, udp: bool) -> Arc<MockProxy> {
+            match (name, udp) {
+                ("DIRECT", _) => MockProxy::direct(),
+                (_, true) => MockProxy::new_udp(name, "10.0.0.1", 1080, 1),
+                (_, false) => MockProxy::no_udp(name, "10.0.0.1", 1080, 1),
+            }
+        }
+        let shapes: [&[(&str, bool)]; 4] = [
+            &[("A", true), ("DIRECT", true), ("B", true)],
+            &[("A", false), ("B", true)],
+            &[("A", true), ("B", false)],
+            &[("A", true), ("B", true), ("C", true)],
+        ];
+        for shape in shapes {
+            let mocks: Vec<Arc<MockProxy>> = shape.iter().map(|&(n, u)| hop(n, u)).collect();
+            let proxies: Vec<Arc<dyn Proxy>> = mocks
+                .iter()
+                .map(|m| Arc::clone(m) as Arc<dyn Proxy>)
+                .collect();
+            let group = RelayGroup::new("udp-multi", proxies);
+
+            assert!(!group.support_udp(), "{shape:?}");
+            let err = group
+                .dial_udp(&udp_target())
+                .await
+                .err()
+                .expect("must fail closed");
+            assert!(
+                matches!(err, MeowError::UdpNotSupported),
+                "{shape:?}: got {err:?}"
+            );
+            for m in &mocks {
+                assert!(
+                    m.udp_dials.lock().is_empty(),
+                    "{shape:?}: {} must not dial UDP",
+                    m.name()
+                );
+            }
+        }
+    }
+
+    // C4: an all-DIRECT chain is a direct path, and its first DIRECT hop
+    // sends the UDP.
+    #[tokio::test]
+    async fn relay_udp_all_direct_sends_from_direct() {
+        let d1 = MockProxy::direct();
+        let d2 = MockProxy::direct();
+        let d1_udp = Arc::clone(&d1.udp_dials);
+        let d2_udp = Arc::clone(&d2.udp_dials);
+
+        let group = RelayGroup::new("udp-direct-direct", vec![d1, d2]);
+
+        assert!(group.support_udp());
+        group.dial_udp(&udp_target()).await.expect("direct UDP");
+        assert_eq!(*d1_udp.lock(), vec!["target.example".to_string()]);
+        assert!(d2_udp.lock().is_empty());
+    }
+
+    // C5: the exit's own capability decides. An exit without UDP fails
+    // closed with `UdpNotSupported`, not the exit's own error, and its
+    // `dial_udp` never runs.
+    #[tokio::test]
+    async fn relay_udp_exit_without_udp_fails_closed() {
+        for exit_first in [true, false] {
+            let a = MockProxy::no_udp("A", "10.0.0.1", 1080, 1);
+            let a_udp = Arc::clone(&a.udp_dials);
+            let direct: Arc<dyn Proxy> = MockProxy::direct();
+            let proxies: Vec<Arc<dyn Proxy>> = if exit_first {
+                vec![a, direct]
+            } else {
+                vec![direct, a]
+            };
+            let group = RelayGroup::new("udp-no-udp-exit", proxies);
+
+            assert!(!group.support_udp(), "exit_first={exit_first}");
+            let err = group
+                .dial_udp(&udp_target())
+                .await
+                .err()
+                .expect("must fail closed");
+            assert!(
+                matches!(err, MeowError::UdpNotSupported),
+                "exit_first={exit_first}: got {err:?}"
+            );
+            assert!(a_udp.lock().is_empty(), "exit_first={exit_first}");
+        }
+    }
+
+    // C6: a group or nested relay member that resolves to one proxy hop
+    // behaves like that leaf.
+    #[tokio::test]
+    async fn relay_udp_group_member_resolving_to_one_hop_acts_as_leaf() {
+        // Selector hop.
+        let b = MockProxy::new_udp("B", "10.0.0.2", 1080, 2);
+        let b_udp = Arc::clone(&b.udp_dials);
+        let sel: Arc<dyn Proxy> = Arc::new(SelectorGroup::new("sel", vec![b]));
+        let group = RelayGroup::new("udp-sel", vec![MockProxy::direct(), sel]);
+        assert!(group.support_udp());
+        group.dial_udp(&udp_target()).await.expect("via selector");
+        assert_eq!(*b_udp.lock(), vec!["target.example".to_string()]);
+
+        // Selector hop whose selection has no UDP.
+        let a = MockProxy::no_udp("A", "10.0.0.1", 1080, 1);
+        let a_udp = Arc::clone(&a.udp_dials);
+        let sel: Arc<dyn Proxy> = Arc::new(SelectorGroup::new("sel", vec![a]));
+        let group = RelayGroup::new("udp-sel-no-udp", vec![MockProxy::direct(), sel]);
+        assert!(!group.support_udp());
+        let err = group.dial_udp(&udp_target()).await.err().expect("no UDP");
+        assert!(matches!(err, MeowError::UdpNotSupported), "got {err:?}");
+        assert!(a_udp.lock().is_empty());
+
+        // Nested relay: `[DIRECT, inner[DIRECT, C]]` flattens to one proxy
+        // hop.
         let c = MockProxy::new_udp("C", "10.0.0.3", 1080, 3);
+        let c_udp = Arc::clone(&c.udp_dials);
+        let inner: Arc<dyn Proxy> =
+            Arc::new(RelayGroup::new("inner", vec![MockProxy::direct(), c]));
+        let group = RelayGroup::new("udp-nested", vec![MockProxy::direct(), inner]);
+        assert!(group.support_udp());
+        group
+            .dial_udp(&udp_target())
+            .await
+            .expect("via nested relay");
+        assert_eq!(*c_udp.lock(), vec!["target.example".to_string()]);
 
-        let proxies: Vec<Arc<dyn Proxy>> = vec![a, b, c];
-        let group = RelayGroup::new("udp-middle-no-udp", proxies);
-
-        let meta = Metadata {
-            host: "target.example".into(),
-            dst_port: 53,
-            ..Default::default()
-        };
-        let err = group.dial_udp(&meta).await.err().expect("must error");
-        assert!(matches!(err, MeowError::UdpNotSupported));
+        // Nested relay adding a second proxy hop: fail closed.
+        let d = MockProxy::new_udp("D", "10.0.0.4", 1080, 4);
+        let e = MockProxy::new_udp("E", "10.0.0.5", 1080, 5);
+        let d_udp = Arc::clone(&d.udp_dials);
+        let e_udp = Arc::clone(&e.udp_dials);
+        let inner: Arc<dyn Proxy> =
+            Arc::new(RelayGroup::new("inner", vec![MockProxy::direct(), e]));
+        let group = RelayGroup::new("udp-nested-two", vec![d, inner]);
+        assert!(!group.support_udp());
+        let err = group.dial_udp(&udp_target()).await.err().expect("two hops");
+        assert!(matches!(err, MeowError::UdpNotSupported), "got {err:?}");
+        assert!(d_udp.lock().is_empty() && e_udp.lock().is_empty());
     }
 
-    // C4: last hop lacks UDP → Err(UdpNotSupported)
+    // C7: `support_udp` resolves groups with a peek. It must not count as
+    // use of a lazy group or advance round-robin, or every UDP rule match
+    // would move the next dial's pick.
     #[tokio::test]
-    async fn relay_udp_last_hop_lacks_udp_returns_error() {
-        let a = MockProxy::new_udp("A", "10.0.0.1", 1080, 1);
-        let b = MockProxy::no_udp("B", "10.0.0.2", 1080, 2); // no UDP
+    async fn relay_support_udp_peek_does_not_touch_groups() {
+        let b1 = MockProxy::new_udp("B1", "10.0.0.2", 1080, 2);
+        let b2 = MockProxy::new_udp("B2", "10.0.0.3", 1080, 3);
+        let b1_udp = Arc::clone(&b1.udp_dials);
+        let b2_udp = Arc::clone(&b2.udp_dials);
+        let lb = Arc::new(LoadBalanceGroup::new(
+            "lb",
+            vec![b1, b2],
+            LbStrategy::RoundRobin,
+        ));
+        let proxies: Vec<Arc<dyn Proxy>> = vec![MockProxy::direct(), Arc::clone(&lb) as _];
+        let group = RelayGroup::new("udp-lb", proxies);
 
-        let proxies: Vec<Arc<dyn Proxy>> = vec![a, b];
-        let group = RelayGroup::new("udp-last-no-udp", proxies);
+        for _ in 0..3 {
+            assert!(group.support_udp());
+        }
+        assert_eq!(lb.usage_generation(), 0, "a peek is not a use");
 
-        let meta = Metadata {
-            host: "target.example".into(),
-            dst_port: 53,
-            ..Default::default()
-        };
-        let err = group.dial_udp(&meta).await.err().expect("must error");
-        assert!(matches!(err, MeowError::UdpNotSupported));
-    }
-
-    // C5: support_udp() reflects all members
-    #[tokio::test]
-    async fn relay_support_udp_requires_all_members() {
-        // All support UDP → true
-        let proxies_all: Vec<Arc<dyn Proxy>> = vec![
-            MockProxy::new_udp("A", "10.0.0.1", 1080, 1),
-            MockProxy::new_udp("B", "10.0.0.2", 1080, 2),
-            MockProxy::new_udp("C", "10.0.0.3", 1080, 3),
-        ];
-        let group_all = RelayGroup::new("udp-all-3", proxies_all);
-        assert!(group_all.support_udp());
-
-        // One lacks UDP → false
-        let proxies_one: Vec<Arc<dyn Proxy>> = vec![
-            MockProxy::new_udp("A", "10.0.0.1", 1080, 1),
-            MockProxy::no_udp("B", "10.0.0.2", 1080, 2),
-            MockProxy::new_udp("C", "10.0.0.3", 1080, 3),
-        ];
-        let group_one = RelayGroup::new("udp-one-missing", proxies_one);
-        assert!(!group_one.support_udp());
+        group
+            .dial_udp(&udp_target())
+            .await
+            .expect("via load-balance");
+        assert_eq!(lb.usage_generation(), 1, "the dial is a use");
+        // The peeks left the round-robin counter alone, so the first dial
+        // still gets B1.
+        assert_eq!(b1_udp.lock().len(), 1);
+        assert!(b2_udp.lock().is_empty());
     }
 
     // ─── D. Error handling — RelayHopFailed ───────────────────────────────
@@ -1013,6 +1693,272 @@ mod tests {
         assert_eq!(*b_visits.lock(), vec![2]);
         assert_eq!(*c_visits.lock(), vec![3]);
         assert_eq!(*d_visits.lock(), vec![4]);
+    }
+
+    // ─── H. Fail-closed hops & first-hop dialer-proxy ─────────────────────
+
+    /// A non-DIRECT member with no dialable address (REJECT, an
+    /// unresolvable group, …) is terminal — its `connect_over` errors — so
+    /// the chain must fail during flattening, before the preceding hop is
+    /// told to open a real connection to whatever comes after it.  The old
+    /// behaviour skipped the member when choosing the next hop's target,
+    /// which made `[entry, REJECT]` dial the *final target* first: the
+    /// reject fired, but only after the destination had been contacted.
+    #[tokio::test]
+    async fn reject_final_hop_fails_before_preceding_hop_dials() {
+        let entry = MockProxy::new("entry", "10.0.0.1", 1080, 1);
+        let entry_host = Arc::clone(&entry.last_dial_host);
+        let reject: Arc<dyn Proxy> = MockProxy::reject(false);
+
+        let group = RelayGroup::new("reject-final", vec![entry, reject]);
+        let target = Metadata {
+            host: "target.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        let err = group.dial_tcp(&target).await.err().expect("must fail");
+        assert!(
+            matches!(err, MeowError::RelayHopFailed { hop: 1, .. }),
+            "failure must be attributed to the REJECT hop; got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("REJECT"),
+            "error must name the offending member; got: {err}"
+        );
+        assert!(
+            entry_host.lock().is_none(),
+            "preceding hop must not dial the final target: {:?}",
+            entry_host.lock()
+        );
+    }
+
+    /// Same for a middle position: nothing may touch the network.
+    #[tokio::test]
+    async fn reject_middle_hop_fails_before_any_dial() {
+        let entry = MockProxy::new("entry", "10.0.0.1", 1080, 1);
+        let exit = MockProxy::new("exit", "10.0.0.2", 1081, 2);
+        let entry_host = Arc::clone(&entry.last_dial_host);
+        let exit_visits = Arc::clone(&exit.visits);
+        let reject: Arc<dyn Proxy> = MockProxy::reject(false);
+
+        let group = RelayGroup::new("reject-mid", vec![entry, reject, exit]);
+        let target = Metadata {
+            host: "target.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        let err = group.dial_tcp(&target).await.err().expect("must fail");
+        assert!(
+            matches!(err, MeowError::RelayHopFailed { hop: 1, .. }),
+            "failure must be attributed to the REJECT hop; got {err:?}"
+        );
+        assert!(entry_host.lock().is_none(), "no hop may perform I/O");
+        assert!(exit_visits.lock().is_empty());
+    }
+
+    /// REJECT-DROP at hop 0 must not burn the dial timeout inside its
+    /// black-hole sleep: flattening flags it before any hop runs.
+    #[tokio::test]
+    async fn reject_drop_first_hop_fails_fast() {
+        let reject: Arc<dyn Proxy> = MockProxy::reject(true);
+        let exit = MockProxy::new("exit", "10.0.0.2", 1081, 2);
+        let exit_visits = Arc::clone(&exit.visits);
+
+        let group = RelayGroup::new("reject-first", vec![reject, exit]);
+        let target = Metadata {
+            host: "target.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        let err = group.dial_tcp(&target).await.err().expect("must fail");
+        assert!(
+            matches!(err, MeowError::RelayHopFailed { hop: 0, .. }),
+            "failure must be attributed to hop 0; got {err:?}"
+        );
+        assert!(exit_visits.lock().is_empty());
+    }
+
+    /// `[DIRECT, REJECT]`: the DIRECT exemption lets hop 0 pass the check
+    /// (empty addr is legal for a transparent hop), but the chain still
+    /// fails closed at hop 1 — before DIRECT opens a real socket.
+    #[tokio::test]
+    async fn direct_entry_reject_fails_before_direct_dials() {
+        let direct = MockProxy::direct();
+        let direct_host = Arc::clone(&direct.last_dial_host);
+        let reject: Arc<dyn Proxy> = MockProxy::reject(false);
+
+        let group = RelayGroup::new("direct-reject", vec![direct, reject]);
+        let target = Metadata {
+            host: "target.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        let err = group.dial_tcp(&target).await.err().expect("must fail");
+        assert!(
+            matches!(err, MeowError::RelayHopFailed { hop: 1, .. }),
+            "failure must be attributed to the REJECT hop; got {err:?}"
+        );
+        assert!(direct_host.lock().is_none(), "DIRECT must not dial");
+    }
+
+    /// The fail-closed check covers every member that resolves to nothing
+    /// dialable — an empty Selector stays a group (`adapter_type !=
+    /// Direct`, `addr() == ""`), so it is terminal mid-chain like REJECT.
+    #[tokio::test]
+    async fn unresolvable_group_middle_hop_fails_before_any_dial() {
+        let entry = MockProxy::new("entry", "10.0.0.1", 1080, 1);
+        let exit = MockProxy::new("exit", "10.0.0.2", 1081, 2);
+        let entry_host = Arc::clone(&entry.last_dial_host);
+        let sel: Arc<dyn Proxy> = Arc::new(SelectorGroup::new("sel", vec![]));
+
+        let group = RelayGroup::new("sel-mid", vec![entry, sel, exit]);
+        let target = Metadata {
+            host: "target.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        let err = group.dial_tcp(&target).await.err().expect("must fail");
+        assert!(
+            matches!(err, MeowError::RelayHopFailed { hop: 1, .. }),
+            "failure must be attributed to the group hop; got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("sel"),
+            "error must name the offending member; got: {err}"
+        );
+        assert!(entry_host.lock().is_none(), "no hop may perform I/O");
+    }
+
+    /// Error hop indices are flattened positions: a REJECT spliced in from
+    /// a nested relay is reported at its global index.
+    #[tokio::test]
+    async fn reject_inside_nested_relay_reports_flattened_index() {
+        let a = MockProxy::new("a", "10.0.0.1", 1080, 1);
+        let b = MockProxy::new("b", "10.0.0.3", 1082, 3);
+        let a_host = Arc::clone(&a.last_dial_host);
+        let reject: Arc<dyn Proxy> = MockProxy::reject(false);
+
+        let inner: Arc<dyn Proxy> = Arc::new(RelayGroup::new("inner", vec![reject, b]));
+        let outer = RelayGroup::new("outer", vec![a, inner]);
+        let target = Metadata {
+            host: "target.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        let err = outer.dial_tcp(&target).await.err().expect("must fail");
+        assert!(
+            matches!(err, MeowError::RelayHopFailed { hop: 1, .. }),
+            "REJECT sits at flattened index 1 ([a, REJECT, b]); got {err:?}"
+        );
+        assert!(a_host.lock().is_none(), "no hop may perform I/O");
+    }
+
+    /// Regression: a `dialer-proxy` member that lands at the *global* first
+    /// hop through nested-relay splicing must keep its wrapper — the
+    /// configured front dialer has to fire.  The old guard tested a
+    /// per-call `depth == 0 && out.is_empty()`, but each recursion level
+    /// had a fresh `out`, so a nested relay's first member was peeled even
+    /// when it was the chain's true hop 0 — silently bypassing the dialer.
+    #[tokio::test]
+    async fn nested_relay_first_member_keeps_dialer_proxy() {
+        let p = MockProxy::new("p", "10.0.0.2", 1081, 2);
+        let q = MockProxy::new("q", "10.0.0.3", 1082, 3);
+        let r = MockProxy::new("r", "10.0.0.4", 1083, 4);
+        let s = MockProxy::new("s", "10.0.0.5", 1084, 5);
+        let p_visits = Arc::clone(&p.visits);
+        let r_visits = Arc::clone(&r.visits);
+        let s_visits = Arc::clone(&s.visits);
+
+        let inner: Arc<dyn Proxy> = Arc::new(RelayGroup::new("inner", vec![p, q]));
+        let dpa: Arc<dyn Proxy> = Arc::new(DialerProxyAdapter::new(
+            inner,
+            crate::dialer::DialerTarget::new(
+                "never-resolved",
+                &crate::dialer::ProxyRegistry::default(),
+            ),
+        ));
+        let mid: Arc<dyn Proxy> = Arc::new(RelayGroup::new("mid", vec![dpa, r]));
+        let outer = RelayGroup::new("outer", vec![mid, s]);
+        let target = Metadata {
+            host: "t.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        let err = outer
+            .dial_tcp(&target)
+            .await
+            .err()
+            .expect("global hop 0 must run the DPA's dial_tcp and fail on the missing dialer");
+        assert!(
+            matches!(err, MeowError::RelayHopFailed { hop: 0, .. }),
+            "failure must be attributed to hop 0; got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("never-resolved"),
+            "error must name the missing dialer, got: {err}"
+        );
+        // Peeling would have spliced the inner chain and run `p` directly —
+        // prove nothing ran.
+        assert!(p_visits.lock().is_empty());
+        assert!(r_visits.lock().is_empty());
+        assert!(s_visits.lock().is_empty());
+    }
+
+    /// The same nested shape with a *resolvable* front dialer must run the
+    /// whole chain through it: `outer = [mid[DPA(inner[p, q]), r], s]`
+    /// dials `front → p → q → r → s → target`.
+    #[tokio::test]
+    async fn nested_relay_first_member_dialer_proxy_dials_through_front() {
+        let front = MockProxy::new("front", "10.0.9.9", 1090, 9);
+        let p = MockProxy::new("p", "10.0.0.2", 1081, 2);
+        let q = MockProxy::new("q", "10.0.0.3", 1082, 3);
+        let r = MockProxy::new("r", "10.0.0.4", 1083, 4);
+        let s = MockProxy::new("s", "10.0.0.5", 1084, 5);
+        let front_host = Arc::clone(&front.last_dial_host);
+        let p_host = Arc::clone(&p.last_dial_host);
+        let q_host = Arc::clone(&q.last_dial_host);
+        let r_host = Arc::clone(&r.last_dial_host);
+        let s_host = Arc::clone(&s.last_dial_host);
+        let p_visits = Arc::clone(&p.visits);
+        let q_visits = Arc::clone(&q.visits);
+
+        let registry = crate::dialer::ProxyRegistry::default();
+        let mut proxies: std::collections::HashMap<SmolStr, Arc<dyn Proxy>> =
+            std::collections::HashMap::new();
+        proxies.insert(front.name().into(), front);
+        registry.publish(Arc::new(proxies));
+
+        let inner: Arc<dyn Proxy> = Arc::new(RelayGroup::new("inner", vec![p, q]));
+        let dpa: Arc<dyn Proxy> = Arc::new(DialerProxyAdapter::new(
+            inner,
+            crate::dialer::DialerTarget::new("front", &registry),
+        ));
+        let mid: Arc<dyn Proxy> = Arc::new(RelayGroup::new("mid", vec![dpa, r]));
+        let outer = RelayGroup::new("outer", vec![mid, s]);
+        let target = Metadata {
+            host: "t.example".into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+
+        outer.dial_tcp(&target).await.expect("nested DPA chain");
+
+        // The front dialer reaches the inner chain's entry point; each hop
+        // then gets the next hop's server; the last hop gets the target.
+        assert_eq!(*front_host.lock(), Some("10.0.0.2".into()));
+        assert_eq!(*p_host.lock(), Some("10.0.0.3".into()));
+        assert_eq!(*q_host.lock(), Some("10.0.0.4".into()));
+        assert_eq!(*r_host.lock(), Some("10.0.0.5".into()));
+        assert_eq!(*s_host.lock(), Some("t.example".into()));
+        assert_eq!(*p_visits.lock(), vec![2]);
+        assert_eq!(*q_visits.lock(), vec![3]);
     }
 
     // ─── F. AdapterType and ProxyAdapter trait methods ────────────────────

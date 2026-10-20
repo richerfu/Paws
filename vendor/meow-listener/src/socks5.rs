@@ -1,12 +1,10 @@
 use crate::sniffer::SnifferRuntime;
 use meow_common::{AuthConfig, ConnType, Metadata, Network};
-use meow_tunnel::{copy_bidirectional_buf_tracked, ConnectionGuard, Tunnel, RELAY_BUF_SIZE};
-use smallvec::smallvec;
+use meow_tunnel::{route_inbound_tcp, Tunnel};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 const SOCKS5_VERSION: u8 = 0x05;
 const NO_AUTH: u8 = 0x00;
@@ -43,6 +41,7 @@ pub async fn handle_socks5(
         Ok(PostHandshake::UdpAssociate {
             requested_ip,
             requested_port,
+            in_user,
         }) => {
             // The handshake (auth + request) is consumed; the control conn is
             // now ours for the association's lifetime.
@@ -52,8 +51,12 @@ pub async fn handle_socks5(
                 src_addr,
                 requested_ip,
                 requested_port,
-                in_name,
-                in_port,
+                &Metadata {
+                    in_name: in_name.into(),
+                    in_port,
+                    in_user: in_user.as_deref().map(Into::into),
+                    ..Default::default()
+                },
             )
             .await
             {
@@ -72,6 +75,7 @@ enum PostHandshake {
     UdpAssociate {
         requested_ip: Option<IpAddr>,
         requested_port: u16,
+        in_user: Option<String>,
     },
 }
 
@@ -169,6 +173,7 @@ async fn handle_socks5_inner(
         return Ok(PostHandshake::UdpAssociate {
             requested_ip: dst_ip,
             requested_port: dst_port,
+            in_user,
         });
     }
 
@@ -216,78 +221,12 @@ async fn handle_socks5_inner(
 
     debug!("SOCKS5 CONNECT to {}", metadata.remote_address());
 
+    // Hand off to the shared inbound routing+relay path: fake-IP rewrite,
+    // lazy rule match, connection tracking, dial, and bidirectional copy.
+    // `prefix` is empty — the SOCKS5 CONNECT handshake consumes exactly the
+    // request header, leaving a clean stream.
     let inner = tunnel.inner();
-
-    // Fake-IP → host rewrite (no-op outside fake-IP mode aside from the
-    // snooping-cache hostname fill-in). Without this, a fake-IP TCP flow
-    // reaches rule matching still carrying the 28.x/198.18.x placeholder,
-    // matches no DOMAIN/GEOSITE/GEOIP rule, and falls through to
-    // MATCH()/final — so domain rules are silently bypassed for TCP under
-    // fake-IP. Mirrors `handle_tcp` (meow-tunnel/src/tcp.rs) and the UDP
-    // ASSOCIATE path (socks5_udp.rs).
-    inner.pre_handle_metadata(&mut metadata);
-
-    // Match rules with lazy enrichment: host → real-IP resolution happens
-    // inside only if the scan reaches an IP-based rule that demands it.
-    let Some((proxy, rule_name, rule_payload)) = inner.resolve_proxy_lazy(&mut metadata).await
-    else {
-        return Err("no matching rule".into());
-    };
-
-    info!(
-        "{} --> {} match {}({}) using {}",
-        metadata.source_address(),
-        metadata.remote_address(),
-        rule_name,
-        rule_payload,
-        proxy.name()
-    );
-
-    // RAII-tracked so the entry is removed from `Statistics.connections` even
-    // if the relay future is cancelled (listener shutdown, iOS idle sweeper,
-    // panic-unwind).
-    let _guard = ConnectionGuard::track(
-        &inner.stats,
-        metadata.pure(),
-        rule_name,
-        rule_payload,
-        smallvec![Arc::from(proxy.name())],
-    );
-
-    // Relay buffers on the future's stack — zero per-relay heap allocation (ADR-0011 T6).
-    let mut relay_buf_up = [0u8; RELAY_BUF_SIZE];
-    let mut relay_buf_dn = [0u8; RELAY_BUF_SIZE];
-
-    match proxy.dial_tcp(&metadata).await {
-        Ok(mut remote) => {
-            let up = Arc::clone(_guard.counters());
-            let dn = Arc::clone(_guard.counters());
-            match copy_bidirectional_buf_tracked(
-                stream,
-                &mut remote,
-                &mut relay_buf_up,
-                &mut relay_buf_dn,
-                |n| {
-                    inner
-                        .stats
-                        .record_upload(&up, n as meow_common::atomic::Int);
-                },
-                |n| {
-                    inner
-                        .stats
-                        .record_download(&dn, n as meow_common::atomic::Int);
-                },
-            )
-            .await
-            {
-                Ok((up, down)) => {
-                    debug!("SOCKS5 relay closed: up={up} down={down}");
-                }
-                Err(e) => debug!("SOCKS5 relay error: {}", e),
-            }
-        }
-        Err(e) => warn!("{} SOCKS5 dial error: {}", metadata.remote_address(), e),
-    }
+    route_inbound_tcp(inner, stream, metadata, &[]).await;
 
     Ok(PostHandshake::Done)
 }

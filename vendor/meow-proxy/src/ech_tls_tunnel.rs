@@ -12,7 +12,7 @@
 //!
 //! ```text
 //! TcpStream
-//!   → rustls TLS (with ECH + inner SNI override, ALPN=http/1.1)
+//!   → BoringSSL TLS (with ECH + inner SNI override, ALPN=http/1.1)
 //!   → HTTP/1.1 WebSocket upgrade (Host = inner SNI, path = cfg.path)
 //!   → caller wraps with Shadowsocks ProxyClientStream
 //! ```
@@ -22,6 +22,8 @@
 
 use base64::Engine;
 use meow_common::{MeowError, Result};
+
+use crate::plugin_util::{parse_bool, sip003_opts};
 use meow_transport::{
     tls::{EchOpts, TlsConfig, TlsLayer},
     ws::{WsConfig, WsLayer},
@@ -45,10 +47,6 @@ pub struct EchTlsTunnelConfig {
     pub fingerprint: Option<String>,
 }
 
-fn parse_bool(s: &str) -> bool {
-    matches!(s.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
-}
-
 /// Parse a SIP003 opts string for `ech-tls-tunnel`.
 ///
 /// Recognised keys:
@@ -70,12 +68,8 @@ pub fn parse_opts(s: &str) -> Result<EchTlsTunnelConfig> {
     let mut ech_b64: Option<String> = None;
     let mut fingerprint: Option<String> = Some("chrome".to_string());
 
-    for token in s.split(';').map(str::trim).filter(|t| !t.is_empty()) {
-        let (key, value) = match token.split_once('=') {
-            Some((k, v)) => (k.trim(), v.trim().to_string()),
-            None => (token, "true".to_string()),
-        };
-        match key {
+    for (key, value) in sip003_opts(s) {
+        match key.as_str() {
             "mode" => mode = Some(value),
             "sni" => sni = Some(value),
             "path" => path = Some(value),
@@ -87,7 +81,9 @@ pub fn parse_opts(s: &str) -> Result<EchTlsTunnelConfig> {
                 };
             }
             "fast_open" | "fast-open" => {
-                let _ = parse_bool(&value);
+                // Accepted-but-ignored compat knob; shared parse_bool
+                // still warns on garbage values.
+                let _ = parse_bool(&value, "ech-tls-tunnel", "fast-open");
             }
             other => warn!("ech-tls-tunnel: ignoring unknown opt '{}'", other),
         }
@@ -158,6 +154,28 @@ pub async fn dial(
     tls_layer: &TlsLayer,
     server_host: &str,
     server_port: u16,
+    dialer: &dyn crate::dialer::TcpDialer,
+    internal: bool,
+) -> Result<Box<dyn meow_transport::Stream>> {
+    // 1) Raw TCP.
+    let tcp = dialer
+        .dial(server_host, server_port, internal)
+        .await
+        .map_err(MeowError::Io)?;
+
+    handshake_over(cfg, tls_layer, server_host, server_port, tcp).await
+}
+
+/// Apply the TLS-with-ECH handshake + WebSocket upgrade on `stream`, which
+/// must already terminate at `server_host:server_port` — `dial` obtains it
+/// from `dialer.dial`, the SS adapter's `connect_over` receives it from the
+/// relay chain.
+pub async fn handshake_over(
+    cfg: &EchTlsTunnelConfig,
+    tls_layer: &TlsLayer,
+    server_host: &str,
+    server_port: u16,
+    stream: Box<dyn meow_transport::Stream>,
 ) -> Result<Box<dyn meow_transport::Stream>> {
     debug!(
         "ech-tls-tunnel: dialing {}:{} sni={} path={} ech_config_len={}",
@@ -168,16 +186,10 @@ pub async fn dial(
         cfg.ech_config.len(),
     );
 
-    // 1) Raw TCP.
-    let tcp = meow_common::connect_tcp_host(server_host, server_port)
-        .await
-        .map_err(MeowError::Io)?;
-    let _ = tcp.set_nodelay(true);
-
     // 2) TLS (with ECH). Reuse the pre-built TlsLayer — avoids rebuilding
     //    the BoringSSL SSL_CTX and re-parsing ~150 root certs per connection.
     let tls_stream = tls_layer
-        .connect(Box::new(tcp))
+        .connect(Box::new(stream))
         .await
         .map_err(transport_to_proxy_err)?;
 

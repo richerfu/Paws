@@ -22,10 +22,11 @@ advanced-protocol use.
 Redistribution of a HAP containing `libsingbox.so` must include the matching
 sing-box source, bridge source, and GPL-3.0-or-later license notice.
 
-The Rust native engine uses meow-rs 0.21.2. The local copies of `meow-common`,
-`meow-proxy`, and `meow-anytls` in `vendor/` retain their original source and
-license notices. TinyPaws changes add OpenHarmony socket protection and
-network-bound bootstrap DNS; those changes are distributed with this source.
+The Rust native engine uses meow-rs 0.22.0. The local copies of `meow-common`,
+`meow-proxy`, `meow-anytls`, `meow-listener`, `meow-tunnel`, and `meow-transport`
+in `vendor/` retain their original source and license notices. TinyPaws changes
+add OpenHarmony socket protection, network-bound bootstrap DNS, HTTP-obfs
+compatibility and bounded diagnostics; see `vendor/TINYPAWS-PATCHES.md`.
 
 The sing-box bridge additionally includes `physical_network.go`, `obfs_plugin.go`,
 `trace.go`, and `httpobfs/conn.go`; the required upstream handshake change is

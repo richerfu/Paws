@@ -5,13 +5,13 @@ Current device release: **1.2.7-tiny** (versionCode **1002007**). See the
 [delivery record](docs/TinyPaws-1.2.7-delivery.md) for physical-device evidence.
 
 TinyPaws is a Clash/mihomo HarmonyOS client with a native ArkUI interface,
-powered by [meow-rs](https://github.com/madeye/meow-rs), a Rust userspace TUN
+powered by [meow-rs 0.22.0](https://github.com/meow-rs/meow-rs), a Rust userspace TUN
 stack, and optional mihomo and sing-box compatibility engines.
 Profiles that use plugin transports are resolved through the route-validated
 mihomo engine even when a candidate engine is selected, so a compatibility
 preference cannot produce a false Connected state.
 Its product flow follows
-[Meow for Android](https://github.com/madeye/meow), while the HarmonyOS UI,
+[Meow for Android](https://github.com/meow-rs/meow-android), while the HarmonyOS UI,
 VPN lifecycle, native bridge, packaging, and device validation are implemented
 in this repository.
 
@@ -65,7 +65,11 @@ Network
 - **Runtime views**: proxy selection and delay test, live traffic, connections,
   requests, logs, resources, and VPN lifecycle diagnostics.
 - **Native UI**: phone, tablet, and 2-in-1 device targets built with
-  [arkit](https://github.com/richerfu/arkit).
+  [arkit](https://github.com/richerfu/arkit). Live window widths below 840vp
+  use bottom navigation; wider tablet and desktop windows use a sidebar and
+  bounded page content. Keyboard and pointer input remain available in split
+  or narrow windows. Text fields focus on click so scrolling does not open
+  the keyboard accidentally.
 - **Localization**: English and Simplified Chinese.
 - **Automation**: workspace tests, local protocol mocks, HAP export checks,
   device/QEMU smoke tests, and a 14-mode positive/negative protocol matrix.
@@ -75,14 +79,23 @@ Network
 ### Prerequisites
 
 - macOS with DevEco Studio and the HarmonyOS SDK installed.
-- Rust 1.89 or a compatible newer toolchain.
+- Rust 1.90 or a compatible newer toolchain.
 - [`ohrs`](https://github.com/ohos-rs/ohos-rs) available in `PATH`.
 - `hvigorw` and `hdc`; the packaging scripts can use the copies bundled with
   DevEco Studio.
 - Signing material configured locally when producing a physical-device HAP.
 
-The project targets HarmonyOS 6.1, is compatible with HarmonyOS 6.0.2, and
-exports release packages for `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
+If DevEco Studio is installed outside `/Applications/DevEco-Studio.app`, set
+`DEVECO_STUDIO_HOME` to its `Contents` directory before running these scripts.
+
+Run `ohpm install --all` after changing dependencies. Paws uses the published
+Arkit `0.0.1-beta.0` Rust crates and Ability `1.0.0-beta.3` Rust / OHPM
+packages, including the matching files and URL plugins. Third-party
+dependencies resolve from crates.io and the OHPM registry; no local host
+snapshot or sibling checkout is required.
+
+The project targets HarmonyOS 6.1 and is compatible with HarmonyOS 6.0.2.
+The default release package contains `arm64-v8a` native libraries.
 
 ### Verify the source tree
 
@@ -90,8 +103,8 @@ exports release packages for `arm64-v8a`, `armeabi-v7a`, and `x86_64`.
 scripts/verify.sh
 ```
 
-This runs Rust formatting checks, workspace tests, local protocol profile
-generation, and an OpenHarmony `aarch` build.
+This runs Rust formatting checks, workspace tests, ArkTS platform tests,
+local protocol profile generation, and an OpenHarmony `aarch` build.
 
 ### Build an unsigned release HAP
 
@@ -115,7 +128,7 @@ After configuring a valid HarmonyOS signing profile for the target device:
 
 ```sh
 scripts/fetch-geodata.sh
-scripts/package-signed-hap.sh
+scripts/package-hap.sh --signed
 ```
 
 Output:
@@ -128,8 +141,8 @@ Do not unpack and rebuild a signed HAP with a generic ZIP utility. Doing so can
 change the aligned resource layout and cause application icon or launcher
 problems on physical devices.
 
-See [CI and release checks](docs/ci-and-release.md) and
-[GeoData provisioning](docs/geodata.md) for details.
+See [GeoData provisioning](docs/geodata.md) for rawfile sources and packaging
+requirements.
 
 ## Install and launch
 
@@ -149,17 +162,15 @@ hdc shell aa start -b com.richerfu.paws -a EntryAbility
 
 For a target selected by key, add `-t <target-key>` immediately after `hdc`.
 
-The smoke script builds, validates the native exports inside the HAP, installs
-the app, launches `EntryAbility`, and captures `hilog`:
+The smoke script builds a fresh debug HAP, validates its native exports,
+installs the app, launches `EntryAbility`, and captures `hilog`. Pass `--hap`
+to reuse an already packaged HAP, such as the signed release:
 
 ```sh
 scripts/harmony-smoke.sh \
   --hap entry/build/default/outputs/default/entry-default-release-signed.hap \
   --require-protect-success
 ```
-
-See [HarmonyOS smoke validation](docs/harmony-smoke.md) for profile import,
-automatic VPN startup, traffic probes, and troubleshooting options.
 
 For a route-proven performance sample on a connected phone, use:
 
@@ -192,14 +203,11 @@ hdc tconn 127.0.0.1:5555
 hdc list targets
 ```
 
-Then package and run an automated direct-mode VPN smoke:
+Then build a debug HAP and run an automated direct-mode VPN smoke:
 
 ```sh
-scripts/package-hap.sh
 scripts/harmony-smoke.sh \
-  --no-build \
   --target 127.0.0.1:5555 \
-  --hap entry/build/default/outputs/default/entry-default-unsigned.hap \
   --protocol-mode direct \
   --mock-bind 0.0.0.0 \
   --mock-advertise-host 10.0.2.2 \
@@ -237,7 +245,11 @@ scripts/harmony-protocol-matrix.sh \
 
 The matrix covers Direct, HTTP, SOCKS5, Shadowsocks, Trojan, and VLESS,
 including authentication, unavailable-server, bad-password, and bad-UUID
-failure paths. See the [protocol acceptance matrix](docs/app-protocol-acceptance.md).
+failure paths. It builds and packages one debug HAP before running all modes.
+Set `HAP_PATH` to reuse an existing debug HAP, or pass `--no-build` to reuse
+the default output. Debug Want automation requires `app.debug=true` in the HAP;
+for a signed debug package, use
+`NATIVE_PROFILE=debug HAP_BUILD_MODE=debug scripts/package-hap.sh --signed`.
 
 ## Project structure
 
@@ -254,7 +266,7 @@ crates/
   paws_model/                 Shared data model
 local-protocol-tests/          Echo servers, mock proxies, and generated profiles
 scripts/                       Build, package, smoke, and regression automation
-docs/                          Release, protocol, GeoData, and validation notes
+docs/                          GeoData provisioning notes
 ```
 
 ## License

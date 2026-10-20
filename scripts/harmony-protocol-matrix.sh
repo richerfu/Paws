@@ -9,6 +9,10 @@ MOCK_ADVERTISE_HOST="${MOCK_ADVERTISE_HOST:-}"
 HILOG_SECONDS="${HILOG_SECONDS:-20}"
 REQUIRE_PROTECT_SUCCESS="${REQUIRE_PROTECT_SUCCESS:-1}"
 RUN_BUILD_ONCE="${RUN_BUILD_ONCE:-1}"
+RUN_BUILD=1
+if [ -n "${HAP_PATH:-}" ]; then
+  RUN_BUILD=0
+fi
 ALLOW_VPN_UNSUPPORTED="${ALLOW_VPN_UNSUPPORTED:-0}"
 
 usage() {
@@ -26,11 +30,13 @@ Options:
   --no-require-protect-success
                               Accept explicit protect failure as diagnostics.
   --no-build-once            Let every smoke invocation run its own build.
+  --no-build                 Reuse the existing HAP for every mode.
   --allow-vpn-unsupported    Forward emulator allowance to harmony-smoke.
   -h, --help                 Show this help.
 
 Most harmony-smoke.sh environment overrides still apply, including HDC,
 HDC_TARGET, HAP_PATH, BUNDLE_NAME, LOG_DIR, and OHRS.
+Setting HAP_PATH reuses that HAP without building or packaging.
 USAGE
 }
 
@@ -60,6 +66,10 @@ while [ "$#" -gt 0 ]; do
       RUN_BUILD_ONCE=0
       shift
       ;;
+    --no-build)
+      RUN_BUILD=0
+      shift
+      ;;
     --allow-vpn-unsupported)
       ALLOW_VPN_UNSUPPORTED=1
       shift
@@ -81,8 +91,11 @@ if [ ! -x "$SMOKE_SCRIPT" ]; then
   exit 1
 fi
 
-if [ "$RUN_BUILD_ONCE" -eq 1 ]; then
-  (cd "$ROOT_DIR" && "${OHRS:-ohrs}" build --arch aarch)
+if [ "$RUN_BUILD" -eq 0 ]; then
+  no_build_arg="--no-build"
+elif [ "$RUN_BUILD_ONCE" -eq 1 ]; then
+  NATIVE_PROFILE="${NATIVE_PROFILE:-debug}" HAP_BUILD_MODE="${HAP_BUILD_MODE:-debug}" \
+    "$ROOT_DIR/scripts/package-hap.sh"
   no_build_arg="--no-build"
 else
   no_build_arg=""

@@ -36,6 +36,7 @@ use tracing::Level;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::Layer;
 
+mod app_http;
 mod controller;
 mod diagnostics;
 mod engine_health;
@@ -68,6 +69,7 @@ mod subscription;
 mod telemetry;
 mod webdav;
 
+use app_http::{AppHttpProxyEndpoint, AppHttpProxyRuntime};
 pub use controller::shared_core;
 use controller::*;
 use exit_location::*;
@@ -108,9 +110,9 @@ const MIXED_LISTENER_READY_RETRY: Duration = Duration::from_millis(25);
 const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = "1.2.9-tiny";
-const MEOW_RS_VERSION: &str = "0.21.2";
-const ARKIT_REV: &str = env!("PAWS_ARKIT_REV");
-const RUST_VERSION: &str = "1.89";
+const MEOW_RS_VERSION: &str = "0.22.0";
+const ARKIT_VERSION: &str = env!("PAWS_ARKIT_VERSION");
+const RUST_VERSION: &str = env!("CARGO_PKG_RUST_VERSION");
 const MIHOMO_OHOS_SDK_VERSION: u32 = 24;
 
 #[derive(Debug, Clone, Serialize)]
@@ -170,6 +172,8 @@ struct PlatformVpnState {
     running: bool,
     network_protected: bool,
     network_protect_error: Option<String>,
+    engine: Option<VpnEngine>,
+    app_http_proxy: Option<AppHttpProxyEndpoint>,
     updated_at: u128,
 }
 
@@ -229,6 +233,7 @@ struct ControllerStartConfig {
     runtime_path: PathBuf,
     raw_config: RawConfig,
     proxy_providers: HashMap<String, Arc<ProxyProvider>>,
+    provider_dialer_registry: meow_proxy::dialer::ProxyRegistry,
     rule_providers: HashMap<String, Arc<RuleProvider>>,
     listeners: Vec<NamedListener>,
 }
@@ -297,6 +302,7 @@ struct CoreState {
     platform_vpn_cleanup_complete: bool,
     platform_network_protected: bool,
     platform_network_protect_error: Option<String>,
+    platform_app_http_proxy: Option<AppHttpProxyEndpoint>,
     platform_vpn_state_updated_at: u128,
     platform_remote_state_updated_at: u128,
     platform_remote_state_seen_at: Option<Instant>,
@@ -545,6 +551,7 @@ impl Default for CoreState {
             platform_vpn_cleanup_complete: false,
             platform_network_protected: false,
             platform_network_protect_error: None,
+            platform_app_http_proxy: None,
             platform_vpn_state_updated_at: 0,
             platform_remote_state_updated_at: 0,
             platform_remote_state_seen_at: None,
@@ -617,6 +624,7 @@ pub struct CoreHandle {
     vpn_operation_lock: tokio::sync::Mutex<()>,
     exit_location_refresh_lock: tokio::sync::Mutex<()>,
     mixed_listener: Mutex<Option<MixedListenerRuntime>>,
+    app_http_proxy: Mutex<Option<AppHttpProxyRuntime>>,
     vpn: TunSession,
     api_controller_enabled: bool,
     api_controller_addr_override: Option<SocketAddr>,
@@ -856,6 +864,7 @@ impl CoreHandle {
             vpn_operation_lock: tokio::sync::Mutex::new(()),
             exit_location_refresh_lock: tokio::sync::Mutex::new(()),
             mixed_listener: Mutex::new(None),
+            app_http_proxy: Mutex::new(None),
             vpn: TunSession::default(),
             api_controller_enabled: true,
             api_controller_addr_override: None,
@@ -933,6 +942,7 @@ impl CoreHandle {
                 platform_vpn_cleanup_complete: false,
                 platform_network_protected: false,
                 platform_network_protect_error: None,
+                platform_app_http_proxy: None,
                 platform_vpn_state_updated_at: 0,
                 platform_remote_state_updated_at: 0,
                 platform_remote_state_seen_at: None,
@@ -1000,6 +1010,7 @@ impl CoreHandle {
             vpn_operation_lock: tokio::sync::Mutex::new(()),
             exit_location_refresh_lock: tokio::sync::Mutex::new(()),
             mixed_listener: Mutex::new(None),
+            app_http_proxy: Mutex::new(None),
             vpn: TunSession::default(),
             api_controller_enabled: false,
             api_controller_addr_override: None,
@@ -1367,14 +1378,9 @@ impl CoreHandle {
             }
         }
 
-        let log_root = {
-            let state = self.lock_state()?;
-            state.profiles.root().to_path_buf()
-        };
-        log_recording::reset_recording(&log_root)?;
-        if let Ok(mut logs) = RUNTIME_LOGS.lock() {
-            logs.clear();
-        }
+        // Creating a UI IPC session must not revoke the user's recording
+        // choice or discard errors captured during native initialization.
+        // Fresh installations stay disabled until explicitly enabled.
         let (platform, fds) = platform_ipc::PlatformIpc::create_ui().map_err(platform_ipc_error)?;
         {
             let mut slot = self
@@ -1673,6 +1679,28 @@ impl CoreHandle {
     ) -> Result<(Option<String>, http_client::ExternalHttpRoute), PawsError> {
         let state = self.lock_state()?;
         if self.vpn.is_running() || state.platform_vpn_running {
+            if let Some(engine @ (VpnEngine::Mihomo | VpnEngine::SingBox)) =
+                state.platform_vpn_engine
+            {
+                return Ok((
+                    Some(format!(
+                        "http://127.0.0.1:{}",
+                        engine_policy::benchmark_port(engine)
+                    )),
+                    http_client::ExternalHttpRoute::CurrentProxy,
+                ));
+            }
+            if let Some(endpoint) = &state.platform_app_http_proxy {
+                return Ok((
+                    Some(endpoint.proxy_url()),
+                    http_client::ExternalHttpRoute::CurrentProxy,
+                ));
+            }
+            if !state.network_ports.mixed_enabled {
+                return Err(PawsError::Core(
+                    "VPN app HTTP proxy is not ready".to_owned(),
+                ));
+            }
             Ok((
                 Some(format!(
                     "http://127.0.0.1:{}",
@@ -1690,6 +1718,31 @@ impl CoreHandle {
         url: &str,
         context: &str,
     ) -> Result<http_client::ExternalTextResponse, PawsError> {
+        let started = Instant::now();
+        let result = self.download_subscription_unreported(url, context).await;
+        if let Err(error) = &result {
+            self.record_http_failure(format!(
+                "{context} failed after {} ms: {error}",
+                started.elapsed().as_millis()
+            ));
+        }
+        result
+    }
+
+    fn record_http_failure(&self, message: String) {
+        let entry = error_log(message);
+        if let Ok(mut state) = self.lock_state() {
+            state.logs.push(entry.clone());
+            self.publish_status_and_telemetry_change_locked(&mut state);
+        }
+        broadcast_log_entry(&entry);
+    }
+
+    async fn download_subscription_unreported(
+        &self,
+        url: &str,
+        context: &str,
+    ) -> Result<http_client::ExternalTextResponse, PawsError> {
         let (proxy_url, route) = self.external_http_route()?;
         let client = http_client::shared_external_http_client()
             .map_err(|error| PawsError::Core(error.to_string()))?;
@@ -1701,12 +1754,14 @@ impl CoreHandle {
                 http_client::ExternalRequestKind::Subscription,
             )
             .map_err(|error| PawsError::Core(error.to_string()))?;
-        let response = request.send().await.map_err(|error| {
-            PawsError::Core(format!(
-                "{context} request via {route} failed: {}",
-                error.without_url()
-            ))
-        })?;
+        let response = http_client::send_external_get(request, route)
+            .await
+            .map_err(|error| {
+                PawsError::Core(format!(
+                    "{context} request via {route} failed: {}",
+                    http_client::request_error_message(error, proxy_url.as_deref())
+                ))
+            })?;
         http_client::read_external_text_response(
             response,
             context,
@@ -2923,6 +2978,14 @@ impl CoreHandle {
             .vpn
             .start(fd, options.clone(), tunnel.clone(), sniffer_config)
             .await?;
+        let app_http_proxy = match self.restart_app_http_proxy(tunnel.clone()).await {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                self.vpn.stop().await?;
+                self.stop_mixed_listener()?;
+                return Err(error);
+            }
+        };
         if let Some(attempt_id) = attempt_id {
             let attempt_result = {
                 let mut state = self.lock_state()?;
@@ -2976,6 +3039,7 @@ impl CoreHandle {
                 Err(error) => Err(error),
                 Ok(()) => {
                     state.vpn_options = options;
+                    state.platform_app_http_proxy = app_http_proxy;
                     state.engine_loaded = true;
                     state.platform_vpn_starting = false;
                     state.platform_vpn_running = true;
@@ -3013,7 +3077,7 @@ impl CoreHandle {
         tunnel: Tunnel,
         mixed_port: Option<u16>,
     ) -> Result<bool, PawsError> {
-        self.stop_mixed_listener()?;
+        self.stop_public_mixed_listener()?;
         let Some(platform) = self.platform_ipc()? else {
             return Ok(false);
         };
@@ -3094,6 +3158,40 @@ impl CoreHandle {
     }
 
     fn stop_mixed_listener(&self) -> Result<(), PawsError> {
+        self.stop_public_mixed_listener()?;
+        self.app_http_proxy
+            .lock()
+            .map_err(|_| PawsError::Core("app HTTP proxy lock poisoned".to_owned()))?
+            .take();
+        Ok(())
+    }
+
+    async fn restart_app_http_proxy(
+        &self,
+        tunnel: Tunnel,
+    ) -> Result<Option<AppHttpProxyEndpoint>, PawsError> {
+        let Some(platform) = self.platform_ipc()? else {
+            return Ok(None);
+        };
+        if platform.is_ui() {
+            return Ok(None);
+        }
+        if !self.lock_state()?.platform_network_protected {
+            return Err(PawsError::Core(
+                "app HTTP proxy requires protected VPN process egress".to_owned(),
+            ));
+        }
+        let runtime = AppHttpProxyRuntime::start(tunnel).await?;
+        let endpoint = runtime.endpoint();
+        *self
+            .app_http_proxy
+            .lock()
+            .map_err(|_| PawsError::Core("app HTTP proxy lock poisoned".to_owned()))? =
+            Some(runtime);
+        Ok(Some(endpoint))
+    }
+
+    fn stop_public_mixed_listener(&self) -> Result<(), PawsError> {
         self.mixed_listener
             .lock()
             .map_err(|_| PawsError::Core("mixed listener lock poisoned".to_owned()))?
@@ -3102,9 +3200,9 @@ impl CoreHandle {
     }
 
     /// Ensure the active meow tunnel is ready before the platform supplies a
-    /// TUN descriptor. VPN Extension can run this concurrently with native
-    /// `VpnConnection::create`, removing config parsing from the serial start
-    /// path. Returns `true` when a cold config load was required.
+    /// TUN descriptor. The VPN Extension must protect process egress before
+    /// calling this: configuration loading may fetch providers and GeoData.
+    /// Returns `true` when a cold config load was required.
     pub async fn prepare_active_vpn(&self) -> Result<bool, PawsError> {
         let tunnel = {
             let state = self.lock_state()?;
@@ -3188,10 +3286,14 @@ impl CoreHandle {
         let route = tunnel.route_snapshot();
         let mut resolution_attempted = false;
         let mut resolved_ip = None;
-        let matched = match route
-            .compiled_rules
-            .match_rules_lazy(&metadata, route.rules.as_ref())
-        {
+        let matched = match route.compiled_rules.match_rules_lazy(
+            &metadata,
+            route.rules.as_ref(),
+            &RuleLookupTargetProbe {
+                route: &route,
+                metadata: &metadata,
+            },
+        ) {
             LazyMatchOutcome::Matched(matched) => Some((
                 matched.rule_index,
                 matched.rule_type.to_string(),
@@ -3209,7 +3311,14 @@ impl CoreHandle {
                 }
                 route
                     .compiled_rules
-                    .match_rules(&metadata, route.rules.as_ref())
+                    .match_rules(
+                        &metadata,
+                        route.rules.as_ref(),
+                        &RuleLookupTargetProbe {
+                            route: &route,
+                            metadata: &metadata,
+                        },
+                    )
                     .map(|matched| {
                         (
                             matched.rule_index,
@@ -4168,7 +4277,7 @@ impl CoreHandle {
         if require_unattached {
             state.platform_vpn_cleanup_complete = true;
         }
-        state.logs.push(warning_log(format!(
+        state.logs.push(error_log(format!(
             "platform VPN start transaction {attempt_id} failed: {error}"
         )));
         if state.platform_vpn_cleanup_complete {
@@ -5052,6 +5161,25 @@ impl CoreHandle {
     }
 
     async fn reload_config_inner(&self, profile_id: &str) -> Result<(), PawsError> {
+        let started = Instant::now();
+        let result = self.reload_config_unreported(profile_id).await;
+        if let Err(error) = &result {
+            // Config construction can fail before the controller /logs
+            // channel exists. Record directly, independent of tracing setup.
+            let entry = error_log(format!(
+                "config reload failed (profile {profile_id}, meow {MEOW_RS_VERSION}, {} ms): {error}",
+                started.elapsed().as_millis()
+            ));
+            if let Ok(mut state) = self.lock_state() {
+                state.logs.push(entry.clone());
+                self.publish_status_and_resource_change_locked(&mut state);
+            }
+            broadcast_log_entry(&entry);
+        }
+        result
+    }
+
+    async fn reload_config_unreported(&self, profile_id: &str) -> Result<(), PawsError> {
         #[cfg(test)]
         if self.fail_next_config_reload.swap(false, Ordering::AcqRel) {
             return Err(PawsError::Core(
@@ -5122,6 +5250,7 @@ impl CoreHandle {
         let raw_config = config.raw.clone();
         let loaded_rule_lines = raw_config.rules.clone().unwrap_or_default();
         let proxy_provider_registry = config.proxy_providers.clone();
+        let provider_dialer_registry = config.provider_dialer_registry.clone();
         let rule_provider_registry = config.rule_providers.clone();
         let listeners = config.listeners.named.clone();
         let sniffer_config = config.sniffer.clone();
@@ -5134,6 +5263,19 @@ impl CoreHandle {
         };
         let runtime_rules = runtime_rule_summaries(profile_id, &loaded_rule_lines, &editable_rules);
         let tunnel = tunnel_from_config(config, mode);
+        // 0.22 defers provider proxy fetches until the shared dialer registry
+        // is published. Match the mobile embedders' one-shot initial retry.
+        for provider in proxy_provider_registry.values() {
+            if provider.take_deferred_initial() {
+                let provider = Arc::clone(provider);
+                tokio::spawn(async move {
+                    if let Err(error) = provider.acquire_initial().await {
+                        tracing::warn!(target: "paws_core::providers",
+                            "deferred proxy-provider fetch failed for {}: {error}", provider.name);
+                    }
+                });
+            }
+        }
         restore_proxy_selections(&tunnel, &selected_proxies);
         let global_proxy = if mode == RuntimeMode::Global {
             ensure_global_proxy_selected(&tunnel, None)?
@@ -5154,6 +5296,7 @@ impl CoreHandle {
             runtime_path,
             raw_config,
             proxy_providers: proxy_provider_registry,
+            provider_dialer_registry,
             rule_providers: rule_provider_registry,
             listeners,
         };
@@ -5221,7 +5364,7 @@ impl CoreHandle {
             )));
         }
         if !network_ports.mixed_enabled {
-            self.stop_mixed_listener()?;
+            self.stop_public_mixed_listener()?;
         }
         Ok(())
     }
@@ -7104,7 +7247,7 @@ impl CoreHandle {
         let Ok(_refresh_guard) = self.exit_location_refresh_lock.try_lock() else {
             return Ok(false);
         };
-        let (revision, mixed_port) = {
+        let revision = {
             let mut state = self.lock_state()?;
             let connected = self.vpn.is_running() || state.platform_vpn_running;
             if !connected {
@@ -7136,23 +7279,14 @@ impl CoreHandle {
                     )
                 })?;
             }
-            let mixed_port = match state.platform_vpn_engine {
-                Some(VpnEngine::Mihomo | VpnEngine::Auto) => {
-                    engine_policy::benchmark_port(VpnEngine::Mihomo)
-                }
-                Some(VpnEngine::SingBox) => engine_policy::benchmark_port(VpnEngine::SingBox),
-                Some(VpnEngine::Meow) | None => {
-                    if state.network_ports.mixed_enabled {
-                        state.network_ports.mixed_port
-                    } else {
-                        engine_policy::benchmark_port(VpnEngine::Meow)
-                    }
-                }
-            };
-            (state.exit_location_revision, mixed_port)
+            state.exit_location_revision
         };
 
-        let result = probe_exit_location(mixed_port).await;
+        let result = match self.external_http_route() {
+            Ok((Some(proxy_url), _)) => probe_exit_location(&proxy_url).await,
+            Ok((None, _)) => return Ok(false),
+            Err(error) => Err(error),
+        };
         let mut state = self.lock_state()?;
         if state.exit_location_revision != revision
             || !(self.vpn.is_running() || state.platform_vpn_running)
@@ -7177,9 +7311,9 @@ impl CoreHandle {
             }
             Err(error) => {
                 state.exit_location.error = Some(error.to_string());
-                state.logs.push(warning_log(format!(
-                    "exit location refresh failed: {error}"
-                )));
+                state
+                    .logs
+                    .push(error_log(format!("exit location refresh failed: {error}")));
             }
         }
         self.publish_runtime_change_locked(&mut state, false, false);
@@ -7393,6 +7527,14 @@ impl CoreHandle {
         }}))
     }
 
+    pub fn traffic_speed_snapshot(&self) -> Result<paws_model::TrafficSpeedSnapshot, PawsError> {
+        let state = self.lock_state()?;
+        Ok(paws_model::TrafficSpeedSnapshot {
+            upload_speed: state.traffic.upload_speed,
+            download_speed: state.traffic.download_speed,
+        })
+    }
+
     fn start_api_controller(
         &self,
         enabled: bool,
@@ -7415,6 +7557,7 @@ impl CoreHandle {
             runtime_path,
             raw_config,
             proxy_providers,
+            provider_dialer_registry,
             rule_providers,
             listeners,
         } = config.clone();
@@ -7459,6 +7602,14 @@ impl CoreHandle {
             proxy_provider_map.insert(name, provider);
         }
         let proxy_providers = Arc::new(proxy_provider_map);
+        let rule_providers = Arc::new(parking_lot::RwLock::new(rule_providers));
+        let rule_provider_refresh =
+            Arc::new(meow_config::rule_provider_refresh::RefreshSupervisor::default());
+        rule_provider_refresh.reconcile(&rule_providers);
+        let proxy_provider_refresh = Arc::new(
+            meow_config::proxy_provider_refresh::ProxyProviderRefreshSupervisor::default(),
+        );
+        proxy_provider_refresh.reconcile(&proxy_providers, raw_config.proxy_providers.as_ref());
         let shared_raw_config = Arc::new(parking_lot::RwLock::new(raw_config.clone()));
         let config_revision = Arc::new(AtomicU64::new(0));
         let memory_in_use_bytes = Arc::new(AtomicU64::new(0));
@@ -7466,14 +7617,26 @@ impl CoreHandle {
         let app_state = Arc::new(meow_api::routes::AppState {
             tunnel: tunnel.clone(),
             secret: raw_config.secret.clone(),
-            config_path: runtime_path.to_string_lossy().into_owned(),
+            config_path: Some(
+                runtime_path
+                    .to_str()
+                    .ok_or_else(|| {
+                        PawsError::Core("controller config path is not valid UTF-8".to_owned())
+                    })?
+                    .to_owned(),
+            ),
             raw_config: Arc::clone(&shared_raw_config),
             log_tx,
             proxy_providers: Arc::clone(&proxy_providers),
-            rule_providers: Arc::new(parking_lot::RwLock::new(rule_providers)),
+            provider_dialer_registry,
+            rule_providers,
+            rule_provider_refresh,
+            proxy_provider_refresh,
             listeners,
             external_ui: None,
-            config_mutation_lock: tokio::sync::Mutex::new(()),
+            traffic_feed: meow_api::routes::TrafficFeed::default(),
+            // Paws answers TUN DNS in process; it owns no standalone socket.
+            dns_server: Arc::new(parking_lot::RwLock::new(None)),
         });
         let task_revision = Arc::clone(&config_revision);
         let task = tokio::spawn(async move {
@@ -7804,6 +7967,12 @@ impl CoreHandle {
         if remote_terminal || !local_terminal {
             state.platform_network_protected = remote.network_protected;
             state.platform_network_protect_error = remote.network_protect_error;
+            state.platform_vpn_engine = remote.engine.filter(|_| remote.running);
+            state.platform_app_http_proxy = if remote.running {
+                remote.app_http_proxy
+            } else {
+                None
+            };
         }
         if state.platform_vpn_cleanup_complete {
             state.platform_vpn_issuer_lease = None;
@@ -8366,6 +8535,10 @@ fn apply_platform_failure(state: &mut CoreState, error: String) {
     state.platform_vpn_starting = false;
     state.platform_vpn_running = false;
     state.platform_network_protected = false;
+    state.logs.push(error_log(format!(
+        "platform VPN failed (attempt {}): {error}",
+        state.platform_start_attempt_id
+    )));
     state.platform_network_protect_error = Some(error);
     state.platform_start_outcome = PlatformStartOutcome::Failed;
     state.platform_remote_stale_since = None;

@@ -11,9 +11,14 @@
 //! lwIP's accept hook runs only after the TCP handshake, so a SYN-only
 //! packet never becomes a `TcpStream`. PCB / window / heap caps live in
 //! that crate's `lwipopts.h` (`MEMP_NUM_TCP_PCB`, `TCP_WND`, `MEM_SIZE`).
-//! We still wait for the first payload byte before rule-match / stats /
-//! DIRECT — empty ESTABLISHED sockets (Office reconnects) never enter
-//! `handle_tcp`.
+//! An accepted flow then gets a short sniff window (`TUN_SNIFF_WINDOW`,
+//! 200 ms) for the client's first bytes, which are replayed upstream as
+//! the relay prefix. A flow that closes or resets inside the window
+//! (connect scans, aborted reconnects) is dropped before rule-match /
+//! stats / dial. A flow that stays silent is dialed anyway with an empty
+//! prefix: server-first protocols (SMTP, POP3, IMAP, FTP, MySQL, VNC,
+//! SSH) wait for the server's banner and would otherwise never get one
+//! (#695).
 //!
 //! ## Loop freedom (v1: fake-IP-scoped capture)
 //!
@@ -31,13 +36,16 @@
 //!
 //! The trade-off: IP-literal traffic (no DNS lookup) is not captured.
 //!
-//! ## Global route scope (#375, experimental, Linux-only)
+//! ## Global route scope (#375, experimental)
 //!
 //! [`TunRouteScope::Global`] opts into capturing everything: `auto-route`
-//! installs split default routes (`0.0.0.0/1` + `128.0.0.0/1`), and loop
+//! installs split default routes (`0.0.0.0/1` + `128.0.0.0/1`, plus
+//! `::/1` + `8000::/1` when the device has an `inet6-address`; on macOS an
+//! equivalent set that avoids the all-zero destination), and loop
 //! freedom moves from route scoping to the outbound path — every socket
 //! meow creates is bound to the physical interface
-//! (`meow_common::set_outbound_interface`, `SO_BINDTODEVICE`) before
+//! (`meow_common::install_outbound_interface`: `SO_BINDTODEVICE` on Linux,
+//! `IP_BOUND_IF` on macOS, `IP_UNICAST_IF` on Windows) before
 //! connect/bind, and hostname dials resolve through meow's own resolver
 //! hook. Startup fails closed if the binding cannot be installed.
 //!
@@ -51,6 +59,7 @@ mod device;
 mod dns;
 #[cfg(target_os = "windows")]
 mod local_dns;
+mod outbound_binding;
 mod route;
 mod udp;
 #[cfg(any(test, target_os = "windows"))]
@@ -65,7 +74,7 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use ipnet::Ipv4Net;
+use ipnet::{Ipv4Net, Ipv6Net};
 use meow_common::{ConnType, Metadata, Network, ProxyConn};
 use meow_tunnel::Tunnel;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
@@ -73,52 +82,104 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
-/// How long a TUN TCP socket may sit after the handshake with no payload
-/// before we drop it. SYN scans and half-open reconnects never become
-/// meow connections.
-const TUN_PAYLOAD_WAIT: Duration = crate::DEFAULT_HANDSHAKE_TIMEOUT;
+/// Post-handshake sniff window: how long an accepted TUN TCP flow may stay
+/// silent before it is dialed anyway with an empty prefix (#695).
+///
+/// Server-first clients (SMTP, POP3, IMAP, FTP, MySQL, VNC, SSH) send
+/// nothing until they see the server's banner, so they pay this window
+/// once before the dial — it must stay well under a second. 200 ms is
+/// mihomo's pre-dial peek window (`tunnel/tunnel.go` `handleTCPConn`:
+/// `SetReadDeadline(now + 200ms)` + `Peek(1)`, deadline error ignored).
+/// A client-first flow's first segment normally follows the handshake ACK
+/// back-to-back and lands well inside it; one that misses the window just
+/// relays its bytes without a prefix — the prefix takes no part in
+/// routing, so nothing else changes.
+const TUN_SNIFF_WINDOW: Duration = Duration::from_millis(200);
 /// First-read size when waiting for real traffic. Large enough to pull a
 /// TLS ClientHello record header + a bit of payload in one shot.
 const TUN_FIRST_READ: usize = 256;
 
 use route::RouteGuard;
 
+pub use outbound_binding::OutboundBinding;
+
+/// Process-global serialization point for lwIP generations (issue #514).
+/// `NetStack::new` must not run while a previous core is still tearing
+/// down — aborted pump tasks are reaped asynchronously, so the core's
+/// `core_done` signal is the only reliable barrier. The mutex is held
+/// across the (synchronous) stack build so two listeners can never
+/// interleave through the gate.
+static PREVIOUS_CORE: tokio::sync::Mutex<Option<tokio::sync::watch::Receiver<bool>>> =
+    tokio::sync::Mutex::const_new(None);
+
+/// Upper bound on waiting for a previous lwIP core's teardown. Teardown is
+/// a synchronous pcb sweep — well under a second — so this only bounds a
+/// wedged-core scenario; proceeding past it logs loudly because two live
+/// cores risk corrupting lwIP's process-global pcb lists.
+const PREVIOUS_CORE_TEARDOWN_WAIT: Duration = Duration::from_secs(10);
+
 /// Tracks all child `JoinHandle`s spawned by a TUN listener. On drop,
 /// aborts every tracked task — this guarantees the TUN device and all its
 /// resources are fully released even when the parent task is externally
-/// aborted.
+/// aborted. `shutdown()` additionally awaits the owned children so a
+/// natural exit leaves nothing still touching the old stack's channels.
 struct TaskGroup {
-    aborts: Vec<tokio::task::AbortHandle>,
+    /// Children this group can join (uniform `()` output): per-flow TCP
+    /// handlers, the UDP dispatcher, the Windows local-DNS task.
+    owned: Vec<tokio::task::JoinHandle<()>>,
+    /// Abort handles for tasks whose `JoinHandle` is awaited elsewhere —
+    /// the device↔stack pumps are polled inside `run_inner`'s select loop.
+    tracked: Vec<tokio::task::AbortHandle>,
 }
 
 impl TaskGroup {
     fn new() -> Self {
-        Self { aborts: Vec::new() }
+        Self {
+            owned: Vec::new(),
+            tracked: Vec::new(),
+        }
     }
 
-    /// Track a `JoinHandle<T>` by recording its `AbortHandle`. Type-erased
-    /// via `AbortHandle` so heterogeneous task return types (e.g. `()`,
-    /// `io::Result<()>`) coexist in the same collection.
-    ///
-    /// Reaps finished tasks first: an `AbortHandle` keeps its task's
-    /// allocation alive, so without the `retain` the group would grow
-    /// unboundedly with every accepted TCP flow.
+    /// Track a `JoinHandle<T>` by recording its `AbortHandle`. Used for
+    /// tasks whose join is owned by `run_inner` itself (the pumps).
     fn push<T>(&mut self, h: &tokio::task::JoinHandle<T>) {
-        self.aborts.retain(|a| !a.is_finished());
-        self.aborts.push(h.abort_handle());
+        self.tracked.retain(|a| !a.is_finished());
+        self.tracked.push(h.abort_handle());
     }
 
-    /// Spawn a future and automatically track its handle.
+    /// Spawn a future and automatically track its handle. Reaps finished
+    /// tasks first so the group does not grow unboundedly with every
+    /// accepted TCP flow.
     fn spawn(&mut self, f: impl std::future::Future<Output = ()> + Send + 'static) {
-        let h = tokio::spawn(f);
-        self.push(&h);
+        self.owned.retain(|h| !h.is_finished());
+        self.owned.push(tokio::spawn(f));
+    }
+
+    /// Abort every tracked child, then await the owned set (issue #514):
+    /// `run_inner` returns only when no child can still hold a stack
+    /// handle — the lwIP core's `core_done` (which the next generation
+    /// gates on) only fires after all those handles are gone.
+    async fn shutdown(&mut self) {
+        for a in &self.tracked {
+            a.abort();
+        }
+        for h in &self.owned {
+            h.abort();
+        }
+        for h in self.owned.drain(..) {
+            let _ = h.await;
+        }
+        self.tracked.clear();
     }
 }
 
 impl Drop for TaskGroup {
     fn drop(&mut self) {
-        for a in &self.aborts {
+        for a in &self.tracked {
             a.abort();
+        }
+        for h in &self.owned {
+            h.abort();
         }
     }
 }
@@ -134,6 +195,9 @@ pub struct TunListenerConfig {
     pub mtu: u16,
     /// Address + prefix assigned to the device.
     pub inet4_address: Ipv4Net,
+    /// IPv6 address + prefix assigned to the device; `None` = IPv4-only.
+    /// In global scope it also adds the IPv6 split default routes (#375).
+    pub inet6_address: Option<Ipv6Net>,
     /// Install routes on startup (removed on shutdown). What gets routed is
     /// selected by `route_scope`.
     pub auto_route: bool,
@@ -157,9 +221,10 @@ pub enum TunRouteScope {
     /// v1: route only the fake-IP range — loop-free by construction.
     #[default]
     FakeIp,
-    /// Route all IPv4 (split defaults `0.0.0.0/1` + `128.0.0.0/1`) into the
-    /// device; outbound sockets bind to the physical interface for loop
-    /// avoidance. Experimental, Linux-only.
+    /// Route all IPv4 (split defaults `0.0.0.0/1` + `128.0.0.0/1`) — and
+    /// all IPv6 (`::/1` + `8000::/1`) when the device has an IPv6 address —
+    /// into the device; outbound sockets bind to the physical interface
+    /// for loop avoidance. Experimental.
     Global,
 }
 
@@ -168,7 +233,15 @@ pub enum TunRouteScope {
 /// without waiting for the full `TUN_STARTUP_TIMEOUT`.
 pub enum TunReady {
     /// Device + stack + child tasks are fully initialized.
-    Ready,
+    Ready {
+        /// The lwIP core's done signal — it flips `true` once that
+        /// generation's teardown fully completes, which the owner must
+        /// await before permitting a successor stack (issue #514).
+        core_done: tokio::sync::watch::Receiver<bool>,
+        /// Live UDP flow-table occupancy — written by the UDP read loop,
+        /// readable at any time for observability (issue #515).
+        udp_flows: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    },
     /// Setup failed before reaching the accept loop.  The String carries
     /// the underlying error message so callers can surface it directly.
     Failed(String),
@@ -191,10 +264,18 @@ impl ReadyNotifier {
         Self { tx: Some(tx) }
     }
 
-    /// Consume the notifier and send `TunReady::Ready`.
-    fn ready(mut self) {
+    /// Consume the notifier and send `TunReady::Ready` carrying the lwIP
+    /// core's done signal and the UDP flow-table gauge.
+    fn ready(
+        mut self,
+        core_done: tokio::sync::watch::Receiver<bool>,
+        udp_flows: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
         if let Some(tx) = self.tx.take() {
-            let _ = tx.send(TunReady::Ready);
+            let _ = tx.send(TunReady::Ready {
+                core_done,
+                udp_flows,
+            });
         } else {
             tracing::warn!("ReadyNotifier::ready called but tx was already None");
         }
@@ -231,23 +312,14 @@ struct TunDevice {
     /// this field is dropped, before `device` is destroyed.
     #[allow(dead_code)]
     route_guard: Option<RouteGuard>,
-    /// Held only for its `Drop` side effect — clears the process-global
-    /// outbound-interface binding installed for global route scope.
+    /// Held only for its `Drop` side effect — gives up this listener's
+    /// ownership of the process-global outbound-interface binding for
+    /// global route scope (after `route_guard` has removed the routes it
+    /// protects). A successor that already installed its own binding keeps
+    /// it; otherwise the binding is cleared.
     #[allow(dead_code)]
-    iface_guard: Option<OutboundIfaceGuard>,
+    iface_guard: Option<OutboundBinding>,
     pub(super) device: tun_rs::AsyncDevice,
-}
-
-/// RAII wrapper for `meow_common::set_outbound_interface`: global route
-/// scope installs the binding at startup; dropping this (listener teardown /
-/// config reload) clears it so later sessions don't inherit a stale
-/// interface.
-struct OutboundIfaceGuard;
-
-impl Drop for OutboundIfaceGuard {
-    fn drop(&mut self) {
-        meow_common::clear_outbound_interface();
-    }
 }
 
 pub struct TunListener {
@@ -260,6 +332,9 @@ pub struct TunListener {
     /// `Drop` impl sends `TunReady::Failed`, giving callers an immediate
     /// error without waiting for a timeout.
     ready: Option<tokio::sync::oneshot::Sender<TunReady>>,
+    /// Global-scope binding installed by the caller before this listener
+    /// was built (see [`Self::with_outbound_binding`]).
+    outbound_binding: Option<OutboundBinding>,
 }
 
 impl TunListener {
@@ -269,7 +344,21 @@ impl TunListener {
             cfg,
             name,
             ready: None,
+            outbound_binding: None,
         }
+    }
+
+    /// Hand over an [`OutboundBinding`] the caller installed early — the
+    /// binary does so before its first startup dial, and a config reload
+    /// before the reload's first dial, so no socket predates the binding
+    /// (issue #695). The listener uses it instead of installing its own
+    /// and owns it from here on: it is given up with the routes on
+    /// teardown, or straight away if startup fails or the listener is
+    /// dropped without running. Ignored (and so given up) outside global
+    /// route scope.
+    pub fn with_outbound_binding(mut self, binding: OutboundBinding) -> Self {
+        self.outbound_binding = Some(binding);
+        self
     }
 
     /// Attach a readiness signal. The sender will fire `TunReady::Ready`
@@ -290,7 +379,8 @@ impl TunListener {
         // is dropped mid-setup the notifier's `Drop` impl sends a generic
         // failure — either way no timeout wait.
         let mut notifier = self.ready.take().map(ReadyNotifier::new);
-        let result = self.run_inner(&mut notifier).await;
+        let preinstalled = self.outbound_binding.take();
+        let result = self.run_inner(&mut notifier, preinstalled).await;
         if let Err(e) = &result {
             if let Some(n) = notifier.take() {
                 n.fail(e.to_string());
@@ -302,6 +392,7 @@ impl TunListener {
     async fn run_inner(
         &self,
         notifier: &mut Option<ReadyNotifier>,
+        preinstalled: Option<OutboundBinding>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let t0 = Instant::now();
         info!("TUN listener '{}' starting...", self.name);
@@ -326,6 +417,7 @@ impl TunListener {
         // Each attempt runs on a blocking thread; the outer caller's
         // TUN_STARTUP_TIMEOUT guards the overall time spent here.
         const MAX_TUN_RETRIES: u32 = 5;
+        const TUN_CREATE_RETRY_DELAY: Duration = Duration::from_millis(500);
         let base_addr = cfg.inet4_address.addr();
         let prefix = cfg.inet4_address.prefix_len();
         let mut device: Option<tun_rs::AsyncDevice> = None;
@@ -349,6 +441,7 @@ impl TunListener {
             // Copy the values we need inside `spawn_blocking` so we don't
             // borrow `cfg` across the closure boundary.
             let mtu = cfg.mtu;
+            let inet6 = cfg.inet6_address;
             let name_for_closure = name.clone();
             #[cfg(target_os = "windows")]
             let wintun_file = wintun_file.clone();
@@ -366,6 +459,9 @@ impl TunListener {
                 let mut builder = tun_rs::DeviceBuilder::new()
                     .mtu(mtu)
                     .ipv4(addr, prefix, None);
+                if let Some(v6) = inet6 {
+                    builder = builder.ipv6(v6.addr(), v6.prefix_len());
+                }
                 if let Some(n) = &name_for_closure {
                     builder = builder.name(n);
                 }
@@ -406,6 +502,13 @@ impl TunListener {
                     "failed to create TUN device after {MAX_TUN_RETRIES} attempts{detail}"
                 ))));
             }
+
+            // The point of retrying is to outlast an asynchronously
+            // closing stale adapter (common on Windows after an unclean
+            // shutdown) — back-to-back attempts would race ahead of the
+            // cleanup they exist to wait for. Bounded by TUN_STARTUP_TIMEOUT
+            // (issue #641).
+            tokio::time::sleep(TUN_CREATE_RETRY_DELAY).await;
         }
         // SAFETY: the loop either breaks with `device = Some(...)` and
         // `dev_name` set, or returns `Err` above.
@@ -417,40 +520,20 @@ impl TunListener {
         // Obtain the interface index before moving `device` into `TunDevice`.
         let if_index = device.if_index()?;
 
-        // Global route scope (#375): before any routes go in, install the
-        // outbound-interface binding so meow's own dials cannot loop back
-        // into the device. Fail closed — a global default route without
-        // working loop avoidance would blackhole the host's connectivity.
+        // Global route scope (#375): before any routes go in, the
+        // outbound-interface binding must be installed so meow's own dials
+        // cannot loop back into the device — usually it already is (the
+        // binary installs it before its first startup dial, a config
+        // reload before the reload's first dial; issue #695).
+        // Fail closed — a global default route without working loop
+        // avoidance would blackhole the host's connectivity.
         let iface_guard = if cfg.auto_route && cfg.route_scope == TunRouteScope::Global {
-            if !cfg!(target_os = "linux") {
-                return Err(Box::new(io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "tun auto-route: global is currently Linux-only (tracked on #375); \
-                     use auto-route: fake-ip on this platform",
-                )));
-            }
-            let iface = match cfg.outbound_interface.clone() {
-                Some(name) => name,
-                None => route::default_interface().map_err(|e| {
-                    io::Error::other(format!(
-                        "tun auto-route: global: could not auto-detect the physical \
-                         interface ({e}); set tun.outbound-interface explicitly"
-                    ))
-                })?,
-            };
-            meow_common::set_outbound_interface(&iface).map_err(|e| {
-                io::Error::other(format!(
-                    "tun auto-route: global: outbound interface binding failed ({e}); \
-                     refusing to install default routes without loop avoidance"
-                ))
-            })?;
-            info!(
-                "tun '{}': global route scope — outbound sockets bound to '{iface}' \
-                 (experimental, #375)",
-                self.name
-            );
-            Some(OutboundIfaceGuard)
+            Some(match preinstalled {
+                Some(binding) => binding,
+                None => OutboundBinding::install(cfg.outbound_interface.as_deref())?,
+            })
         } else {
+            drop(preinstalled);
             None
         };
 
@@ -461,15 +544,13 @@ impl TunListener {
         // outer TUN_STARTUP_TIMEOUT guards the overall startup.
         let route_nets: Option<Vec<ipnet::IpNet>> = if cfg.auto_route {
             match cfg.route_scope {
-                // Split defaults: two /1s cover all IPv4 while staying more
+                // Split defaults: two /1s (macOS: eight routes that avoid
+                // the all-zero key) cover all IPv4 while staying more
                 // specific than the physical 0/0 default, so the original
                 // route survives untouched and restore-on-drop is trivial.
                 // The device's own /30 and the fake-IP range (if any) are
                 // inside the /1s already.
-                TunRouteScope::Global => Some(vec![
-                    "0.0.0.0/1".parse().expect("static CIDR parses"),
-                    "128.0.0.0/1".parse().expect("static CIDR parses"),
-                ]),
+                TunRouteScope::Global => Some(global_route_nets(cfg.inet6_address.is_some())),
                 TunRouteScope::FakeIp => self.tunnel.resolver().fake_ip_v4_net().map(|n| vec![n]),
             }
         } else {
@@ -577,9 +658,51 @@ impl TunListener {
         // lwIP answers ICMP echo itself. The core task is spawned inside
         // `NetStack::new` (one live stack per process — await `core_done`
         // before building a successor, e.g. on config reload).
+        //
+        // Issue #514: the previous generation's teardown finishes only
+        // after every stack handle — including the split halves held by the
+        // device pumps — is dropped. An aborted parent task cannot await
+        // that reaping, so gate construction on the previous core's
+        // `core_done` signal instead of trusting task ordering.
         let t_stack = Instant::now();
+        let mut prev_slot = PREVIOUS_CORE.lock().await;
+        // Clone, not take: if this task is dropped mid-wait (startup
+        // timeout, `NetStack::new` error via `?`), the slot must keep the
+        // barrier so the next generation still gates on this core's
+        // teardown rather than building a second stack over a live one.
+        if let Some(mut prev_done) = prev_slot.clone() {
+            match timeout(
+                PREVIOUS_CORE_TEARDOWN_WAIT,
+                prev_done.wait_for(|done| *done),
+            )
+            .await
+            {
+                // Teardown signalled, or the core's sender vanished entirely
+                // (core panicked/exited without signalling — nothing left to
+                // wait on either way).
+                Ok(_) => {}
+                // A still-living predecessor owns the process-global pcb
+                // lists `NetStack::new` is about to overwrite — proceeding
+                // is a data race on C state, not a recoverable wait. Fail
+                // the listener; the caller rolls `tun.enable` back.
+                Err(_) => {
+                    return Err(io::Error::other(format!(
+                        "previous lwIP core did not finish teardown within \
+                         {PREVIOUS_CORE_TEARDOWN_WAIT:?}; refusing to build \
+                         a second stack over live pcb globals"
+                    ))
+                    .into());
+                }
+            }
+        }
         let (stack, mut tcp_listener, udp_socket) =
             lwip::NetStack::new().map_err(|e| io::Error::other(format!("lwIP netstack: {e}")))?;
+        // Publish this generation's done signal so the next stack build
+        // gates on it — including the case where this listener is aborted
+        // before readiness fires.
+        let core_done = stack.core_done();
+        *prev_slot = Some(core_done.clone());
+        drop(prev_slot);
 
         let stack_ms = t_stack.elapsed().as_secs_f64() * 1000.0;
         info!("lwIP netstack built in {stack_ms:.0}ms");
@@ -592,32 +715,43 @@ impl TunListener {
         // pipeline as the TUN dns-hijack path, returning fake IPs.
         #[cfg(target_os = "windows")]
         if let Some(sockets) = local_dns_sockets {
-            let resolver = Arc::clone(self.tunnel.resolver());
+            let resolver = self.tunnel.resolver_slot();
             tasks.spawn(async move {
                 local_dns::run(sockets, resolver).await;
             });
         }
 
+        let tun_net = udp::TunNets {
+            v4: cfg.inet4_address,
+            v6: cfg.inet6_address,
+        };
         let (mut pump_in, mut pump_out) = device::spawn_pumps(device, stack);
         tasks.push(&pump_in);
         tasks.push(&pump_out);
+        // Live UDP flow-table occupancy, readable via `TunReady::Ready` →
+        // `TunHandle` for observability (issue #515).
+        let udp_flows = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         tasks.spawn(udp::run_udp(
             self.tunnel.clone(),
             udp_socket,
             cfg.dns_hijack,
             cfg.udp_timeout,
             self.name.clone(),
-            cfg.inet4_address,
+            tun_net,
+            std::sync::Arc::clone(&udp_flows),
         ));
 
         let total_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let max_conn = cfg.max_connections;
         info!(
-            "TUN listener '{}' started on device '{dev_name}' ({}/{}, mtu {}, auto-route: {}, \
+            "TUN listener '{}' started on device '{dev_name}' ({}/{}{}, mtu {}, auto-route: {}, \
              dns-hijack: {}, max-connections: {}, stack: lwip, total startup {total_ms:.0}ms)",
             self.name,
             used_addr,
             prefix,
+            cfg.inet6_address
+                .map(|v6| format!(" + {v6}"))
+                .unwrap_or_default(),
             cfg.mtu,
             cfg.auto_route,
             cfg.dns_hijack,
@@ -629,14 +763,15 @@ impl TunListener {
         );
 
         // Signal readiness: device, stack, and child tasks are all up.
-        // An `Err` return from this function sends `TunReady::Failed`
-        // (with the real error) from `run` instead.
+        // The payload hands the owner the lwIP core's done signal so a
+        // later `stop_tun` can await real teardown (issue #514). An `Err`
+        // return from this function sends `TunReady::Failed` (with the
+        // real error) from `run` instead.
         if let Some(notifier) = notifier.take() {
-            notifier.ready();
+            notifier.ready(core_done.clone(), udp_flows);
             debug!("TUN listener '{}' readiness signalled", self.name);
         }
 
-        let tun_net = cfg.inet4_address;
         let conn_limit: Option<Arc<Semaphore>> = if max_conn > 0 {
             Some(Arc::new(Semaphore::new(max_conn)))
         } else {
@@ -644,7 +779,7 @@ impl TunListener {
         };
         let warned_saturated = Arc::new(AtomicBool::new(false));
 
-        loop {
+        let result = loop {
             tokio::select! {
                 accepted = tcp_listener.next() => match accepted {
                     Some((stream, src, dst)) => {
@@ -661,11 +796,22 @@ impl TunListener {
                         let warned = Arc::clone(&warned_saturated);
                         tasks.spawn(async move {
                             // lwIP only delivers this stream after the
-                            // handshake. We still wait for the first payload
-                            // before taking a max-connections slot / dialing.
+                            // handshake. Sniff the client's first bytes for
+                            // up to TUN_SNIFF_WINDOW; a close/reset inside
+                            // the window drops the flow, silence dials it
+                            // with an empty prefix (server-first, #695).
                             let mut stream = stream;
-                            let prefix = match wait_for_first_payload(&mut stream).await {
-                                Ok(p) => p,
+                            let prefix = match sniff_first_payload(&mut stream).await {
+                                Ok(p) => {
+                                    if p.is_empty() {
+                                        debug!(
+                                            "tun TCP: {src} -> {dst} silent for {}ms, \
+                                             dialing without prefix",
+                                            TUN_SNIFF_WINDOW.as_millis()
+                                        );
+                                    }
+                                    p
+                                }
                                 Err(e) => {
                                     debug!(
                                         "tun TCP: dropping {src} -> {dst} before payload: {e}"
@@ -673,13 +819,21 @@ impl TunListener {
                                     return;
                                 }
                             };
+                            // A slot is taken only once the flow leaves the
+                            // sniff window (payload seen, or silent past it),
+                            // so a flow that dies inside the window never
+                            // occupies one. Past the window every flow —
+                            // including an idle server-first one — holds its
+                            // slot for its lifetime, exactly as on the other
+                            // inbounds. Flows queued here at saturation are
+                            // bounded by lwIP's MEMP_NUM_TCP_PCB.
                             let permit = if let Some(sem) = sem {
                                 if sem.available_permits() == 0
                                     && !warned.swap(true, Ordering::Relaxed)
                                 {
                                     warn!(
                                         "TUN listener '{name}' saturated at max-connections; \
-                                         payload-ready flows will wait"
+                                         new flows will wait for a free slot before dialing"
                                     );
                                 }
                                 match Arc::clone(&sem).acquire_owned().await {
@@ -698,17 +852,100 @@ impl TunListener {
                             handle_tcp_flow(tunnel, stream, prefix, src, dst, &name).await;
                         });
                     }
-                    None => return Err("netstack TCP listener closed".into()),
+                    None => break Err("netstack TCP listener closed".into()),
                 },
                 joined = &mut pump_in => {
-                    return Err(pump_error("device→stack", joined).into());
+                    break Err(pump_error("device→stack", joined).into());
                 }
                 joined = &mut pump_out => {
-                    return Err(pump_error("stack→device", joined).into());
+                    break Err(pump_error("stack→device", joined).into());
                 }
             }
+        };
+
+        // Ordered teardown (issue #514): the lwIP core begins teardown only
+        // once every stack handle is dropped — the pumps hold the split
+        // halves and children hold the UDP socket — so abort and JOIN them
+        // before returning. When this future is aborted mid-loop the tail
+        // never runs, but `TaskGroup::drop` still requests the aborts and
+        // the `core_done` gate above serializes the next generation once
+        // the reaping completes.
+        //
+        // A pump arm that won the select! already consumed that handle's
+        // output — re-polling a consumed JoinHandle panics
+        // ("JoinHandle polled after completion"), so only await a pump
+        // that is still running. abort() on a finished task is a no-op.
+        pump_in.abort();
+        pump_out.abort();
+        if !pump_in.is_finished() {
+            let _ = pump_in.await;
         }
+        if !pump_out.is_finished() {
+            let _ = pump_out.await;
+        }
+        tasks.shutdown().await;
+        drop(tcp_listener);
+        result
     }
+}
+
+/// The split default routes of global route scope (#375): more specific
+/// than the physical default so it is never touched. IPv6 is included only
+/// when the device carries an IPv6 address — routes into a device that
+/// cannot source IPv6 would blackhole that traffic.
+fn global_route_nets(ipv6: bool) -> Vec<ipnet::IpNet> {
+    global_route_nets_for(ipv6, cfg!(target_os = "macos"))
+}
+
+/// Pure selection behind [`global_route_nets`], split out so both shapes
+/// are unit-tested on every host.
+///
+/// Everywhere but macOS a family is two `/1`s. On macOS
+/// (`zero_key_shadows_default`) the lower half is instead split into seven
+/// routes that skip the first `/8`, so that **no installed route has the
+/// all-zero destination**.
+///
+/// The reason is XNU's scoped route lookup, which is what an outbound
+/// socket bound with `IP_BOUND_IF` / `IPV6_BOUND_IF` gets. When the best
+/// match belongs to another interface (the TUN) and the bound interface
+/// has no scoped route of its own — the primary interface's default is
+/// unscoped — the kernel falls back to looking the default route up *by
+/// key*, `0.0.0.0` / `::`. A `0.0.0.0/1` (or `::/1`) route shares that key
+/// and is returned instead of the real default; its interface is not the
+/// bound one, so the lookup fails and every dial meow makes dies with
+/// `ENETUNREACH` (IPv4) / `EHOSTUNREACH` (IPv6) — for destinations in
+/// *both* halves. Observed on macOS 26.6 (#375); removing the zero-keyed
+/// route alone restores the bound sockets.
+///
+/// The skipped `0.0.0.0/8` is "this network" and never a destination. The
+/// skipped `::/8` holds the unspecified/loopback addresses and the
+/// IPv4-mapped and NAT64 (`64:ff9b::/96`) ranges, which therefore bypass
+/// the device on macOS.
+fn global_route_nets_for(ipv6: bool, zero_key_shadows_default: bool) -> Vec<ipnet::IpNet> {
+    const V4: &[&str] = &["0.0.0.0/1", "128.0.0.0/1"];
+    const V6: &[&str] = &["::/1", "8000::/1"];
+    const V4_NO_ZERO_KEY: &[&str] = &[
+        "1.0.0.0/8",
+        "2.0.0.0/7",
+        "4.0.0.0/6",
+        "8.0.0.0/5",
+        "16.0.0.0/4",
+        "32.0.0.0/3",
+        "64.0.0.0/2",
+        "128.0.0.0/1",
+    ];
+    const V6_NO_ZERO_KEY: &[&str] = &[
+        "100::/8", "200::/7", "400::/6", "800::/5", "1000::/4", "2000::/3", "4000::/2", "8000::/1",
+    ];
+    let (v4, v6) = if zero_key_shadows_default {
+        (V4_NO_ZERO_KEY, V6_NO_ZERO_KEY)
+    } else {
+        (V4, V6)
+    };
+    v4.iter()
+        .chain(v6.iter().filter(|_| ipv6))
+        .map(|net| net.parse().expect("static CIDR parses"))
+        .collect()
 }
 
 /// Device name to try on creation `attempt` (0-based).
@@ -739,20 +976,33 @@ fn pump_error(direction: &str, joined: Result<io::Result<()>, tokio::task::JoinE
     }
 }
 
-/// Wait until the client sends at least one payload byte (handshake is
-/// already done by lwIP). Times out empty ESTABLISHED sockets.
-async fn wait_for_first_payload(tcp: &mut lwip::TcpStream) -> io::Result<Vec<u8>> {
-    wait_for_first_payload_timed(tcp, TUN_PAYLOAD_WAIT).await
+/// Sniff the client's first payload within [`TUN_SNIFF_WINDOW`] (the
+/// handshake is already done by lwIP).
+///
+/// - `Ok(bytes)` — the client spoke first; `bytes` is the relay prefix.
+/// - `Ok(empty)` — the window expired in silence: dial anyway, the server
+///   may be the one to speak first (#695). No allocation is kept.
+/// - `Err(_)` — EOF or reset before any payload: drop the flow.
+async fn sniff_first_payload<R>(tcp: &mut R) -> io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    sniff_first_payload_within(tcp, TUN_SNIFF_WINDOW).await
 }
 
-async fn wait_for_first_payload_timed<R>(tcp: &mut R, wait: Duration) -> io::Result<Vec<u8>>
+/// [`sniff_first_payload`] with an explicit window. The stream stays usable
+/// after the window expires: lwIP's `TcpStream::poll_read` only consumes a
+/// chunk on the poll that returns it, so dropping the pending read loses
+/// nothing — the relay picks up whatever arrives later.
+async fn sniff_first_payload_within<R>(tcp: &mut R, window: Duration) -> io::Result<Vec<u8>>
 where
     R: AsyncRead + Unpin,
 {
     let mut buf = vec![0u8; TUN_FIRST_READ];
-    let n = timeout(wait, tcp.read(&mut buf))
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no payload after TCP handshake"))??;
+    let Ok(read) = timeout(window, tcp.read(&mut buf)).await else {
+        return Ok(Vec::new());
+    };
+    let n = read?;
     if n == 0 {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
@@ -783,8 +1033,12 @@ async fn handle_tcp_flow(
     };
 
     // handle_tcp does the rest: fake-IP rewrite, lazy rule match, stats
-    // guard, dial, zero-alloc relay. `prefix` is the first payload already
-    // read while waiting for real traffic.
+    // guard, dial, zero-alloc relay. `prefix` is the first payload read
+    // during the sniff window; it reaches the upstream as the relay's first
+    // client read (counted as upload there). It is empty for a flow that
+    // stayed silent (server-first): `TunTcpConn` then reads straight from
+    // the stream and nothing is written upstream until a side speaks — no
+    // zero-length write, no synthetic EOF.
     meow_tunnel::tcp::handle_tcp(
         tunnel.inner(),
         Box::new(TunTcpConn {
@@ -797,8 +1051,8 @@ async fn handle_tcp_flow(
     .await;
 }
 
-/// Netstack TCP stream plus the bytes already consumed while waiting for
-/// the first payload. The inner stream sits in a `Mutex` so the type is
+/// Netstack TCP stream plus the bytes already consumed during the sniff
+/// window (possibly none). The inner stream sits in a `Mutex` so the type is
 /// `Sync` (`ProxyConn` requires it); lwIP's `TcpStream` is `Send` but not
 /// `Sync`. Only one task ever polls a given connection.
 struct TunTcpConn<S> {
@@ -870,10 +1124,15 @@ impl<S: AsyncRead + AsyncWrite + Send + Sync + Unpin> ProxyConn for TunTcpConn<S
 
 #[cfg(test)]
 mod tests {
-    use super::{device_name_for_attempt, wait_for_first_payload_timed, TunTcpConn};
+    use super::{
+        device_name_for_attempt, global_route_nets, global_route_nets_for, sniff_first_payload,
+        sniff_first_payload_within, TunTcpConn, TUN_SNIFF_WINDOW,
+    };
     use std::io;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use std::time::Duration;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -908,36 +1167,170 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn wait_for_payload_returns_first_bytes() {
+    #[test]
+    fn global_routes_cover_ipv6_only_for_a_dual_stack_device() {
+        let nets = |ipv6| -> Vec<String> {
+            global_route_nets_for(ipv6, false)
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        };
+        // The platform's own set is one of the two shapes.
+        assert_eq!(
+            global_route_nets(true),
+            global_route_nets_for(true, cfg!(target_os = "macos"))
+        );
+        assert_eq!(nets(false), ["0.0.0.0/1", "128.0.0.0/1"]);
+        assert_eq!(nets(true), ["0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"]);
+        // Each family's pair covers the whole space without being a default.
+        for family in [&nets(true)[..2], &nets(true)[2..]] {
+            let pair: Vec<ipnet::IpNet> = family.iter().map(|n| n.parse().unwrap()).collect();
+            assert!(pair.iter().all(|n| n.prefix_len() == 1));
+            assert_ne!(pair[0].network(), pair[1].network());
+        }
+    }
+
+    /// macOS (#375): a route keyed on the all-zero address shadows the
+    /// physical default in the scoped lookup an `IP_BOUND_IF` socket gets,
+    /// so the set must cover everything from the second `/8` up without
+    /// ever using that key.
+    #[test]
+    fn macos_global_routes_never_use_the_all_zero_destination() {
+        let nets = global_route_nets_for(true, true);
+        assert!(nets.iter().all(|n| !n.network().is_unspecified()));
+        assert_eq!(nets.iter().filter(|n| n.addr().is_ipv4()).count(), 8);
+        assert_eq!(nets.iter().filter(|n| n.addr().is_ipv6()).count(), 8);
+        assert_eq!(global_route_nets_for(false, true).len(), 8);
+
+        let covering = |ip: &str| {
+            let ip: std::net::IpAddr = ip.parse().unwrap();
+            nets.iter().filter(|n| n.contains(&ip)).count()
+        };
+        // Exactly one route per address: contiguous, no overlap.
+        for ip in [
+            "1.0.0.0",
+            "1.1.1.1",
+            "8.8.8.8",
+            "100.64.0.1",
+            "127.255.255.255",
+            "128.0.0.0",
+            "198.18.0.1",
+            "255.255.255.254",
+            "100::1",
+            "2001:4860:4860::8888",
+            "2606:4700:4700::1111",
+            "7fff::1",
+            "8000::",
+            "fd00::1",
+        ] {
+            assert_eq!(covering(ip), 1, "{ip}");
+        }
+        // Only the first /8 of each family is left out.
+        for ip in ["0.0.0.0", "0.255.255.255", "::", "::1", "64:ff9b::101:101"] {
+            assert_eq!(covering(ip), 0, "{ip}");
+        }
+    }
+
+    #[test]
+    fn sniff_window_is_short_enough_for_server_first_banners() {
+        // #695: a server-first client (SMTP/IMAP/FTP/MySQL/SSH) waits this
+        // long for its banner on every connect. Keep it on mihomo's
+        // pre-dial peek (200 ms), never back up toward the 15 s handshake
+        // timeout that used to drop these flows.
+        assert_eq!(TUN_SNIFF_WINDOW, Duration::from_millis(200));
+        assert!(TUN_SNIFF_WINDOW < crate::DEFAULT_HANDSHAKE_TIMEOUT);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sniff_returns_client_first_payload_inside_window() {
         let (mut client, mut server) = tokio::io::duplex(64);
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            // Late but inside the production window.
+            tokio::time::sleep(TUN_SNIFF_WINDOW - Duration::from_millis(50)).await;
             server.write_all(b"GET /").await.unwrap();
+            // Keep the peer open so the read sees data, not EOF.
+            std::future::pending::<()>().await;
         });
-        let got = wait_for_first_payload_timed(&mut client, Duration::from_secs(1))
-            .await
-            .expect("payload");
+        let got = sniff_first_payload(&mut client).await.expect("payload");
         assert_eq!(got, b"GET /");
     }
 
-    #[tokio::test]
-    async fn wait_for_payload_times_out_without_data() {
-        let (mut client, _server) = tokio::io::duplex(64);
-        let err = wait_for_first_payload_timed(&mut client, Duration::from_millis(20))
+    #[tokio::test(start_paused = true)]
+    async fn sniff_window_expiry_dials_with_empty_prefix() {
+        // Server-first flow (#695): the client stays silent until it sees
+        // a banner. Window expiry must proceed (empty prefix), not drop.
+        let (mut client, mut server) = tokio::io::duplex(64);
+        let start = tokio::time::Instant::now();
+        let got = sniff_first_payload(&mut client)
             .await
-            .expect_err("syn-only");
-        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+            .expect("silence past the window proceeds instead of dropping");
+        assert!(got.is_empty(), "no prefix for a silent flow");
+        assert_eq!(got.capacity(), 0, "the scratch buffer is not kept");
+        // Proceeds right at the window (paused clock; the timer wheel may
+        // round the deadline up by a tick).
+        let waited = start.elapsed();
+        assert!(
+            waited >= TUN_SNIFF_WINDOW && waited < TUN_SNIFF_WINDOW + Duration::from_millis(5),
+            "waited {waited:?}"
+        );
+
+        // The abandoned read lost nothing: the client's reply to the
+        // banner arrives after the window and the relay side reads it
+        // through the (prefix-less) TunTcpConn.
+        let mut conn = TunTcpConn {
+            prefix: got,
+            pos: 0,
+            inner: std::sync::Mutex::new(client),
+        };
+        server.write_all(b"EHLO meow\r\n").await.unwrap();
+        let mut buf = [0u8; 32];
+        let n = conn.read(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"EHLO meow\r\n");
     }
 
     #[tokio::test]
-    async fn wait_for_payload_eof_before_data_is_an_error() {
+    async fn sniff_eof_before_payload_drops_the_flow() {
         let (mut client, server) = tokio::io::duplex(64);
         drop(server);
-        let err = wait_for_first_payload_timed(&mut client, Duration::from_secs(1))
+        let err = sniff_first_payload_within(&mut client, Duration::from_secs(5))
             .await
             .expect_err("eof");
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
+    async fn sniff_reset_before_payload_drops_the_flow() {
+        // lwIP surfaces an RST (tcp_err_cb) as a read error.
+        struct Reset;
+        impl AsyncRead for Reset {
+            fn poll_read(
+                self: Pin<&mut Self>,
+                _cx: &mut Context<'_>,
+                _buf: &mut ReadBuf<'_>,
+            ) -> Poll<io::Result<()>> {
+                Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+            }
+        }
+        let err = sniff_first_payload_within(&mut Reset, Duration::from_secs(5))
+            .await
+            .expect_err("reset");
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn empty_prefix_waits_for_inner_instead_of_reporting_eof() {
+        // An empty prefix must not surface as a zero-length read — the
+        // relay would take that as client EOF and half-close upstream
+        // before the server's banner arrives.
+        let (client, _server) = tokio::io::duplex(64);
+        let mut conn = TunTcpConn {
+            prefix: Vec::new(),
+            pos: 0,
+            inner: std::sync::Mutex::new(client),
+        };
+        let mut buf = [0u8; 8];
+        let pending = tokio::time::timeout(Duration::from_secs(30), conn.read(&mut buf)).await;
+        assert!(pending.is_err(), "read must pend, got {pending:?}");
     }
 
     #[tokio::test]

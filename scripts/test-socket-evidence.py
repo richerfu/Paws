@@ -348,7 +348,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertNotIn("SENSITIVE_SENTINEL", json.dumps(safe))
         self.assertEqual(safe["probeTarget"], "custom-probe-target")
         self.assertEqual(len(safe["probeTargetFingerprint"]), 64)
-        for version in ("meow-rs 0.21.2 / OHOS socket bridge 2", "sing-box 1.13.21 / TinyPaws OpenHarmony bridge 2", "1.10.0"):
+        for version in ("meow-rs 0.22.0 / OHOS socket bridge 2", "sing-box 1.13.21 / TinyPaws OpenHarmony bridge 2", "1.10.0"):
             self.assertEqual(a.safe_session({"version": version})["version"], version)
 
     def test_cli_requires_explicit_input_and_writes_private_safe_json(self):

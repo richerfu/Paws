@@ -136,6 +136,10 @@ fn test_rule_type_display() {
         (RuleType::SrcGeoIp, "SRC-GEOIP"),
         (RuleType::IpCidr, "IP-CIDR"),
         (RuleType::SrcIpCidr, "SRC-IP-CIDR"),
+        (RuleType::IpSuffix, "IP-SUFFIX"),
+        (RuleType::SrcIpSuffix, "SRC-IP-SUFFIX"),
+        (RuleType::IpAsn, "IP-ASN"),
+        (RuleType::SrcIpAsn, "SRC-IP-ASN"),
         (RuleType::SrcPort, "SRC-PORT"),
         (RuleType::DstPort, "DST-PORT"),
         (RuleType::InPort, "IN-PORT"),
@@ -291,6 +295,7 @@ fn test_metadata_pure_clears_extra_fields() {
         in_name: "mixed-in".into(),
         in_port: 7890,
         special_proxy: "special".into(),
+        internal: true,
         ..Default::default()
     };
 
@@ -315,6 +320,9 @@ fn test_metadata_pure_clears_extra_fields() {
     assert!(pure.in_name.is_empty());
     assert_eq!(pure.in_port, 0);
     assert!(pure.special_proxy.is_empty());
+    // `internal` is a property of the traffic, not the inbound — it must
+    // survive the sanitizing copy so usage accounting still skips it.
+    assert!(pure.internal);
 }
 
 #[test]
@@ -405,6 +413,30 @@ fn test_metadata_json_field_rename() {
     assert!(json.contains("\"type\""));
 }
 
+#[test]
+fn test_metadata_internal_never_serializes() {
+    // `internal` is an in-process usage-accounting marker, not a conn
+    // attribute: it must not leak onto the wire (/connections API), and a
+    // forged `"internal":true` in JSON must not be honored.
+    let m = Metadata {
+        internal: true,
+        ..Default::default()
+    };
+    let json = serde_json::to_string(&m).unwrap();
+    assert!(!json.contains("internal"), "internal must not serialize");
+
+    let deserialized: Metadata = serde_json::from_str(&json).unwrap();
+    assert!(!deserialized.internal, "absent field defaults to false");
+
+    // Forged input: inject `"internal":true` into a complete object.
+    let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    v.as_object_mut()
+        .unwrap()
+        .insert("internal".to_string(), serde_json::json!(true));
+    let forged: Metadata = serde_json::from_value(v).unwrap();
+    assert!(!forged.internal, "forged internal field is ignored");
+}
+
 // ============================================================
 // MeowError
 // ============================================================
@@ -432,4 +464,12 @@ fn test_error_from_io() {
     let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
     let err: MeowError = io_err.into();
     assert!(err.to_string().contains("not found"));
+}
+
+/// ADR-0011 footprint guard — `Metadata` is the per-connection hot type
+/// (M2 baseline 272 B). Fields must land in existing tail padding; a
+/// growth needs a measured justification in the commit body.
+#[test]
+fn metadata_stays_272_bytes() {
+    assert_eq!(std::mem::size_of::<meow_common::Metadata>(), 272);
 }

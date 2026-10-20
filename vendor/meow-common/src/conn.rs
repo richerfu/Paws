@@ -17,6 +17,11 @@ impl<T: ProxyConn + ?Sized> ProxyConn for Box<T> {}
 
 #[async_trait::async_trait]
 pub trait ProxyPacketConn: Send + Sync {
+    /// Per-packet conns return the real wire source; bound conns may
+    /// report the bound remote or an unspecified address when the
+    /// underlying transport carries no source information. Consumers
+    /// filtering on the source must skip the check for unspecified
+    /// addresses or they would wedge bound conns.
     async fn read_packet(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)>;
     async fn write_packet(&self, buf: &[u8], addr: &SocketAddr) -> Result<usize>;
     fn local_addr(&self) -> Result<SocketAddr>;

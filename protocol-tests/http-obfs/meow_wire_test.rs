@@ -1,7 +1,6 @@
 //! Standalone local fixture. The temporary Cargo manifest supplies dependencies;
 //! this path includes the actual production HTTP envelope without modifying it.
-#[path = "../../vendor/meow-proxy/src/simple_obfs.rs"]
-mod simple_obfs;
+use meow_transport::simple_obfs::client as simple_obfs;
 
 use shadowsocks::{
     config::{ServerConfig, ServerType},
@@ -81,7 +80,8 @@ async fn main() -> io::Result<()> {
                 max_write,
                 yield_next: false,
             };
-            let transport = simple_obfs::HttpObfs::new(raw, "cover.example".into(), 443);
+            let transport = simple_obfs::HttpObfs::new(raw, "cover.example".into(), 443)
+                .map_err(io::Error::other)?;
             let config = ServerConfig::new(
                 "127.0.0.1:8388".parse::<std::net::SocketAddr>().unwrap(),
                 "local-test-only",

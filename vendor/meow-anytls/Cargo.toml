@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.89"
 name = "meow-anytls"
-version = "0.21.2"
+version = "0.22.0"
 build = false
 autolib = false
 autobins = false
@@ -27,6 +27,18 @@ license = "MIT"
 repository = "https://github.com/meow-rs/meow-rs"
 resolver = "2"
 
+[features]
+default = []
+server = [
+    "dep:rustls",
+    "dep:tokio-rustls",
+    "dep:rustls-pemfile",
+    "dep:rcgen",
+    "dep:notify",
+    "dep:x509-parser",
+    "dep:chrono",
+]
+
 [lib]
 name = "anytls_rs"
 path = "src/lib.rs"
@@ -39,15 +51,17 @@ version = "1.10.1"
 
 [dependencies.chrono]
 version = "0.4"
+optional = true
 
 [dependencies.md5]
 version = "0.8"
 
 [dependencies.meow-common]
-version = "0.21.2"
+version = "0.22.0"
 
 [dependencies.notify]
 version = "8.2"
+optional = true
 
 [dependencies.once_cell]
 version = "1.21"
@@ -61,6 +75,7 @@ features = [
     "pem",
     "ring",
 ]
+optional = true
 default-features = false
 
 [dependencies.rustls]
@@ -71,10 +86,12 @@ features = [
     "std",
     "tls12",
 ]
+optional = true
 default-features = false
 
 [dependencies.rustls-pemfile]
 version = "2"
+optional = true
 
 [dependencies.serde]
 version = "1"
@@ -110,11 +127,15 @@ features = [
     "logging",
     "tls12",
 ]
+optional = true
 default-features = false
 
 [dependencies.tokio-util]
 version = "0.7"
-features = ["codec"]
+features = [
+    "codec",
+    "rt",
+]
 
 [dependencies.tracing]
 version = "0.1"
@@ -130,6 +151,11 @@ default-features = false
 
 [dependencies.x509-parser]
 version = "0.18"
+optional = true
+
+[dev-dependencies.tokio]
+version = "1.48"
+features = ["test-util"]
 
 [target.'cfg(any(target_os = "android", target_env = "ohos"))'.dependencies.libc]
 version = "0.2"

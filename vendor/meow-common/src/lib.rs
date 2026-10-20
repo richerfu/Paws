@@ -4,39 +4,59 @@
 //! [`Metadata`], connection types, and shared error values used by every
 //! other meow crate.
 
+/// Largest `u64` seconds value a config field may carry into
+/// `Duration::from_secs` + `Instant`/`tokio`-timer arithmetic. Beyond a few
+/// hundred years `Instant + Duration` overflows and panics, and the release
+/// profile's `panic = "abort"` turns that into a process crash — provider or
+/// subscription-controlled interval/timeout fields must never reach it
+/// (issue #648). Ten years is far beyond any meaningful value while staying
+/// representable on every supported platform.
+pub const MAX_DURATION_SECS: u64 = 10 * 365 * 24 * 60 * 60;
+
 pub mod adapter;
 pub mod adapter_type;
 pub mod atomic;
 pub mod auth;
+pub mod backoff;
 pub mod conn;
+pub mod dial;
 pub mod dns_mode;
 pub mod error;
+pub mod fs_util;
 pub mod home_dir;
 pub mod metadata;
 pub mod network;
 pub mod outbound_iface;
 pub mod process_lookup;
+pub mod replay_window;
 pub mod rule;
 pub mod sniffer;
 pub mod socket_protect;
 pub mod tunnel_mode;
 
 pub use adapter::{
-    DelayHistory, ProviderSlot, Proxy, ProxyAdapter, ProxyHealth, ProxySelection, ProxyState,
+    reset_sessions_reachable, DelayHistory, ProviderSlot, Proxy, ProxyAdapter, ProxyHealth,
+    ProxySelection, ProxyState,
 };
 pub use adapter_type::{AdapterType, ConnType};
 pub use auth::{AuthConfig, Credentials};
+pub use backoff::ErrorBackoff;
 pub use conn::{ProxyConn, ProxyPacketConn, UdpPacket};
+pub use dial::{with_dial_timeout, DIAL_TIMEOUT};
 pub use dns_mode::DnsMode;
 pub use error::{MeowError, Result};
-pub use home_dir::{meow_home_dir, set_home_dir};
-pub use metadata::{AddrDisplay, Metadata};
+pub use fs_util::{sweep_scratch_siblings, SCRATCH_STALE_AGE};
+pub use home_dir::{meow_home_dir, resolved_home_dir, set_home_dir, xdg_home_dir};
+pub use metadata::{metadata_ip_literal, AddrDisplay, Metadata};
 pub use network::Network;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 pub use outbound_iface::apply_outbound_interface;
-pub use outbound_iface::{clear_outbound_interface, outbound_interface, set_outbound_interface};
-pub use process_lookup::{find_process, ProcessInfo};
-pub use rule::{Rule, RuleMatchHelper, RuleType};
+pub use outbound_iface::{install_outbound_interface, outbound_interface, OutboundIfaceGuard};
+pub use process_lookup::{
+    disable_socket_table_cache, find_process, find_process_async, ProcessInfo,
+};
+pub use replay_window::ReplayWindow;
+pub use rule::{Rule, RuleMatchHelper, RuleType, TargetCheck, TargetProbe};
 pub use sniffer::SnifferConfig;
 pub use socket_protect::{bind_udp, connect_tcp, connect_tcp_host, resolve_host, resolve_host_all};
 // Host-resolver hook is cross-platform (iOS installs it without a protector).
@@ -47,3 +67,6 @@ pub use socket_protect::{
     clear_socket_protector, set_socket_protector, socket_protector, SocketProtector,
 };
 pub use tunnel_mode::TunnelMode;
+
+pub mod health_check;
+pub use health_check::HealthCheckSpec;

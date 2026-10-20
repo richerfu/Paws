@@ -1,11 +1,10 @@
-//! Snell KDF and AEAD helpers.
+//! Snell KDF.
 //!
 //! Port of opensnell `components/snell/cipher.go`. The Snell-specific KDF is
 //! Argon2id with t=3, m=8 KiB, p=1, 32-byte output; the first `key_size`
-//! bytes are used as the AEAD key (AES-128-GCM uses 16).
+//! bytes are used as the AEAD key (AES-128-GCM uses 16). The AEAD itself is
+//! the crate's BoringSSL one (`crate::aead`).
 
-use aes_gcm::aead::KeyInit;
-use aes_gcm::Aes128Gcm;
 use argon2::{Algorithm, Argon2, Params, Version};
 
 /// Snell KDF — Argon2id(t=3, m=8 KiB, p=1) → 32 bytes; first `key_size`
@@ -25,12 +24,6 @@ pub fn snell_kdf(psk: &[u8], salt: &[u8], key_size: usize) -> Vec<u8> {
         .expect("argon2 hash_password_into never fails with valid params + output len 32");
     out.truncate(key_size);
     out
-}
-
-/// Build an AES-128-GCM cipher from a 16-byte key.
-pub fn aes_gcm(key: &[u8]) -> Aes128Gcm {
-    debug_assert_eq!(key.len(), 16, "snell AEAD requires a 16-byte AES-128 key");
-    Aes128Gcm::new_from_slice(key).expect("16-byte key is valid for AES-128-GCM")
 }
 
 #[cfg(test)]

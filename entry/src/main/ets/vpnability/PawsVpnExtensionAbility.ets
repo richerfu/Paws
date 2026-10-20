@@ -473,6 +473,40 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     const vpnOwner = vpnExtension.createVpnConnection(this.context);
     this.vpnConnection = vpnOwner;
     const startedAt = Date.now();
+
+    let createOperation: Promise<number>;
+    try {
+      createOperation = vpnOwner.create(config);
+    } catch (err) {
+      throw new Error(`VpnConnection.create rejected synchronously: ${describeError(err)}`);
+    }
+    const fd = await this.awaitPlatformOperation(vpnOwner, createOperation, 'VpnConnection.create');
+    if (!this.isCurrentRequest(generation, attemptId) || this.vpnConnection !== vpnOwner) {
+      await this.destroyVpn();
+      throw new Error('stale VPN request generation after TUN create');
+    }
+    this.tunFd = fd;
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'created tun fd %{public}d', fd);
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase create finished in %{public}d ms', Date.now() - startedAt);
+
+    const protectStartedAt = Date.now();
+    try {
+      await this.awaitPlatformOperation(vpnOwner, vpnOwner.protectProcessNet(),
+        'VpnConnection.protectProcessNet');
+      this.requireCurrentRequest(generation, attemptId, vpnOwner);
+      if (!pawsUi.setPlatformNetworkProtected(attemptId, true)) {
+        throw new Error('platform VPN protection result belongs to a stale attempt');
+      }
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'protected process network');
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase protect finished in %{public}d ms', Date.now() - protectStartedAt);
+    } catch (err) {
+      const message = describeError(err) || 'protect process network failed';
+      pawsUi.setPlatformNetworkProtected(attemptId, false, message);
+      throw new Error(message);
+    }
+
+    // Config/provider IO must use the protected physical network.
+    const prepareStartedAt = Date.now();
     const nativePrepare: Promise<NativePrepareResult> = (engine === 'mihomo'
       ? Promise.resolve().then((): NativePrepareResult => ({
           error: '',
@@ -501,39 +535,12 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       }
     });
 
-    let createOperation: Promise<number>;
-    try {
-      createOperation = vpnOwner.create(config);
-    } catch (err) {
-      throw new Error(`VpnConnection.create rejected synchronously: ${describeError(err)}`);
-    }
-    const fd = await this.awaitPlatformOperation(vpnOwner, createOperation, 'VpnConnection.create');
-    if (!this.isCurrentRequest(generation, attemptId) || this.vpnConnection !== vpnOwner) {
-      await this.destroyVpn();
-      throw new Error('stale VPN request generation after TUN create');
-    }
-    this.tunFd = fd;
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'created tun fd %{public}d', fd);
-
-    try {
-      await this.awaitPlatformOperation(vpnOwner, vpnOwner.protectProcessNet(),
-        'VpnConnection.protectProcessNet');
-      this.requireCurrentRequest(generation, attemptId, vpnOwner);
-      if (!pawsUi.setPlatformNetworkProtected(attemptId, true)) {
-        throw new Error('platform VPN protection result belongs to a stale attempt');
-      }
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'protected process network');
-    } catch (err) {
-      const message = describeError(err) || 'protect process network failed';
-      pawsUi.setPlatformNetworkProtected(attemptId, false, message);
-      throw new Error(message);
-    }
-
     const prepareResult = await this.awaitPlatformOperation(vpnOwner, nativePrepare, 'native VPN prepare');
     if (prepareResult.error.length > 0) {
       throw new Error(prepareResult.error);
     }
     this.requireCurrentRequest(generation, attemptId, vpnOwner);
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase config finished in %{public}d ms', Date.now() - prepareStartedAt);
     this.activeEngine = engine;
     this.activeOptionsJson = optionsJson;
     this.activeUnderlyingNetId = underlyingNetId;

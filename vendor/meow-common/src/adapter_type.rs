@@ -20,6 +20,16 @@ pub enum AdapterType {
     Hysteria2,
     Anytls,
     Snell,
+    /// Built-in nop adapter (`PASS`) — a matched rule is skipped silently
+    /// by the match loop (upstream `C.Pass`).
+    Pass,
+    /// Built-in nop adapter (`PASS-RULE`) — inside a SUB-RULE block it
+    /// skips the inner rule; at top level it rejects like `REJECT`
+    /// (upstream `C.PassRule`).
+    PassRule,
+    /// Direct-dialing built-in named `COMPATIBLE` — upstream registers it
+    /// as GLOBAL's default member (upstream `C.Compatible`).
+    Compatible,
 }
 
 impl fmt::Display for AdapterType {
@@ -42,6 +52,9 @@ impl fmt::Display for AdapterType {
             AdapterType::Hysteria2 => write!(f, "Hysteria2"),
             AdapterType::Anytls => write!(f, "AnyTLS"),
             AdapterType::Snell => write!(f, "Snell"),
+            AdapterType::Pass => write!(f, "Pass"),
+            AdapterType::PassRule => write!(f, "PassRule"),
+            AdapterType::Compatible => write!(f, "Compatible"),
         }
     }
 }

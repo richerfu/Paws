@@ -76,7 +76,8 @@ impl MuxPacketConn {
 }
 
 /// Cancel-safe datagram reader.  Length and payload progress survive a
-/// dropped `read_packet` future (the TUN pump recreates it inside select!).
+/// dropped `read_packet` future (callers may cancel a read by dropping
+/// the future, e.g. on task abort).
 struct PacketReader {
     stream: tokio::io::ReadHalf<MuxStream>,
     len: [u8; 2],
@@ -351,6 +352,7 @@ mod tests {
             kind: SessionKind::Smux(session),
             streams: AtomicUsize::new(1),
             last_used_ms: AtomicU::new(0),
+            generation: 0,
         });
         let conn = MuxPacketConn::new(
             stream,
@@ -434,6 +436,7 @@ mod tests {
             kind: SessionKind::Yamux(session),
             streams: AtomicUsize::new(1),
             last_used_ms: AtomicU::new(0),
+            generation: 0,
         });
         let conn = MuxPacketConn::new(
             stream,
@@ -514,6 +517,7 @@ mod tests {
             kind: SessionKind::Smux(session),
             streams: AtomicUsize::new(1),
             last_used_ms: AtomicU::new(0),
+            generation: 0,
         });
         let conn = Arc::new(MuxPacketConn::new(
             stream,
@@ -589,6 +593,7 @@ mod tests {
             kind: SessionKind::Smux(session),
             streams: AtomicUsize::new(1),
             last_used_ms: AtomicU::new(0),
+            generation: 0,
         });
         let conn = MuxPacketConn::new(
             stream,

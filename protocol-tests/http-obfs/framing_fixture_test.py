@@ -31,7 +31,9 @@ def main():
         manifest = ('[package]\nname="paws_meow_wire_fixture"\nversion="0.1.0"\nedition="2021"\n'
                     '[[bin]]\nname="meow-wire-fixture"\npath=' + json.dumps(str(source)) + '\n'
                     '[dependencies]\nshadowsocks={version="=1.24.0",default-features=false,features=["aead-cipher"]}\n'
-                    'tokio={version="=1.53.2",features=["full"]}\nbase64="0.22"\nfutures="0.3"\nrand="0.9"\nserde_json="1"\n')
+                    'tokio={version="1",features=["full"]}\nserde_json="1"\n'
+                    'meow-transport={path=' + json.dumps(str(ROOT / 'vendor/meow-transport')) +
+                    ',default-features=false,features=["simple-obfs"]}\n')
         (work / "Cargo.toml").write_text(manifest)
         with (work / "meow.json").open("w") as capture:
             subprocess.run(["cargo", "run", "--offline", "--quiet", "--manifest-path", str(work / "Cargo.toml"),
@@ -43,7 +45,7 @@ def main():
                        check=True, capture_output=True, timeout=180)
         report = json.loads(report_path.read_text())
         report["meow"] = {"shadowsocksVersion": "1.24.0",
-                          "httpObfsSha256": hashlib.sha256((ROOT / "vendor/meow-proxy/src/simple_obfs.rs").read_bytes()).hexdigest()}
+                          "httpObfsSha256": hashlib.sha256((ROOT / "vendor/meow-transport/src/simple_obfs/client.rs").read_bytes()).hexdigest()}
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps({"passed": report["passed"], "report": str(args.output),

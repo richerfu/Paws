@@ -64,7 +64,7 @@ impl StreamHandler for TcpProxyHandler {
                 }
             };
 
-            tracing::info!(
+            tracing::debug!(
                 "[Proxy] Destination: {}:{}",
                 destination.addr,
                 destination.port
@@ -282,7 +282,7 @@ async fn proxy_tcp_connection_with_synack_internal(
     let outbound = match timeout(connect_timeout, TcpStream::connect(target_socket)).await {
         Ok(Ok(conn)) => {
             configure_tcp_stream(&conn, &target_display);
-            tracing::info!("[Proxy] Successfully connected to {}", target_display);
+            tracing::debug!("[Proxy] Successfully connected to {}", target_display);
             conn
         }
         Ok(Err(e)) => {
@@ -482,9 +482,12 @@ async fn proxy_tcp_connection_data_forwarding(
                 }
             };
 
-            // 写入 stream（使用 send_data，完全无锁！）
+            // Queue one complete frame with session-wide backpressure.
             use bytes::Bytes;
-            if let Err(e) = stream_for_write.send_data(Bytes::copy_from_slice(&buf[..n])) {
+            if let Err(e) = stream_for_write
+                .send_data(Bytes::copy_from_slice(&buf[..n]))
+                .await
+            {
                 tracing::error!(
                     "[Proxy-Task2] Stream write error (stream_id={}, iteration={}): {:?}",
                     stream_id,

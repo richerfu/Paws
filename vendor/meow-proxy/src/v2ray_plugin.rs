@@ -24,6 +24,7 @@ use meow_transport::{
 };
 use tracing::{debug, warn};
 
+use crate::plugin_util::{parse_bool, sip003_opts};
 use crate::transport_to_proxy_err;
 
 /// Transport mode.  Only WebSocket is supported.
@@ -65,11 +66,6 @@ impl Default for V2rayPluginConfig {
         }
     }
 }
-
-fn parse_bool(s: &str) -> bool {
-    matches!(s.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
-}
-
 /// Parse a SIP003 opts string (`mode=websocket;tls;host=...;path=/ws;mux=1`).
 ///
 /// - Bare keys (e.g. `tls`) are treated as `key=true`.
@@ -78,13 +74,8 @@ fn parse_bool(s: &str) -> bool {
 pub fn parse_opts(s: &str) -> Result<V2rayPluginConfig> {
     let mut cfg = V2rayPluginConfig::default();
 
-    for token in s.split(';').map(str::trim).filter(|t| !t.is_empty()) {
-        let (key, value) = match token.split_once('=') {
-            Some((k, v)) => (k.trim(), v.trim().to_string()),
-            None => (token, "true".to_string()),
-        };
-
-        match key {
+    for (key, value) in sip003_opts(s) {
+        match key.as_str() {
             "mode" => {
                 if value.eq_ignore_ascii_case("websocket") || value.eq_ignore_ascii_case("ws") {
                     cfg.mode = Mode::Websocket;
@@ -94,14 +85,27 @@ pub fn parse_opts(s: &str) -> Result<V2rayPluginConfig> {
                     )));
                 }
             }
-            "tls" => cfg.tls = parse_bool(&value),
+            "tls" => cfg.tls = parse_bool(&value, "v2ray-plugin", "tls"),
             "host" => cfg.host = value,
             "path" => cfg.path = value,
-            "mux" => cfg.mux = parse_bool(&value),
-            "skip-cert-verify" => cfg.skip_cert_verify = parse_bool(&value),
+            "mux" => cfg.mux = parse_bool(&value, "v2ray-plugin", "mux"),
+            "skip-cert-verify" => {
+                cfg.skip_cert_verify = parse_bool(&value, "v2ray-plugin", "skip-cert-verify");
+            }
             "header" => {
                 // Form: header=Key:Value
                 if let Some((k, v)) = value.split_once(':') {
+                    // Provider opts can repeat `header=` — the map is
+                    // re-serialized per dial, so bound it like the xhttp
+                    // `headers` cap (issue #648).
+                    if cfg.headers.len() >= meow_transport::MAX_EXTRA_HEADERS
+                        && !cfg.headers.contains_key(k.trim())
+                    {
+                        return Err(MeowError::Config(format!(
+                            "v2ray-plugin: more than {} header= entries",
+                            meow_transport::MAX_EXTRA_HEADERS
+                        )));
+                    }
                     cfg.headers
                         .insert(k.trim().to_string(), v.trim().to_string());
                 } else {
@@ -143,6 +147,28 @@ pub async fn dial(
     tls_layer: Option<&TlsLayer>,
     server_host: &str,
     server_port: u16,
+    dialer: &dyn crate::dialer::TcpDialer,
+    internal: bool,
+) -> Result<Box<dyn meow_transport::Stream>> {
+    // 1) Raw TCP.
+    let tcp = dialer
+        .dial(server_host, server_port, internal)
+        .await
+        .map_err(MeowError::Io)?;
+
+    handshake_over(cfg, tls_layer, server_host, server_port, tcp).await
+}
+
+/// Apply the optional TLS handshake + WebSocket upgrade on `stream`, which
+/// must already terminate at `server_host:server_port` — `dial` obtains it
+/// from `dialer.dial`, the SS adapter's `connect_over` receives it from the
+/// relay chain.
+pub async fn handshake_over(
+    cfg: &V2rayPluginConfig,
+    tls_layer: Option<&TlsLayer>,
+    server_host: &str,
+    server_port: u16,
+    stream: Box<dyn meow_transport::Stream>,
 ) -> Result<Box<dyn meow_transport::Stream>> {
     let host_header = if cfg.host.is_empty() {
         server_host.to_string()
@@ -155,18 +181,13 @@ pub async fn dial(
         server_host, server_port, cfg.tls, host_header, cfg.path, cfg.mux
     );
 
-    // 1) Raw TCP.
-    let tcp = meow_common::connect_tcp_host(server_host, server_port)
-        .await
-        .map_err(MeowError::Io)?;
-
     // 2) Optional TLS handshake via the pre-built TlsLayer.
     let stream: Box<dyn meow_transport::Stream> = if let Some(tls) = tls_layer {
-        tls.connect(Box::new(tcp))
+        tls.connect(Box::new(stream))
             .await
             .map_err(transport_to_proxy_err)?
     } else {
-        Box::new(tcp)
+        stream
     };
 
     // 3) WebSocket upgrade via WsLayer.
@@ -194,6 +215,28 @@ pub async fn dial(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Provider-controlled `header=` opts repeat unboundedly and the map is
+    /// re-serialized per dial — same bound as xhttp `headers` (issue #648).
+    #[test]
+    fn parse_opts_caps_header_count() {
+        let mut opts = String::from("mode=websocket");
+        for i in 0..meow_transport::MAX_EXTRA_HEADERS {
+            use std::fmt::Write;
+            write!(opts, ";header=H{i}:v").unwrap();
+        }
+        // At the cap: still parses (re-`insert` of a known key is a replace).
+        assert!(parse_opts(&opts).is_ok());
+        use std::fmt::Write;
+        write!(opts, ";header=one-more:v").unwrap();
+        let Err(err) = parse_opts(&opts) else {
+            panic!(
+                "{} headers must be rejected",
+                meow_transport::MAX_EXTRA_HEADERS + 1
+            )
+        };
+        assert!(err.to_string().contains("header"), "msg: {err}");
+    }
 
     #[test]
     fn parse_opts_cases() {

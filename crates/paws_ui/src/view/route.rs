@@ -126,6 +126,27 @@ impl Route {
             Self::Tools {},
         ]
     }
+
+    /// Keep dense data pages wide on desktop while forms and settings retain
+    /// shadcn's readable content measure. Compact windows are constrained by
+    /// the shell independently of this desktop-only value.
+    pub(super) const fn desktop_content_width(&self) -> f32 {
+        match self {
+            Self::Dashboard {} => 960.0,
+            Self::Profiles {} | Self::Proxies {} => 1120.0,
+            Self::Traffic {} => 1040.0,
+            Self::Requests {} | Self::Connections { .. } | Self::Resources {} | Self::Logs {} => {
+                1180.0
+            }
+            Self::Tools {}
+            | Self::Diagnostics {}
+            | Self::Appearance {}
+            | Self::Settings {}
+            | Self::SubscriptionConverter {}
+            | Self::About {}
+            | Self::Privacy {} => 840.0,
+        }
+    }
 }
 
 #[component]

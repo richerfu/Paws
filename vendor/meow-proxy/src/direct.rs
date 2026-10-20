@@ -3,18 +3,26 @@ use meow_common::{
     AdapterType, MeowError, Metadata, ProxyAdapter, ProxyConn, ProxyHealth, ProxyPacketConn, Result,
 };
 use meow_dns::Resolver;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpStream, UdpSocket};
 
 pub struct DirectAdapter {
+    /// `Direct` normally; `Compatible` for the built-in `COMPATIBLE`
+    /// adapter (upstream `outbound.NewCompatible()` — a `*Direct` with the
+    /// `C.Compatible` type tag, used as GLOBAL's default member).
+    adapter_type: AdapterType,
     routing_mark: Option<u32>,
     /// Optional internal DNS resolver. When set, `dial_tcp` resolves
     /// hostnames via this resolver instead of the OS resolver — this is
     /// important when meow-rs *is* the system DNS, because routing a direct
     /// DNS query back through the OS would loop the query back into meow-rs.
-    resolver: Option<Arc<Resolver>>,
+    /// Behind a slot so `Tunnel::set_resolver` can hot-swap the generation
+    /// on `PUT /configs` without rebuilding the adapter (issue #514). When
+    /// built via `with_resolver_slot` the slot is shared with the tunnel,
+    /// so map `DIRECT` and `TunnelInner.direct` track one generation.
+    resolver: Option<meow_dns::ResolverSlot>,
     /// Wall-clock bound on `TcpStream::connect`. iOS / macOS scoped-routing
     /// and reachability-cache transients can leave a `connect()` hanging
     /// indefinitely against a destination whose route is in flux (Wi-Fi
@@ -30,10 +38,22 @@ pub struct DirectAdapter {
 impl DirectAdapter {
     pub fn new() -> Self {
         Self {
+            adapter_type: AdapterType::Direct,
             routing_mark: None,
             resolver: None,
             connect_timeout: None,
             health: ProxyHealth::new(),
+        }
+    }
+
+    /// `COMPATIBLE` built-in — a direct dialer carrying the `Compatible`
+    /// type tag, like upstream `NewCompatible`. Receives the same
+    /// routing-mark/resolver/timeout options as `DIRECT` via the `with_*`
+    /// builders.
+    pub fn compatible() -> Self {
+        Self {
+            adapter_type: AdapterType::Compatible,
+            ..Self::new()
         }
     }
 
@@ -42,8 +62,19 @@ impl DirectAdapter {
         self
     }
 
+    /// Wrap `resolver` in a fresh private slot — this adapter will not
+    /// follow later `Tunnel::set_resolver` swaps. Prefer
+    /// [`Self::with_resolver_slot`] when a shared generation is intended.
     pub fn with_resolver(mut self, resolver: Arc<Resolver>) -> Self {
-        self.resolver = Some(resolver);
+        self.resolver = Some(meow_dns::new_resolver_slot(resolver));
+        self
+    }
+
+    /// Share an existing resolver slot — writes to the slot (e.g.
+    /// `Tunnel::set_resolver`) are observed by this adapter on every dial
+    /// (issue #514).
+    pub fn with_resolver_slot(mut self, slot: meow_dns::ResolverSlot) -> Self {
+        self.resolver = Some(slot);
         self
     }
 
@@ -74,8 +105,10 @@ impl DirectAdapter {
             return Ok(vec![SocketAddr::new(ip, metadata.dst_port)]);
         }
 
-        // 2. `host` is an IP literal — no DNS needed.
-        if let Ok(ip) = metadata.host.parse::<IpAddr>() {
+        // 2. `host` is an IP literal — no DNS needed. The fold also
+        //    unwraps a bracketed display form (e.g. a SOCKS5 domain
+        //    BND.ADDR of `[::1]`) so it cannot fall into DNS (issue #701).
+        if let Some(ip) = meow_common::metadata_ip_literal(&metadata.host) {
             return Ok(vec![SocketAddr::new(ip, metadata.dst_port)]);
         }
 
@@ -84,16 +117,22 @@ impl DirectAdapter {
         //    standalone usage).
         if !metadata.host.is_empty() {
             if let Some(resolver) = &self.resolver {
+                let resolver = Arc::clone(&resolver.read());
                 return match resolver.resolve_ips(&metadata.host).await {
-                    Some(ips) if !ips.is_empty() => Ok(ips
+                    Ok(Some(ips)) if !ips.is_empty() => Ok(ips
                         .into_iter()
                         .map(|ip| SocketAddr::new(ip, metadata.dst_port))
                         .collect()),
-                    None => Err(MeowError::Dns(format!(
+                    // The lookup itself failed — the io error keeps its
+                    // raw_os_error, so a local EMFILE while opening the
+                    // resolver socket stays `is_local_resource_error`
+                    // instead of dead-marking this member (#682).
+                    Err(e) => Err(MeowError::Io(e)),
+                    Ok(None) => Err(MeowError::Dns(format!(
                         "direct: failed to resolve {}",
                         metadata.host
                     ))),
-                    Some(_) => Err(MeowError::Dns(format!(
+                    Ok(Some(_)) => Err(MeowError::Dns(format!(
                         "direct: no address for {}",
                         metadata.host
                     ))),
@@ -169,20 +208,31 @@ impl Unpin for DirectConn {}
 impl ProxyConn for DirectConn {}
 
 // UDP wrapper
-struct DirectPacketConn(UdpSocket);
+struct DirectPacketConn {
+    socket: UdpSocket,
+    /// `Some` when the socket is `connect()`ed to a name-resolved target
+    /// (a chained `UdpTarget::Name`, issue #657): writes ignore the
+    /// advisory arg and reads report the connected peer.
+    bound: Option<SocketAddr>,
+}
 
 #[async_trait]
 impl ProxyPacketConn for DirectPacketConn {
     async fn read_packet(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
-        self.0.recv_from(buf).await.map_err(MeowError::Io)
+        self.socket.recv_from(buf).await.map_err(MeowError::Io)
     }
 
     async fn write_packet(&self, buf: &[u8], addr: &SocketAddr) -> Result<usize> {
-        self.0.send_to(buf, addr).await.map_err(MeowError::Io)
+        match self.bound {
+            // send_to() with the caller's placeholder arg would fail with
+            // EISCONN on a connected socket.
+            Some(_) => self.socket.send(buf).await.map_err(MeowError::Io),
+            None => self.socket.send_to(buf, addr).await.map_err(MeowError::Io),
+        }
     }
 
     fn local_addr(&self) -> Result<SocketAddr> {
-        self.0.local_addr().map_err(MeowError::Io)
+        self.socket.local_addr().map_err(MeowError::Io)
     }
 
     fn close(&self) -> Result<()> {
@@ -247,7 +297,7 @@ async fn connect_with_mark(
         // TUN global-route loop avoidance (#375): this branch bypasses
         // `meow_common::connect_tcp`, so apply the outbound-interface
         // binding here too (no-op when none is installed).
-        meow_common::apply_outbound_interface(&socket)?;
+        meow_common::apply_outbound_interface(&socket, domain)?;
         socket.set_nonblocking(true)?;
 
         match socket.connect(&dest.into()) {
@@ -269,11 +319,14 @@ async fn connect_with_mark(
 #[async_trait]
 impl ProxyAdapter for DirectAdapter {
     fn name(&self) -> &str {
-        "DIRECT"
+        match self.adapter_type {
+            AdapterType::Compatible => "COMPATIBLE",
+            _ => "DIRECT",
+        }
     }
 
     fn adapter_type(&self) -> AdapterType {
-        AdapterType::Direct
+        self.adapter_type
     }
 
     fn addr(&self) -> &str {
@@ -297,7 +350,12 @@ impl ProxyAdapter for DirectAdapter {
             .await
             {
                 Ok(stream) => return Ok(Box::new(DirectConn(stream))),
-                Err(err) => last_err = Some(err),
+                // An errno-backed connect failure (e.g. EMFILE on
+                // socket()) outranks a later context-only error — the
+                // errno is what dead-mark classification reads (issue
+                // #668); this error also escapes through relay hop-0 /
+                // dialer-proxy front boundaries.
+                Err(err) => last_err = MeowError::prefer_errno(last_err, err),
             }
         }
 
@@ -313,19 +371,65 @@ impl ProxyAdapter for DirectAdapter {
         // NAT session was never inserted, so no reply reader could ever form —
         // server→app QUIC replies had no socket to arrive on.
         //
+        // A chained `UdpTarget::Name` reaching a `direct` front arrives as
+        // host-only metadata (issue #657): direct is the terminal hop —
+        // there is no further resolver view to delegate to, so resolve
+        // through this adapter's configured resolver (the front's own view)
+        // and *connect* the socket. The conn is bound: the caller holds no
+        // literal for a name target and its write arg is only an advisory
+        // placeholder.
+        if metadata.domain_udp_target().is_some() {
+            let mut last_err = None;
+            for addr in self.resolve_targets(metadata).await? {
+                let bind: SocketAddr = if addr.is_ipv4() {
+                    "0.0.0.0:0".parse().expect("static")
+                } else {
+                    "[::]:0".parse().expect("static")
+                };
+                let socket = match meow_common::bind_udp(bind).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        last_err = MeowError::prefer_errno_io(last_err, e);
+                        continue;
+                    }
+                };
+                match socket.connect(addr).await {
+                    Ok(()) => {
+                        return Ok(Box::new(DirectPacketConn {
+                            socket,
+                            bound: Some(addr),
+                        }));
+                    }
+                    Err(e) => last_err = MeowError::prefer_errno_io(last_err, e),
+                }
+            }
+            return Err(MeowError::Io(last_err.unwrap_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "direct udp: no candidates for {}",
+                        metadata.remote_address()
+                    ),
+                )
+            })));
+        }
+
         // The NAT key in `handle_udp` is `(src, dst)`, so a single direct UDP
         // session only ever targets one destination → one address family; we
-        // can bind the matching family up front. Falls back to IPv4 when the
+        // bind the matching family up front. Falls back to IPv4 when the
         // destination family is unknown (preserves the legacy behaviour).
         let dst_is_v6 = match metadata.dst_ip {
             Some(ip) => ip.is_ipv6(),
-            None => metadata.host.parse::<IpAddr>().is_ok_and(|ip| ip.is_ipv6()),
+            None => meow_common::metadata_ip_literal(&metadata.host).is_some_and(|ip| ip.is_ipv6()),
         };
         let bind_addr = if dst_is_v6 { "[::]:0" } else { "0.0.0.0:0" };
         let socket = meow_common::bind_udp(bind_addr)
             .await
             .map_err(MeowError::Io)?;
-        Ok(Box::new(DirectPacketConn(socket)))
+        Ok(Box::new(DirectPacketConn {
+            socket,
+            bound: None,
+        }))
     }
 
     /// Pass the stream through unchanged.
@@ -356,7 +460,7 @@ mod tests {
     use meow_common::DnsMode;
     use meow_dns::HostEntry;
     use meow_trie::DomainTrie;
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     fn fake_dest() -> SocketAddr {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 1)
@@ -392,7 +496,14 @@ mod tests {
             ]
             .into(),
         );
-        let resolver = Arc::new(Resolver::new(vec![], vec![], DnsMode::Normal, hosts, true));
+        let resolver = Arc::new(Resolver::new(
+            vec![],
+            vec![],
+            DnsMode::Normal,
+            hosts,
+            true,
+            true,
+        ));
         let adapter = DirectAdapter::new()
             .with_resolver(resolver)
             .with_connect_timeout(Duration::from_secs(2));
@@ -404,6 +515,40 @@ mod tests {
             .expect("second resolved address should connect");
         let _ = accept.await.unwrap();
         drop(conn);
+    }
+
+    /// `COMPATIBLE` is a real direct dialer under the `Compatible` tag —
+    /// not a display alias. Prove it with a real loopback exchange.
+    #[tokio::test]
+    async fn compatible_dials_direct_tcp_and_udp() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let echo = tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 16];
+            let n = s.read(&mut buf).await.unwrap();
+            s.write_all(&buf[..n]).await.unwrap();
+        });
+
+        let adapter = DirectAdapter::compatible();
+        assert_eq!(adapter.adapter_type(), AdapterType::Compatible);
+        let mut conn = adapter
+            .dial_tcp(&tcp_metadata("127.0.0.1", port))
+            .await
+            .expect("COMPATIBLE must dial direct");
+        conn.write_all(b"ping").await.unwrap();
+        let mut buf = [0u8; 4];
+        conn.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping");
+        echo.await.unwrap();
+
+        let udp = adapter
+            .dial_udp(&udp_metadata(IpAddr::V4(Ipv4Addr::LOCALHOST)))
+            .await
+            .expect("COMPATIBLE must bind a UDP session");
+        assert!(udp.local_addr().unwrap().is_ipv4());
     }
 
     /// Regression for QUIC/HTTP3 direct: `dial_udp` must bind the reply socket
@@ -568,6 +713,175 @@ mod tests {
             io.kind(),
             std::io::ErrorKind::TimedOut,
             "real IO error must not be relabeled as TimedOut: {io}"
+        );
+    }
+
+    /// Front role: a chained `UdpTarget::Name` arrives as host-only UDP
+    /// metadata (issue #657). Direct is the terminal hop — it resolves via
+    /// the adapter's configured resolver and returns a *connected* socket
+    /// whose write arg is advisory.
+    #[tokio::test]
+    async fn dial_udp_host_only_resolves_and_connects() {
+        let echo = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = echo.local_addr().unwrap().port();
+        let echo_task = tokio::spawn(async move {
+            let mut buf = [0u8; 16];
+            let (n, src) = echo.recv_from(&mut buf).await.unwrap();
+            echo.send_to(&buf[..n], src).await.unwrap();
+        });
+
+        let mut hosts: DomainTrie<HostEntry> = DomainTrie::new();
+        hosts.insert("bound.test", vec![IpAddr::V4(Ipv4Addr::LOCALHOST)].into());
+        let resolver = Arc::new(Resolver::new(
+            vec![],
+            vec![],
+            DnsMode::Normal,
+            hosts,
+            true,
+            true,
+        ));
+        let adapter = DirectAdapter::new().with_resolver(resolver);
+
+        let meta = Metadata {
+            network: meow_common::Network::Udp,
+            host: "bound.test".into(),
+            dst_port: port,
+            ..Default::default()
+        };
+        assert!(meta.domain_udp_target().is_some());
+        let conn = adapter.dial_udp(&meta).await.expect("host-only dial_udp");
+
+        // The caller's placeholder arg is ignored — the socket is bound.
+        conn.write_packet(b"ping", &"0.0.0.0:0".parse().unwrap())
+            .await
+            .expect("write");
+        let mut buf = [0u8; 16];
+        let (n, src) = conn.read_packet(&mut buf).await.expect("read");
+        assert_eq!(&buf[..n], b"ping");
+        assert_eq!(src, SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
+        echo_task.await.unwrap();
+    }
+
+    /// `EMFILE` on unix, `WSAEMFILE` on Windows — both are in
+    /// `is_local_resource_error`'s set.
+    #[cfg(unix)]
+    const EMFILE: i32 = 24;
+    #[cfg(windows)]
+    const EMFILE: i32 = 10024;
+
+    /// `Proxy` whose `dial_tcp` fails with an errno-bearing io error —
+    /// the dns-via-proxy upstream path hits a local-resource failure
+    /// without touching real sockets (#682).
+    struct ErrnoProxy {
+        health: ProxyHealth,
+    }
+
+    #[async_trait]
+    impl ProxyAdapter for ErrnoProxy {
+        fn name(&self) -> &str {
+            "errno"
+        }
+        fn adapter_type(&self) -> AdapterType {
+            AdapterType::Direct
+        }
+        fn addr(&self) -> &str {
+            ""
+        }
+        fn support_udp(&self) -> bool {
+            false
+        }
+        async fn dial_tcp(&self, _m: &Metadata) -> Result<Box<dyn ProxyConn>> {
+            Err(MeowError::Io(std::io::Error::from_raw_os_error(EMFILE)))
+        }
+        async fn dial_udp(&self, _m: &Metadata) -> Result<Box<dyn ProxyPacketConn>> {
+            unimplemented!("errno mock has no UDP")
+        }
+        fn health(&self) -> &ProxyHealth {
+            &self.health
+        }
+    }
+
+    impl meow_common::Proxy for ErrnoProxy {
+        fn alive(&self) -> bool {
+            true
+        }
+        fn alive_for_url(&self, _url: &str) -> bool {
+            true
+        }
+        fn last_delay(&self) -> u16 {
+            0
+        }
+        fn last_delay_for_url(&self, _url: &str) -> u16 {
+            0
+        }
+        fn delay_history(&self) -> Vec<meow_common::DelayHistory> {
+            Vec::new()
+        }
+    }
+
+    /// Issue #701: a bracketed IPv6 display form in `metadata.host` (e.g. a
+    /// SOCKS5 domain `BND.ADDR` of `[::1]`, or a `server: "[::1]"` config)
+    /// folds to the literal instead of falling into DNS, where the
+    /// bracketed "domain" can never resolve.
+    #[tokio::test]
+    async fn resolve_targets_folds_bracketed_ipv6_host() {
+        // No resolver injected: without the fold the bracketed "domain"
+        // hits getaddrinfo and fails — the Ok arm below cannot be reached
+        // from DNS on this input.
+        let adapter = DirectAdapter::new();
+        let metadata = tcp_metadata("[::1]", 443);
+        let addrs = adapter
+            .resolve_targets(&metadata)
+            .await
+            .expect("bracketed literal must fold, not resolve");
+        assert_eq!(addrs, vec!["[::1]:443".parse().unwrap()]);
+    }
+
+    /// #682 end-to-end: a resolver whose upstream fails with EMFILE must
+    /// reach `resolve_targets` as `MeowError::Io` carrying the errno — the
+    /// classifier then treats it as local resource pressure instead of a
+    /// member-health failure.
+    #[tokio::test]
+    async fn resolve_targets_surfaces_resolver_io_errno() {
+        use meow_dns::NameServerEntry;
+        use smol_str::SmolStr;
+        use std::collections::HashMap;
+
+        let mut registry: HashMap<SmolStr, Arc<dyn meow_common::Proxy>> = HashMap::new();
+        registry.insert(
+            SmolStr::from("emfile"),
+            Arc::new(ErrnoProxy {
+                health: ProxyHealth::new(),
+            }),
+        );
+        let resolver = Resolver::new_with_bootstrap_with_proxies(
+            vec![NameServerEntry::parse("udp://203.0.113.53#emfile").unwrap()],
+            vec![],
+            vec![],
+            DnsMode::Normal,
+            DomainTrie::new(),
+            true,
+            true,
+            None,
+            None,
+            &registry,
+            false,
+        )
+        .await
+        .expect("resolver builds");
+        let adapter = DirectAdapter::new().with_resolver(Arc::new(resolver));
+
+        let err = adapter
+            .resolve_targets(&tcp_metadata("dial.example", 443))
+            .await
+            .expect_err("errno-bearing lookup failure must surface");
+        assert!(
+            matches!(&err, MeowError::Io(io) if io.raw_os_error() == Some(EMFILE)),
+            "errno must survive into MeowError::Io, got {err:?}"
+        );
+        assert!(
+            err.is_local_resource_error(),
+            "the classifier must see local resource pressure: {err:?}"
         );
     }
 }

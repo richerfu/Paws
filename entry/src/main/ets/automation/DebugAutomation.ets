@@ -27,6 +27,7 @@ interface PawsAutomationParams {
   pawsEchoPayload?: string;
   pawsEchoTimeoutMs?: string | number;
   pawsExpectEchoFailure?: string | boolean;
+  pawsVerifyAppHttp?: string | boolean;
 }
 
 interface PawsSnapshot {
@@ -76,7 +77,8 @@ async function run(
     delayProxy.length === 0 &&
     echoProxy.length === 0 &&
     mode.length === 0 &&
-    !selectionRequested
+    !selectionRequested &&
+    !wantBool(want, 'pawsVerifyAppHttp')
   ) {
     return;
   }
@@ -114,7 +116,7 @@ async function run(
       optionsJson = JSON.stringify(options);
     }
     const vpnStart: Promise<void> = startVpn(optionsJson);
-    if (wantBool(want, 'pawsWaitForVpnBeforeProbes')) {
+    if (wantBool(want, 'pawsWaitForVpnBeforeProbes') || wantBool(want, 'pawsVerifyAppHttp')) {
       await vpnStart;
       hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation VPN connected before probes');
     } else {
@@ -126,6 +128,10 @@ async function run(
 
   await runDebugDelay(want);
   await runDebugEcho(want);
+  if (wantBool(want, 'pawsVerifyAppHttp')) {
+    const result = await pawsUi.verifyAppHttpRegression();
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'app HTTP acceptance %{public}s', result);
+  }
 }
 
 function activeVpnOptionsJson(): string {
@@ -242,6 +248,8 @@ function automationParam(want: Want, key: keyof PawsAutomationParams): string | 
       return params.pawsEchoTimeoutMs;
     case 'pawsExpectEchoFailure':
       return params.pawsExpectEchoFailure;
+    case 'pawsVerifyAppHttp':
+      return params.pawsVerifyAppHttp;
     default:
       return undefined;
   }

@@ -50,7 +50,6 @@ impl VlessAddr {
     ///
     /// 256-byte domains cause a protocol error (1 byte for the length field)
     /// with no diagnostic on silent truncation — reject early. Class A per ADR-0002.
-    #[allow(dead_code)] // called only in tests; kept as public API for external callers
     pub(crate) fn domain(s: &str) -> std::result::Result<Self, String> {
         if s.len() > 255 {
             return Err(format!(
@@ -65,17 +64,20 @@ impl VlessAddr {
 
 /// Derive a `VlessAddr` from connection metadata.
 ///
-/// Prefers `host` (domain), falls back to `dst_ip`.
-pub(crate) fn addr_from_metadata(m: &Metadata) -> VlessAddr {
+/// Prefers `host` (domain), falls back to `dst_ip`. Returns `Err` when the
+/// name exceeds the one-byte domain-length field — callers pick the class:
+/// `dial_udp` maps to `NotSupported` so a chained caller can fall back to a
+/// locally-resolved `UdpTarget::Addr` (issue #657).
+pub(crate) fn addr_from_metadata(m: &Metadata) -> std::result::Result<VlessAddr, String> {
     if !m.host.is_empty() {
-        VlessAddr::Domain(m.host.clone())
+        VlessAddr::domain(&m.host)
     } else if let Some(ip) = m.dst_ip {
-        match ip {
+        Ok(match ip {
             std::net::IpAddr::V4(v4) => VlessAddr::Ipv4(v4.octets()),
             std::net::IpAddr::V6(v6) => VlessAddr::Ipv6(v6.octets()),
-        }
+        })
     } else {
-        VlessAddr::Domain(smol_str::SmolStr::default())
+        Ok(VlessAddr::Domain(smol_str::SmolStr::default()))
     }
 }
 
@@ -439,4 +441,28 @@ mod tests {
     // Response-header decode coverage (B1-B4) lives with the consumers
     // now: `vless/conn.rs` tests `VlessUdpReader` for version mismatch,
     // addon discard and truncated-header errors.
+
+    /// A >255-byte `host` must error instead of silently truncating the
+    /// one-byte domain length field (issue #657 review): previously
+    /// `addr_from_metadata` bypassed the checked `VlessAddr::domain`.
+    #[test]
+    fn addr_from_metadata_rejects_oversized_domain() {
+        let m = Metadata {
+            host: "a".repeat(256).into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+        let Err(msg) = addr_from_metadata(&m) else {
+            panic!("256-byte domain must error");
+        };
+        assert!(msg.contains("255"), "error names the limit: {msg}");
+
+        // The boundary itself still encodes.
+        let m = Metadata {
+            host: "a".repeat(255).into(),
+            dst_port: 443,
+            ..Default::default()
+        };
+        assert!(addr_from_metadata(&m).is_ok());
+    }
 }

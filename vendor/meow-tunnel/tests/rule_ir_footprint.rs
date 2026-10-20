@@ -126,7 +126,7 @@ fn fixture_cases() -> Vec<Metadata> {
 fn scan_linear<'a>(rules: &'a [Box<dyn Rule>], metadata: &Metadata) -> Option<&'a str> {
     let helper = RuleMatchHelper;
     for rule in rules {
-        if let Some(adapter) = rule.match_and_resolve(metadata, &helper) {
+        if let Some(adapter) = rule.match_and_resolve(metadata, &helper, &|_: &str| true) {
             return Some(adapter);
         }
     }
@@ -155,15 +155,22 @@ fn measure_hot_loop(
                         std::hint::black_box(metadata),
                         std::hint::black_box(rules),
                         std::hint::black_box(index),
+                        &|_: &str| true,
                     ));
                 }
                 Matcher::Ir => {
-                    std::hint::black_box(
-                        compiled.match_rules(
-                            std::hint::black_box(metadata),
-                            std::hint::black_box(rules),
-                        ),
-                    );
+                    std::hint::black_box(compiled.match_rules(
+                        std::hint::black_box(metadata),
+                        std::hint::black_box(rules),
+                        &|_: &str| true,
+                    ));
+                }
+                Matcher::LazyIr => {
+                    let _ = std::hint::black_box(compiled.match_rules_lazy(
+                        std::hint::black_box(metadata),
+                        std::hint::black_box(rules),
+                        &|_: &str| true,
+                    ));
                 }
             }
         }
@@ -176,6 +183,7 @@ enum Matcher {
     Linear,
     Indexed,
     Ir,
+    LazyIr,
 }
 
 fn rss_kb() -> Option<u64> {
@@ -224,7 +232,7 @@ fn rule_ir_fixture_memory_footprint() {
     let raw = load_raw_fixture();
     let (rebuilt, rules_alloc) = measure(|| meow_config::rebuild_from_raw(&raw));
     let rules = match rebuilt {
-        Ok((_, rules)) => rules,
+        Ok(res) => res.rules,
         // The fixture contains GEOIP rules that eagerly load the local GeoIP/
         // geosite databases (resolved under `~/.config/meow`). Those data files
         // are absent on CI and most dev machines, so skip the measurement
@@ -252,6 +260,7 @@ fn rule_ir_fixture_memory_footprint() {
     let linear_hot = measure_hot_loop(&rules, &index, &compiled, &cases, Matcher::Linear);
     let indexed_hot = measure_hot_loop(&rules, &index, &compiled, &cases, Matcher::Indexed);
     let ir_hot = measure_hot_loop(&rules, &index, &compiled, &cases, Matcher::Ir);
+    let lazy_ir_hot = measure_hot_loop(&rules, &index, &compiled, &cases, Matcher::LazyIr);
 
     println!("\n=== rule IR fixture memory footprint ===");
     println!("fixture rules: {}", rules.len());
@@ -279,6 +288,7 @@ fn rule_ir_fixture_memory_footprint() {
     print_alloc_row("hot loop linear", linear_hot);
     print_alloc_row("hot loop indexed", indexed_hot);
     print_alloc_row("hot loop IR", ir_hot);
+    print_alloc_row("hot loop lazy IR", lazy_ir_hot);
 
     std::hint::black_box((rules, index, compiled));
 }

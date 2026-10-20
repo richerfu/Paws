@@ -25,6 +25,25 @@ pub fn meow_home_dir() -> Option<PathBuf> {
     MEOW_HOME_DIR.get().cloned()
 }
 
+/// The XDG fallback chain used when no `-d` home applies:
+/// `$XDG_CONFIG_HOME/meow`, `$HOME/.config/meow`, `./meow` last resort.
+/// Shared so crates that cannot depend on `meow-config` (e.g.
+/// `meow-proxy` — dependency cycle) resolve relative resource paths the
+/// same way the config loader does.
+pub fn xdg_home_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("meow")
+}
+
+/// The effective meow home directory: the `-d` override when set, else
+/// [`xdg_home_dir`].
+pub fn resolved_home_dir() -> PathBuf {
+    meow_home_dir().unwrap_or_else(xdg_home_dir)
+}
+
 #[cfg(test)]
 mod tests {
     // OnceLock is process-global, so we cannot meaningfully test set/get in

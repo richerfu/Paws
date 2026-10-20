@@ -52,40 +52,47 @@ const UI_ICON_NAMES: &[&str] = &[
 
 #[test]
 fn ui_icon_names_exist_in_embedded_lucide_assets() {
-    let cargo_home = std::env::var_os("CARGO_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cargo")
-        });
-    let checkouts = cargo_home.join("git/checkouts");
-    let workspace = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml"),
-    )
-    .unwrap();
-    let arkit_line = workspace
+    // Read the resolved package assets without linking the OHOS renderer into
+    // this host test. Filtering metadata to the host also avoids downloading
+    // packages for unrelated target platforms during an offline test run.
+    let rustc =
+        std::process::Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+            .arg("-vV")
+            .output()
+            .expect("query Rust host target");
+    assert!(rustc.status.success());
+    let version = String::from_utf8(rustc.stdout).unwrap();
+    let host = version
         .lines()
-        .find(|line| line.starts_with("arkit ="))
-        .unwrap();
-    let revision = arkit_line
-        .split("rev = \"")
-        .nth(1)
+        .find_map(|line| line.strip_prefix("host: "))
+        .expect("Rust host target");
+    let metadata = std::process::Command::new(env!("CARGO"))
+        .args([
+            "metadata",
+            "--locked",
+            "--offline",
+            "--format-version=1",
+            "--filter-platform",
+            host,
+        ])
+        .output()
+        .expect("query resolved Cargo packages");
+    assert!(
+        metadata.status.success(),
+        "{}",
+        String::from_utf8_lossy(&metadata.stderr)
+    );
+    let metadata: serde_json::Value = serde_json::from_slice(&metadata.stdout).unwrap();
+    let package = metadata["packages"]
+        .as_array()
         .unwrap()
-        .split('"')
-        .next()
-        .unwrap();
-    let asset_dir = std::fs::read_dir(checkouts)
+        .iter()
+        .find(|package| package["name"] == "arkit_icon")
+        .expect("resolved Arkit icon package");
+    let asset_dir = std::path::Path::new(package["manifest_path"].as_str().unwrap())
+        .parent()
         .unwrap()
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with("arkit-"))
-        .flat_map(|entry| {
-            std::fs::read_dir(entry.path())
-                .unwrap()
-                .filter_map(Result::ok)
-        })
-        .filter(|entry| revision.starts_with(entry.file_name().to_string_lossy().as_ref()))
-        .map(|entry| entry.path().join("crates/arkit_icon/assets/lucide"))
-        .find(|path| path.is_dir())
-        .expect("Pinned arkit icon assets must exist in the Cargo checkout");
+        .join("assets/lucide");
     let missing = UI_ICON_NAMES
         .iter()
         .copied()

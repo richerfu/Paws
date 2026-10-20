@@ -32,7 +32,10 @@ export default class EntryAbility extends NativeAbility {
   public moduleName: string = 'paws_ui';
   public defaultPage: boolean = false;
 
-  private vpnPlugin?: VpnPlugin;
+  private resolveVpnPluginReady?: (plugin: VpnPlugin) => void;
+  private vpnPluginReady: Promise<VpnPlugin> = new Promise((resolve): void => {
+    this.resolveVpnPluginReady = resolve;
+  });
   private safeAreaPlugin?: SafeAreaPlugin;
   private systemExitRecorder: SystemExitRecorder = new SystemExitRecorder();
 
@@ -50,8 +53,9 @@ export default class EntryAbility extends NativeAbility {
   ];
 
   private createVpnPlugin(): VpnPlugin {
-    const plugin = new VpnPlugin();
-    this.vpnPlugin = plugin;
+    const plugin = new VpnPlugin((): void => {
+      this.resolveVpnPluginReady?.(plugin);
+    });
     return plugin;
   }
 
@@ -65,12 +69,19 @@ export default class EntryAbility extends NativeAbility {
     return plugin;
   }
 
-  private requestStartVpn(optionsJson: string): Promise<void> {
-    const plugin = this.vpnPlugin;
-    if (plugin === undefined) {
-      return Promise.reject(new Error('VPN plugin is not attached to the active Ability session'));
+  private async requestStartVpn(optionsJson: string): Promise<void> {
+    let timer: number = -1;
+    try {
+      const plugin = await Promise.race([
+        this.vpnPluginReady,
+        new Promise<VpnPlugin>((_resolve, reject): void => {
+          timer = setTimeout((): void => reject(new Error('VPN plugin did not attach before debug startup deadline')), 30000);
+        }),
+      ]);
+      await plugin.requestStartVpn(optionsJson);
+    } finally {
+      if (timer >= 0) { clearTimeout(timer); }
     }
-    return plugin.requestStartVpn(optionsJson);
   }
 
   private async captureInitialSafeArea(): Promise<void> {

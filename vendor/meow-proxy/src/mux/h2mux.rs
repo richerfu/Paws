@@ -37,6 +37,20 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 /// response, not the open.  Mirrors `SESSION_SETUP_TIMEOUT` (5 s).
 const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Surface an io-carrying `h2::Error` as the inner `io::Error` verbatim —
+/// `io::Error::other` would erase its `raw_os_error`, which
+/// `DialFailureTracker`'s local-resource classification needs
+/// (issue #680).
+fn h2_to_io(e: h2::Error) -> io::Error {
+    if e.is_io() {
+        if let Some(io) = e.into_io() {
+            return io;
+        }
+        return io::Error::other("h2mux io error");
+    }
+    io::Error::other(e)
+}
+
 /// h2mux session over one physical connection (client role).  The concrete
 /// IO type is erased — the driver task owns the h2 connection.
 pub struct Session {
@@ -50,8 +64,13 @@ impl Session {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let (send_request, connection) =
-            h2::client::handshake(io).await.map_err(io::Error::other)?;
+        // Proxy-sized receive windows (4 MiB / stream, 16 MiB / connection)
+        // instead of h2's 64 KiB default — see
+        // `meow_transport::h2_common::client_builder`.
+        let (send_request, connection) = meow_transport::h2_common::client_builder()
+            .handshake::<_, Bytes>(io)
+            .await
+            .map_err(h2_to_io)?;
         let dead = Arc::new(AtomicBool::new(false));
         let driver_dead = Arc::clone(&dead);
         // Drive SETTINGS / WINDOW_UPDATE / PING frames; the future resolves
@@ -85,10 +104,10 @@ impl Session {
         send_request = tokio::time::timeout(OPEN_TIMEOUT, send_request.ready())
             .await
             .map_err(|_| io::Error::other("h2mux: timed out waiting for send readiness (open)"))?
-            .map_err(io::Error::other)?;
+            .map_err(h2_to_io)?;
         let (response_future, send_stream) = send_request
             .send_request(request, false)
-            .map_err(io::Error::other)?;
+            .map_err(h2_to_io)?;
         Ok(Stream::new(
             send_stream,
             RecvState::with_timeout(
@@ -103,6 +122,15 @@ impl Session {
 
     pub fn is_dead(&self) -> bool {
         self.dead.load(Ordering::SeqCst)
+    }
+
+    /// Tear the session down now even while streams still hold it: aborts
+    /// the driver (dropping the h2 connection, so every stream fails) and
+    /// marks it dead — an aborted driver never reaches its own
+    /// `dead.store`. Used by pool resets (issue #695). Idempotent.
+    pub fn close(&self) {
+        self.dead.store(true, Ordering::SeqCst);
+        self._task.abort();
     }
 }
 
@@ -161,6 +189,73 @@ mod tests {
                 });
             }
         })
+    }
+
+    /// Server that answers 200 at once and pushes `body` as fast as the
+    /// *client's* receive windows allow, resolving with the byte count once
+    /// h2 has accepted everything.  Against the 64 KiB default windows it
+    /// parks after 65 535 bytes until the client reads.
+    fn run_push_server<S>(io: S, body: Vec<u8>) -> tokio::sync::oneshot::Receiver<usize>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut connection = h2::server::handshake(io).await.expect("handshake");
+            let (request, mut respond) = connection
+                .accept()
+                .await
+                .expect("one request")
+                .expect("accept");
+            tokio::spawn(async move { while connection.accept().await.is_some() {} });
+            let response = http::Response::builder()
+                .status(StatusCode::OK)
+                .body(())
+                .expect("static response");
+            let mut send = respond.send_response(response, false).expect("respond");
+            let mut remaining = Bytes::from(body);
+            let total = remaining.len();
+            while !remaining.is_empty() {
+                send.reserve_capacity(remaining.len());
+                let granted = std::future::poll_fn(|cx| send.poll_capacity(cx))
+                    .await
+                    .expect("stream open")
+                    .expect("capacity");
+                let chunk = remaining.split_to(granted.min(remaining.len()));
+                send.send_data(chunk, false).expect("send_data");
+            }
+            send.send_data(Bytes::new(), true).expect("eos");
+            drop(request);
+            let _ = done_tx.send(total);
+        });
+        done_rx
+    }
+
+    /// The session must advertise receive windows well above h2's 65 535-byte
+    /// default (issue #495 item 12): a server pushes 1 MiB down one stream
+    /// while the client does not read, which with the default windows parks
+    /// after 64 KiB waiting for a WINDOW_UPDATE only a read can produce.
+    #[tokio::test]
+    async fn receive_window_absorbs_1mib_before_first_read() {
+        const PAYLOAD_SIZE: usize = 1024 * 1024;
+
+        let (client_io, server_io) = tokio::io::duplex(256 * 1024);
+        let payload: Vec<u8> = (0u8..=255).cycle().take(PAYLOAD_SIZE).collect();
+        let pushed = run_push_server(server_io, payload.clone());
+
+        let session = Session::client(client_io).await.unwrap();
+        let mut stream = session.open_stream().await.unwrap();
+
+        // Deliberately no read until the server reports the whole push done.
+        let pushed = tokio::time::timeout(Duration::from_secs(5), pushed)
+            .await
+            .expect("server must push 1 MiB into the client's receive window without a read")
+            .expect("push server task");
+        assert_eq!(pushed, PAYLOAD_SIZE);
+
+        let mut recv = Vec::with_capacity(PAYLOAD_SIZE);
+        stream.read_to_end(&mut recv).await.unwrap();
+        assert_eq!(recv, payload, "pushed bytes must arrive intact");
     }
 
     #[tokio::test]
@@ -351,5 +446,51 @@ Connection: close
             std::io::ErrorKind::InvalidInput,
             "expected InvalidInput, got {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod io_preserve_tests {
+    use super::*;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::ReadBuf;
+
+    /// An inner stream that fails every op with a raw errno (issue #680).
+    #[derive(Debug)]
+    struct ErrnoStream(i32);
+
+    impl AsyncRead for ErrnoStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::from_raw_os_error(self.0)))
+        }
+    }
+
+    impl AsyncWrite for ErrnoStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Err(io::Error::from_raw_os_error(self.0)))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::from_raw_os_error(self.0)))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::from_raw_os_error(self.0)))
+        }
+    }
+
+    #[tokio::test]
+    async fn session_client_preserves_handshake_errno() {
+        let Err(err) = Session::client(ErrnoStream(105)).await else {
+            panic!("handshake on an always-failing stream must error");
+        };
+        assert_eq!(err.raw_os_error(), Some(105));
     }
 }

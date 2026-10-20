@@ -1,3 +1,244 @@
+use meow_common::atomic::AtomicU;
+use meow_common::{AdapterType, MeowError, Metadata, Proxy};
+use parking_lot::Mutex;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tracing::debug;
+
+/// Lock-free traffic-use generation shared by automatic proxy groups. A lazy
+/// health-check loop remembers the last generation it probed and sleeps until
+/// another dial increments this counter.
+pub(super) struct UsageTracker(AtomicU);
+
+impl UsageTracker {
+    pub(super) fn new() -> Self {
+        Self(AtomicU::new(0))
+    }
+
+    pub(super) fn touch(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a use, but only for real user traffic.
+    ///
+    /// Health-check probes dial with [`meow_common::ConnType::Tunnel`] — an internal
+    /// marker set by `health::url_test` (no production dialer uses the
+    /// variant) — and housekeeping traffic (provider/geodata/subscription
+    /// fetches, DNS-via-proxy) carries [`Metadata::internal`].  Counting
+    /// either as uses would defeat lazy mode: a parent group's periodic
+    /// probes or a background refresh would mark a lazy child as used and
+    /// keep its own probe loop awake forever without any real traffic.
+    pub(super) fn touch_user_traffic(&self, metadata: &Metadata) {
+        if metadata.is_internal() {
+            return;
+        }
+        self.touch();
+    }
+
+    pub(super) fn generation(&self) -> u64 {
+        #[allow(
+            clippy::useless_conversion,
+            reason = "identity on 64-bit; u32→u64 widening on targets without 64-bit atomics"
+        )]
+        u64::from(self.0.load(Ordering::Relaxed))
+    }
+}
+
+/// Escalation threshold and window, matching mihomo's `GroupBase` defaults
+/// (`maxFailedTimes = 5`, `testTimeout = 5000` ms —
+/// adapter/outboundgroup/groupbase.go).
+///
+/// Note the window interaction with the dial deadline: each
+/// `with_dial_timeout` failure burns the full 5s dial budget, so *serial*
+/// deadline-timeout dials land >5s apart and always reset the streak —
+/// a serially-blackholed member is dead-marked only by the probe sweep.
+/// Concurrent dials sharing an expiry do escalate. Same shape as
+/// upstream's `failedTime` window.
+const DIAL_FAILURE_THRESHOLD: u32 = 5;
+const DIAL_FAILURE_WINDOW: Duration = Duration::from_secs(5);
+
+/// Dial-failure escalation state shared by the automatic groups, modeled on
+/// mihomo's `GroupBase.onDialFailed`.
+///
+/// mihomo's terminal action on escalation is to force a provider health
+/// check. The group layer here cannot trigger probes (the health-check loop
+/// lives in meow-app), so the local equivalent is to mark the failed member
+/// dead: routing stops selecting it immediately. A member is revived by the
+/// next scheduled group probe — guaranteed to run for a lazy group, because
+/// a dial bumps the usage generation. The sweep resolves members through
+/// `member_proxies()`, so provider-slot members are probed and revived too
+/// (issue #543).
+///
+/// Unlike [`UsageTracker::touch_user_traffic`], failure recording does NOT
+/// skip internal traffic (mihomo's `onDialFailed` ignores the touch flag
+/// the same way): a failed dial is real evidence the member is down,
+/// regardless of who asked.  The asymmetry is deliberate — housekeeping
+/// traffic neither keeps a lazy group awake nor hides a dead member.
+pub(super) struct DialFailureTracker {
+    state: Mutex<DialFailureState>,
+}
+
+struct DialFailureState {
+    count: u32,
+    first_at: Option<Instant>,
+}
+
+impl DialFailureTracker {
+    pub(super) fn new() -> Self {
+        Self {
+            state: Mutex::new(DialFailureState {
+                count: 0,
+                first_at: None,
+            }),
+        }
+    }
+
+    /// mihomo resets the failure streak on dial success
+    /// (`GroupBase.onDialSuccess`).
+    pub(super) fn on_success(&self) {
+        let mut state = self.state.lock();
+        state.count = 0;
+        state.first_at = None;
+    }
+
+    /// Record a failed dial; returns `true` when the failure should escalate
+    /// (the caller then marks the failed member dead).
+    pub(super) fn on_failure(&self, err: &MeowError) -> bool {
+        // mihomo ignores C.ErrNotSupport failures outright; meow splits that
+        // sentinel into `NotSupported` and `UdpNotSupported`. Both describe a
+        // member's capabilities, not its health (e.g. a relay chain without
+        // UDP support), so neither may count toward marking a member dead.
+        // The check walks `RelayHopFailed` chains and io-boundary
+        // reconstitution — a refusal from hop N of a chained front is the
+        // same permanent property (issue #663).
+        //
+        // Local resource exhaustion (EMFILE/ENFILE/ENOBUFS/ENOMEM at any
+        // hop depth, errno preserved across the dialer io boundary) is
+        // likewise not evidence the member is down: dead-marking a healthy
+        // node for local fd pressure blackholes the group until the next
+        // probe sweep (issue #668).
+        //
+        // Exemption trade-off: a member that fails *permanently* with an
+        // exempt class (e.g. a hop that can never carry UDP) keeps being
+        // selected — fail-fast each dial — until the health sweep's
+        // `record_delay(0)` marks it dead (or the delay API does). Groups
+        // with probing disabled (`interval: 0`) have no such bound, the
+        // same shape mihomo's ErrNotSupport exemption already carries.
+        if err.is_capability_error() || err.is_local_resource_error() {
+            return false;
+        }
+        // mihomo escalates immediately on "connection refused" and leaves the
+        // streak untouched.
+        if err.to_string().contains("refused") {
+            return true;
+        }
+        let mut state = self.state.lock();
+        state.count += 1;
+        if state.count == 1 {
+            state.first_at = Some(Instant::now());
+            return false;
+        }
+        if state
+            .first_at
+            .is_some_and(|at| Instant::now().duration_since(at) > DIAL_FAILURE_WINDOW)
+        {
+            // mihomo drops the stale streak and starts a fresh window.
+            state.count = 0;
+            state.first_at = None;
+            return false;
+        }
+        if state.count >= DIAL_FAILURE_THRESHOLD {
+            state.count = 0;
+            state.first_at = None;
+            return true;
+        }
+        false
+    }
+}
+
+/// Shared dial-failure policy for automatic groups, mirroring the exemptions
+/// in mihomo's `GroupBase.onDialFailed`: adapter types whose dial errors
+/// describe the *target* (Direct / Reject family) are never tracked, and
+/// everything else escalates through the group's [`DialFailureTracker`].
+/// Escalation marks the failed member dead — see [`DialFailureTracker`] for
+/// why this stands in for mihomo's forced health check.
+pub(super) fn record_dial_failure(
+    group_name: &str,
+    tracker: &DialFailureTracker,
+    member: &Arc<dyn Proxy>,
+    err: &MeowError,
+) {
+    if matches!(
+        member.adapter_type(),
+        AdapterType::Direct
+            | AdapterType::Compatible
+            | AdapterType::Reject
+            | AdapterType::RejectDrop
+            | AdapterType::Pass
+            | AdapterType::PassRule
+    ) {
+        return;
+    }
+    if tracker.on_failure(err) {
+        debug!(
+            "proxy-group '{group_name}': marking member '{}' dead after repeated dial failures",
+            member.name()
+        );
+        member.health().set_alive(false);
+    }
+}
+
+/// Tracks the selected member even when an outer dial deadline drops the
+/// group future before its error arm can run. Capturing the deadline avoids
+/// consulting task-local state during destruction. Ordinary cancellation
+/// before expiry is not a node failure, and completed dials are counted once.
+struct DialAttempt<'a> {
+    group_name: &'a str,
+    tracker: &'a DialFailureTracker,
+    member: &'a Arc<dyn Proxy>,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl<'a> DialAttempt<'a> {
+    fn new(
+        group_name: &'a str,
+        tracker: &'a DialFailureTracker,
+        member: &'a Arc<dyn Proxy>,
+    ) -> Self {
+        Self {
+            group_name,
+            tracker,
+            member,
+            deadline: meow_common::dial::dial_deadline(),
+        }
+    }
+
+    fn finish<T>(mut self, result: meow_common::Result<T>) -> meow_common::Result<T> {
+        self.deadline = None;
+        match &result {
+            Ok(_) => self.tracker.on_success(),
+            Err(err) => record_dial_failure(self.group_name, self.tracker, self.member, err),
+        }
+        result
+    }
+}
+
+impl Drop for DialAttempt<'_> {
+    fn drop(&mut self) {
+        if self
+            .deadline
+            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+        {
+            let err = MeowError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "outbound dial deadline elapsed",
+            ));
+            record_dial_failure(self.group_name, self.tracker, self.member, &err);
+        }
+    }
+}
+
 pub mod dialer_proxy;
 pub mod fallback;
 pub mod load_balance;
@@ -8,3 +249,161 @@ pub mod urltest;
 
 #[cfg(test)]
 pub(crate) mod test_support;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn proxy_err(msg: &str) -> MeowError {
+        MeowError::Proxy(msg.into())
+    }
+
+    #[test]
+    fn five_failures_within_window_escalate() {
+        let tracker = DialFailureTracker::new();
+        for i in 1..DIAL_FAILURE_THRESHOLD {
+            assert!(
+                !tracker.on_failure(&proxy_err("dial timed out")),
+                "failure {i} is below the threshold"
+            );
+        }
+        assert!(
+            tracker.on_failure(&proxy_err("dial timed out")),
+            "the 5th failure within the window escalates"
+        );
+        // Escalation resets the streak, so a fresh window starts over.
+        assert!(!tracker.on_failure(&proxy_err("dial timed out")));
+    }
+
+    #[test]
+    fn connection_refused_escalates_immediately() {
+        let tracker = DialFailureTracker::new();
+        assert!(tracker.on_failure(&proxy_err("connection refused")));
+    }
+
+    #[test]
+    fn connection_refused_leaves_the_streak_intact() {
+        // mihomo's refused fast path does not touch failedTimes.
+        let tracker = DialFailureTracker::new();
+        for _ in 1..DIAL_FAILURE_THRESHOLD {
+            tracker.on_failure(&proxy_err("dial timed out"));
+        }
+        assert!(tracker.on_failure(&proxy_err("connection refused")));
+        assert!(
+            tracker.on_failure(&proxy_err("dial timed out")),
+            "the pre-refused streak still counts toward the threshold"
+        );
+    }
+
+    #[test]
+    fn success_resets_the_streak() {
+        let tracker = DialFailureTracker::new();
+        for _ in 1..DIAL_FAILURE_THRESHOLD {
+            tracker.on_failure(&proxy_err("dial timed out"));
+        }
+        tracker.on_success();
+        for i in 1..DIAL_FAILURE_THRESHOLD {
+            assert!(
+                !tracker.on_failure(&proxy_err("dial timed out")),
+                "failure {i} after a success does not escalate"
+            );
+        }
+        assert!(tracker.on_failure(&proxy_err("dial timed out")));
+    }
+
+    #[test]
+    fn not_supported_failures_never_escalate() {
+        let tracker = DialFailureTracker::new();
+        for _ in 0..100 {
+            assert!(!tracker.on_failure(&MeowError::NotSupported("udp".into())));
+        }
+    }
+
+    #[test]
+    fn udp_unsupported_failures_never_escalate() {
+        let tracker = DialFailureTracker::new();
+        for _ in 0..100 {
+            assert!(!tracker.on_failure(&MeowError::UdpNotSupported));
+        }
+    }
+
+    #[test]
+    fn capability_errors_inside_relay_hops_never_escalate() {
+        // A refusal from hop N of a chained front is the same permanent
+        // property as a top-level NotSupported (issue #663).
+        let tracker = DialFailureTracker::new();
+        let err = MeowError::RelayHopFailed {
+            hop: 2,
+            source: Box::new(MeowError::NotSupported("udp".into())),
+        };
+        for _ in 0..100 {
+            assert!(!tracker.on_failure(&err));
+        }
+        // io-boundary reconstitution reaches the tracker as
+        // `MeowError::Io` with `Unsupported` kind.
+        let io = MeowError::Io(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "dialer-proxy udp: refused",
+        ));
+        for _ in 0..100 {
+            assert!(!tracker.on_failure(&io));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_resource_errors_never_escalate() {
+        // EMFILE & friends mean this process is out of fds — dead-marking
+        // a healthy member for local pressure blackholes the group
+        // (issue #668).
+        let tracker = DialFailureTracker::new();
+        for errno in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
+            let err = MeowError::Io(std::io::Error::from_raw_os_error(errno));
+            for _ in 0..100 {
+                assert!(
+                    !tracker.on_failure(&err),
+                    "errno {errno} must not count toward dead-marking"
+                );
+            }
+        }
+        // The same errno inside a relay-hop wrapper is equally local.
+        let nested = MeowError::RelayHopFailed {
+            hop: 1,
+            source: Box::new(MeowError::Io(std::io::Error::from_raw_os_error(
+                libc::EMFILE,
+            ))),
+        };
+        for _ in 0..100 {
+            assert!(!tracker.on_failure(&nested));
+        }
+        // ...while an unrelated errno still counts toward the threshold.
+        let timed_out = MeowError::Io(std::io::Error::from_raw_os_error(libc::ETIMEDOUT));
+        for _ in 1..DIAL_FAILURE_THRESHOLD {
+            assert!(!tracker.on_failure(&timed_out));
+        }
+        assert!(tracker.on_failure(&timed_out));
+    }
+
+    #[test]
+    fn window_expiry_drops_the_streak() {
+        let tracker = DialFailureTracker::new();
+        for _ in 1..DIAL_FAILURE_THRESHOLD {
+            tracker.on_failure(&proxy_err("dial timed out"));
+        }
+        // Age the window without sleeping in the test.
+        tracker.state.lock().first_at =
+            Some(Instant::now() - DIAL_FAILURE_WINDOW - Duration::from_millis(50));
+        assert!(
+            !tracker.on_failure(&proxy_err("dial timed out")),
+            "a streak older than the window is dropped"
+        );
+        // A fresh window needs a full new streak to escalate.
+        for _ in 1..DIAL_FAILURE_THRESHOLD {
+            assert!(!tracker.on_failure(&proxy_err("dial timed out")));
+        }
+        assert!(tracker.on_failure(&proxy_err("dial timed out")));
+    }
+}
+
+#[cfg(test)]
+mod dial_timeout_tests;

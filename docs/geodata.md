@@ -19,10 +19,8 @@ Fetch or refresh the files with:
 scripts/fetch-geodata.sh
 ```
 
-`country.mmdb` and `GeoLite2-ASN.mmdb` are downloaded from MetaCubeX
-`meta-rules-dat`. meow-rs 0.17 auto-detects and loads the upstream V2Ray
-`geosite.dat` format directly, so release builds do not require an additional
-conversion CLI.
+The fetch script downloads all three files from MetaCubeX
+`meta-rules-dat` releases.
 
 The geodata binaries are ignored by git so routine source changes do not churn
 large generated artifacts. CI and release runners should run the fetch script

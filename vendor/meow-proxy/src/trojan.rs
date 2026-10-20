@@ -50,12 +50,19 @@ pub struct TrojanAdapter {
     support_udp: bool,
     health: ProxyHealth,
     tls_layer: Arc<TlsLayer>,
+    /// Pluggable TCP dialer for the underlying connection to the proxy
+    /// server (direct or via dialer-proxy).
+    dialer: Arc<dyn crate::dialer::TcpDialer>,
     /// sing-mux compatible connection multiplexing (optional).
     #[cfg(feature = "mux")]
     mux: Option<Arc<MuxClient>>,
 }
 
 impl TrojanAdapter {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "dialer param for pluggable TcpDialer"
+    )]
     pub fn new(
         name: &str,
         server: &str,
@@ -64,6 +71,7 @@ impl TrojanAdapter {
         sni: &str,
         skip_verify: bool,
         udp: bool,
+        dialer: Arc<dyn crate::dialer::TcpDialer>,
     ) -> Self {
         // SHA-224 hash of password, hex-encoded = 56 chars.
         let mut hasher = Sha224::new();
@@ -91,6 +99,7 @@ impl TrojanAdapter {
             port,
             addr_str: SmolStr::from(format!("{server}:{port}")),
             hex_password: SmolStr::from(hex_password),
+            dialer,
             support_udp: udp,
             health: ProxyHealth::new(),
             tls_layer: Arc::new(tls_layer),
@@ -111,11 +120,13 @@ impl TrojanAdapter {
         let port = self.port;
         let hex_password = self.hex_password.clone();
         let tls_layer = Arc::clone(&self.tls_layer);
+        let dialer = Arc::clone(&self.dialer);
 
         let dial: crate::mux::DialFn = Arc::new(move || {
             let server = server.clone();
             let hex_password = hex_password.clone();
             let tls_layer = Arc::clone(&tls_layer);
+            let dialer = Arc::clone(&dialer);
             Box::pin(async move {
                 // Build the mux-destination request header.
                 let mut hdr_buf = [0u8; TROJAN_HEADER_BUF_SIZE];
@@ -140,11 +151,15 @@ impl TrojanAdapter {
                 pos += 2;
                 let header = &hdr_buf[..pos];
 
-                let tcp = meow_common::connect_tcp_host(&server, port)
+                // Mux session dial — `internal: false`: a shared mux conn
+                // exists to serve user streams regardless of which dial
+                // triggered its establishment.
+                let tcp = dialer
+                    .dial(&server, port, false)
                     .await
                     .map_err(MeowError::Io)?;
                 let mut stream = tls_layer
-                    .connect(Box::new(tcp))
+                    .connect(tcp)
                     .await
                     .map_err(transport_to_proxy_err)?;
                 stream.write_all(header).await.map_err(MeowError::Io)?;
@@ -181,16 +196,30 @@ impl TrojanAdapter {
         metadata: &Metadata,
         cmd: u8,
     ) -> Result<Box<dyn TransportStream>> {
+        let tcp = self
+            .dialer
+            .dial(&self.server, self.port, metadata.is_internal())
+            .await
+            .map_err(MeowError::Io)?;
+        self.tls_header_over(tcp, metadata, cmd).await
+    }
+
+    /// TLS-wrap `stream` and write the Trojan request header targeting
+    /// `metadata`.  `stream` must already terminate at this Trojan server —
+    /// `dial_tcp`/`dial_udp` obtain it from `dialer.dial`, `connect_over`
+    /// receives it from the relay chain.
+    async fn tls_header_over(
+        &self,
+        stream: Box<dyn TransportStream>,
+        metadata: &Metadata,
+        cmd: u8,
+    ) -> Result<Box<dyn TransportStream>> {
         let mut hdr_buf = [0u8; TROJAN_HEADER_BUF_SIZE];
         let header = self.build_header(metadata, cmd, &mut hdr_buf)?;
 
-        let tcp = meow_common::connect_tcp_host(&self.server, self.port)
-            .await
-            .map_err(MeowError::Io)?;
-
         let mut stream = self
             .tls_layer
-            .connect(Box::new(tcp))
+            .connect(stream)
             .await
             .map_err(transport_to_proxy_err)?;
 
@@ -272,6 +301,21 @@ fn encode_socks5_addr_from_metadata(buf: &mut Vec<u8>, metadata: &Metadata) {
     buf.extend_from_slice(&metadata.dst_port.to_be_bytes());
 }
 
+/// Encode a `(domain, port)` as a SOCKS5 ATYP_DOMAIN address — the
+/// per-packet form a domain-bound UDP association stamps (issue #657).
+/// Callers must have validated `host.len() <= MAX_DOMAIN_LEN`.
+fn encode_socks5_addr_domain(buf: &mut Vec<u8>, host: &str, port: u16) {
+    let host_bytes = host.as_bytes();
+    debug_assert!(
+        host_bytes.len() <= MAX_DOMAIN_LEN,
+        "domain length checked by caller"
+    );
+    buf.push(ATYP_DOMAIN);
+    buf.push(u8::try_from(host_bytes.len()).expect("domain length checked by caller"));
+    buf.extend_from_slice(host_bytes);
+    buf.extend_from_slice(&port.to_be_bytes());
+}
+
 /// Encode an explicit `SocketAddr` as a SOCKS5 address (used for per-packet
 /// UDP frames where each datagram targets an arbitrary peer).
 fn encode_socks5_addr_socket(buf: &mut Vec<u8>, addr: &SocketAddr) {
@@ -347,17 +391,37 @@ async fn read_socks5_addr<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Soc
 /// `write_packet` can run concurrently from `&self`.  Each half is guarded
 /// by its own `Mutex` because the trait exposes only `&self`, but in
 /// practice the tunnel calls each direction from a dedicated task.
+///
+/// `read_packet` consumes frame bytes incrementally and `write_packet`
+/// emits a frame with a single `write_all`. If either future is dropped
+/// mid-frame (timeout, session teardown), the consumed read bytes are gone
+/// and a partially written frame has already reached the wire — the next
+/// operation would resume/append mid-frame, silently desyncing every
+/// subsequent packet in BOTH directions (issue #514). Any such incomplete
+/// frame poisons the conn: later reads and writes fail fast so the tunnel
+/// tears the session down and re-dials instead of parsing or feeding
+/// garbage.
 pub struct TrojanPacketConn {
     reader: Mutex<ReadHalf<Box<dyn TransportStream>>>,
     writer: Mutex<WriteHalf<Box<dyn TransportStream>>>,
+    poisoned: std::sync::atomic::AtomicBool,
+    /// A chained `UdpTarget::Name` binds every datagram's DST field to the
+    /// domain (ATYP_DOMAIN) so the server resolves it (issue #657). `None`
+    /// keeps per-packet `SocketAddr` stamping.
+    write_target: Option<(smol_str::SmolStr, u16)>,
 }
 
 impl TrojanPacketConn {
-    fn new(stream: Box<dyn TransportStream>) -> Self {
+    fn new(
+        stream: Box<dyn TransportStream>,
+        write_target: Option<(smol_str::SmolStr, u16)>,
+    ) -> Self {
         let (r, w) = tokio::io::split(stream);
         Self {
             reader: Mutex::new(r),
             writer: Mutex::new(w),
+            poisoned: std::sync::atomic::AtomicBool::new(false),
+            write_target,
         }
     }
 }
@@ -365,7 +429,13 @@ impl TrojanPacketConn {
 #[async_trait]
 impl ProxyPacketConn for TrojanPacketConn {
     async fn read_packet(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+        crate::check_not_desynced(&self.poisoned)?;
         let mut reader = self.reader.lock().await;
+        // Re-check after the lock: a read parked here while another op was
+        // cancelled mid-frame passed the outer check before the poison
+        // store landed (issue #514 review).
+        crate::check_not_desynced(&self.poisoned)?;
+        let mut guard = crate::PoisonOnIncomplete::new(&self.poisoned);
 
         let addr = read_socks5_addr(&mut *reader).await?;
 
@@ -397,10 +467,12 @@ impl ProxyPacketConn for TrojanPacketConn {
             let mut sink = vec![0u8; length - to_copy];
             reader.read_exact(&mut sink).await.map_err(MeowError::Io)?;
         }
+        guard.complete = true;
         Ok((to_copy, addr))
     }
 
     async fn write_packet(&self, buf: &[u8], addr: &SocketAddr) -> Result<usize> {
+        crate::check_not_desynced(&self.poisoned)?;
         if buf.len() > u16::MAX as usize {
             return Err(MeowError::Proxy(format!(
                 "trojan udp: packet too large ({} > {})",
@@ -409,15 +481,25 @@ impl ProxyPacketConn for TrojanPacketConn {
             )));
         }
 
-        // Pre-size: ATYP(1) + addr(≤16) + port(2) + len(2) + CRLF(2) + payload.
-        let mut frame = Vec::with_capacity(buf.len() + 23);
-        encode_socks5_addr_socket(&mut frame, addr);
+        // Pre-size: ATYP(1) + addr(≤16 or ≤255 domain) + port(2) + len(2) + CRLF(2) + payload.
+        let mut frame = Vec::with_capacity(buf.len() + 280);
+        match &self.write_target {
+            Some((host, port)) => encode_socks5_addr_domain(&mut frame, host, *port),
+            None => encode_socks5_addr_socket(&mut frame, addr),
+        }
         frame.extend_from_slice(&(buf.len() as u16).to_be_bytes());
         frame.extend_from_slice(b"\r\n");
         frame.extend_from_slice(buf);
 
         let mut writer = self.writer.lock().await;
+        // Same post-lock re-check as the read side: a write parked behind
+        // one cancelled mid-frame must not append after a torn frame.
+        crate::check_not_desynced(&self.poisoned)?;
+        let mut guard = crate::PoisonOnIncomplete::new(&self.poisoned);
         writer.write_all(&frame).await.map_err(MeowError::Io)?;
+        // The frame is fully buffered once `write_all` returns; a cancelled
+        // `flush` cannot tear framing, so it runs unguarded.
+        guard.complete = true;
         writer.flush().await.map_err(MeowError::Io)?;
         Ok(buf.len())
     }
@@ -478,6 +560,24 @@ impl ProxyAdapter for TrojanAdapter {
         Ok(Box::new(StreamConn(stream)))
     }
 
+    /// Run TLS + the Trojan request header over an existing stream (relay
+    /// chain).  Mux pooling is bypassed — the relay-supplied stream is
+    /// single-use and cannot be re-dialled.
+    async fn connect_over(
+        &self,
+        stream: Box<dyn ProxyConn>,
+        metadata: &Metadata,
+    ) -> Result<Box<dyn ProxyConn>> {
+        #[cfg(feature = "mux")]
+        if self.mux.is_some() {
+            debug!("Trojan mux bypassed on relay-supplied stream (single-use)");
+        }
+        let stream = self
+            .tls_header_over(Box::new(stream), metadata, CMD_CONNECT)
+            .await?;
+        Ok(Box::new(StreamConn(stream)))
+    }
+
     async fn dial_udp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyPacketConn>> {
         // Mux UDP rides the mux TCP session and does not depend on the
         // node's `udp:` flag — check it before the plain-path gate.
@@ -504,10 +604,32 @@ impl ProxyAdapter for TrojanAdapter {
             metadata.remote_address(),
             self.addr_str
         );
+        // This adapter as a *front*: a host-only UDP destination — the
+        // dialer layer's encoding of a chained `UdpTarget::Name`
+        // (issue #657) — binds the association to the domain; each
+        // datagram's DST stamps ATYP_DOMAIN and the server resolves it.
+        let write_target = match metadata.domain_udp_target() {
+            Some((host, port)) if host.len() <= MAX_DOMAIN_LEN => Some((host.clone(), port)),
+            Some(_) => {
+                return Err(MeowError::NotSupported(
+                    "trojan: domain UDP target exceeds ATYP_DOMAIN length".into(),
+                ));
+            }
+            None => None,
+        };
         let stream = self
             .open_tls_with_header(metadata, CMD_UDP_ASSOCIATE)
             .await?;
-        Ok(Box::new(TrojanPacketConn::new(stream)))
+        Ok(Box::new(TrojanPacketConn::new(stream, write_target)))
+    }
+
+    /// Issue #695: close every pooled mux session so the next dial opens a
+    /// fresh physical connection (see `MuxClient::reset`).
+    #[cfg(feature = "mux")]
+    fn reset_sessions(&self) {
+        if let Some(mux) = &self.mux {
+            mux.reset();
+        }
     }
 
     fn health(&self) -> &ProxyHealth {
@@ -525,7 +647,7 @@ mod tests {
         // QUIC first flight: server sends ~3 datagrams that coalesce into one
         // TLS record → meow must yield all three, not just the first.
         let (client, mut server) = tokio::io::duplex(64 * 1024);
-        let conn = TrojanPacketConn::new(Box::new(client));
+        let conn = TrojanPacketConn::new(Box::new(client), None);
 
         let src: SocketAddr = "9.9.9.9:443".parse().unwrap();
         let payloads: [&[u8]; 3] = [b"\xc0one", b"\xc0two", b"\xc0three!"];
@@ -545,6 +667,147 @@ mod tests {
             assert_eq!(addr, src);
             assert_eq!(&buf[..n], *expect, "frame mismatch / dropped frame");
         }
+    }
+
+    /// Issue #514: cancelling `read_packet` mid-frame consumes an unknown
+    /// number of bytes — resuming would parse payload bytes as a header.
+    /// The conn must poison itself so the tunnel re-dials instead.
+    #[tokio::test]
+    async fn cancelled_read_poisons_packet_conn() {
+        use tokio::io::AsyncWriteExt;
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let conn = TrojanPacketConn::new(Box::new(client), None);
+        let mut buf = [0u8; 2048];
+
+        // Peer sends a partial header then stalls: ATYP + one address byte.
+        server.write_all(&[ATYP_IPV4, 9, 9]).await.unwrap();
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            conn.read_packet(&mut buf),
+        )
+        .await;
+        assert!(cancelled.is_err(), "read must have timed out mid-header");
+
+        // The peer then completes the frame — but the conn must not try to
+        // resume mid-stream.
+        server
+            .write_all(&[9, 9, 0x01, 0xbb, 0, 1, b'\r', b'\n', b'x'])
+            .await
+            .unwrap();
+        let err = conn.read_packet(&mut buf).await.unwrap_err();
+        assert!(
+            err.to_string().contains("desynced"),
+            "expected desync error after cancelled read, got {err:?}"
+        );
+    }
+
+    /// The same poison must fire on a parse error after bytes were consumed
+    /// (bad CRLF) — not only on future cancellation.
+    #[tokio::test]
+    async fn errored_read_poisons_packet_conn() {
+        use tokio::io::AsyncWriteExt;
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let conn = TrojanPacketConn::new(Box::new(client), None);
+        let mut buf = [0u8; 2048];
+
+        // Valid addr + length, then a wrong CRLF marker.
+        let mut wire = Vec::new();
+        encode_socks5_addr_socket(&mut wire, &"9.9.9.9:443".parse().unwrap());
+        wire.extend_from_slice(&1u16.to_be_bytes());
+        wire.extend_from_slice(b"XX");
+        wire.extend_from_slice(b"z");
+        server.write_all(&wire).await.unwrap();
+
+        let err = conn.read_packet(&mut buf).await.unwrap_err();
+        assert!(err.to_string().contains("CRLF"), "got {err:?}");
+
+        let err = conn.read_packet(&mut buf).await.unwrap_err();
+        assert!(
+            err.to_string().contains("desynced"),
+            "second read must fail fast on poisoned conn, got {err:?}"
+        );
+    }
+
+    /// Happy-path guard: a completed frame read must not poison the conn.
+    #[tokio::test]
+    async fn completed_read_leaves_conn_usable() {
+        use tokio::io::AsyncWriteExt;
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let conn = TrojanPacketConn::new(Box::new(client), None);
+        let mut buf = [0u8; 2048];
+        let src: SocketAddr = "9.9.9.9:443".parse().unwrap();
+
+        for i in 0u8..2 {
+            let payload = [i, i, i];
+            let mut wire = Vec::new();
+            encode_socks5_addr_socket(&mut wire, &src);
+            wire.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            wire.extend_from_slice(b"\r\n");
+            wire.extend_from_slice(&payload);
+            server.write_all(&wire).await.unwrap();
+            let (n, addr) = conn.read_packet(&mut buf).await.unwrap();
+            assert_eq!(addr, src);
+            assert_eq!(&buf[..n], &payload);
+        }
+    }
+
+    /// Issue #514 review: a `write_packet` future cancelled mid-`write_all`
+    /// has already pushed a frame PREFIX onto the wire — the peer reads
+    /// `len` payload bytes from the next frame's header and the stream is
+    /// desynced on the uplink direction, which the read-side poison cannot
+    /// observe. The write path must poison the conn symmetrically.
+    #[tokio::test]
+    async fn cancelled_write_poisons_packet_conn() {
+        // Tiny pipe: a 4 KiB datagram exceeds the buffer, so `write_all`
+        // pends mid-frame with a prefix already on the wire.
+        let (client, server) = tokio::io::duplex(1024);
+        let conn = TrojanPacketConn::new(Box::new(client), None);
+        let dst: SocketAddr = "9.9.9.9:53".parse().unwrap();
+
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            conn.write_packet(&[0xAA; 4096], &dst),
+        )
+        .await;
+        assert!(cancelled.is_err(), "write must have timed out mid-frame");
+        drop(server);
+
+        let err = conn.write_packet(b"x", &dst).await.unwrap_err();
+        assert!(
+            err.to_string().contains("desynced"),
+            "write after a cancelled write must fail fast, got {err:?}"
+        );
+        let mut buf = [0u8; 64];
+        let err = conn.read_packet(&mut buf).await.unwrap_err();
+        assert!(
+            err.to_string().contains("desynced"),
+            "read after a cancelled write must fail fast, got {err:?}"
+        );
+    }
+
+    /// A write parked on the writer mutex while another write is cancelled
+    /// mid-frame must fail fast instead of appending after the torn frame.
+    #[tokio::test]
+    async fn queued_write_after_cancelled_write_fails_fast() {
+        let (client, server) = tokio::io::duplex(1024);
+        let conn = std::sync::Arc::new(TrojanPacketConn::new(Box::new(client), None));
+        let dst: SocketAddr = "9.9.9.9:53".parse().unwrap();
+
+        // Occupy the writer mid-frame.
+        let conn2 = std::sync::Arc::clone(&conn);
+        let first = tokio::spawn(async move { conn2.write_packet(&[0xAA; 4096], &dst).await });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        // Queue a second write behind it, then abort the first mid-frame.
+        let conn3 = std::sync::Arc::clone(&conn);
+        let queued = tokio::spawn(async move { conn3.write_packet(b"queued", &dst).await });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        first.abort();
+        let err = queued.await.unwrap().unwrap_err();
+        assert!(
+            err.to_string().contains("desynced"),
+            "queued write must fail fast after the poisoned first write, got {err:?}"
+        );
+        drop(server);
     }
 
     #[test]
@@ -580,8 +843,16 @@ mod tests {
 
     #[test]
     fn build_header_accepts_max_length_domain() {
-        let adapter =
-            TrojanAdapter::new("t", "127.0.0.1", 443, "secret", "example.com", true, false);
+        let adapter = TrojanAdapter::new(
+            "t",
+            "127.0.0.1",
+            443,
+            "secret",
+            "example.com",
+            true,
+            false,
+            std::sync::Arc::new(crate::dialer::DirectDialer),
+        );
         let md = Metadata {
             host: "a".repeat(MAX_DOMAIN_LEN).into(),
             dst_port: 443,
@@ -599,8 +870,16 @@ mod tests {
 
     #[test]
     fn build_header_rejects_overlong_domain_without_panic() {
-        let adapter =
-            TrojanAdapter::new("t", "127.0.0.1", 443, "secret", "example.com", true, false);
+        let adapter = TrojanAdapter::new(
+            "t",
+            "127.0.0.1",
+            443,
+            "secret",
+            "example.com",
+            true,
+            false,
+            std::sync::Arc::new(crate::dialer::DirectDialer),
+        );
         let md = Metadata {
             host: "a".repeat(MAX_DOMAIN_LEN + 1).into(),
             dst_port: 443,
@@ -615,5 +894,18 @@ mod tests {
             matches!(err, MeowError::Proxy(ref msg) if msg.contains("domain name too long")),
             "expected domain length proxy error, got {err:?}"
         );
+    }
+
+    /// The per-packet domain stamp a bound UDP association writes when the
+    /// chained target is a `UdpTarget::Name` (issue #657): ATYP_DOMAIN +
+    /// u8 length + host + port — the server resolves the name itself.
+    #[test]
+    fn encode_socks5_addr_domain_wire_layout() {
+        let mut buf = Vec::new();
+        encode_socks5_addr_domain(&mut buf, "back.internal", 8388);
+        assert_eq!(buf[0], ATYP_DOMAIN);
+        assert_eq!(buf[1] as usize, "back.internal".len());
+        assert_eq!(&buf[2..15], b"back.internal");
+        assert_eq!(&buf[15..], &8388u16.to_be_bytes());
     }
 }

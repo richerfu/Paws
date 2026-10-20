@@ -39,8 +39,9 @@ fn load_fixture_rules() -> Vec<Box<dyn Rule>> {
         .expect("fixture config merge keys must expand");
     let raw: RawConfig =
         serde_yaml::from_value(value).expect("fixture config must deserialize as RawConfig");
-    let (_, rules) =
-        meow_config::rebuild_from_raw(&raw).expect("fixture config rules must rebuild");
+    let rules = meow_config::rebuild_from_raw(&raw)
+        .expect("fixture config rules must rebuild")
+        .rules;
     assert_eq!(rules.len(), 19, "fixture rule count changed");
     rules
 }
@@ -173,7 +174,7 @@ fn scan_linear<'a>(
 ) -> Option<(&'a str, RuleType, &'a str)> {
     let helper = RuleMatchHelper;
     for rule in rules {
-        if let Some(adapter) = rule.match_and_resolve(metadata, &helper) {
+        if let Some(adapter) = rule.match_and_resolve(metadata, &helper, &|_: &str| true) {
             return Some((adapter, rule.rule_type(), rule.payload()));
         }
     }
@@ -187,10 +188,10 @@ fn assert_matchers_agree(
     case: &BenchCase,
 ) {
     let linear = scan_linear(rules, &case.metadata);
-    let indexed = match_rules(&case.metadata, rules, index)
+    let indexed = match_rules(&case.metadata, rules, index, &|_: &str| true)
         .map(|m| (m.adapter_name, m.rule_type, m.rule_payload));
     let ir = compiled
-        .match_rules(&case.metadata, rules)
+        .match_rules(&case.metadata, rules, &|_: &str| true)
         .map(|m| (m.adapter_name, m.rule_type, m.rule_payload));
 
     assert_eq!(indexed, linear, "indexed diverged for {}", case.name);
@@ -224,12 +225,19 @@ fn bench_case_group(
                 black_box(&case.metadata),
                 black_box(rules),
                 black_box(index),
+                &|_: &str| true,
             ))
         });
     });
 
     group.bench_function(BenchmarkId::new("after_ir", case.name), |b| {
-        b.iter(|| black_box(compiled.match_rules(black_box(&case.metadata), black_box(rules))));
+        b.iter(|| {
+            black_box(compiled.match_rules(
+                black_box(&case.metadata),
+                black_box(rules),
+                &|_: &str| true,
+            ))
+        });
     });
 
     group.finish();

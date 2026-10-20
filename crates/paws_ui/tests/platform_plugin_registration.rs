@@ -43,7 +43,7 @@ fn about_links_keep_the_typed_url_plugin_and_surface_failures() {
 }
 
 #[test]
-fn about_revision_comes_from_the_actual_dependency_pin() {
+fn about_version_comes_from_the_published_dependency() {
     let manifest = include_str!("../../../Cargo.toml");
     let core = include_str!("../../paws_core/src/lib.rs");
     let build = include_str!("../../paws_core/build.rs");
@@ -51,8 +51,9 @@ fn about_revision_comes_from_the_actual_dependency_pin() {
         .lines()
         .find(|line| line.starts_with("arkit = "))
         .unwrap();
-    assert!(arkit.contains("rev = \""));
-    assert!(core.contains("env!(\"PAWS_ARKIT_REV\")"));
+    assert!(arkit.contains("version = \"="));
+    assert!(!arkit.contains("git ="));
+    assert!(core.contains("env!(\"PAWS_ARKIT_VERSION\")"));
     assert!(build.contains("cargo:rerun-if-changed="));
-    assert!(build.contains("cargo:rustc-env=PAWS_ARKIT_REV={revision}"));
+    assert!(build.contains("cargo:rustc-env=PAWS_ARKIT_VERSION={version}"));
 }

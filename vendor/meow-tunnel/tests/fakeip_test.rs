@@ -9,32 +9,30 @@
 use ipnet::IpNet;
 use meow_common::{DnsMode, Metadata, Network};
 use meow_dns::fakeip::{MemoryStore, Pool};
-use meow_dns::{HostEntry, Resolver};
+use meow_dns::Resolver;
 use meow_trie::DomainTrie;
-use meow_tunnel::Tunnel;
-use std::net::{IpAddr, Ipv4Addr};
+use meow_tunnel::{PreHandleVerdict, Tunnel};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
-fn build_fakeip_resolver(real_host: &str, real_ip: IpAddr) -> Arc<Resolver> {
-    let mut hosts: DomainTrie<HostEntry> = DomainTrie::new();
-    hosts.insert(real_host, vec![real_ip].into());
-    // hosts trie is consulted BEFORE the fake-IP pool, so put the host in
-    // the trie. That mirrors the production wiring: explicit `hosts:`
-    // entries override fake-IP. For the rewrite test we want the resolver
-    // to NOT have the host in the trie (so the pool synthesises) and we
-    // wire the real IP separately via the cache. Use a different trie.
-    let mut resolver = Resolver::new(vec![], vec![], DnsMode::FakeIp, DomainTrie::new(), true);
+fn build_fakeip_resolver() -> Arc<Resolver> {
+    let mut resolver = Resolver::new(
+        vec![],
+        vec![],
+        DnsMode::FakeIp,
+        DomainTrie::new(),
+        true,
+        true,
+    );
     let net = "198.18.0.0/16".parse::<IpNet>().unwrap();
     let pool = Pool::new(net, Arc::new(MemoryStore::new(1024))).unwrap();
     resolver.set_fakeip_v4(Arc::new(pool));
-    drop(hosts); // unused — placeholder for the explanatory comment above
     Arc::new(resolver)
 }
 
 #[tokio::test]
 async fn fakeip_destination_rewritten_to_hostname() {
-    let real_ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-    let resolver = build_fakeip_resolver("example.test", real_ip);
+    let resolver = build_fakeip_resolver();
 
     // Synthesise a fake IP for the host first (this is what a DNS query
     // would have done before the connection arrived).
@@ -55,8 +53,9 @@ async fn fakeip_destination_rewritten_to_hostname() {
         ..Default::default()
     };
 
-    tunnel.inner().pre_handle_metadata(&mut md);
+    let verdict = tunnel.inner().pre_handle_metadata(&mut md);
 
+    assert_eq!(verdict, PreHandleVerdict::Continue);
     assert_eq!(
         md.host.as_str(),
         "example.test",
@@ -73,8 +72,7 @@ async fn non_fakeip_destination_passes_through() {
     // Same resolver, but the incoming connection arrives with a real IP
     // (e.g. a SOCKS5 client dialed directly). pre_handle_metadata must
     // NOT modify dst_ip or host.
-    let real_ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-    let resolver = build_fakeip_resolver("example.test", real_ip);
+    let resolver = build_fakeip_resolver();
     let tunnel = Tunnel::new(resolver);
     let bystander = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
     let mut md = Metadata {
@@ -84,9 +82,323 @@ async fn non_fakeip_destination_passes_through() {
         network: Network::Tcp,
         ..Default::default()
     };
-    tunnel.inner().pre_handle_metadata(&mut md);
+    let verdict = tunnel.inner().pre_handle_metadata(&mut md);
+    assert_eq!(verdict, PreHandleVerdict::Continue);
     assert_eq!(md.dst_ip, Some(bystander), "real IP must stay put");
     assert_eq!(md.host.as_str(), "");
+}
+
+/// Issue #618: an address inside the fake-IP range with no live
+/// allocation (stale after restart/wrap, or a literal connect into the
+/// range) must be dropped — never dialed. Under TUN `auto-route` the
+/// whole fake range routes into the device, so dialing a stale fake IP
+/// re-enters the listener and self-saturates `max-connections`.
+#[tokio::test]
+async fn unmapped_fakeip_destination_is_dropped() {
+    let resolver = build_fakeip_resolver();
+    let tunnel = Tunnel::new(resolver);
+
+    // In range, never allocated: first allocatable (.4), pool gateway
+    // (.1), network (.0) and broadcast (.255.255) all drop.
+    for octets in [
+        [198, 18, 0, 4],
+        [198, 18, 0, 1],
+        [198, 18, 0, 0],
+        [198, 18, 255, 255],
+    ] {
+        let stale = IpAddr::V4(Ipv4Addr::from(octets));
+        let mut md = Metadata {
+            host: "".into(),
+            dst_ip: Some(stale),
+            dst_port: 80,
+            network: Network::Tcp,
+            ..Default::default()
+        };
+        assert_eq!(
+            tunnel.inner().pre_handle_metadata(&mut md),
+            PreHandleVerdict::Drop,
+            "unmapped fake-IP {stale} must be dropped, not dialed"
+        );
+        assert_eq!(
+            md.dst_ip,
+            Some(stale),
+            "Drop leaves metadata untouched — the caller aborts"
+        );
+    }
+}
+
+/// `CONNECT 198.18.0.9:443` through the HTTP listener puts the *literal*
+/// in `metadata.host` alongside `dst_ip` — a literal is the same stale
+/// address, not a rescuable name, so the verdict must still be Drop.
+#[tokio::test]
+async fn fakeip_literal_in_host_does_not_rescue() {
+    let resolver = build_fakeip_resolver();
+    let tunnel = Tunnel::new(resolver);
+    let mut md = Metadata {
+        host: "198.18.0.9".into(),
+        dst_ip: Some(IpAddr::V4(Ipv4Addr::new(198, 18, 0, 9))),
+        dst_port: 443,
+        network: Network::Tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        tunnel.inner().pre_handle_metadata(&mut md),
+        PreHandleVerdict::Drop,
+        "an IP literal in `host` is not a recoverable hostname"
+    );
+}
+
+/// SOCKS5 `ATYP_DOMAIN` / SS `DomainNameAddress` put the literal in `host`
+/// with `dst_ip = None` — without `fixMetadata`-style folding the range
+/// check never ran at all. The literal must be folded into `dst_ip` and
+/// dropped. A *live* fake IP carried the same way still reverse-maps.
+#[tokio::test]
+async fn fakeip_domain_typed_literal_folds_and_drops() {
+    let resolver = build_fakeip_resolver();
+    let fake = resolver.lookup_ipv4("example.test").await.unwrap();
+    let tunnel = Tunnel::new(resolver);
+
+    // Stale, domain-typed: folds into dst_ip → Drop.
+    let mut md = Metadata {
+        host: "198.18.0.9".into(),
+        dst_ip: None,
+        dst_port: 443,
+        network: Network::Tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        tunnel.inner().pre_handle_metadata(&mut md),
+        PreHandleVerdict::Drop,
+        "domain-typed stale literal must fold into dst_ip and drop"
+    );
+
+    // Live allocation, domain-typed: folds → reverse-maps → rescues.
+    let mut md = Metadata {
+        host: fake.to_string().into(),
+        dst_ip: None,
+        dst_port: 443,
+        network: Network::Tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        tunnel.inner().pre_handle_metadata(&mut md),
+        PreHandleVerdict::Continue
+    );
+    assert_eq!(md.host.as_str(), "example.test");
+    assert_eq!(md.dst_ip, None);
+}
+
+/// A sniffed name (`sniff_host`) rescues a stale flow even when `host` is
+/// empty — upstream re-runs `TCPSniff` on this exact failure. The promoted
+/// name must replace the literal so `remote_address()` dials the name.
+#[tokio::test]
+async fn sniff_host_rescues_stale_fakeip() {
+    let resolver = build_fakeip_resolver();
+    let tunnel = Tunnel::new(resolver);
+    let mut md = Metadata {
+        host: "".into(),
+        sniff_host: "sni.example".into(),
+        dst_ip: Some(IpAddr::V4(Ipv4Addr::new(198, 18, 0, 9))),
+        dst_port: 443,
+        network: Network::Tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        tunnel.inner().pre_handle_metadata(&mut md),
+        PreHandleVerdict::Continue
+    );
+    assert_eq!(md.host.as_str(), "sni.example", "sniffed name promoted");
+    assert_eq!(md.dst_ip, None, "stale literal cleared on rescue");
+
+    // A sniffed *literal* is no rescue either.
+    let mut md = Metadata {
+        host: "".into(),
+        sniff_host: "198.18.0.9".into(),
+        dst_ip: Some(IpAddr::V4(Ipv4Addr::new(198, 18, 0, 9))),
+        dst_port: 443,
+        network: Network::Tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        tunnel.inner().pre_handle_metadata(&mut md),
+        PreHandleVerdict::Drop,
+        "an IP literal in sniff_host is not a name"
+    );
+}
+
+/// `::ffff:198.18.x.x` (v4-mapped v6) must hit the v4 range check —
+/// upstream `fixMetadata` unmaps `DstIP` before `preHandleMetadata`.
+#[tokio::test]
+async fn v4_mapped_v6_fakeip_drops() {
+    let resolver = build_fakeip_resolver();
+    let tunnel = Tunnel::new(resolver);
+    let mut md = Metadata {
+        host: "".into(),
+        dst_ip: Some("::ffff:198.18.0.9".parse().unwrap()),
+        dst_port: 443,
+        network: Network::Tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        tunnel.inner().pre_handle_metadata(&mut md),
+        PreHandleVerdict::Drop,
+        "v4-mapped v6 must unmap before the range check"
+    );
+    assert_eq!(
+        md.dst_ip,
+        Some(IpAddr::V4(Ipv4Addr::new(198, 18, 0, 9))),
+        "dst_ip is normalized to its canonical form"
+    );
+}
+
+/// A *snooped* reverse name for a stale fake IP still rescues the flow:
+/// the adapter dials the learned name. A snoop entry keyed on a pool-range
+/// IP can only exist via an upstream answer inside the range (a chained
+/// fake-IP resolver sharing the range, or poisoned data) — safe because
+/// `resolve_ips` filters in-range results, so the rescued name cannot
+/// resolve back into the range and re-sustain the loop.
+#[tokio::test]
+async fn snooped_name_for_stale_fakeip_rescues() {
+    let resolver = build_fakeip_resolver();
+    resolver.preload_cache(
+        "snooped.test",
+        &[IpAddr::V4(Ipv4Addr::new(198, 18, 0, 9))],
+        std::time::Duration::from_secs(60),
+    );
+    let tunnel = Tunnel::new(resolver);
+    let mut md = Metadata {
+        host: "".into(),
+        dst_ip: Some(IpAddr::V4(Ipv4Addr::new(198, 18, 0, 9))),
+        dst_port: 443,
+        network: Network::Tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        tunnel.inner().pre_handle_metadata(&mut md),
+        PreHandleVerdict::Continue,
+        "a snooped name is a real recovery path — dial by name"
+    );
+    assert_eq!(md.host.as_str(), "snooped.test");
+    assert_eq!(md.dst_ip, None);
+}
+
+/// The v6 pool arm of `in_fake_ip_range`: an unmapped v6 fake IP drops,
+/// while a v6 literal against a v4-only pool passes through untouched.
+#[tokio::test]
+async fn fakeip_v6_range_drops_unmapped() {
+    let mut resolver = Resolver::new(
+        vec![],
+        vec![],
+        DnsMode::FakeIp,
+        DomainTrie::new(),
+        true,
+        true,
+    );
+    resolver.set_fakeip_v6(Arc::new(
+        Pool::new(
+            "fc00::/64".parse::<IpNet>().unwrap(),
+            Arc::new(MemoryStore::new(1024)),
+        )
+        .unwrap(),
+    ));
+    let resolver = Arc::new(resolver);
+    let tunnel = Tunnel::new(resolver);
+
+    let mut md = Metadata {
+        host: "".into(),
+        dst_ip: Some("fc00::9".parse().unwrap()),
+        dst_port: 443,
+        network: Network::Tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        tunnel.inner().pre_handle_metadata(&mut md),
+        PreHandleVerdict::Drop,
+        "unmapped v6 fake-IP must drop"
+    );
+
+    // v4-only pool: a v6 literal is out of range → untouched.
+    let resolver = build_fakeip_resolver();
+    let tunnel = Tunnel::new(resolver);
+    let v6 = IpAddr::V6("fd00::1".parse().unwrap());
+    let mut md = Metadata {
+        host: "".into(),
+        dst_ip: Some(v6),
+        dst_port: 443,
+        network: Network::Tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        tunnel.inner().pre_handle_metadata(&mut md),
+        PreHandleVerdict::Continue
+    );
+    assert_eq!(md.dst_ip, Some(v6), "out-of-range literal must stay put");
+}
+
+/// Issue #618 sibling: a stale fake IP that still carries a hostname
+/// (e.g. sniffed SNI) is rescued — the adapter resolves the real name
+/// instead of dialing the looping literal.
+#[tokio::test]
+async fn stale_fakeip_with_host_falls_back_to_name() {
+    let resolver = build_fakeip_resolver();
+    let tunnel = Tunnel::new(resolver);
+    let mut md = Metadata {
+        host: "example.test".into(),
+        dst_ip: Some(IpAddr::V4(Ipv4Addr::new(198, 18, 0, 9))),
+        dst_port: 443,
+        network: Network::Tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        tunnel.inner().pre_handle_metadata(&mut md),
+        PreHandleVerdict::Continue
+    );
+    assert_eq!(
+        md.dst_ip, None,
+        "stale literal must clear so the adapter resolves the host"
+    );
+    assert_eq!(md.host.as_str(), "example.test");
+}
+
+/// Issue #701: `CONNECT [::1]:443` fills `host="[::1]"` *and*
+/// `dst_ip=::1` (the HTTP listener parses one bracket-tolerantly and
+/// keeps the other verbatim). The literal must still be folded out —
+/// otherwise host-first encoders emit `"[::1]"` as a domain on the wire
+/// even though the typed IP is right there. A conflicting `dst_ip`
+/// keeps precedence: the literal host is display text, not a name.
+#[tokio::test]
+async fn bracketed_host_literal_cleared_alongside_dst_ip() {
+    let resolver = build_fakeip_resolver();
+    let tunnel = Tunnel::new(resolver);
+    let mut md = Metadata {
+        host: "[::1]".into(),
+        dst_ip: Some(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+        dst_port: 443,
+        network: Network::Tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        tunnel.inner().pre_handle_metadata(&mut md),
+        PreHandleVerdict::Continue
+    );
+    assert_eq!(md.host.as_str(), "", "a literal is never a domain name");
+    assert_eq!(md.dst_ip, Some(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+
+    // Same fold for a bare-literal host that disagrees with dst_ip:
+    // dst_ip wins, the literal display string is dropped.
+    let mut md = Metadata {
+        host: "8.8.8.8".into(),
+        dst_ip: Some(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))),
+        dst_port: 443,
+        network: Network::Tcp,
+        ..Default::default()
+    };
+    assert_eq!(
+        tunnel.inner().pre_handle_metadata(&mut md),
+        PreHandleVerdict::Continue
+    );
+    assert_eq!(md.host.as_str(), "");
+    assert_eq!(md.dst_ip, Some(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9))));
 }
 
 #[tokio::test]
@@ -94,7 +406,14 @@ async fn fakeip_skipper_bypasses_filtered_host() {
     // Build a resolver with a skipper that BYPASSES the test host. The
     // fake-IP pool then leaves the host alone — but because there's no
     // upstream nameserver configured, the lookup returns None.
-    let mut resolver = Resolver::new(vec![], vec![], DnsMode::FakeIp, DomainTrie::new(), true);
+    let mut resolver = Resolver::new(
+        vec![],
+        vec![],
+        DnsMode::FakeIp,
+        DomainTrie::new(),
+        true,
+        true,
+    );
     let net = "198.18.0.0/16".parse::<IpNet>().unwrap();
     resolver.set_fakeip_v4(Arc::new(
         Pool::new(net, Arc::new(MemoryStore::new(1024))).unwrap(),

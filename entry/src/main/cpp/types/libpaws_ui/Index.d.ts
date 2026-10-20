@@ -354,6 +354,8 @@ export declare function prepareVpn(attemptId: string): Promise<boolean>
 export declare function profileRawYaml(profileId: string): string
 
 export declare function querySnapshot(): string
+export declare function queryTrafficSpeed(): string
+export declare function verifyAppHttpRegression(): Promise<string>
 
 export declare function queryVpnSpeed(): string
 

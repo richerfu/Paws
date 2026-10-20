@@ -3,6 +3,16 @@
 //! Implements the sing-box udp-over-tcp v2 protocol, both the Connect and the
 //! Bind (non-connect) format.
 //!
+//! # Vendored-code note (meow-rs issue #625)
+//!
+//! The sequential `read_exact` framing reads below can leave the stream
+//! mid-frame after a partial read error, desyncing subsequent packets —
+//! the same class of bug fixed in `meow-proxy`'s Snell UDP path. There
+//! are **no production-path callers** (meow-rs does not wire UDP-over-TCP
+//! through the vendored `Server`; only `meow-proxy` integration tests
+//! drive it). The note stands so the pattern is not copied into live
+//! code without the fix.
+//!
 //! # Protocol Format
 //!
 //! ## Request (sent once at stream start):
@@ -111,8 +121,9 @@ pub async fn handle_udp_over_tcp(stream: Arc<Stream>) -> Result<()> {
         bytes_in = field::Empty,
         bytes_out = field::Empty
     );
-    let _udp_guard = udp_span.enter();
-
+    // Record-only span: callers run this inside the `anytls.stream.proxy`
+    // span; an Entered guard held across the awaits below would leak onto
+    // unrelated tasks sharing this worker thread.
     tracing::debug!("[UDP] Starting UDP over TCP proxy for stream {}", stream_id);
 
     let reader = stream.reader();
@@ -498,7 +509,7 @@ async fn udp_to_stream(
         };
 
         // Send to Stream using the send_data method
-        if let Err(e) = stream.send_data(packet) {
+        if let Err(e) = stream.send_data(packet).await {
             tracing::error!("[UDP] Failed to send to stream: {}", e);
             return Err(AnyTlsError::Protocol("Channel send failed".into()));
         }
