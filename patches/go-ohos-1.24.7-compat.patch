@@ -1,0 +1,113 @@
+--- a/VERSION
++++ b/VERSION
+@@ -1,2 +1,2 @@
+-go1.24.5
+-time 2025-07-02T21:47:15Z
++go1.24.7
++time 2025-08-27T15:49:40Z
+--- a/src/cmd/go/internal/gover/mod.go
++++ b/src/cmd/go/internal/gover/mod.go
+@@ -109,6 +109,9 @@
+ // The caller is assumed to have checked that ModIsValid(path, vers) is true.
+ func ModIsPrerelease(path, vers string) bool {
+ 	if IsToolchain(path) {
++		if path == "toolchain" {
++			return IsPrerelease(FromToolchain(vers))
++		}
+ 		return IsPrerelease(vers)
+ 	}
+ 	return semver.Prerelease(vers) != ""
+--- a/src/cmd/go/testdata/script/mod_get_toolchain.txt
++++ b/src/cmd/go/testdata/script/mod_get_toolchain.txt
+@@ -89,12 +89,14 @@
+ grep 'go 1.22.9' go.mod  # no longer implied
+ grep 'toolchain go1.24rc1' go.mod
+ 
+-# go get toolchain@latest finds go1.999testmod.
++# go get toolchain@latest finds go1.23.9.
+ cp go.mod.orig go.mod
+ go get toolchain@latest
+-stderr '^go: added toolchain go1.999testmod$'
++stderr '^go: added toolchain go1.23.9$'
+ grep 'go 1.21' go.mod
+-grep 'toolchain go1.999testmod' go.mod
++grep 'toolchain go1.23.9' go.mod
++
++
+ 
+ # Bug fixes.
+ 
+@@ -110,7 +112,7 @@
+ 
+ # go get toolchain@1.24rc1 is OK too.
+ go get toolchain@1.24rc1
+-stderr '^go: downgraded toolchain go1.999testmod => go1.24rc1$'
++stderr '^go: downgraded toolchain go1.99rc1 => go1.24rc1$'
+ 
+ # go get go@1.21 should work if we are the Go 1.21 language version,
+ # even though there's no toolchain for it.
+--- a/src/net/ipsock_posix.go
++++ b/src/net/ipsock_posix.go
+@@ -237,8 +237,12 @@
+ func addrPortToSockaddrInet4(ap netip.AddrPort) (syscall.SockaddrInet4, error) {
+ 	// ipToSockaddrInet4 has special handling here for zero length slices.
+ 	// We do not, because netip has no concept of a generic zero IP address.
++	//
++	// addr is allowed to be an IPv4-mapped IPv6 address.
++	// As4 will unmap it to an IPv4 address.
++	// The error message is kept consistent with ipToSockaddrInet4.
+ 	addr := ap.Addr()
+-	if !addr.Is4() {
++	if !addr.Is4() && !addr.Is4In6() {
+ 		return syscall.SockaddrInet4{}, &AddrError{Err: "non-IPv4 address", Addr: addr.String()}
+ 	}
+ 	sa := syscall.SockaddrInet4{
+--- a/src/net/udpsock_test.go
++++ b/src/net/udpsock_test.go
+@@ -705,3 +705,35 @@
+ 		t.Fatal(err)
+ 	}
+ }
++
++// TestIPv4WriteMsgUDPAddrPortTargetAddrIPVersion verifies that
++// WriteMsgUDPAddrPort accepts IPv4 and IPv4-mapped IPv6 destination addresses,
++// and rejects IPv6 destination addresses on a "udp4" connection.
++func TestIPv4WriteMsgUDPAddrPortTargetAddrIPVersion(t *testing.T) {
++	if !testableNetwork("udp4") {
++		t.Skipf("skipping: udp4 not available")
++	}
++
++	conn, err := ListenUDP("udp4", &UDPAddr{IP: IPv4(127, 0, 0, 1)})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer conn.Close()
++
++	daddr4 := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), 12345)
++	daddr4in6 := netip.AddrPortFrom(netip.MustParseAddr("::ffff:127.0.0.1"), 12345)
++	daddr6 := netip.AddrPortFrom(netip.MustParseAddr("::1"), 12345)
++	buf := make([]byte, 8)
++
++	if _, _, err = conn.WriteMsgUDPAddrPort(buf, nil, daddr4); err != nil {
++		t.Errorf("conn.WriteMsgUDPAddrPort(buf, nil, daddr4) failed: %v", err)
++	}
++
++	if _, _, err = conn.WriteMsgUDPAddrPort(buf, nil, daddr4in6); err != nil {
++		t.Errorf("conn.WriteMsgUDPAddrPort(buf, nil, daddr4in6) failed: %v", err)
++	}
++
++	if _, _, err = conn.WriteMsgUDPAddrPort(buf, nil, daddr6); err == nil {
++		t.Errorf("conn.WriteMsgUDPAddrPort(buf, nil, daddr6) should have failed, but got no error")
++	}
++}
+--- a/src/os/exec/lp_plan9.go
++++ b/src/os/exec/lp_plan9.go
+@@ -36,7 +36,7 @@
+ // As of Go 1.19, LookPath will instead return that path along with an error satisfying
+ // [errors.Is](err, [ErrDot]). See the package documentation for more details.
+ func LookPath(file string) (string, error) {
+-	if err := validateLookPath(file); err != nil {
++	if err := validateLookPath(filepath.Clean(file)); err != nil {
+ 		return "", &Error{file, err}
+ 	}
+ 

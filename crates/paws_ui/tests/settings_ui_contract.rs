@@ -61,8 +61,9 @@ fn settings_route_rows_do_not_inherit_native_button_insets() {
     );
     assert!(
         route_row.contains("background_color: 0x00000000")
-            || route_row.contains("background_color: surface()"),
-        "settings route rows must not paint a competing surface fill"
+            || route_row.contains("background_color: surface()")
+            || (route_row.contains("theme.colors.accent") && route_row.contains("0x00000000")),
+        "settings route rows may only add the shadcn accent for pointer/focus feedback"
     );
 }
 
@@ -80,7 +81,7 @@ fn about_page_constrains_long_values_and_aligns_repositories() {
     let page = fs::read_to_string("src/view/pages/tools.rs").unwrap();
     let view = fs::read_to_string("src/view.rs").unwrap();
 
-    assert!(page.contains("middle_truncate_text(&about.arkit_rev, 18)"));
+    assert!(page.contains("middle_truncate_text(&about.arkit_version, 18)"));
     assert!(page.matches("width: Some(\"46%\".into())").count() >= 2);
     assert!(page.matches("width: 18.0").count() >= 2);
     assert!(page.contains("layout_weight: 1.0"));
@@ -210,7 +211,7 @@ fn network_ports_are_editable_and_lan_access_requires_a_secret() {
     assert!(model.contains("pub const DEFAULT_MIXED_PORT: u16 = 7890"));
     assert!(model.contains("pub const DEFAULT_CONTROLLER_PORT: u16 = 9090"));
     assert!(core.contains("mixed_enabled.then_some(mixed_port)"));
-    assert!(core.contains("probe_exit_location(mixed_port)"));
+    assert!(core.contains("probe_exit_location(&proxy_url)"));
     assert!(callbacks.contains("pub(crate) async fn copy_text"));
 }
 

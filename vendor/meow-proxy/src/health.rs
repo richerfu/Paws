@@ -1,5 +1,7 @@
 use futures::{future::BoxFuture, stream::FuturesUnordered, FutureExt, StreamExt};
 use meow_common::{Proxy, ProxyAdapter};
+use meow_transport::tls::{TlsConfig, TlsLayer};
+use meow_transport::Transport as _;
 use smol_str::SmolStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -39,7 +41,7 @@ pub enum UrlTestError {
 /// `component/proxydialer/http.go::httpHealthCheck`.
 ///
 /// `https://` targets are tunneled through a client-side TLS handshake
-/// (rustls + webpki-roots) before the GET. HTTP targets go over the raw
+/// (`meow_transport::tls::TlsLayer`, BoringSSL by default) before the GET. HTTP targets go over the raw
 /// dialed connection.
 pub async fn url_test(
     adapter: &dyn ProxyAdapter,
@@ -56,8 +58,19 @@ pub async fn url_test(
     };
 
     let start = Instant::now();
+    // `Tunnel` marks this dial as a health probe rather than user traffic.
+    // mihomo solves the same problem by threading an explicit `touch` flag
+    // through its group calls (`fast(false)` for probes); meow-rs'
+    // `ProxyAdapter` trait has no such parameter, so the marker rides on
+    // the metadata instead.  Groups skip the usage-generation bump for
+    // these dials — counting probes as "use" would defeat lazy health
+    // checks for nested groups.  No production dialer sets
+    // `ConnType::Tunnel` today; `Metadata::internal` (#555) is the
+    // explicit escape hatch `is_internal()` also honours, should a
+    // tunnel inbound ever need to reuse the variant.
     let metadata = meow_common::Metadata {
         network: meow_common::Network::Tcp,
+        conn_type: meow_common::ConnType::Tunnel,
         host: parsed.host.as_str().into(),
         dst_port: parsed.port,
         ..Default::default()
@@ -205,11 +218,13 @@ async fn probe_once(
         .map_err(|e| format!("dial: {e}"))?;
 
     if parsed.https {
-        let connector = tls_connector();
-        let server_name = rustls::pki_types::ServerName::try_from(parsed.host.to_string())
+        // Same TlsLayer the proxies dial with (BoringSSL by default). Both
+        // backends memoise the TLS context per (alpn, skip_cert_verify), so
+        // building a layer per probe is a hash lookup, not a root-store clone.
+        let tls = TlsLayer::new(&TlsConfig::new(parsed.host.to_string()))
             .map_err(|e| format!("tls sni: {e}"))?;
-        let tls = connector
-            .connect(server_name, conn)
+        let tls = tls
+            .connect(Box::new(conn))
             .await
             .map_err(|e| format!("tls: {e}"))?;
         send_get_and_check(tls, &parsed, &ranges).await
@@ -308,31 +323,6 @@ where
         .map_err(|_| format!("bad status code: {code_str:?}"))
 }
 
-fn tls_connector() -> tokio_rustls::TlsConnector {
-    // Lazy singleton: one TlsConnector + ClientConfig + root-store clone for
-    // the whole process. URLTest probe cycles previously rebuilt this on every
-    // HTTPS probe, cloning webpki_roots::TLS_SERVER_ROOTS per call.
-    static CONNECTOR: std::sync::OnceLock<tokio_rustls::TlsConnector> = std::sync::OnceLock::new();
-    CONNECTOR
-        .get_or_init(|| {
-            let root_store = rustls::RootCertStore {
-                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-            };
-            // Be explicit about the provider: when `ech-tls-tunnel` (or any other
-            // feature that pulls aws-lc-rs) is on, rustls' `builder()` would panic
-            // because two providers are compiled in.
-            let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .with_safe_default_protocol_versions()
-            .expect("rustls protocol versions are safe defaults")
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-            tokio_rustls::TlsConnector::from(Arc::new(config))
-        })
-        .clone()
-}
-
 #[derive(Debug, Clone)]
 struct ParsedUrl {
     https: bool,
@@ -348,6 +338,14 @@ impl ParsedUrl {
         } else {
             (false, url.strip_prefix("http://")?)
         };
+        // CTL/space bytes would smuggle extra request lines or headers into
+        // the probe request — reject before splitting authority/path. A
+        // subscription-controlled `proxy-groups[].url` (or the `?url=` delay
+        // endpoint) could otherwise write a raw `\r\n` onto the wire
+        // (issue #648).
+        if rest.bytes().any(|b| b <= b' ' || b == 0x7f) {
+            return None;
+        }
         let (authority, path) = match rest.find('/') {
             Some(i) => (&rest[..i], &rest[i..]),
             None => (rest, "/"),
@@ -430,10 +428,10 @@ mod tests {
         // (input, https, host, port, path)
         let accepted: &[(&str, bool, &str, u16, &str)] = &[
             (
-                "http://www.gstatic.com/generate_204",
-                false,
+                "https://www.gstatic.com/generate_204",
+                true,
                 "www.gstatic.com",
-                80,
+                443,
                 "/generate_204",
             ),
             (
@@ -446,7 +444,22 @@ mod tests {
             ("http://example.com:8080", false, "example.com", 8080, "/"),
             ("http://[::1]:8080/x", false, "::1", 8080, "/x"),
         ];
-        let rejected: &[&str] = &["ftp://x", "example.com"];
+        // CTL/whitespace bytes would inject raw request lines or headers
+        // into the probe request (issue #648).
+        let rejected: &[&str] = &[
+            "ftp://x",
+            "example.com",
+            "http://victim/\r\nX-Injected: x",
+            "http://victim/x y",
+            "http://vic\ttim/",
+            "http://vic\0tim/",
+            "http://victim/\x0bz",
+            "http://victim/\x7f",
+            // CTL in the authority half, not just the path — these would
+            // still parse (valid host + port) without the guard.
+            "http://vic\ntim:8080/",
+            "http://vic\rtim:8080/",
+        ];
 
         // Collect instead of asserting inline so one bad input does not hide
         // the remaining cases.

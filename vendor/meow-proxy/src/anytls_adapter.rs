@@ -11,27 +11,29 @@
 //! in-process `anytls_rs::server::Server`; no external anytls server needed.
 
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use anytls_rs::client::Client as AnytlsClient;
 use anytls_rs::client::UDP_OVER_TCP_MAGIC_ADDR;
 use anytls_rs::padding::PaddingFactory;
-use anytls_rs::protocol::{Command, Frame};
-use anytls_rs::session::{Session, Stream as AnytlsStream, StreamReader};
+use anytls_rs::session::{Session, Stream as AnytlsStream};
+use anytls_rs::{AsyncStream, TlsConnect, TlsConnectFuture};
 use async_trait::async_trait;
 use bytes::Bytes;
+use meow_transport::tls::{TlsConfig, TlsLayer};
+use meow_transport::Transport as _;
 use parking_lot::Mutex;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_rustls::rustls::pki_types::ServerName;
-use tokio_rustls::TlsConnector;
+use tokio::net::TcpStream;
 
 use meow_common::{
     AdapterType, MeowError, Metadata, ProxyAdapter, ProxyConn, ProxyHealth, ProxyPacketConn, Result,
 };
+
+use crate::uot::{encode_uot_addr, encode_uot_addr_domain, read_uot_addr};
 
 /// AnyTLS outbound adapter.
 pub struct AnytlsAdapter {
@@ -39,6 +41,11 @@ pub struct AnytlsAdapter {
     addr: String,
     health: ProxyHealth,
     client: AnytlsClient,
+    /// The adapter's own TLS layer, `Arc`-shared with the `TlsConnect` hook
+    /// given to the anytls client. `connect_over` runs it directly on the
+    /// relay-supplied stream because `TlsConnect::connect` is typed on
+    /// `TcpStream` while a relay stream is a generic `meow_transport::Stream`.
+    tls_layer: Arc<TlsLayer>,
     udp: bool,
 }
 
@@ -71,27 +78,33 @@ impl AnytlsAdapter {
 
         let effective_sni = sni.filter(|s| !s.trim().is_empty()).unwrap_or(server);
         let server_name =
-            build_server_name(effective_sni).map_err(|e| format!("anytls[{name}]: {e}"))?;
+            normalize_server_name(effective_sni).map_err(|e| format!("anytls[{name}]: {e}"))?;
 
-        let tls_config = build_tls_client_config(skip_cert_verify)
-            .map_err(|e| format!("anytls[{name}]: tls config: {e}"))?;
-        let tls_connector = Arc::new(TlsConnector::from(tls_config));
+        // Same BoringSSL TlsLayer every other TLS outbound uses; the
+        // SSL_CTX is shared across proxies with the same shaping key.
+        // `Arc`-shared with `MeowTlsConnect` so `connect_over` can run the
+        // identical handshake on a relay-supplied stream.
+        let tls_layer = Arc::new(
+            TlsLayer::new(&TlsConfig {
+                skip_cert_verify,
+                ..TlsConfig::new(server_name)
+            })
+            .map_err(|e| format!("anytls[{name}]: tls config: {e}"))?,
+        );
+        let tls: Arc<dyn TlsConnect> = Arc::new(MeowTlsConnect {
+            layer: Arc::clone(&tls_layer),
+        });
 
         let padding = PaddingFactory::default();
 
-        let client = AnytlsClient::new(
-            password,
-            server_addr.clone(),
-            server_name,
-            tls_connector,
-            padding,
-        );
+        let client = AnytlsClient::new(password, server_addr.clone(), tls, padding);
 
         Ok(Self {
             name: name.to_string(),
             addr: server_addr,
             health: ProxyHealth::new(),
             client,
+            tls_layer,
             udp,
         })
     }
@@ -116,38 +129,96 @@ impl ProxyAdapter for AnytlsAdapter {
     }
 
     async fn dial_tcp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyConn>> {
-        let host = metadata.rule_host().to_string();
+        let host = anytls_tcp_destination(metadata)?;
         let port = metadata.dst_port;
         let (stream, session) = self
             .client
             .create_proxy_stream((host, port))
             .await
-            .map_err(|e| MeowError::Proxy(format!("anytls dial: {e}")))?;
+            .map_err(|e| anytls_err("dial", e))?;
         Ok(Box::new(AnytlsConn::new(stream, session)))
+    }
+
+    /// Run TLS + the AnyTLS session handshake over an existing stream
+    /// (relay chain).
+    ///
+    /// The vendored client's `TlsConnect` hook is typed on `TcpStream`, so
+    /// the adapter runs its shared `TlsLayer` itself and hands the
+    /// handshaken stream to `create_proxy_stream_on_tls`. The session that
+    /// comes back is **not** pooled — pooling it would let a later direct
+    /// `dial_tcp` silently reuse the relay channel — so the returned conn
+    /// owns it and closes it on drop.
+    async fn connect_over(
+        &self,
+        stream: Box<dyn ProxyConn>,
+        metadata: &Metadata,
+    ) -> Result<Box<dyn ProxyConn>> {
+        let host = anytls_tcp_destination(metadata)?;
+        let port = metadata.dst_port;
+        let tls_stream = self
+            .tls_layer
+            .connect(Box::new(stream))
+            .await
+            .map_err(|e| match e {
+                meow_transport::TransportError::Io(e) => MeowError::Io(e),
+                other => MeowError::Proxy(format!("anytls relay tls: {other}")),
+            })?;
+        let (stream, session) = self
+            .client
+            .create_proxy_stream_on_tls(tls_stream, (host, port))
+            .await
+            .map_err(|e| anytls_err("relay dial", e))?;
+        Ok(Box::new(AnytlsConn::new_owned(stream, session)))
     }
 
     /// Open a udp-over-tcp v2 relay stream (issue #75 follow-up).
     ///
     /// Mirrors mihomo `adapter/outbound/anytls.go: ListenPacketContext`: a
     /// plain proxy stream to the magic destination, then sing-box's `uot`
-    /// framing on top of it. The uot request is written lazily together with
-    /// the first datagram, exactly as upstream's `uot.NewLazyConn` does.
+    /// framing on top of it. The uot request is flushed on the open path,
+    /// ahead of the SYNACK wait — sing-box's inbound reads the request before
+    /// it reports handshake success, so sending it lazily with the first
+    /// datagram (upstream's `uot.NewLazyConn` shape) deadlocks against
+    /// sing-box (issue #535).
     async fn dial_udp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyPacketConn>> {
         if !self.udp {
             return Err(MeowError::NotSupported(
                 "anytls: UDP is disabled for this proxy (set `udp: true`)".to_string(),
             ));
         }
+        // This adapter as a *front*: a host-only UDP destination — the
+        // dialer layer's encoding of a chained `UdpTarget::Name`
+        // (issue #657) — stamps each datagram's uot address with the domain
+        // so the server resolves it with its own view.
+        let write_target = match metadata.domain_udp_target() {
+            Some((host, port)) if host.len() <= u8::MAX as usize => Some((host.clone(), port)),
+            Some(_) => {
+                return Err(MeowError::NotSupported(
+                    "anytls: domain UDP target exceeds uot length prefix".into(),
+                ));
+            }
+            None => None,
+        };
         let (stream, session) = self
             .client
-            .create_proxy_stream((UDP_OVER_TCP_MAGIC_ADDR.to_string(), 0))
+            .create_proxy_stream_with_payload(
+                (UDP_OVER_TCP_MAGIC_ADDR.to_string(), 0),
+                Some(Bytes::from(encode_uot_request(metadata))),
+            )
             .await
-            .map_err(|e| MeowError::Proxy(format!("anytls udp dial: {e}")))?;
+            .map_err(|e| anytls_err("udp dial", e))?;
         Ok(Box::new(AnytlsPacketConn::new(
             stream,
             session,
-            encode_uot_request(metadata),
+            write_target,
         )))
+    }
+
+    /// Issue #695: close every pooled AnyTLS session so the next dial opens a
+    /// fresh, interface-bound connection (see `SessionPool::reset`). The
+    /// unpooled `connect_over` sessions belong to their relay stream.
+    fn reset_sessions(&self) {
+        self.client.reset_sessions();
     }
 
     fn health(&self) -> &ProxyHealth {
@@ -155,41 +226,72 @@ impl ProxyAdapter for AnytlsAdapter {
     }
 }
 
+/// An `AnyTlsError::Io` carries the real io error — `raw_os_error` survives
+/// for `DialFailureTracker`'s local-resource classification (issue #668);
+/// stringifying it would dead-mark the member for EMFILE & friends.
+fn anytls_err(context: &str, e: anytls_rs::AnyTlsError) -> MeowError {
+    match e {
+        anytls_rs::AnyTlsError::Io(e) => MeowError::Io(e),
+        other => MeowError::Proxy(format!("anytls {context}: {other}")),
+    }
+}
+
+/// Select the actual TCP dial target without substituting a sniffed rule host.
+///
+/// IP-only inbounds leave `host` empty, so fall back to `dst_ip`.  A sniffed
+/// hostname is useful for rule matching but must not silently replace the
+/// address the client actually requested.
+fn anytls_tcp_destination(metadata: &Metadata) -> Result<String> {
+    if !metadata.host.is_empty() {
+        return Ok(metadata.host.to_string());
+    }
+    metadata
+        .dst_ip
+        .map(|ip| ip.to_string())
+        .ok_or_else(|| MeowError::Proxy("anytls dial: missing destination host and IP".to_string()))
+}
+
 /// Bridge `(Arc<Stream>, Arc<Session>)` into a `ProxyConn`-shaped value.
 ///
 /// The upstream `Stream` impls `AsyncRead`/`AsyncWrite` on `Pin<&mut Self>`,
 /// but `create_proxy_stream` only hands us an `Arc<Stream>` — we can never
-/// obtain `&mut Stream`. So we re-implement the trait against the public
-/// `Stream::reader()` and `Session::write_data_frame()` API surface that the
-/// crate's own SOCKS5 client uses (`src/client/socks5.rs`).
-// The pending futures are `Send` but not `Sync`; `ProxyConn` requires `Sync`,
-// so we wrap them in `parking_lot::Mutex` (which is `Sync` whenever its
-// payload is `Send`). The mutex is uncontended in practice because all
-// access happens through `Pin<&mut Self>` from the AsyncRead/AsyncWrite
-// trait, but the type-level `Sync` bound on `ProxyConn` is what forces the
-// wrapping.
+/// obtain `&mut Stream`. So we re-implement the traits against its public
+/// reader and cancellation-safe writer-channel APIs.
+// The pending read future is `Send` but not `Sync`; `ProxyConn` requires
+// `Sync`, so it is wrapped in `parking_lot::Mutex`.
 type PendingRead = Pin<Box<dyn std::future::Future<Output = io::Result<Vec<u8>>> + Send>>;
-type PendingWrite = Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send>>;
 
 struct AnytlsConn {
     stream: Arc<AnytlsStream>,
+    // Keep the owning session alive even if the adapter is dropped while
+    // this connection is still in use.
     session: Arc<Session>,
-    stream_id: u32,
+    /// `true` when the session was built for this conn alone (relay
+    /// `connect_over`) and is not shared through the client's pool — it is
+    /// closed when the conn drops rather than living until the transport
+    /// dies (the heartbeat only reaps sessions whose peer stops answering).
+    session_owned: bool,
     pending_read: Mutex<Option<PendingRead>>,
-    pending_write: Mutex<Option<PendingWrite>>,
-    fin_sent: AtomicBool,
 }
 
 impl AnytlsConn {
     fn new(stream: Arc<AnytlsStream>, session: Arc<Session>) -> Self {
-        let stream_id = stream.id();
         Self {
             stream,
             session,
-            stream_id,
+            session_owned: false,
             pending_read: Mutex::new(None),
-            pending_write: Mutex::new(None),
-            fin_sent: AtomicBool::new(false),
+        }
+    }
+
+    /// Construct a conn that owns its session outright (relay `connect_over`
+    /// path — the session is deliberately unpooled).
+    fn new_owned(stream: Arc<AnytlsStream>, session: Arc<Session>) -> Self {
+        Self {
+            stream,
+            session,
+            session_owned: true,
+            pending_read: Mutex::new(None),
         }
     }
 
@@ -198,26 +300,10 @@ impl AnytlsConn {
     /// proxied target connection and evicts the per-stream map entry (issue
     /// #201 item 4). The session is pooled and multiplexes other streams, so
     /// this must never close the session itself.
-    ///
-    /// The registry `anytls-rs` exposes only an async session writer (the
-    /// git fork's synchronous `Stream::close()` is not published), so the frame
-    /// is sent fire-and-forget on the current runtime. If no runtime is active
-    /// (e.g. dropped outside tokio), the FIN is skipped — the connection is
-    /// being torn down regardless.
     fn fin_stream(&self) {
-        if self.fin_sent.swap(true, Ordering::Relaxed) {
-            return;
-        }
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let session = Arc::clone(&self.session);
-        let stream_id = self.stream_id;
-        handle.spawn(async move {
-            let _ = session
-                .write_control_frame(Frame::control(Command::Fin, stream_id))
-                .await;
-        });
+        // `Stream::close` uses the same FIFO as `send_data`, so all accepted
+        // data is written before FIN. It is synchronous and idempotent.
+        self.stream.close();
     }
 }
 
@@ -269,50 +355,15 @@ impl AsyncWrite for AnytlsConn {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let len = buf.len();
-        let mut guard = self.pending_write.lock();
-        if guard.is_none() {
-            let session = Arc::clone(&self.session);
-            let stream_id = self.stream_id;
-            let data = Bytes::copy_from_slice(buf);
-            let fut = async move {
-                session
-                    .write_data_frame(stream_id, data)
-                    .await
-                    .map_err(|e| io::Error::other(format!("anytls write: {e}")))
-            };
-            *guard = Some(Box::pin(fut));
-        }
-        let fut = guard.as_mut().expect("just set");
-        match fut.as_mut().poll(cx) {
-            Poll::Ready(Ok(())) => {
-                *guard = None;
-                Poll::Ready(Ok(len))
-            }
-            Poll::Ready(Err(e)) => {
-                *guard = None;
-                Poll::Ready(Err(e))
-            }
-            Poll::Pending => Poll::Pending,
-        }
+        self.stream.poll_write_data(cx, buf)
     }
 
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        // The upstream session writer is unbuffered (each write_data_frame
-        // pushes onto a tokio mpsc that's drained on the wire side), so
-        // there's nothing to flush.
-        Poll::Ready(Ok(()))
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.stream.poll_flush_data(cx)
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        // Tear down just this stream (not the whole session, which is pooled
-        // and multiplexes other streams): `Stream::close` emits a FIN frame so
-        // the server releases the proxied target connection and evicts the
-        // stream from the session maps. Without this the server-side proxied
-        // socket and the session's per-stream map entry leaked on every dial
-        // (issue #201 item 4). Idempotent.
-        self.fin_stream();
-        Poll::Ready(Ok(()))
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.stream.poll_shutdown_data(cx)
     }
 }
 
@@ -323,6 +374,28 @@ impl Drop for AnytlsConn {
         // still FIN the stream so the proxied connection and map entry are
         // released. `fin_stream` is idempotent with `poll_shutdown`.
         self.fin_stream();
+
+        // An owned (unpooled, relay-created) session holds the whole relay
+        // stream — close it now instead of leaving it to the heartbeat,
+        // which is a liveness probe (not an idle reaper) and would keep a
+        // live-server session alive indefinitely. The queued FIN above may
+        // never reach the wire here — `close` tears down the writer before
+        // draining the frame queue — but that's benign: closing the session
+        // releases every server-side stream anyway. `Session::close` is
+        // idempotent, so a session that already failed is a no-op. Without
+        // a runtime handle (conn dropped off-runtime or mid-shutdown) the
+        // session persists until its transport dies — no other watchdog
+        // exists; acceptable because conns are dropped on runtime tasks.
+        if self.session_owned {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let session = Arc::clone(&self.session);
+                handle.spawn(async move {
+                    if let Err(e) = session.close().await {
+                        tracing::debug!("anytls: owned session close failed: {e}");
+                    }
+                });
+            }
+        }
     }
 }
 
@@ -359,11 +432,6 @@ impl ProxyConn for AnytlsConn {}
 const SOCKS5_ATYP_IPV4: u8 = 0x01;
 const SOCKS5_ATYP_DOMAIN: u8 = 0x03;
 const SOCKS5_ATYP_IPV6: u8 = 0x04;
-
-/// `uot.AddrParser` address-family bytes — every **per-packet** header.
-const UOT_ATYP_IPV4: u8 = 0x00;
-const UOT_ATYP_IPV6: u8 = 0x01;
-const UOT_ATYP_DOMAIN: u8 = 0x02;
 
 /// One anytls data frame carries a `u16` length, so a datagram plus its uot
 /// header must fit in 64 KiB. The largest possible IPv6 header is
@@ -414,104 +482,38 @@ fn encode_uot_request(metadata: &Metadata) -> Vec<u8> {
     buf
 }
 
-/// Append a per-packet uot address header (`uot.AddrParser` bytes).
-fn encode_uot_addr(buf: &mut Vec<u8>, addr: &SocketAddr) {
-    match addr.ip() {
-        IpAddr::V4(v4) => {
-            buf.push(UOT_ATYP_IPV4);
-            buf.extend_from_slice(&v4.octets());
-        }
-        // Upstream unmaps before serializing, so a `::ffff:a.b.c.d` peer goes
-        // out as plain IPv4 rather than as an IPv6 address the server would
-        // then have to unmap itself.
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => {
-                buf.push(UOT_ATYP_IPV4);
-                buf.extend_from_slice(&v4.octets());
-            }
-            None => {
-                buf.push(UOT_ATYP_IPV6);
-                buf.extend_from_slice(&v6.octets());
-            }
-        },
-    }
-    buf.extend_from_slice(&addr.port().to_be_bytes());
-}
-
-/// Read a per-packet uot address header.
-///
-/// Domain-form replies are best-effort, matching `trojan.rs`: an IP literal is
-/// parsed, anything else degrades to `0.0.0.0:<port>`. Servers echo the IP
-/// form here — the FQDN branch exists because the serializer allows it.
-async fn read_uot_addr(reader: &mut StreamReader) -> Result<SocketAddr> {
-    let mut atyp = [0u8; 1];
-    reader.read_exact(&mut atyp).await.map_err(MeowError::Io)?;
-    let ip = match atyp[0] {
-        UOT_ATYP_IPV4 => {
-            let mut octets = [0u8; 4];
-            reader
-                .read_exact(&mut octets)
-                .await
-                .map_err(MeowError::Io)?;
-            IpAddr::V4(Ipv4Addr::from(octets))
-        }
-        UOT_ATYP_IPV6 => {
-            let mut octets = [0u8; 16];
-            reader
-                .read_exact(&mut octets)
-                .await
-                .map_err(MeowError::Io)?;
-            IpAddr::V6(Ipv6Addr::from(octets))
-        }
-        UOT_ATYP_DOMAIN => {
-            let mut len = [0u8; 1];
-            reader.read_exact(&mut len).await.map_err(MeowError::Io)?;
-            let mut domain = vec![0u8; len[0] as usize];
-            reader
-                .read_exact(&mut domain)
-                .await
-                .map_err(MeowError::Io)?;
-            std::str::from_utf8(&domain)
-                .ok()
-                .and_then(|d| d.parse::<IpAddr>().ok())
-                .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED))
-        }
-        other => {
-            return Err(MeowError::Proxy(format!(
-                "anytls udp: unknown uot address type {other:#x}"
-            )))
-        }
-    };
-    let mut port = [0u8; 2];
-    reader.read_exact(&mut port).await.map_err(MeowError::Io)?;
-    Ok(SocketAddr::new(ip, u16::from_be_bytes(port)))
-}
-
 /// UDP-over-AnyTLS packet connection.
 ///
 /// Each datagram becomes exactly one anytls data frame, so the framing the
 /// server reassembles never interleaves with another task's packet. Reads
-/// borrow the stream's own reader mutex; writes are serialized by the
-/// `pending_request` mutex, which doubles as the lazy-request slot.
+/// borrow the stream's own reader mutex. The uot request is already on the
+/// wire — `dial_udp` sends it on the open path (issue #535) — so writes are
+/// plain per-datagram frames.
 struct AnytlsPacketConn {
     stream: Arc<AnytlsStream>,
-    session: Arc<Session>,
-    stream_id: u32,
-    /// uot request, sent coalesced with the first datagram (upstream
-    /// `uot.NewLazyConn`); `None` once it has gone out.
-    pending_request: tokio::sync::Mutex<Option<Vec<u8>>>,
-    fin_sent: AtomicBool,
+    // See `AnytlsConn::session`.
+    _session: Arc<Session>,
+    /// Set once a frame read is torn by cancellation or error — the
+    /// stream's framing is then unrecoverable, so every later packet op must fail
+    /// fast rather than misdeliver (issue #514).
+    poisoned: std::sync::atomic::AtomicBool,
+    /// A chained `UdpTarget::Name` binds every datagram's uot address to the
+    /// domain (`UOT_ATYP_DOMAIN`) so the server resolves it (issue #657).
+    /// `None` keeps per-packet `SocketAddr` stamping.
+    write_target: Option<(smol_str::SmolStr, u16)>,
 }
 
 impl AnytlsPacketConn {
-    fn new(stream: Arc<AnytlsStream>, session: Arc<Session>, request: Vec<u8>) -> Self {
-        let stream_id = stream.id();
+    fn new(
+        stream: Arc<AnytlsStream>,
+        session: Arc<Session>,
+        write_target: Option<(smol_str::SmolStr, u16)>,
+    ) -> Self {
         Self {
             stream,
-            session,
-            stream_id,
-            pending_request: tokio::sync::Mutex::new(Some(request)),
-            fin_sent: AtomicBool::new(false),
+            _session: session,
+            poisoned: std::sync::atomic::AtomicBool::new(false),
+            write_target,
         }
     }
 
@@ -519,28 +521,25 @@ impl AnytlsPacketConn {
     /// release the server's UDP socket and the session's stream-map entry
     /// without tearing down the pooled session.
     fn fin_stream(&self) {
-        if self.fin_sent.swap(true, Ordering::Relaxed) {
-            return;
-        }
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let session = Arc::clone(&self.session);
-        let stream_id = self.stream_id;
-        handle.spawn(async move {
-            let _ = session
-                .write_control_frame(Frame::control(Command::Fin, stream_id))
-                .await;
-        });
+        self.stream.close();
     }
 }
 
 #[async_trait]
 impl ProxyPacketConn for AnytlsPacketConn {
     async fn read_packet(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+        crate::check_not_desynced(&self.poisoned)?;
         let mut reader = self.stream.reader().lock().await;
+        // Re-check post-lock: a read parked behind a cancelled mid-frame
+        // read must not consume the torn remainder.
+        crate::check_not_desynced(&self.poisoned)?;
+        // `guard` must be declared AFTER `reader`: locals drop in reverse
+        // order, so the guard's poison store runs while the mutex is still
+        // held — the unlock then gives the parked reader's re-check the
+        // happens-before edge it needs.
+        let mut guard = crate::PoisonOnIncomplete::new(&self.poisoned);
 
-        let addr = read_uot_addr(&mut reader).await?;
+        let addr = read_uot_addr(&mut *reader).await?;
 
         let mut len_bytes = [0u8; 2];
         reader
@@ -558,22 +557,36 @@ impl ProxyPacketConn for AnytlsPacketConn {
                 .await
                 .map_err(MeowError::Io)?;
         }
-        if length > to_copy {
-            let mut sink = vec![0u8; length - to_copy];
-            reader.read_exact(&mut sink).await.map_err(MeowError::Io)?;
+        // Drain the tail through a fixed stack scratch — a peer could
+        // otherwise force a ~64 KiB alloc/dealloc cycle per read by
+        // declaring max-size datagrams (issue #621). The frame length is
+        // a u16, so the loop terminates after at most ~8 iterations.
+        let mut remaining = length - to_copy;
+        if remaining > 0 {
+            let mut sink = [0u8; 8192];
+            while remaining > 0 {
+                let chunk = remaining.min(sink.len());
+                reader
+                    .read_exact(&mut sink[..chunk])
+                    .await
+                    .map_err(MeowError::Io)?;
+                remaining -= chunk;
+            }
         }
+        guard.complete = true;
         Ok((to_copy, addr))
     }
 
     async fn write_packet(&self, buf: &[u8], addr: &SocketAddr) -> Result<usize> {
-        let mut pending = self.pending_request.lock().await;
-
-        let request_len = pending.as_ref().map_or(0, Vec::len);
-        let mut frame = Vec::with_capacity(request_len + 21 + buf.len());
-        if let Some(request) = pending.as_ref() {
-            frame.extend_from_slice(request);
+        // `send_data` queues the frame atomically, so a cancelled write
+        // cannot tear framing — but a conn poisoned on the read side is
+        // dead regardless; fail fast rather than feed it.
+        crate::check_not_desynced(&self.poisoned)?;
+        let mut frame = Vec::with_capacity(21 + buf.len());
+        match &self.write_target {
+            Some((host, port)) => encode_uot_addr_domain(&mut frame, host, *port),
+            None => encode_uot_addr(&mut frame, addr),
         }
-        encode_uot_addr(&mut frame, addr);
         let Ok(length) = u16::try_from(buf.len()) else {
             return Err(MeowError::Proxy(format!(
                 "anytls udp: packet too large ({} > {})",
@@ -584,8 +597,7 @@ impl ProxyPacketConn for AnytlsPacketConn {
         frame.extend_from_slice(&length.to_be_bytes());
         frame.extend_from_slice(buf);
 
-        // The anytls frame header is a `u16` too, and the codec truncates
-        // silently rather than erroring — reject instead of corrupting.
+        // The AnyTLS frame header is a u16 too; reject oversized datagrams.
         if frame.len() > MAX_UOT_FRAME {
             return Err(MeowError::Proxy(format!(
                 "anytls udp: framed packet too large ({} > {MAX_UOT_FRAME})",
@@ -593,11 +605,10 @@ impl ProxyPacketConn for AnytlsPacketConn {
             )));
         }
 
-        self.session
-            .write_data_frame(self.stream_id, Bytes::from(frame))
+        self.stream
+            .send_data(Bytes::from(frame))
             .await
-            .map_err(|e| MeowError::Proxy(format!("anytls udp write: {e}")))?;
-        *pending = None;
+            .map_err(|e| anytls_err("udp write", e))?;
         Ok(buf.len())
     }
 
@@ -621,90 +632,39 @@ impl Drop for AnytlsPacketConn {
     }
 }
 
-fn build_server_name(value: &str) -> std::result::Result<ServerName<'static>, String> {
+/// Normalise the SNI / verification name: trim whitespace and IPv6 brackets;
+/// an IP literal is verified against the certificate's `iPAddress` SAN and
+/// (per RFC 6066 §3) not sent as SNI — `TlsLayer` handles both.
+fn normalize_server_name(value: &str) -> std::result::Result<String, String> {
     let normalized = value.trim().trim_start_matches('[').trim_end_matches(']');
     if normalized.is_empty() {
         return Err("SNI cannot be empty".to_string());
     }
-    if let Ok(ip) = normalized.parse::<std::net::IpAddr>() {
-        return Ok(ServerName::IpAddress(ip.into()));
-    }
-    ServerName::try_from(normalized.to_string()).map_err(|_| format!("invalid SNI '{normalized}'"))
+    Ok(normalized.to_string())
 }
 
-fn build_tls_client_config(
-    skip_cert_verify: bool,
-) -> std::result::Result<Arc<rustls::ClientConfig>, String> {
-    use rustls::RootCertStore;
+/// Bridges `meow_transport::tls::TlsLayer` into anytls-rs's [`TlsConnect`]
+/// hook so the vendored client links no TLS library of its own.
+struct MeowTlsConnect {
+    layer: Arc<TlsLayer>,
+}
 
-    let root_store = RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-
-    let config_builder = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(|e| format!("rustls builder: {e}"))?;
-
-    let mut config = config_builder
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-
-    if skip_cert_verify {
-        use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified};
-        use rustls::pki_types::{CertificateDer, ServerName as RsServerName, UnixTime};
-        use rustls::{DigitallySignedStruct, SignatureScheme};
-
-        #[derive(Debug)]
-        struct NoVerify;
-        impl rustls::client::danger::ServerCertVerifier for NoVerify {
-            fn verify_server_cert(
-                &self,
-                _: &CertificateDer<'_>,
-                _: &[CertificateDer<'_>],
-                _: &RsServerName<'_>,
-                _: &[u8],
-                _: UnixTime,
-            ) -> std::result::Result<ServerCertVerified, rustls::Error> {
-                Ok(ServerCertVerified::assertion())
-            }
-            fn verify_tls12_signature(
-                &self,
-                _: &[u8],
-                _: &CertificateDer<'_>,
-                _: &DigitallySignedStruct,
-            ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
-                Ok(HandshakeSignatureValid::assertion())
-            }
-            fn verify_tls13_signature(
-                &self,
-                _: &[u8],
-                _: &CertificateDer<'_>,
-                _: &DigitallySignedStruct,
-            ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
-                Ok(HandshakeSignatureValid::assertion())
-            }
-            fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-                vec![
-                    SignatureScheme::ECDSA_NISTP256_SHA256,
-                    SignatureScheme::ECDSA_NISTP384_SHA384,
-                    SignatureScheme::ED25519,
-                    SignatureScheme::RSA_PSS_SHA256,
-                    SignatureScheme::RSA_PSS_SHA384,
-                    SignatureScheme::RSA_PSS_SHA512,
-                    SignatureScheme::RSA_PKCS1_SHA256,
-                    SignatureScheme::RSA_PKCS1_SHA384,
-                    SignatureScheme::RSA_PKCS1_SHA512,
-                ]
-            }
-        }
-        config
-            .dangerous()
-            .set_certificate_verifier(Arc::new(NoVerify));
+impl TlsConnect for MeowTlsConnect {
+    fn connect(&self, tcp: TcpStream) -> TlsConnectFuture<'_> {
+        Box::pin(async move {
+            let stream = self.layer.connect(Box::new(tcp)).await.map_err(|e| {
+                // Keep the socket io error verbatim — `anytls_err` maps
+                // `Io` back to `MeowError::Io`, so errno survives to the
+                // group dead-mark classifiers (issue #668); same arm the
+                // `connect_over` path takes.
+                match e {
+                    meow_transport::TransportError::Io(e) => anytls_rs::AnyTlsError::Io(e),
+                    other => anytls_rs::AnyTlsError::Tls(format!("TLS handshake failed: {other}")),
+                }
+            })?;
+            Ok(Box::new(stream) as Box<dyn AsyncStream>)
+        })
     }
-
-    Ok(Arc::new(config))
 }
 
 // ─── meow_common ⇄ anytls_rs protector bridge ────────────────────────────────
@@ -768,12 +728,49 @@ fn install_anytls_bridges() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::uot::UOT_ATYP_IPV4;
+    use anytls_rs::protocol::Command;
     use meow_common::Network;
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
-    fn reader_over(bytes: &[u8]) -> StreamReader {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        tx.send(Bytes::copy_from_slice(bytes)).unwrap();
-        StreamReader::new(0, rx)
+    async fn test_session() -> (Arc<Session>, DuplexStream) {
+        let (io, peer) = tokio::io::duplex(64);
+        let (reader, writer) = tokio::io::split(io);
+        // Server sessions skip padding, making the wire assertions exact.
+        let session = Arc::new(Session::new_server(
+            reader,
+            writer,
+            PaddingFactory::default(),
+        ));
+        let writer_session = Arc::clone(&session);
+        tokio::spawn(async move {
+            writer_session.process_stream_data().await.unwrap();
+        });
+        // `new_server` does not start the inbound frame reader — the
+        // real server spawns `recv_loop` per session (server.rs). Tests
+        // that feed peer→session frames need it running.
+        let reader_session = Arc::clone(&session);
+        tokio::spawn(async move {
+            let _ = reader_session.recv_loop().await;
+        });
+        (session, peer)
+    }
+
+    async fn wire_frame(peer: &mut DuplexStream) -> (Command, u32, Vec<u8>) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let mut header = [0; 7];
+            peer.read_exact(&mut header).await.unwrap();
+            let mut data = vec![0; u16::from_be_bytes([header[5], header[6]]) as usize];
+            peer.read_exact(&mut data).await.unwrap();
+            (
+                Command::from(header[0]),
+                u32::from_be_bytes(header[1..5].try_into().unwrap()),
+                data,
+            )
+        })
+        .await
+        .expect("writer stalled")
     }
 
     fn metadata_for(host: &str, ip: Option<IpAddr>, port: u16) -> Metadata {
@@ -784,6 +781,436 @@ mod tests {
             dst_port: port,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn tcp_destination_uses_original_host_then_ip() {
+        let mut metadata =
+            metadata_for("requested.example", Some("192.0.2.1".parse().unwrap()), 443);
+        metadata.network = Network::Tcp;
+        metadata.sniff_host = smol_str::SmolStr::from("sniffed.example");
+        assert_eq!(
+            anytls_tcp_destination(&metadata).unwrap(),
+            "requested.example",
+            "a sniffed rule host must not replace the requested dial target"
+        );
+
+        metadata.host = smol_str::SmolStr::default();
+        assert_eq!(anytls_tcp_destination(&metadata).unwrap(), "192.0.2.1");
+
+        metadata.dst_ip = Some("2001:db8::1".parse().unwrap());
+        assert_eq!(anytls_tcp_destination(&metadata).unwrap(), "2001:db8::1");
+
+        metadata.dst_ip = None;
+        assert!(anytls_tcp_destination(&metadata)
+            .unwrap_err()
+            .to_string()
+            .contains("missing destination host and IP"));
+    }
+
+    #[tokio::test]
+    async fn tcp_drop_during_partial_frame_preserves_other_streams() {
+        let (session, mut peer) = test_session().await;
+        let (first, _) = session.open_stream().await.unwrap();
+        let first_id = first.id();
+        let (second, _) = session.open_stream().await.unwrap();
+        let second_id = second.id();
+        assert_eq!(wire_frame(&mut peer).await.0, Command::Syn);
+        assert_eq!(wire_frame(&mut peer).await.0, Command::Syn);
+        let mut first = AnytlsConn::new(first, Arc::clone(&session));
+        let mut second = AnytlsConn::new(second, Arc::clone(&session));
+        first.write_all(&[42; 512]).await.unwrap();
+
+        // A 64-byte duplex cannot fit this frame. Seeing its prefix proves
+        // the writer has started, while the rest is still backpressured.
+        let mut prefix = [0; 4];
+        peer.read_exact(&mut prefix).await.unwrap();
+        drop(first);
+        second.write_all(b"still-aligned").await.unwrap();
+
+        let mut remainder = vec![0; 7 + 512 - prefix.len()];
+        peer.read_exact(&mut remainder).await.unwrap();
+        let mut full_frame = prefix.to_vec();
+        full_frame.extend_from_slice(&remainder);
+        assert_eq!(full_frame[0], u8::from(Command::Push));
+        assert_eq!(
+            u32::from_be_bytes(full_frame[1..5].try_into().unwrap()),
+            first_id
+        );
+        assert_eq!(&full_frame[7..], &[42; 512]);
+        assert_eq!(
+            wire_frame(&mut peer).await,
+            (Command::Fin, first_id, vec![])
+        );
+        assert_eq!(
+            wire_frame(&mut peer).await,
+            (Command::Push, second_id, b"still-aligned".to_vec())
+        );
+        drop(second);
+        assert_eq!(
+            wire_frame(&mut peer).await,
+            (Command::Fin, second_id, vec![])
+        );
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn udp_data_and_fin_use_the_stream_writer_fifo() {
+        let (session, mut peer) = test_session().await;
+        let (stream, _) = session.open_stream().await.unwrap();
+        let id = stream.id();
+        assert_eq!(wire_frame(&mut peer).await.0, Command::Syn);
+        let conn = AnytlsPacketConn::new(stream, Arc::clone(&session), None);
+        let destination: SocketAddr = "192.0.2.2:53".parse().unwrap();
+
+        assert_eq!(conn.write_packet(b"udp", &destination).await.unwrap(), 3);
+        drop(conn);
+        let (cmd, stream_id, data) = wire_frame(&mut peer).await;
+        assert_eq!((cmd, stream_id), (Command::Push, id));
+        // One datagram is one frame: uot addr + u16 length + payload, with no
+        // request prefix — in production the request was already flushed by
+        // `create_proxy_stream_with_payload` before the SYNACK wait
+        // (issue #535); this harness builds the conn directly so no request
+        // exists on the wire here at all.
+        assert_eq!(
+            data,
+            [UOT_ATYP_IPV4, 192, 0, 2, 2, 0, 53, 0, 3, b'u', b'd', b'p']
+        );
+        assert_eq!(wire_frame(&mut peer).await, (Command::Fin, id, vec![]));
+        session.close().await.unwrap();
+    }
+
+    /// Push one data frame into the session from the peer end.
+    async fn push_frame(peer: &mut DuplexStream, stream_id: u32, data: &[u8]) {
+        let mut frame = Vec::with_capacity(7 + data.len());
+        frame.push(Command::Push as u8);
+        frame.extend_from_slice(&stream_id.to_be_bytes());
+        frame.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        frame.extend_from_slice(data);
+        peer.write_all(&frame).await.unwrap();
+    }
+
+    /// Issue #543: same class as the trojan poison — a `read_packet`
+    /// cancelled mid-frame releases the reader lock with the stream
+    /// mid-datagram and every later read silently parses garbage. The
+    /// conn must poison itself so the tunnel re-dials instead.
+    #[tokio::test]
+    async fn udp_cancelled_read_poisons_packet_conn() {
+        let (session, mut peer) = test_session().await;
+        let (stream, _) = session.open_stream().await.unwrap();
+        let id = stream.id();
+        assert_eq!(wire_frame(&mut peer).await.0, Command::Syn);
+        let conn = AnytlsPacketConn::new(stream, Arc::clone(&session), None);
+        let mut buf = [0u8; 2048];
+
+        // A lone ATYP byte: the address read stalls mid-frame.
+        push_frame(&mut peer, id, &[UOT_ATYP_IPV4]).await;
+        let cancelled =
+            tokio::time::timeout(Duration::from_millis(50), conn.read_packet(&mut buf)).await;
+        assert!(cancelled.is_err(), "read must have timed out mid-addr");
+
+        // The peer then completes the datagram — the conn must not
+        // resume mid-stream.
+        push_frame(&mut peer, id, &[9, 9, 9, 9, 0, 53, 0, 1, b'x']).await;
+        let err = conn.read_packet(&mut buf).await.unwrap_err();
+        assert!(
+            err.to_string().contains("desynced"),
+            "expected desync error after cancelled read, got {err:?}"
+        );
+
+        // Writes fail fast on the desynced conn too — the tunnel
+        // re-dials rather than emitting datagrams whose replies can
+        // never be parsed.
+        let destination: SocketAddr = "192.0.2.2:53".parse().unwrap();
+        let err = conn.write_packet(b"x", &destination).await.unwrap_err();
+        assert!(
+            err.to_string().contains("desynced"),
+            "write on a desynced conn must fail fast, got {err:?}"
+        );
+        session.close().await.unwrap();
+    }
+
+    /// A read parked on the reader mutex while another is cancelled
+    /// mid-frame must fail fast at the post-lock re-check instead of
+    /// resuming the torn frame.
+    #[tokio::test]
+    async fn udp_parked_read_after_cancelled_read_fails_fast() {
+        let (session, mut peer) = test_session().await;
+        let (stream, _) = session.open_stream().await.unwrap();
+        let id = stream.id();
+        assert_eq!(wire_frame(&mut peer).await.0, Command::Syn);
+        let conn = Arc::new(AnytlsPacketConn::new(stream, Arc::clone(&session), None));
+
+        // read1 stalls mid-addr while holding the reader lock.
+        push_frame(&mut peer, id, &[UOT_ATYP_IPV4]).await;
+        let conn1 = Arc::clone(&conn);
+        let first = tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            conn1.read_packet(&mut buf).await
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        // read2 parks on the mutex behind it.
+        let conn2 = Arc::clone(&conn);
+        let queued = tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            conn2.read_packet(&mut buf).await
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        first.abort();
+        // A trailing datagram keeps a regressed implementation honest:
+        // without the post-lock re-check, read2 would parse these bytes
+        // as the start of a fresh frame and *succeed* — the assert below
+        // fails — rather than parking forever on an empty stream.
+        push_frame(
+            &mut peer,
+            id,
+            &[UOT_ATYP_IPV4, 9, 9, 9, 9, 0, 53, 0, 1, b'x'],
+        )
+        .await;
+        let err = tokio::time::timeout(Duration::from_secs(2), queued)
+            .await
+            .expect("queued read must resolve, not hang")
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("desynced"),
+            "queued read must fail fast after the poisoned first read, got {err:?}"
+        );
+        session.close().await.unwrap();
+    }
+
+    /// A read cancelled while parked on the reader mutex consumed no
+    /// bytes — it must NOT poison the conn. Pins the invariant that the
+    /// guard arms only after the lock is held.
+    #[tokio::test]
+    async fn udp_parked_read_cancellation_does_not_poison() {
+        let (session, mut peer) = test_session().await;
+        let (stream, _) = session.open_stream().await.unwrap();
+        let id = stream.id();
+        assert_eq!(wire_frame(&mut peer).await.0, Command::Syn);
+        let conn = Arc::new(AnytlsPacketConn::new(stream, Arc::clone(&session), None));
+
+        // read1 stalls mid-addr holding the lock; read2 parks behind it.
+        push_frame(&mut peer, id, &[UOT_ATYP_IPV4]).await;
+        let conn1 = Arc::clone(&conn);
+        let first = tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            conn1.read_packet(&mut buf).await
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let conn2 = Arc::clone(&conn);
+        let parked = tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            conn2.read_packet(&mut buf).await
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        parked.abort();
+        let _ = parked.await;
+
+        // read1's datagram completes cleanly once the rest lands, and the
+        // conn still serves the following datagram — no poison.
+        push_frame(&mut peer, id, &[9, 9, 9, 9, 0, 53, 0, 1, b'a']).await;
+        tokio::time::timeout(Duration::from_secs(2), first)
+            .await
+            .expect("read1 must resolve, not hang")
+            .unwrap()
+            .unwrap();
+        push_frame(
+            &mut peer,
+            id,
+            &[UOT_ATYP_IPV4, 8, 8, 8, 8, 0, 53, 0, 1, b'b'],
+        )
+        .await;
+        let mut buf = [0u8; 2048];
+        tokio::time::timeout(Duration::from_secs(2), conn.read_packet(&mut buf))
+            .await
+            .expect("read after parked-cancel must resolve")
+            .unwrap();
+        session.close().await.unwrap();
+    }
+
+    /// The same poison fires on a parse error after bytes were consumed
+    /// (unknown atyp) — not only on future cancellation.
+    #[tokio::test]
+    async fn udp_errored_read_poisons_packet_conn() {
+        let (session, mut peer) = test_session().await;
+        let (stream, _) = session.open_stream().await.unwrap();
+        let id = stream.id();
+        assert_eq!(wire_frame(&mut peer).await.0, Command::Syn);
+        let conn = AnytlsPacketConn::new(stream, Arc::clone(&session), None);
+        let mut buf = [0u8; 2048];
+
+        push_frame(&mut peer, id, &[0x7f]).await;
+        let err = tokio::time::timeout(Duration::from_secs(2), conn.read_packet(&mut buf))
+            .await
+            .expect("errored read must resolve")
+            .unwrap_err();
+        assert!(err.to_string().contains("address type"), "got {err:?}");
+
+        // The peer then sends a valid datagram — the conn must not
+        // resume mid-stream.
+        push_frame(
+            &mut peer,
+            id,
+            &[UOT_ATYP_IPV4, 9, 9, 9, 9, 0, 53, 0, 1, b'x'],
+        )
+        .await;
+        let err = tokio::time::timeout(Duration::from_secs(2), conn.read_packet(&mut buf))
+            .await
+            .expect("poisoned read must fail fast")
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("desynced"),
+            "second read must fail fast on poisoned conn, got {err:?}"
+        );
+        session.close().await.unwrap();
+    }
+
+    /// A datagram larger than the caller buffer is truncated, not torn:
+    /// `read_packet`'s `length > to_copy` sink-drain keeps the stream
+    /// aligned so the next datagram still parses.
+    #[tokio::test]
+    async fn udp_undersized_buffer_truncates_without_desync() {
+        let (session, mut peer) = test_session().await;
+        let (stream, _) = session.open_stream().await.unwrap();
+        let id = stream.id();
+        assert_eq!(wire_frame(&mut peer).await.0, Command::Syn);
+        let conn = AnytlsPacketConn::new(stream, Arc::clone(&session), None);
+        let src: SocketAddr = "192.0.2.9:53".parse().unwrap();
+
+        // 4-byte payload into a 2-byte buffer — 2 bytes must drain.
+        let mut datagram = Vec::new();
+        encode_uot_addr(&mut datagram, &src);
+        datagram.extend_from_slice(&4u16.to_be_bytes());
+        datagram.extend_from_slice(&[1, 2, 3, 4]);
+        push_frame(&mut peer, id, &datagram).await;
+
+        let mut buf = [0u8; 2];
+        let (n, addr) = tokio::time::timeout(Duration::from_secs(2), conn.read_packet(&mut buf))
+            .await
+            .expect("truncated read must resolve")
+            .unwrap();
+        assert_eq!(addr, src);
+        assert_eq!(&buf[..n], &[1, 2]);
+
+        // The following datagram still parses — the drain kept framing.
+        let mut datagram2 = Vec::new();
+        encode_uot_addr(&mut datagram2, &src);
+        datagram2.extend_from_slice(&1u16.to_be_bytes());
+        datagram2.extend_from_slice(&[9]);
+        push_frame(&mut peer, id, &datagram2).await;
+
+        let mut buf2 = [0u8; 2048];
+        let (n2, addr2) = tokio::time::timeout(Duration::from_secs(2), conn.read_packet(&mut buf2))
+            .await
+            .expect("post-truncation read must resolve")
+            .unwrap();
+        assert_eq!(addr2, src);
+        assert_eq!(&buf2[..n2], &[9]);
+        session.close().await.unwrap();
+    }
+
+    /// A drain larger than one 8 KiB sink pass: the loop must iterate and
+    /// still leave framing aligned (issue #621 review — single-pass drains
+    /// alone don't prove the loop).
+    #[tokio::test]
+    async fn udp_oversized_drain_iterates_sink() {
+        let (session, mut peer) = test_session().await;
+        let (stream, _) = session.open_stream().await.unwrap();
+        let id = stream.id();
+        assert_eq!(wire_frame(&mut peer).await.0, Command::Syn);
+        let conn = AnytlsPacketConn::new(stream, Arc::clone(&session), None);
+        let src: SocketAddr = "192.0.2.9:53".parse().unwrap();
+
+        // 20 KiB payload into a 1-byte buffer → 19999 bytes drained over
+        // three 8 KiB sink passes.
+        let mut datagram = Vec::new();
+        encode_uot_addr(&mut datagram, &src);
+        datagram.extend_from_slice(&20000u16.to_be_bytes());
+        datagram.extend_from_slice(&vec![0xAB; 20000]);
+        push_frame(&mut peer, id, &datagram).await;
+
+        let mut buf = [0u8; 1];
+        let (n, addr) = tokio::time::timeout(Duration::from_secs(2), conn.read_packet(&mut buf))
+            .await
+            .expect("oversized read must resolve")
+            .unwrap();
+        assert_eq!(addr, src);
+        assert_eq!(&buf[..n], &[0xAB]);
+
+        let mut datagram2 = Vec::new();
+        encode_uot_addr(&mut datagram2, &src);
+        datagram2.extend_from_slice(&2u16.to_be_bytes());
+        datagram2.extend_from_slice(&[7, 7]);
+        push_frame(&mut peer, id, &datagram2).await;
+
+        let mut buf2 = [0u8; 2048];
+        let (n2, _) = tokio::time::timeout(Duration::from_secs(2), conn.read_packet(&mut buf2))
+            .await
+            .expect("post-drain read must resolve")
+            .unwrap();
+        assert_eq!(&buf2[..n2], &[7, 7]);
+        session.close().await.unwrap();
+    }
+
+    /// Happy-path guard: a completed datagram read must not poison.
+    #[tokio::test]
+    async fn udp_completed_read_leaves_conn_usable() {
+        let (session, mut peer) = test_session().await;
+        let (stream, _) = session.open_stream().await.unwrap();
+        let id = stream.id();
+        assert_eq!(wire_frame(&mut peer).await.0, Command::Syn);
+        let conn = AnytlsPacketConn::new(stream, Arc::clone(&session), None);
+        let mut buf = [0u8; 2048];
+        let src: SocketAddr = "192.0.2.9:53".parse().unwrap();
+
+        for i in 0u8..2 {
+            // uot addr + u16 len + payload, exactly what the server sends.
+            let mut datagram = Vec::new();
+            encode_uot_addr(&mut datagram, &src);
+            datagram.extend_from_slice(&3u16.to_be_bytes());
+            datagram.extend_from_slice(&[i, i, i]);
+            push_frame(&mut peer, id, &datagram).await;
+
+            let (n, addr) =
+                tokio::time::timeout(Duration::from_secs(2), conn.read_packet(&mut buf))
+                    .await
+                    .expect("completed read must resolve")
+                    .unwrap();
+            assert_eq!(addr, src);
+            assert_eq!(&buf[..n], &[i, i, i]);
+        }
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn udp_cancelled_admission_preserves_close_order() {
+        let (session, mut peer) = test_session().await;
+        let (stream, _) = session.open_stream().await.unwrap();
+        let id = stream.id();
+        assert_eq!(wire_frame(&mut peer).await.0, Command::Syn);
+        // Fill the session budget while the first frame blocks on the wire.
+        for _ in 0..64 {
+            stream.send_data(Bytes::from(vec![42; 512])).await.unwrap();
+        }
+        let conn = AnytlsPacketConn::new(stream, Arc::clone(&session), None);
+        let destination: SocketAddr = "192.0.2.2:53".parse().unwrap();
+        let mut write = Box::pin(conn.write_packet(b"cancelled", &destination));
+        assert!(futures::poll!(&mut write).is_pending());
+        drop(write);
+
+        let mut write = Box::pin(conn.write_packet(b"closed", &destination));
+        assert!(futures::poll!(&mut write).is_pending());
+        conn.close().unwrap();
+        assert!(write.await.is_err(), "close must wake blocked admission");
+        for _ in 0..64 {
+            assert_eq!(
+                wire_frame(&mut peer).await,
+                (Command::Push, id, vec![42; 512])
+            );
+        }
+        assert_eq!(wire_frame(&mut peer).await, (Command::Fin, id, vec![]));
+        session.close().await.unwrap();
     }
 
     /// The request header uses SOCKS5 family bytes, *not* the uot ones.
@@ -827,70 +1254,5 @@ mod tests {
     fn request_falls_back_to_unspecified_without_address() {
         let empty = encode_uot_request(&metadata_for("", None, 1234));
         assert_eq!(empty, vec![0, SOCKS5_ATYP_IPV4, 0, 0, 0, 0, 0x04, 0xd2]);
-    }
-
-    /// Per-packet headers use the uot family bytes — 0x00/0x01, not SOCKS5's
-    /// 0x01/0x04. Getting this wrong is silent on the wire.
-    #[test]
-    fn packet_header_encodes_uot_family_bytes() {
-        let mut buf = Vec::new();
-        encode_uot_addr(&mut buf, &"1.2.3.4:80".parse().unwrap());
-        assert_eq!(buf, vec![UOT_ATYP_IPV4, 1, 2, 3, 4, 0, 80]);
-
-        let mut buf = Vec::new();
-        encode_uot_addr(&mut buf, &"[::1]:80".parse().unwrap());
-        assert_eq!(buf[0], UOT_ATYP_IPV6);
-        assert_eq!(buf.len(), 1 + 16 + 2);
-
-        // v4-mapped peers are unmapped, as upstream does before serializing.
-        let mut buf = Vec::new();
-        encode_uot_addr(&mut buf, &"[::ffff:1.2.3.4]:80".parse().unwrap());
-        assert_eq!(buf, vec![UOT_ATYP_IPV4, 1, 2, 3, 4, 0, 80]);
-    }
-
-    #[tokio::test]
-    async fn read_uot_addr_round_trips_encode() {
-        for addr in ["1.2.3.4:53", "[2001:db8::1]:443"] {
-            let addr: SocketAddr = addr.parse().unwrap();
-            let mut buf = Vec::new();
-            encode_uot_addr(&mut buf, &addr);
-            let mut reader = reader_over(&buf);
-            assert_eq!(read_uot_addr(&mut reader).await.unwrap(), addr);
-        }
-    }
-
-    /// Domain-form replies degrade to `0.0.0.0:<port>` unless the "domain" is
-    /// an IP literal — same best-effort rule as `trojan.rs`.
-    #[tokio::test]
-    async fn read_uot_addr_handles_domain_form() {
-        let mut wire = vec![UOT_ATYP_DOMAIN, 11];
-        wire.extend_from_slice(b"example.com");
-        wire.extend_from_slice(&443u16.to_be_bytes());
-        let mut reader = reader_over(&wire);
-        assert_eq!(
-            read_uot_addr(&mut reader).await.unwrap(),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 443)
-        );
-
-        let mut wire = vec![UOT_ATYP_DOMAIN, 7];
-        wire.extend_from_slice(b"1.2.3.4");
-        wire.extend_from_slice(&53u16.to_be_bytes());
-        let mut reader = reader_over(&wire);
-        assert_eq!(
-            read_uot_addr(&mut reader).await.unwrap(),
-            "1.2.3.4:53".parse::<SocketAddr>().unwrap()
-        );
-    }
-
-    #[tokio::test]
-    async fn read_uot_addr_rejects_unknown_family() {
-        let mut reader = reader_over(&[0x09, 0, 0, 0, 0, 0, 0]);
-        let Err(err) = read_uot_addr(&mut reader).await else {
-            panic!("unknown address family must error");
-        };
-        assert!(
-            err.to_string().contains("unknown uot address type"),
-            "{err}"
-        );
     }
 }

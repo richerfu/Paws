@@ -1,14 +1,14 @@
 {
   "name": "entry",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Please describe the basic information.",
   "main": "",
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@ohos-rs/ability": "1.0.0-beta.2",
-    "@ohos-rs/ability-plugin-files": "1.0.0-beta.1",
-    "@ohos-rs/ability-plugin-url": "1.0.0-beta.1",
+    "@ohos-rs/ability": "1.0.0-beta.3",
+    "@ohos-rs/ability-plugin-files": "1.0.0-beta.3",
+    "@ohos-rs/ability-plugin-url": "1.0.0-beta.3",
     "libpaws_ui.so": "file:./src/main/cpp/types/libpaws_ui",
     "libcore.so": "file:./src/main/cpp/types/libcore"
   }

@@ -1,9 +1,7 @@
-diff --git a/pkg/tcpip/link/fdbased/endpoint.go b/pkg/tcpip/link/fdbased/endpoint.go
-index 8997c26680b..2e6dd03c46f 100644
 --- a/pkg/tcpip/link/fdbased/endpoint.go
 +++ b/pkg/tcpip/link/fdbased/endpoint.go
-@@ -409,7 +409,7 @@ func createInboundDispatcher(e *endpoint, fd int, isSocket bool, fID int32, opts
- func isSocketFD(fd int) (bool, error) {
+@@ -474,7 +474,7 @@
+ func IsSocketFD(fd int) (bool, error) {
  	var stat unix.Stat_t
  	if err := unix.Fstat(fd, &stat); err != nil {
 -		return false, fmt.Errorf("unix.Fstat(%v,...) failed: %v", fd, err)

@@ -72,10 +72,45 @@ impl SnifferRuntime {
             return;
         };
 
-        // Bounded peek (8 KiB) with configurable timeout.
+        // Bounded peek (8 KiB) with configurable timeout. A TLS record can
+        // arrive fragmented across segments — peek() returns whatever is
+        // buffered at call time, so keep re-peeking until the declared
+        // record length is buffered (peek always returns the accumulated
+        // prefix, so re-peeking is cheap and idempotent) or the deadline
+        // hits. HTTP and non-TLS bytes parse on the first chunk.
         let mut buf = [0u8; 8192];
-        let Ok(Ok(n)) = tokio::time::timeout(self.cfg.timeout, stream.peek(&mut buf)).await else {
-            // Peek returned IO error or timed out — leave metadata unchanged.
+        let gather = async {
+            let mut poll = std::time::Duration::from_millis(5);
+            loop {
+                match stream.peek(&mut buf).await {
+                    Ok(0) | Err(_) => return None,
+                    Ok(n) => {
+                        // Keep waiting only while the buffered prefix can
+                        // still grow into a complete TLS record: handshake
+                        // record type (0x16), TLS version major (0x03 —
+                        // filters junk that happens to start with 0x16),
+                        // and a short or incomplete header/record.
+                        // Anything else parses on the first chunk.
+                        let need_more = matches!(proto, Proto::Tls)
+                            && n < buf.len()
+                            && buf[0] == 0x16
+                            && (n < 2 || buf[1] == 0x03)
+                            && (n < 5 || n < 5 + u16::from_be_bytes([buf[3], buf[4]]) as usize);
+                        if !need_more {
+                            return Some(n);
+                        }
+                        // peek is level-triggered — buffered data returns
+                        // immediately, so poll with backoff rather than
+                        // spin until the rest lands (bounded by the
+                        // deadline).
+                        tokio::time::sleep(poll).await;
+                        poll = (poll * 2).min(std::time::Duration::from_millis(50));
+                    }
+                }
+            }
+        };
+        let Ok(Some(n)) = tokio::time::timeout(self.cfg.timeout, gather).await else {
+            // Peek errored or timed out — leave metadata unchanged.
             return;
         };
 
@@ -257,6 +292,41 @@ mod tests {
             meta.sniff_host, "",
             "skip-domain must discard the sniffed result"
         );
+    }
+
+    #[tokio::test]
+    async fn sniffer_fragmented_tls_record_waits_for_full_record() {
+        // A ClientHello delivered in multiple TCP segments must still be
+        // parsed — the gather loop re-peeks until the declared record
+        // length is buffered (a single peek would see a truncated record
+        // and lose the SNI).
+        let cfg = SnifferConfig {
+            enable: true,
+            parse_pure_ip: false,
+            tls_ports: vec![443],
+            timeout: std::time::Duration::from_secs(1),
+            ..Default::default()
+        };
+        let rt = make_runtime(cfg);
+        let (mut client, server) = make_stream_pair().await;
+        let hello = build_client_hello("sni.example.com");
+
+        // Three fragments: a sub-header first chunk (can't even classify
+        // the record), then part of the handshake, then the remainder —
+        // each delayed past a poll interval so the gather loop iterates.
+        client.write_all(&hello[..3]).await.unwrap();
+        let mid = hello[3..20].to_vec();
+        let rest = hello[20..].to_vec();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            client.write_all(&mid).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            client.write_all(&rest).await.unwrap();
+        });
+
+        let mut meta = make_metadata("", 443);
+        rt.sniff(&server, &mut meta).await;
+        assert_eq!(meta.sniff_host, "sni.example.com");
     }
 
     #[tokio::test]

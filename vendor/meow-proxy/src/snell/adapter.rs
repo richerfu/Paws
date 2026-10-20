@@ -1,33 +1,39 @@
 //! Snell outbound adapter — implements `ProxyAdapter` for `type: snell`.
 //!
-//! Wires together the v3/v4 AEAD codecs, the optional simple-obfs (http/tls)
-//! layer, the snell request/response framing, and the optional v4/v5 reuse
-//! pool (`CommandConnectV2`).
+//! Wires together the v3/v4/v6 codecs, the optional simple-obfs (http/tls)
+//! layer (v3–v5 only), the snell request/response framing, and the optional
+//! reuse pool (`CommandConnectV2`, v4 and later).
 
 use async_trait::async_trait;
+use meow_common::atomic::Uint;
 use meow_common::{
     AdapterType, MeowError, Metadata, ProxyAdapter, ProxyConn, ProxyHealth, ProxyPacketConn, Result,
 };
 use meow_transport::Stream as TransportStream;
+use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tracing::debug;
 
-use crate::simple_obfs::{HttpObfs, TlsObfs};
+use meow_transport::simple_obfs::client::{HttpObfs, TlsObfs};
 
-use super::pool::{drain_for_reuse, Pool, PoolStream};
-use super::protocol::{write_header, write_udp_header, Snell};
+use super::pool::{Pool, PoolStream};
+use super::protocol::{connect_request, write_header, write_udp_header, Snell, UDP_REQUEST};
 use super::udp::SnellPacketConn;
+use super::v6::{SnellV6Mode, V6Codec};
 
 /// What Snell version label the adapter uses. v5 servers are
-/// backward-compatible with the v4 TCP client wire, matching mihomo.
+/// backward-compatible with the v4 TCP client wire, matching mihomo. v6 has
+/// its own record layer ([`super::v6`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnellVersion {
     V3,
     V4,
     V5,
+    V6,
 }
 
 impl SnellVersion {
@@ -36,13 +42,20 @@ impl SnellVersion {
             SnellVersion::V3 => "v3",
             SnellVersion::V4 => "v4",
             SnellVersion::V5 => "v5",
+            SnellVersion::V6 => "v6",
         }
     }
 
     fn supports_reuse(self) -> bool {
-        matches!(self, SnellVersion::V4 | SnellVersion::V5)
+        matches!(self, SnellVersion::V4 | SnellVersion::V5 | SnellVersion::V6)
     }
 }
+
+/// v6 servers serve any number of sessions per connection and kept idle
+/// ones open for minutes in testing. A minute of pooling stays well inside
+/// that, and [`Snell::idle_conn_alive`] catches earlier closes.
+const V6_POOL_MAX_IDLE: usize = 10;
+const V6_POOL_MAX_AGE: Duration = Duration::from_secs(60);
 
 /// Optional simple-obfs wrapping the underlying TCP. Mirrors the SS adapter's
 /// `BuiltinObfs` enum, but kept private to the snell module so the two
@@ -64,7 +77,10 @@ pub struct SnellAdapter {
     support_udp: bool,
     pool: Option<Arc<Pool>>,
     version: SnellVersion,
+    /// v6 record framing; `None` for v3–v5.
+    v6: Option<V6Codec>,
     health: ProxyHealth,
+    dialer: Arc<dyn crate::dialer::TcpDialer>,
 }
 
 impl SnellAdapter {
@@ -81,6 +97,7 @@ impl SnellAdapter {
         version: SnellVersion,
         udp: bool,
         reuse: bool,
+        dialer: Arc<dyn crate::dialer::TcpDialer>,
     ) -> Result<Self> {
         if psk.is_empty() {
             return Err(MeowError::Config(format!(
@@ -95,6 +112,11 @@ impl SnellAdapter {
         if server.is_empty() {
             return Err(MeowError::Config(format!(
                 "snell[{name}]: server must not be empty"
+            )));
+        }
+        if version == SnellVersion::V6 && !matches!(obfs, SnellObfs::None) {
+            return Err(MeowError::Config(format!(
+                "snell[{name}]: v6 has no obfs support"
             )));
         }
         let psk_bytes: Arc<[u8]> = Arc::from(psk.as_bytes());
@@ -119,47 +141,113 @@ impl SnellAdapter {
             psk: psk_bytes,
             obfs,
             support_udp: udp,
-            pool: if effective_reuse {
-                Some(Arc::new(Pool::new()))
-            } else {
-                None
+            pool: match (effective_reuse, version) {
+                (false, _) => None,
+                (true, SnellVersion::V6) => Some(Arc::new(Pool::with_limits(
+                    V6_POOL_MAX_IDLE,
+                    V6_POOL_MAX_AGE,
+                ))),
+                (true, _) => Some(Arc::new(Pool::new())),
             },
             version,
+            v6: (version == SnellVersion::V6)
+                .then(|| V6Codec::new(SnellV6Mode::Default, psk.as_bytes())),
             health: ProxyHealth::new(),
+            dialer,
         })
+    }
+
+    /// Match the v6 server's `mode` (the adapter starts in `default`).
+    /// Errors for other versions.
+    pub fn with_v6_mode(mut self, mode: SnellV6Mode) -> Result<Self> {
+        let Some(codec) = &mut self.v6 else {
+            return Err(MeowError::Config(format!(
+                "snell[{}]: mode needs version 6",
+                self.name
+            )));
+        };
+        if codec.mode() != mode {
+            *codec = V6Codec::new(mode, &self.psk);
+        }
+        debug!("snell '{}' v6 mode={}", self.name, mode.as_str());
+        Ok(self)
     }
 
     /// Open a fresh underlying byte stream (TCP, optionally wrapped in obfs)
     /// and Snell-wrap it. No CONNECT header is sent yet.
     async fn dial_fresh(&self) -> Result<PoolStream> {
-        let tcp = meow_common::connect_tcp_host(&self.server, self.port)
+        let tcp = self
+            .dialer
+            // Deliberately `false` (same shape as mux/kcptun sessions): a
+            // pooled conn serves a later stream with no fresh dial, so the
+            // establishing dial is the only signal a lazy front hop ever
+            // sees — marking it internal would hide real reuse traffic.
+            .dial(&self.server, self.port, false)
             .await
             .map_err(MeowError::Io)?;
-        let _ = tcp.set_nodelay(true);
         let inner: Box<dyn TransportStream> = Box::new(tcp);
-        Ok(self.wrap_stream(inner))
+        self.wrap_stream(inner)
     }
 
     /// Apply Snell's optional simple-obfs layer and AEAD codec to any already
     /// connected byte stream.
-    fn wrap_stream(&self, inner: Box<dyn TransportStream>) -> PoolStream {
+    fn wrap_stream(&self, inner: Box<dyn TransportStream>) -> Result<PoolStream> {
         let inner: Box<dyn TransportStream> = match &self.obfs {
             SnellObfs::None => inner,
-            SnellObfs::Http { host } => Box::new(HttpObfs::new(inner, host.clone(), self.port)),
-            SnellObfs::Tls { server } => Box::new(TlsObfs::new(inner, server.clone())),
+            SnellObfs::Http { host } => Box::new(
+                HttpObfs::new(inner, host.clone(), self.port)
+                    .map_err(|e| MeowError::Config(format!("snell obfs: {e}")))?,
+            ),
+            SnellObfs::Tls { server } => Box::new(
+                TlsObfs::new(inner, server.clone())
+                    .map_err(|e| MeowError::Config(format!("snell obfs: {e}")))?,
+            ),
         };
-        match self.version {
-            SnellVersion::V3 => Snell::new_v3(inner, Arc::clone(&self.psk)),
-            SnellVersion::V4 | SnellVersion::V5 => Snell::new(inner, Arc::clone(&self.psk)),
+        Ok(match (&self.v6, self.version) {
+            (Some(codec), _) => Snell::new_v6(inner, Arc::clone(&self.psk), codec.clone()),
+            (None, SnellVersion::V3) => Snell::new_v3(inner, Arc::clone(&self.psk)),
+            (None, _) => Snell::new(inner, Arc::clone(&self.psk)),
+        })
+    }
+
+    /// v6 TCP dial. The request (always `CommandConnectV2`: v6 servers keep
+    /// every connection reusable) is deferred into the session's first
+    /// record, so a pooled conn is vetted with a liveness probe instead of
+    /// a header write.
+    async fn dial_tcp_v6(&self, host: &str, port: u16) -> Result<Box<dyn ProxyConn>> {
+        let request = connect_request(host, port, true).map_err(MeowError::Io)?;
+        // Captured before the take / dial: see `Pool::generation`.
+        let pool_ticket = self.pool_ticket();
+        if let Some(pool) = &self.pool {
+            while let Some(mut snell) = pool.take_idle() {
+                if !snell.idle_conn_alive() {
+                    debug!("snell v6: dropping pooled conn closed while idle");
+                    continue;
+                }
+                snell.reset_reply_state();
+                snell.defer_request(request).map_err(MeowError::Io)?;
+                return Ok(Box::new(PooledConn::new(snell, pool_ticket)));
+            }
         }
+        let mut snell = self.dial_fresh().await?;
+        snell.defer_request(request).map_err(MeowError::Io)?;
+        Ok(Box::new(PooledConn::new(snell, pool_ticket)))
     }
 
     /// Number of idle connections currently parked in the reuse pool.
     /// Returns 0 when reuse is disabled. Exposed so integration tests can
-    /// synchronize with the background drain-and-return task that runs after
-    /// a pooled connection is dropped, instead of sleeping.
+    /// synchronize with the pool return that runs after a session completes,
+    /// instead of sleeping.
     pub fn idle_pool_size(&self) -> usize {
         self.pool.as_ref().map_or(0, |pool| pool.idle_count())
+    }
+
+    /// The pool and its current generation, captured before a conn is taken
+    /// or dialled so one straddling a reset is never re-pooled.
+    fn pool_ticket(&self) -> Option<(Arc<Pool>, Uint)> {
+        self.pool
+            .as_ref()
+            .map(|pool| (Arc::clone(pool), pool.generation()))
     }
 
     fn extract_dest(metadata: &Metadata) -> Result<(String, u16)> {
@@ -200,26 +288,29 @@ impl ProxyAdapter for SnellAdapter {
             self.addr_str,
             self.pool.is_some()
         );
+        if self.v6.is_some() {
+            return self.dial_tcp_v6(&host, port).await;
+        }
 
+        // Captured before the take / dial: see `Pool::generation`.
+        let pool_ticket = self.pool_ticket();
         // Pool-first path — opensnell client.go DialTCP semantics.
         if let Some(pool) = &self.pool {
-            // Two tries: a pooled conn may have been silently closed by the
-            // server between sessions, in which case the header write fails
-            // and we try the next/dial fresh.
-            for attempt in 0..2u32 {
-                let Some((mut snell, prev_uses)) = pool.take_idle() else {
-                    break;
-                };
-                snell.reset_reply_state();
-                if let Err(e) = write_header(&mut snell, &host, port, true).await {
-                    debug!("snell pool conn write failed (attempt {attempt}): {e}");
+            // The server may have closed a pooled conn while it sat idle. A
+            // header write into such a conn usually still succeeds, so skip
+            // one that already reads EOF; a failed write also moves on to
+            // the next conn (or a fresh dial).
+            while let Some(mut snell) = pool.take_idle() {
+                if !snell.idle_conn_alive() {
+                    debug!("snell: dropping pooled conn closed while idle");
                     continue;
                 }
-                return Ok(Box::new(PooledConn::new(
-                    snell,
-                    Some(Arc::clone(pool)),
-                    prev_uses + 1,
-                )));
+                snell.reset_reply_state();
+                if let Err(e) = write_header(&mut snell, &host, port, true).await {
+                    debug!("snell pool conn write failed: {e}");
+                    continue;
+                }
+                return Ok(Box::new(PooledConn::new(snell, pool_ticket)));
             }
         }
 
@@ -228,11 +319,7 @@ impl ProxyAdapter for SnellAdapter {
         write_header(&mut snell, &host, port, reuse)
             .await
             .map_err(MeowError::Io)?;
-        Ok(Box::new(PooledConn::new(
-            snell,
-            self.pool.as_ref().map(Arc::clone),
-            1,
-        )))
+        Ok(Box::new(PooledConn::new(snell, pool_ticket)))
     }
 
     async fn connect_over(
@@ -247,25 +334,60 @@ impl ProxyAdapter for SnellAdapter {
         );
 
         let inner: Box<dyn TransportStream> = Box::new(stream);
-        let mut snell = self.wrap_stream(inner);
-        write_header(&mut snell, &host, port, false)
-            .await
-            .map_err(MeowError::Io)?;
-        Ok(Box::new(PooledConn::new(snell, None, 1)))
+        let mut snell = self.wrap_stream(inner)?;
+        if self.v6.is_some() {
+            let request = connect_request(&host, port, true).map_err(MeowError::Io)?;
+            snell.defer_request(request).map_err(MeowError::Io)?;
+        } else {
+            write_header(&mut snell, &host, port, false)
+                .await
+                .map_err(MeowError::Io)?;
+        }
+        Ok(Box::new(PooledConn::new(snell, None)))
     }
 
-    async fn dial_udp(&self, _metadata: &Metadata) -> Result<Box<dyn ProxyPacketConn>> {
+    async fn dial_udp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyPacketConn>> {
         if !self.support_udp {
             return Err(MeowError::NotSupported(
                 "snell UDP is disabled for this proxy (set `udp: true`)".into(),
             ));
         }
+        // This adapter as a *front*: a host-only UDP destination — the
+        // dialer layer's encoding of a chained `UdpTarget::Name`
+        // (issue #657) — stamps each request frame's address with the
+        // domain so the server resolves it with its own view.
+        let write_target = match metadata.domain_udp_target() {
+            Some((host, port)) if host.len() <= u8::MAX as usize => Some((host.clone(), port)),
+            Some(_) => {
+                return Err(MeowError::NotSupported(
+                    "snell: domain UDP target exceeds the length prefix".into(),
+                ));
+            }
+            None => None,
+        };
         let mut snell = self.dial_fresh().await?;
-        write_udp_header(&mut snell).await.map_err(MeowError::Io)?;
+        if self.v6.is_some() {
+            // Datagrams are one record each, so the request goes alone.
+            snell
+                .defer_request(UDP_REQUEST.to_vec())
+                .map_err(MeowError::Io)?;
+            snell.flush().await.map_err(MeowError::Io)?;
+        } else {
+            write_udp_header(&mut snell).await.map_err(MeowError::Io)?;
+        }
         if self.version.supports_reuse() {
             snell.read_reply().await.map_err(MeowError::Io)?;
         }
-        Ok(Box::new(SnellPacketConn::new(snell)))
+        Ok(Box::new(SnellPacketConn::with_target(snell, write_target)))
+    }
+
+    /// Issue #695: drop the idle reuse pool and refuse to re-pool any conn
+    /// checked out before now — every pooled socket may predate the
+    /// outbound-interface binding.
+    fn reset_sessions(&self) {
+        if let Some(pool) = &self.pool {
+            pool.reset();
+        }
     }
 
     fn health(&self) -> &ProxyHealth {
@@ -280,17 +402,57 @@ impl ProxyAdapter for SnellAdapter {
 /// otherwise — the v4 zero-chunk → EOF mapping happens inside `Snell` itself.
 struct PooledConn {
     inner: Option<PoolStream>,
-    pool: Option<Arc<Pool>>,
-    uses: u32,
+    /// Pool plus the generation the conn was taken or dialled under.
+    pool: Option<(Arc<Pool>, Uint)>,
+    local_half_close: LocalHalfClose,
+    reuse_failed: bool,
+}
+
+/// Local half-close progress. It ends at the flushed zero chunk: every
+/// Snell server version aborts the whole session on transport EOF, dropping
+/// any reply the upstream has yet to send, so the write side stays open until
+/// the connection is dropped (or pooled).
+#[derive(Clone, Copy)]
+enum LocalHalfClose {
+    Open,
+    WritingZero,
+    FlushingZero,
+    Sent,
+    Failed,
 }
 
 impl PooledConn {
-    fn new(snell: PoolStream, pool: Option<Arc<Pool>>, uses: u32) -> Self {
+    fn new(snell: PoolStream, pool: Option<(Arc<Pool>, Uint)>) -> Self {
         Self {
             inner: Some(snell),
             pool,
-            uses,
+            local_half_close: LocalHalfClose::Open,
+            reuse_failed: false,
         }
+    }
+}
+
+/// Finish the protocol-level half-close after the peer has already sent its
+/// zero-chunk. `WritingZero` may represent either a partially-written zero
+/// frame or an older pending payload frame, so keep polling empty writes until
+/// the codec reports that the zero-byte input itself completed.
+async fn finish_local_half_close(snell: &mut PoolStream, state: LocalHalfClose) -> io::Result<()> {
+    match state {
+        LocalHalfClose::Open | LocalHalfClose::WritingZero => {
+            loop {
+                let n =
+                    std::future::poll_fn(|cx| Pin::new(&mut *snell).poll_write(cx, &[])).await?;
+                if n == 0 {
+                    break;
+                }
+            }
+            snell.flush().await
+        }
+        LocalHalfClose::FlushingZero => snell.flush().await,
+        LocalHalfClose::Sent => Ok(()),
+        LocalHalfClose::Failed => Err(io::Error::other(
+            "snell: pooled connection cannot finish protocol half-close",
+        )),
     }
 }
 
@@ -304,7 +466,11 @@ impl AsyncRead for PooledConn {
             .inner
             .as_mut()
             .expect("PooledConn::poll_read after take");
-        Pin::new(inner).poll_read(cx, buf)
+        let result = Pin::new(inner).poll_read(cx, buf);
+        if matches!(&result, Poll::Ready(Err(_))) {
+            self.reuse_failed = true;
+        }
+        result
     }
 }
 
@@ -318,27 +484,73 @@ impl AsyncWrite for PooledConn {
             .inner
             .as_mut()
             .expect("PooledConn::poll_write after take");
-        Pin::new(inner).poll_write(cx, buf)
+        let result = Pin::new(inner).poll_write(cx, buf);
+        if matches!(&result, Poll::Ready(Err(_))) {
+            self.reuse_failed = true;
+        }
+        result
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         let inner = self
             .inner
             .as_mut()
             .expect("PooledConn::poll_flush after take");
-        Pin::new(inner).poll_flush(cx)
+        let result = Pin::new(inner).poll_flush(cx);
+        if matches!(&result, Poll::Ready(Err(_))) {
+            self.reuse_failed = true;
+        }
+        result
     }
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let inner = self
-            .inner
-            .as_mut()
-            .expect("PooledConn::poll_shutdown after take");
-        // Send the half-close zero chunk via the v4 codec (empty write =>
-        // zero-chunk frame). After the frame drains we report Ready, and
-        // the pool-return logic runs in `Drop`.
-        match Pin::new(inner).poll_write(cx, &[]) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Ready(Ok(_)) => Poll::Ready(Ok(())),
+        let this = &mut *self;
+        loop {
+            match this.local_half_close {
+                LocalHalfClose::Open => {
+                    this.local_half_close = LocalHalfClose::WritingZero;
+                }
+                LocalHalfClose::WritingZero => {
+                    let inner = this
+                        .inner
+                        .as_mut()
+                        .expect("PooledConn::poll_shutdown after take");
+                    match Pin::new(inner).poll_write(cx, &[]) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(Err(e)) => {
+                            this.local_half_close = LocalHalfClose::Failed;
+                            return Poll::Ready(Err(e));
+                        }
+                        // A non-zero result completes an older buffered
+                        // payload. Poll once more to stage the zero-chunk.
+                        Poll::Ready(Ok(n)) if n > 0 => continue,
+                        Poll::Ready(Ok(_)) => {
+                            this.local_half_close = LocalHalfClose::FlushingZero;
+                        }
+                    }
+                }
+                LocalHalfClose::FlushingZero => {
+                    let inner = this
+                        .inner
+                        .as_mut()
+                        .expect("PooledConn::poll_shutdown after take");
+                    match Pin::new(inner).poll_flush(cx) {
+                        Poll::Pending => return Poll::Pending,
+                        Poll::Ready(Err(e)) => {
+                            this.local_half_close = LocalHalfClose::Failed;
+                            return Poll::Ready(Err(e));
+                        }
+                        Poll::Ready(Ok(())) => {
+                            this.local_half_close = LocalHalfClose::Sent;
+                        }
+                    }
+                }
+                LocalHalfClose::Sent => return Poll::Ready(Ok(())),
+                LocalHalfClose::Failed => {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "snell: previous shutdown attempt failed",
+                    )));
+                }
+            }
         }
     }
 }
@@ -348,27 +560,38 @@ impl ProxyConn for PooledConn {}
 
 impl Drop for PooledConn {
     fn drop(&mut self) {
-        let (Some(snell), Some(pool)) = (self.inner.take(), self.pool.take()) else {
+        let (Some(snell), Some((pool, generation))) = (self.inner.take(), self.pool.take()) else {
             return;
         };
-        let uses = self.uses;
-        // Spawn a background task to drain the server's tail bytes + the
-        // zero-chunk half-close, then push the conn back. Failures simply
-        // drop the conn — its underlying TCP is closed by `Snell`'s drop.
-        //
-        // Requires an active tokio runtime; the meow-rs binary always runs
-        // inside #[tokio::main], so this is safe in production. In unit
-        // tests that drop a PooledConn outside any runtime, `tokio::spawn`
-        // panics — those tests should use a #[tokio::test] runtime.
+
+        // A raw TCP EOF or unread server tail is not reusable. In particular,
+        // never drain arbitrary bytes here: doing so can swallow an old
+        // session and then feed the next CONNECT_V2 header into that session.
+        if self.reuse_failed || !snell.peer_half_closed() {
+            return;
+        }
+
+        if matches!(self.local_half_close, LocalHalfClose::Sent) {
+            let mut snell = snell;
+            snell.reset_reply_state();
+            pool.put(snell, generation);
+            return;
+        }
+
+        let state = self.local_half_close;
+        if matches!(state, LocalHalfClose::Failed) {
+            return;
+        }
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
         tokio::spawn(async move {
             let mut snell = snell;
-            if drain_for_reuse(&mut snell).await {
-                snell.reset_reply_state();
-                pool.put(snell, uses);
+            if finish_local_half_close(&mut snell, state).await.is_err() {
+                return;
             }
+            snell.reset_reply_state();
+            pool.put(snell, generation);
         });
     }
 }
@@ -439,6 +662,7 @@ mod tests {
             SnellVersion::V3,
             false,
             false,
+            Arc::new(crate::dialer::DirectDialer),
         )
         .unwrap();
         let metadata = Metadata {
@@ -469,5 +693,91 @@ mod tests {
         let mut body = [0u8; 2];
         within(conn.read_exact(&mut body)).await.unwrap();
         assert_eq!(&body, b"ok");
+    }
+
+    /// Every Snell server version tears the session down on transport EOF,
+    /// so a half-close must stop at the zero chunk: the upstream's late
+    /// reply still has to reach the client.
+    #[tokio::test]
+    async fn half_close_keeps_the_transport_open_for_the_reply() {
+        use super::super::v4::V4Conn;
+        use super::super::v6::V6Conn;
+
+        let psk: Arc<[u8]> = Arc::from(b"test-psk".as_slice());
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let peer = V3Conn::new(server, Arc::clone(&psk));
+        half_close_then_late_reply(SnellVersion::V3, client, peer).await;
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let peer = V4Conn::new(server, Arc::clone(&psk));
+        half_close_then_late_reply(SnellVersion::V4, client, peer).await;
+        let (client, server) = tokio::io::duplex(1 << 16);
+        let codec = V6Codec::new(SnellV6Mode::Default, b"test-psk");
+        let peer = V6Conn::new(server, psk, codec);
+        half_close_then_late_reply(SnellVersion::V6, client, peer).await;
+    }
+
+    /// Half-close a `version` session to `peer` (the server side of
+    /// `client`), check that only the zero chunk crossed, then have the peer
+    /// reply.
+    async fn half_close_then_late_reply<P: AsyncRead + AsyncWrite + Unpin>(
+        version: SnellVersion,
+        client: DuplexStream,
+        mut peer: P,
+    ) {
+        use super::super::protocol::is_zero_chunk;
+        use std::task::Waker;
+
+        let adapter = SnellAdapter::new(
+            "snell",
+            "unused.invalid",
+            8443,
+            "test-psk",
+            SnellObfs::None,
+            version,
+            false,
+            false,
+            Arc::new(crate::dialer::DirectDialer),
+        )
+        .unwrap();
+        let metadata = Metadata {
+            host: "example.com".into(),
+            dst_port: 443,
+            ..Metadata::default()
+        };
+        let mut conn = within(adapter.connect_over(Box::new(TestProxyConn(client)), &metadata))
+            .await
+            .unwrap();
+        within(conn.write_all(b"ping")).await.unwrap();
+        within(conn.shutdown()).await.unwrap();
+
+        // v6 always sends the reuse-capable request.
+        let mut expected =
+            connect_request("example.com", 443, version == SnellVersion::V6).unwrap();
+        expected.extend_from_slice(b"ping");
+        let mut got = vec![0u8; expected.len()];
+        within(peer.read_exact(&mut got)).await.unwrap();
+        assert_eq!(got, expected, "{version:?}");
+        let err = within(peer.read(&mut [0u8; 1])).await.unwrap_err();
+        assert!(
+            is_zero_chunk(&err),
+            "{version:?}: expected the zero chunk, got {err}"
+        );
+        let mut probe = [0u8; 1];
+        let polled = Pin::new(&mut peer).poll_read(
+            &mut Context::from_waker(Waker::noop()),
+            &mut ReadBuf::new(&mut probe),
+        );
+        assert!(
+            polled.is_pending(),
+            "{version:?}: half-close sent a transport FIN"
+        );
+
+        within(peer.write_all(&[RESPONSE_TUNNEL])).await.unwrap();
+        within(peer.write_all(b"late")).await.unwrap();
+        within(peer.write(&[])).await.unwrap();
+        within(peer.flush()).await.unwrap();
+        let mut reply = Vec::new();
+        within(conn.read_to_end(&mut reply)).await.unwrap();
+        assert_eq!(reply, b"late", "{version:?}");
     }
 }

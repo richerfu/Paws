@@ -1,8 +1,9 @@
 use crate::sniffer::SnifferRuntime;
 use base64::Engine;
-use meow_common::{AuthConfig, ConnType, Metadata, Network};
-use meow_tunnel::{copy_bidirectional_buf_tracked, ConnectionGuard, Tunnel, RELAY_BUF_SIZE};
-use smallvec::smallvec;
+use meow_common::{with_dial_timeout, AuthConfig, ConnType, Metadata, Network};
+use meow_tunnel::{
+    copy_bidirectional_buf_tracked, route_inbound_tcp, ResolvedTarget, Tunnel, RELAY_BUF_SIZE,
+};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
@@ -46,11 +47,6 @@ async fn handle_http_inner(
     in_name: &str,
     in_port: u16,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Relay scratch buffers on the future's stack — zero per-relay heap allocation
-    // (ADR-0011 T6). Declared up front so both the CONNECT and plain-HTTP paths share them.
-    let mut relay_buf_up = [0u8; RELAY_BUF_SIZE];
-    let mut relay_buf_dn = [0u8; RELAY_BUF_SIZE];
-
     // Read the HTTP request line and headers in chunks until we find
     // \r\n\r\n. Reading one byte at a time costs ~100 syscalls per CONNECT;
     // chunked reads cap the syscall count at ceil(headers / 1024).
@@ -221,81 +217,19 @@ async fn handle_http_inner(
             rt.sniff(stream, &mut metadata).await;
         }
 
-        // Hand off to tunnel
+        // Hand off to the shared inbound routing+relay path. `leftover`
+        // holds any application bytes the client pipelined ahead of the
+        // 200 OK (RFC 7230 forbids this but real clients do it); the shared
+        // path re-emits them to the remote before the bidirectional copy.
         let inner = tunnel.inner();
-        inner.pre_handle_metadata(&mut metadata);
-        let Some((proxy, rule_name, rule_payload)) = inner.resolve_proxy_lazy(&mut metadata).await
-        else {
-            return Err("no matching rule".into());
-        };
-
-        info!(
-            "{} --> {} match {}({}) using {}",
-            metadata.source_address(),
-            metadata.remote_address(),
-            rule_name,
-            rule_payload,
-            proxy.name()
-        );
-
-        let _guard = ConnectionGuard::track(
-            &inner.stats,
-            metadata.pure(),
-            rule_name,
-            rule_payload,
-            smallvec![Arc::from(proxy.name())],
-        );
-
-        let dial = proxy.dial_tcp(&metadata);
-        let dial_result = if let Some(probe_id) = diagnostic_probe {
-            dial.instrument(tracing::info_span!("paws_flow", probe_id)).await
+        let route = route_inbound_tcp(inner, stream, metadata, &leftover);
+        if let Some(probe_id) = diagnostic_probe {
+            route
+                .instrument(tracing::info_span!("paws_flow", probe_id))
+                .await;
         } else {
-            dial.await
-        };
-        match dial_result {
-            Ok(mut remote) => {
-                // Per RFC 7230 the client must wait for 200 OK before sending
-                // application data, but if a client pipelined bytes ahead of
-                // that we already read them — forward before relaying.
-                let up = Arc::clone(_guard.counters());
-                let dn = Arc::clone(_guard.counters());
-                if !leftover.is_empty() {
-                    remote.write_all(&leftover).await?;
-                    inner
-                        .stats
-                        .record_upload(&up, leftover.len() as meow_common::atomic::Int);
-                }
-                match copy_bidirectional_buf_tracked(
-                    stream,
-                    &mut remote,
-                    &mut relay_buf_up,
-                    &mut relay_buf_dn,
-                    |n| {
-                        inner
-                            .stats
-                            .record_upload(&up, n as meow_common::atomic::Int);
-                    },
-                    |n| {
-                        inner
-                            .stats
-                            .record_download(&dn, n as meow_common::atomic::Int);
-                    },
-                )
-                .await
-                {
-                    Ok((up, down)) => {
-                        debug!("HTTP CONNECT relay closed: up={up} down={down}");
-                    }
-                    Err(e) => debug!("HTTP CONNECT relay error: {}", e),
-                }
-            }
-            Err(e) => warn!(
-                "{} HTTP CONNECT dial error: {}",
-                metadata.remote_address(),
-                e
-            ),
+            route.await;
         }
-        // _guard drops here, removing the entry from Statistics.
     } else {
         // Plain HTTP proxy (GET/POST/etc via proxy)
         let url = target;
@@ -328,9 +262,15 @@ async fn handle_http_inner(
         debug!("HTTP {} to {}:{}", method, host, port);
 
         let inner = tunnel.inner();
-        inner.pre_handle_metadata(&mut metadata);
-        let Some((proxy, rule_name, rule_payload)) = inner.resolve_proxy_lazy(&mut metadata).await
-        else {
+        if matches!(
+            inner.pre_handle_metadata(&mut metadata),
+            meow_tunnel::PreHandleVerdict::Drop
+        ) {
+            write_bad_gateway(stream).await?;
+            return Err("unmapped fake-ip destination".into());
+        }
+        let admission = inner.tcp_admission();
+        let Some(target) = inner.resolve_proxy_lazy(&mut metadata).await else {
             write_bad_gateway(stream).await?;
             return Err("no matching rule".into());
         };
@@ -339,93 +279,116 @@ async fn handle_http_inner(
             "{} --> {} match {}({}) using {}",
             metadata.source_address(),
             metadata.remote_address(),
-            rule_name,
-            rule_payload,
-            proxy.name()
+            target.rule_name,
+            target.rule_payload,
+            target.adapter.name()
         );
 
-        let _guard = ConnectionGuard::track(
-            &inner.stats,
-            metadata.pure(),
+        // `route` pins this generation's dialer registry across the dial
+        // (issue #533 review) — released as soon as the dial resolves its
+        // chained front hops so a long-lived relay pins nothing.
+        let ResolvedTarget {
+            adapter: proxy,
             rule_name,
             rule_payload,
-            smallvec![Arc::from(proxy.name())],
-        );
+            route,
+        } = target;
+        let mut route = Some(route);
 
-        match proxy.dial_tcp(&metadata).await {
-            Ok(mut remote) => {
-                // Rewrite the request line: remove the absolute URI scheme+host,
-                // keep the path. Rebuild headers without Proxy-* headers while
-                // preserving all other field bytes exactly.
-                let path = extract_path_from_url(url);
-                let rewritten = rewrite_plain_request(&request, path);
+        let Some(_guard) = admission.track_named(&metadata, rule_name, rule_payload, proxy.name())
+        else {
+            return Ok(());
+        };
 
-                // Force a one-request upstream exchange. The bounded client
-                // wrapper forwards exactly this request body, holds any
-                // pipelined request back, and marks the final response close.
-                remote.write_all(&rewritten).await?;
-                let up = Arc::clone(_guard.counters());
-                let dn = Arc::clone(_guard.counters());
-                // Keep the response-head scratch out of `handle_http_inner`'s
-                // async frame. CONNECT is the dominant path and must not pay
-                // for storage used only by plain HTTP exchanges.
-                let pass_upstream_shutdown = AtomicBool::new(false);
-                let mut client = Box::new(SingleRequestClient::new(
-                    stream,
-                    &leftover,
-                    request.body_kind,
-                    request.upgrade_requested,
-                    &pass_upstream_shutdown,
-                ));
-                // Client EOF should finish the upload direction and arm the
-                // relay linger, but it must not half-close an encrypted proxy
-                // transport before the origin has produced its response. A
-                // validated 101 switches this gate to ordinary tunnel
-                // half-close semantics.
-                let mut remote = ShutdownGate::new(remote, &pass_upstream_shutdown);
+        _guard
+            .run_until_closed(async {
+                let dial = with_dial_timeout(proxy.name(), proxy.dial_tcp(&metadata)).await;
+                drop(route.take());
+                match dial {
+                    Ok(mut remote) => {
+                        // Rewrite the request line: remove the absolute URI scheme+host,
+                        // keep the path. Rebuild headers without Proxy-* headers while
+                        // preserving all other field bytes exactly.
+                        let path = extract_path_from_url(url);
+                        let rewritten = rewrite_plain_request(&request, path);
 
-                match copy_bidirectional_buf_tracked(
-                    &mut *client,
-                    &mut remote,
-                    &mut relay_buf_up,
-                    &mut relay_buf_dn,
-                    |n| {
-                        inner
-                            .stats
-                            .record_upload(&up, n as meow_common::atomic::Int);
-                    },
-                    |n| {
-                        inner
-                            .stats
-                            .record_download(&dn, n as meow_common::atomic::Int);
-                    },
-                )
-                .await
-                {
-                    Ok((up, down)) => {
-                        debug!("HTTP single-request relay closed: up={up} down={down}");
-                    }
-                    Err(e) => {
-                        debug!("HTTP single-request relay error: {}", e);
-                        // A response head the proxy rejects (oversized,
-                        // malformed, invalid status line) aborts the relay
-                        // before anything reached the client. Turn that into
-                        // an explicit 502 rather than a silent connection
-                        // close; once response bytes have flowed, appending
-                        // an error would corrupt the stream instead.
-                        let sent_response_bytes = client.sent_response_bytes;
-                        drop(client);
-                        if !sent_response_bytes {
-                            let _ = write_bad_gateway(stream).await;
+                        // Force a one-request upstream exchange. The bounded client
+                        // wrapper forwards exactly this request body, holds any
+                        // pipelined request back, and marks the final response close.
+                        remote.write_all(&rewritten).await?;
+                        let up = Arc::clone(_guard.counters());
+                        let dn = Arc::clone(_guard.counters());
+                        // Relay scratch buffers live on this plain-HTTP path's stack —
+                        // zero per-relay heap allocation (ADR-0008). Declared here
+                        // (not at the top of handle_http_inner) so the dominant CONNECT
+                        // path, which relays via the shared `route_inbound_tcp` helper
+                        // and its own stack buffers, does not carry these 8 KiB.
+                        let mut relay_buf_up = [0u8; RELAY_BUF_SIZE];
+                        let mut relay_buf_dn = [0u8; RELAY_BUF_SIZE];
+                        // Keep the response-head scratch out of `handle_http_inner`'s
+                        // async frame. CONNECT is the dominant path and must not pay
+                        // for storage used only by plain HTTP exchanges.
+                        let pass_upstream_shutdown = AtomicBool::new(false);
+                        let mut client = Box::new(SingleRequestClient::new(
+                            stream,
+                            &leftover,
+                            request.body_kind,
+                            request.upgrade_requested,
+                            &pass_upstream_shutdown,
+                        ));
+                        // Client EOF should finish the upload direction and arm the
+                        // relay linger, but it must not half-close an encrypted proxy
+                        // transport before the origin has produced its response. A
+                        // validated 101 switches this gate to ordinary tunnel
+                        // half-close semantics.
+                        let mut remote = ShutdownGate::new(remote, &pass_upstream_shutdown);
+
+                        match copy_bidirectional_buf_tracked(
+                            &mut *client,
+                            &mut remote,
+                            &mut relay_buf_up,
+                            &mut relay_buf_dn,
+                            |n| {
+                                inner
+                                    .stats
+                                    .record_upload(&up, n as meow_common::atomic::Int);
+                            },
+                            |n| {
+                                inner
+                                    .stats
+                                    .record_download(&dn, n as meow_common::atomic::Int);
+                            },
+                        )
+                        .await
+                        {
+                            Ok((up, down)) => {
+                                debug!("HTTP single-request relay closed: up={up} down={down}");
+                            }
+                            Err(e) => {
+                                debug!("HTTP single-request relay error: {}", e);
+                                // A response head the proxy rejects (oversized,
+                                // malformed, invalid status line) aborts the relay
+                                // before anything reached the client. Turn that into
+                                // an explicit 502 rather than a silent connection
+                                // close; once response bytes have flowed, appending
+                                // an error would corrupt the stream instead.
+                                let sent_response_bytes = client.sent_response_bytes;
+                                drop(client);
+                                if !sent_response_bytes {
+                                    let _ = write_bad_gateway(stream).await;
+                                }
+                            }
                         }
                     }
+                    Err(e) => {
+                        warn!("{}:{} HTTP dial error: {}", host, port, e);
+                        write_bad_gateway(stream).await?;
+                    }
                 }
-            }
-            Err(e) => {
-                warn!("{}:{} HTTP dial error: {}", host, port, e);
-                write_bad_gateway(stream).await?;
-            }
-        }
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            })
+            .await
+            .unwrap_or(Ok(()))?;
         // _guard drops here, removing the entry from Statistics.
     }
 

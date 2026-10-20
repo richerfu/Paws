@@ -1,5 +1,54 @@
 use super::*;
 
+/// Read-only rule inspection uses the same target checks as Meow dispatch,
+/// including PASS groups and SUB-RULE's PASS-RULE semantics. Peeking through
+/// a group must not advance its load-balancer or count a connection.
+pub(super) struct RuleLookupTargetProbe<'a> {
+    pub route: &'a meow_tunnel::tunnel::RouteTable,
+    pub metadata: &'a Metadata,
+}
+
+impl RuleLookupTargetProbe<'_> {
+    fn unwraps_to(&self, name: &str, kind: AdapterType) -> bool {
+        let Some(mut proxy) = self.route.proxies.get(name).cloned() else {
+            return false;
+        };
+        for _ in 0..16 {
+            if proxy.adapter_type() == kind {
+                return true;
+            }
+            let Some(next) = proxy.unwrap_proxy(self.metadata, false) else {
+                return false;
+            };
+            proxy = next;
+        }
+        false
+    }
+}
+
+impl meow_common::TargetProbe for RuleLookupTargetProbe<'_> {
+    fn check(&self, name: &str) -> meow_common::TargetCheck {
+        use meow_common::TargetCheck;
+        if name == "DIRECT" {
+            return TargetCheck::Usable;
+        }
+        let Some(proxy) = self.route.proxies.get(name) else {
+            return TargetCheck::Missing;
+        };
+        if self.unwraps_to(name, AdapterType::Pass) {
+            return TargetCheck::Pass;
+        }
+        if self.metadata.network == Network::Udp && !proxy.support_udp() {
+            return TargetCheck::Missing;
+        }
+        TargetCheck::Usable
+    }
+
+    fn is_pass_rule(&self, name: &str) -> bool {
+        self.unwraps_to(name, AdapterType::PassRule)
+    }
+}
+
 pub(super) fn target_routes_through_proxy(
     tunnel: &Tunnel,
     target: &str,

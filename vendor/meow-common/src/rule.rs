@@ -28,7 +28,9 @@ pub enum RuleType {
     Not,
     DomainWildcard,
     IpSuffix,
+    SrcIpSuffix,
     IpAsn,
+    SrcIpAsn,
     SubRule,
     InName,
     InType,
@@ -62,7 +64,9 @@ impl RuleType {
             RuleType::Not => "NOT",
             RuleType::DomainWildcard => "DOMAIN-WILDCARD",
             RuleType::IpSuffix => "IP-SUFFIX",
+            RuleType::SrcIpSuffix => "SRC-IP-SUFFIX",
             RuleType::IpAsn => "IP-ASN",
+            RuleType::SrcIpAsn => "SRC-IP-ASN",
             RuleType::SubRule => "SUB-RULE",
             RuleType::InName => "IN-NAME",
             RuleType::InType => "IN-TYPE",
@@ -98,7 +102,9 @@ impl fmt::Display for RuleType {
             RuleType::Not => write!(f, "NOT"),
             RuleType::DomainWildcard => write!(f, "DOMAIN-WILDCARD"),
             RuleType::IpSuffix => write!(f, "IP-SUFFIX"),
+            RuleType::SrcIpSuffix => write!(f, "SRC-IP-SUFFIX"),
             RuleType::IpAsn => write!(f, "IP-ASN"),
+            RuleType::SrcIpAsn => write!(f, "SRC-IP-ASN"),
             RuleType::SubRule => write!(f, "SUB-RULE"),
             RuleType::InName => write!(f, "IN-NAME"),
             RuleType::InType => write!(f, "IN-TYPE"),
@@ -116,6 +122,57 @@ impl fmt::Display for RuleType {
 /// call site again.
 #[derive(Default)]
 pub struct RuleMatchHelper;
+
+/// Match-time verdict for a matched rule's target adapter (issue #533).
+/// Mirrors the checks upstream's `match()` loop applies between
+/// `rule.Match` and returning the adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetCheck {
+    /// The adapter resolves and may carry this connection.
+    Usable,
+    /// Absent from the registry, or present but incapable for this
+    /// connection class (e.g. no UDP support on a UDP flow) — the rule is
+    /// skipped with a warning, mihomo's `continue`.
+    Missing,
+    /// The adapter unwraps to the `PASS` built-in — the rule is skipped
+    /// silently (upstream `continue GetRules` on `C.Pass`).
+    Pass,
+}
+
+/// Registry probe consulted by the match engines for every matched rule.
+/// A plain `Fn(&str) -> bool` closure covers `check` (true → [`Usable`],
+/// false → [`Missing`]) and leaves the pass probes at their defaults, so
+/// existing call sites and tests keep compiling unchanged.
+///
+/// upstream: `tunnel/tunnel.go::match` — `proxies[ada]` lookup, the
+/// `Unwrap` walk for `C.Pass`/`C.Rematch`, and the UDP `SupportUDP`
+/// continue; `CheckPassRule` on `RuleMatchHelper` for sub-rule scans.
+///
+/// [`Usable`]: TargetCheck::Usable
+/// [`Missing`]: TargetCheck::Missing
+pub trait TargetProbe {
+    fn check(&self, name: &str) -> TargetCheck;
+    /// Whether `name` unwraps to a `PASS-RULE`-typed adapter — consulted by
+    /// SUB-RULE inner scans (upstream `matchSubRules`' `CheckPassRule`).
+    fn is_pass_rule(&self, _name: &str) -> bool {
+        false
+    }
+}
+
+/// Convenience adapter for tests and the legacy call sites: a plain
+/// existence predicate. **It can never report [`TargetCheck::Pass`] and
+/// `is_pass_rule` always answers `false`** — a production engine that
+/// needs pass semantics must implement `TargetProbe` for real (see
+/// `RouteTargetProbe` in meow-tunnel).
+impl<F: Fn(&str) -> bool> TargetProbe for F {
+    fn check(&self, name: &str) -> TargetCheck {
+        if self(name) {
+            TargetCheck::Usable
+        } else {
+            TargetCheck::Missing
+        }
+    }
+}
 
 pub trait Rule: Send + Sync {
     fn rule_type(&self) -> RuleType;
@@ -164,11 +221,19 @@ pub trait Rule: Send + Sync {
     /// upstream: `rules/logic/logic.go::matchSubRules` — returns
     /// `(bool, adapter)` from the inner rule, not from the SUB-RULE
     /// wrapper.
+    ///
+    /// `probe` carries the registry checks inner scans need (today only
+    /// [`TargetProbe::is_pass_rule`]); most rules ignore it. A rule whose
+    /// resolved target differs from `adapter()` must also be declared
+    /// `TargetPlan::DynamicAdapter` in the compiled engine (today only
+    /// [`RuleType::SubRule`] qualifies).
     fn match_and_resolve<'a>(
         &'a self,
         metadata: &Metadata,
         helper: &RuleMatchHelper,
+        probe: &dyn TargetProbe,
     ) -> Option<&'a str> {
+        let _ = probe;
         if self.match_metadata(metadata, helper) {
             Some(self.adapter())
         } else {

@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.89"
 name = "meow-listener"
-version = "0.21.2"
+version = "0.22.0"
 build = "build.rs"
 autolib = false
 autobins = false
@@ -38,6 +38,11 @@ listener-mixed = [
     "listener-http",
     "listener-socks5",
 ]
+listener-shadowsocks = [
+    "dep:shadowsocks",
+    "dep:meow-transport",
+    "meow-transport/simple-obfs",
+]
 listener-socks5 = []
 listener-tproxy = []
 listener-tun = [
@@ -56,6 +61,10 @@ path = "src/lib.rs"
 [[test]]
 name = "http_connect"
 path = "tests/http_connect.rs"
+
+[[test]]
+name = "http_connection_close"
+path = "tests/http_connection_close.rs"
 
 [[test]]
 name = "http_proxy_strict"
@@ -85,6 +94,15 @@ path = "tests/socks5_udp_associate.rs"
 name = "socks5_udp_multi_reply"
 path = "tests/socks5_udp_multi_reply.rs"
 
+[[test]]
+name = "socks5_udp_user"
+path = "tests/socks5_udp_user.rs"
+
+[[test]]
+name = "ss_listener_integration"
+path = "tests/ss_listener_integration.rs"
+required-features = ["listener-shadowsocks"]
+
 [dependencies.base64]
 version = "0.22"
 
@@ -100,27 +118,45 @@ optional = true
 version = "0.2"
 
 [dependencies.lwip]
-version = "0.21.2"
+version = "0.22.0"
 optional = true
 package = "meow-lwip"
 
 [dependencies.meow-common]
-version = "0.21.2"
+version = "0.22.0"
 
 [dependencies.meow-dns]
-version = "0.21.2"
+version = "0.22.0"
+optional = true
+default-features = false
+
+[dependencies.meow-transport]
+version = "0.22.0"
 optional = true
 default-features = false
 
 [dependencies.meow-trie]
-version = "0.21.2"
+version = "0.22.0"
 
 [dependencies.meow-tunnel]
-version = "0.21.2"
+version = "0.22.0"
+
+[dependencies.parking_lot]
+version = "0.12"
 
 [dependencies.route_manager]
 version = "0.2"
 optional = true
+
+[dependencies.shadowsocks]
+version = "1.21"
+features = [
+    "aead-cipher",
+    "aead-cipher-2022",
+    "stream-cipher",
+]
+optional = true
+default-features = false
 
 [dependencies.smallvec]
 version = "1"
@@ -128,6 +164,10 @@ features = [
     "union",
     "serde",
 ]
+
+[dependencies.smol_str]
+version = "0.3"
+features = ["serde"]
 
 [dependencies.tokio]
 version = "1"
@@ -141,21 +181,51 @@ version = "2.8"
 features = ["async_tokio"]
 optional = true
 
+[dev-dependencies.async-trait]
+version = "0.1"
+
 [dev-dependencies.ipnet]
 version = "2"
 
-[dev-dependencies.meow-dns]
-version = "0.21.2"
+[dev-dependencies.meow-config]
+version = "0.22.0"
 default-features = false
 
+[dev-dependencies.meow-dns]
+version = "0.22.0"
+default-features = false
+
+[dev-dependencies.meow-rules]
+version = "0.22.0"
+
 [dev-dependencies.meow-trie]
-version = "0.21.2"
+version = "0.22.0"
+
+[dev-dependencies.shadowsocks]
+version = "1.21"
+features = [
+    "aead-cipher",
+    "aead-cipher-2022",
+    "stream-cipher",
+]
+default-features = false
+
+[dev-dependencies.smol_str]
+version = "0.3"
+features = ["serde"]
 
 [dev-dependencies.tokio]
 version = "1"
 features = [
     "full",
     "test-util",
+]
+
+[dev-dependencies.tracing-subscriber]
+version = "0.3"
+features = [
+    "env-filter",
+    "json",
 ]
 
 [lints.clippy]

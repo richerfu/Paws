@@ -27,13 +27,11 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Instant;
 
-use aes_gcm::aead::generic_array::GenericArray;
-use aes_gcm::aead::AeadInPlace;
-use aes_gcm::Aes128Gcm;
 use rand::RngCore;
 use tokio::io::{AsyncRead, AsyncWrite, BufReader, ReadBuf};
 
-use super::cipher::{aes_gcm, snell_kdf};
+use super::cipher::snell_kdf;
+use crate::aead::Aead;
 
 pub const V4_SALT_SIZE: usize = 16;
 pub const V4_NONCE_SIZE: usize = 12;
@@ -66,11 +64,11 @@ pub fn is_zero_chunk(err: &io::Error) -> bool {
             .is_some_and(|e| e.to_string() == ZERO_CHUNK_MSG)
 }
 
-fn zero_chunk_err() -> io::Error {
+pub(super) fn zero_chunk_err() -> io::Error {
     io::Error::new(ZERO_CHUNK_KIND, ZERO_CHUNK_MSG)
 }
 
-fn increment_nonce(nonce: &mut [u8; V4_NONCE_SIZE]) {
+pub(super) fn increment_nonce(nonce: &mut [u8; V4_NONCE_SIZE]) {
     for byte in nonce.iter_mut() {
         *byte = byte.wrapping_add(1);
         if *byte != 0 {
@@ -174,14 +172,14 @@ enum ReaderState {
     },
     /// Reading the next frame's 23-byte sealed header.
     ReadingHeader {
-        aead: Arc<Aes128Gcm>,
+        aead: Arc<Aead>,
         nonce: [u8; V4_NONCE_SIZE],
         header_buf: [u8; V4_HEADER_CIPHER_SIZE],
         header_progress: usize,
     },
     /// Reading `padding_len + payload_len + 16` body bytes.
     ReadingBody {
-        aead: Arc<Aes128Gcm>,
+        aead: Arc<Aead>,
         nonce: [u8; V4_NONCE_SIZE],
         padding_len: usize,
         payload_len: usize,
@@ -190,7 +188,7 @@ enum ReaderState {
     },
     /// Decrypted payload pending — drain into caller before next frame.
     Drain {
-        aead: Arc<Aes128Gcm>,
+        aead: Arc<Aead>,
         nonce: [u8; V4_NONCE_SIZE],
         payload: Vec<u8>,
         payload_off: usize,
@@ -200,7 +198,7 @@ enum ReaderState {
 // ─── Writer state ────────────────────────────────────────────────────────────
 
 struct Writer {
-    aead: Arc<Aes128Gcm>,
+    aead: Arc<Aead>,
     nonce: [u8; V4_NONCE_SIZE],
     salt: [u8; V4_SALT_SIZE],
     salt_sent: bool,
@@ -219,7 +217,7 @@ impl Writer {
     fn new(psk: &[u8]) -> Self {
         let mut salt = [0u8; V4_SALT_SIZE];
         rand::rng().fill_bytes(&mut salt);
-        let aead = aes_gcm(&snell_kdf(psk, &salt, 16));
+        let aead = Aead::aes_128_gcm(&snell_kdf(psk, &salt, 16));
         let padding_delta = (rand::rng().next_u32() % u32::from(V4_INITIAL_PADDING_SPAN)) as u16;
         Self {
             aead: Arc::new(aead),
@@ -320,21 +318,13 @@ impl Writer {
     }
 }
 
-fn seal_in_place(
-    aead: &Aes128Gcm,
-    nonce: &[u8; V4_NONCE_SIZE],
-    buf: &mut Vec<u8>,
-) -> io::Result<()> {
-    aead.encrypt_in_place(GenericArray::from_slice(nonce), b"", buf)
+fn seal_in_place(aead: &Aead, nonce: &[u8; V4_NONCE_SIZE], buf: &mut Vec<u8>) -> io::Result<()> {
+    aead.seal_append(nonce, &[], buf)
         .map_err(|_| io::Error::other("snell v4 encrypt failed"))
 }
 
-fn open_in_place(
-    aead: &Aes128Gcm,
-    nonce: &[u8; V4_NONCE_SIZE],
-    buf: &mut Vec<u8>,
-) -> io::Result<()> {
-    aead.decrypt_in_place(GenericArray::from_slice(nonce), b"", buf)
+fn open_in_place(aead: &Aead, nonce: &[u8; V4_NONCE_SIZE], buf: &mut Vec<u8>) -> io::Result<()> {
+    aead.open_trailing(nonce, &[], buf)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "snell v4 decrypt failed"))
 }
 
@@ -418,7 +408,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for V4Conn<S> {
                     if *salt_progress < V4_SALT_SIZE {
                         continue;
                     }
-                    let aead = Arc::new(aes_gcm(&snell_kdf(&this.psk, &salt_buf[..], 16)));
+                    let aead =
+                        Arc::new(Aead::aes_128_gcm(&snell_kdf(&this.psk, &salt_buf[..], 16)));
                     this.reader = ReaderState::ReadingHeader {
                         aead,
                         nonce: [0u8; V4_NONCE_SIZE],

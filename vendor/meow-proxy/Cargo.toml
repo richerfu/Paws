@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.89"
 name = "meow-proxy"
-version = "0.21.2"
+version = "0.22.0"
 build = false
 autolib = false
 autobins = false
@@ -39,16 +39,21 @@ default = [
     "snell",
     "hysteria2",
     "mux",
+    "kcptun",
 ]
-ech-tls-tunnel = [
-    "ss",
-    "meow-transport/ech",
-]
+ech-tls-tunnel = ["ss"]
 hysteria2 = [
-    "dep:quinn",
-    "dep:h3",
-    "dep:h3-quinn",
+    "dep:quiche",
+    "dep:boring",
     "dep:blake2",
+    "dep:webpki-root-certs",
+    "dep:tokio-util",
+]
+kcptun = [
+    "ss",
+    "mux",
+    "dep:tokio-util",
+    "meow-transport/kcptun",
 ]
 mux = [
     "dep:h2",
@@ -58,9 +63,17 @@ mux = [
 ]
 snell = [
     "dep:argon2",
-    "dep:aes-gcm",
+    "dep:boring",
+    "dep:blake2",
+    "meow-transport/simple-obfs",
 ]
-ss = ["dep:shadowsocks"]
+ss = [
+    "dep:shadowsocks",
+    "meow-transport/simple-obfs",
+    "meow-transport/shadow-tls",
+    "meow-transport/restls",
+    "meow-transport/jls",
+]
 trojan = []
 vless = []
 vless-encryption = [
@@ -70,16 +83,14 @@ vless-encryption = [
     "dep:x25519-dalek",
     "dep:ctr",
     "dep:aes",
-    "dep:aes-gcm",
-    "dep:chacha20poly1305",
+    "dep:boring",
 ]
 vless-vision = ["vless"]
 vmess = [
     "dep:md-5",
     "dep:hmac",
     "dep:aes",
-    "dep:aes-gcm",
-    "dep:chacha20poly1305",
+    "dep:boring",
     "dep:crc32fast",
 ]
 
@@ -96,12 +107,20 @@ name = "anytls_leak"
 path = "tests/anytls_leak.rs"
 
 [[test]]
+name = "gost_plugin_integration"
+path = "tests/gost_plugin_integration.rs"
+
+[[test]]
 name = "http_adapter_integration"
 path = "tests/http_adapter_integration.rs"
 
 [[test]]
 name = "hysteria2_integration"
 path = "tests/hysteria2_integration.rs"
+
+[[test]]
+name = "kcptun_e2e"
+path = "tests/kcptun_e2e.rs"
 
 [[test]]
 name = "shadowsocks_integration"
@@ -135,12 +154,12 @@ path = "tests/v2ray_plugin_integration.rs"
 name = "vless_integration"
 path = "tests/vless_integration.rs"
 
+[[test]]
+name = "xray_server_docker_integration"
+path = "tests/xray_server_docker_integration.rs"
+
 [dependencies.aes]
 version = "0.8"
-optional = true
-
-[dependencies.aes-gcm]
-version = "0.10"
 optional = true
 
 [dependencies.argon2]
@@ -163,12 +182,12 @@ optional = true
 version = "1"
 optional = true
 
+[dependencies.boring]
+version = "5.2"
+optional = true
+
 [dependencies.bytes]
 version = "1"
-
-[dependencies.chacha20poly1305]
-version = "0.10"
-optional = true
 
 [dependencies.crc32fast]
 version = "1"
@@ -183,14 +202,6 @@ version = "0.3"
 
 [dependencies.h2]
 version = "0.4"
-optional = true
-
-[dependencies.h3]
-version = "0.0.8"
-optional = true
-
-[dependencies.h3-quinn]
-version = "0.0.10"
 optional = true
 
 [dependencies.hex]
@@ -211,18 +222,23 @@ version = "0.10"
 optional = true
 
 [dependencies.meow-anytls]
-version = "0.21.2"
+version = "0.22.0"
 optional = true
 
 [dependencies.meow-common]
-version = "0.21.2"
+version = "0.22.0"
 
 [dependencies.meow-dns]
-version = "0.21.2"
+version = "0.22.0"
 default-features = false
 
 [dependencies.meow-transport]
-version = "0.21.2"
+version = "0.22.0"
+features = [
+    "tls",
+    "ws",
+]
+default-features = false
 
 [dependencies.ml-kem]
 version = "0.3"
@@ -232,29 +248,17 @@ optional = true
 [dependencies.parking_lot]
 version = "0.12"
 
-[dependencies.quinn]
-version = "0.11"
-features = [
-    "log",
-    "ring",
-    "runtime-tokio",
-    "rustls-ring",
-]
+[dependencies.psl]
+version = "=2.1.232"
+
+[dependencies.quiche]
+version = "0.30"
+features = ["boringssl-boring-crate"]
 optional = true
 default-features = false
 
 [dependencies.rand]
 version = "0.9"
-
-[dependencies.rustls]
-version = "0.23"
-features = [
-    "ring",
-    "logging",
-    "std",
-    "tls12",
-]
-default-features = false
 
 [dependencies.serde_json]
 version = "1"
@@ -295,15 +299,6 @@ version = "2"
 version = "1"
 features = ["full"]
 
-[dependencies.tokio-rustls]
-version = "0.26"
-features = [
-    "ring",
-    "logging",
-    "tls12",
-]
-default-features = false
-
 [dependencies.tokio-util]
 version = "0.7"
 features = ["compat"]
@@ -312,8 +307,9 @@ optional = true
 [dependencies.tracing]
 version = "0.1"
 
-[dependencies.webpki-roots]
-version = "0.26"
+[dependencies.webpki-root-certs]
+version = "1"
+optional = true
 
 [dependencies.x25519-dalek]
 version = "2"
@@ -325,11 +321,32 @@ default-features = false
 version = "0.14"
 optional = true
 
+[dev-dependencies.aes-gcm]
+version = "0.10"
+
+[dev-dependencies.chacha20poly1305]
+version = "0.10"
+
 [dev-dependencies.hex]
 version = "0.4"
 
+[dev-dependencies.http]
+version = "1"
+
+[dev-dependencies.meow-anytls]
+version = "0.22.0"
+features = ["server"]
+
+[dev-dependencies.meow-transport]
+version = "0.22.0"
+features = [
+    "xhttp",
+    "reality",
+]
+default-features = false
+
 [dev-dependencies.meow-trie]
-version = "0.21.2"
+version = "0.22.0"
 
 [dev-dependencies.rcgen]
 version = "0.13"
@@ -363,6 +380,14 @@ features = [
     "ring",
     "logging",
     "tls12",
+]
+default-features = false
+
+[dev-dependencies.tokio-tungstenite]
+version = "0.29"
+features = [
+    "connect",
+    "handshake",
 ]
 default-features = false
 

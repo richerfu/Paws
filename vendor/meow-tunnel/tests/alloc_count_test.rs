@@ -1,6 +1,7 @@
 use meow_common::{ConnType, DnsMode, Metadata, Network, Rule, RuleType};
 use meow_config::load_config_from_str;
 use meow_tunnel::match_engine::{match_rules, DomainIndex};
+use meow_tunnel::rule_ir::{CompiledRuleSet, LazyMatchOutcome};
 use meow_tunnel::Statistics;
 use smallvec::smallvec;
 use smol_str::SmolStr;
@@ -164,12 +165,12 @@ fn rule_match_zero_alloc_on_hot_path() {
     };
 
     // Warm up
-    let _ = match_rules(&meta, &rules, &index);
+    let _ = match_rules(&meta, &rules, &index, &|_: &str| true);
 
     reset_counts();
     let n = 1000;
     for _ in 0..n {
-        let result = match_rules(&meta, &rules, &index);
+        let result = match_rules(&meta, &rules, &index, &|_: &str| true);
         let _ = std::hint::black_box(result);
     }
     let (allocs, _) = snapshot();
@@ -243,25 +244,25 @@ fn rule_engine_pressure_zero_alloc_free_on_critical_path() {
 
     // Warm up any lazy test/runtime state outside the measured critical path.
     assert_eq!(
-        match_rules(&domain_hit, &rules, &index)
+        match_rules(&domain_hit, &rules, &index, &|_: &str| true)
             .expect("domain suffix rule should match")
             .adapter_name,
         "直连"
     );
     assert_eq!(
-        match_rules(&geosite_hit, &rules, &index)
+        match_rules(&geosite_hit, &rules, &index, &|_: &str| true)
             .expect("GEOSITE github rule should match")
             .adapter_name,
         "Github"
     );
     assert_eq!(
-        match_rules(&geoip_hit, &rules, &index)
+        match_rules(&geoip_hit, &rules, &index, &|_: &str| true)
             .expect("GEOIP CN rule should match")
             .adapter_name,
         "国内"
     );
     assert_eq!(
-        match_rules(&full_scan_final, &rules, &index)
+        match_rules(&full_scan_final, &rules, &index, &|_: &str| true)
             .expect("final rule should match")
             .adapter_name,
         "其他"
@@ -273,21 +274,25 @@ fn rule_engine_pressure_zero_alloc_free_on_critical_path() {
             std::hint::black_box(&domain_hit),
             std::hint::black_box(&rules),
             std::hint::black_box(&index),
+            &|_: &str| true,
         );
         let geosite = match_rules(
             std::hint::black_box(&geosite_hit),
             std::hint::black_box(&rules),
             std::hint::black_box(&index),
+            &|_: &str| true,
         );
         let geoip = match_rules(
             std::hint::black_box(&geoip_hit),
             std::hint::black_box(&rules),
             std::hint::black_box(&index),
+            &|_: &str| true,
         );
         let full_scan = match_rules(
             std::hint::black_box(&full_scan_final),
             std::hint::black_box(&rules),
             std::hint::black_box(&index),
+            &|_: &str| true,
         );
         std::hint::black_box((domain, geosite, geoip, full_scan));
     }
@@ -394,5 +399,88 @@ fn metadata_remote_address_zero_alloc() {
     assert!(
         allocs_bare <= 5,
         "remote_address() should produce near-zero heap allocations, got {allocs_bare}"
+    );
+}
+
+#[test]
+fn lazy_match_zero_alloc_on_clean_scan() {
+    // The lazy matcher buffers dead-target skips in a SmallVec and drains
+    // them only on final outcomes — a scan that never hits a dead target or
+    // a demanding slot must stay allocation-free (ADR-0008).
+    let _guard = serial();
+
+    let rules: Vec<Box<dyn Rule>> = vec![
+        Box::new(SimpleDomainRule::new("example.com", "DIRECT")),
+        Box::new(FinalRule::new("DIRECT")),
+    ];
+    let compiled = CompiledRuleSet::build(&rules);
+    let meta = test_metadata();
+
+    // Warm up.
+    let _ = compiled.match_rules_lazy(&meta, &rules, &|_: &str| true);
+
+    reset_counts();
+    let n = 1000;
+    for _ in 0..n {
+        let outcome = compiled.match_rules_lazy(&meta, &rules, &|_: &str| true);
+        assert!(matches!(outcome, LazyMatchOutcome::Matched(_)));
+        let _ = std::hint::black_box(outcome);
+    }
+    let (allocs, _) = snapshot();
+
+    let per_match = allocs as f64 / n as f64;
+    println!("lazy_rule_match: {allocs} allocs for {n} iterations = {per_match:.3} per match");
+    if under_coverage_instrumentation() {
+        println!("skipping alloc assertion under coverage instrumentation");
+        return;
+    }
+    assert!(
+        allocs == 0,
+        "expected zero heap allocations per lazy rule match, got {allocs} total ({per_match:.3}/match)"
+    );
+}
+
+#[test]
+fn lazy_match_zero_alloc_with_dead_target_skips() {
+    // The skipped-target buffer is a SmallVec with two inline slots — one
+    // or two dead-target matches per connection must still be
+    // allocation-free (ADR-0008); beyond that a heap spill is acceptable
+    // but bounded to once per scan.
+    let _guard = serial();
+
+    let rules: Vec<Box<dyn Rule>> = vec![
+        Box::new(SimpleDomainRule::new("dead-a.example", "GHOST-A")),
+        Box::new(SimpleDomainRule::new("dead-b.example", "GHOST-B")),
+        Box::new(SimpleDomainRule::new("example.com", "DIRECT")),
+        Box::new(FinalRule::new("DIRECT")),
+    ];
+    let compiled = CompiledRuleSet::build(&rules);
+    let meta = Metadata {
+        host: "dead-a.example".into(),
+        ..test_metadata()
+    };
+    let no_ghosts = |name: &str| !name.starts_with("GHOST");
+
+    // Warm up.
+    let _ = compiled.match_rules_lazy(&meta, &rules, &no_ghosts);
+
+    reset_counts();
+    let n = 1000;
+    for _ in 0..n {
+        let outcome = compiled.match_rules_lazy(&meta, &rules, &no_ghosts);
+        assert!(matches!(outcome, LazyMatchOutcome::Matched(_)));
+        let _ = std::hint::black_box(outcome);
+    }
+    let (allocs, _) = snapshot();
+
+    let per_match = allocs as f64 / n as f64;
+    println!("lazy_rule_match dead-target: {allocs} allocs for {n} = {per_match:.3}/match");
+    if under_coverage_instrumentation() {
+        println!("skipping alloc assertion under coverage instrumentation");
+        return;
+    }
+    assert!(
+        allocs == 0,
+        "one dead-target skip must stay inline in the SmallVec, got {allocs} allocs ({per_match:.3}/match)"
     );
 }

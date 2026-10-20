@@ -28,6 +28,8 @@ use ctr::cipher::StreamCipher;
 const RELAY_BUF: usize = 32 * 1024;
 /// Maximum plaintext bytes per record (`common.go`: `if len(b) > 8192`).
 const MAX_CHUNK: usize = 8192;
+/// Maximum accepted encrypted record body (`decode_header`).
+const MAX_RECORD_BODY: usize = 16_640;
 
 /// A parsed long-term "NFS" public key from the `encryption` config string.
 enum NfsKey {
@@ -361,6 +363,12 @@ pub(super) struct DataPhase {
 }
 
 /// Spawn the bidirectional record relay and return the plaintext duplex half.
+///
+/// The returned stream owns both relay tasks: dropping it aborts them, which
+/// is the bounded cleanup path when the upstream transport stays silent (no
+/// data, FIN, or RST — issue #514). A write-side `shutdown()` alone only
+/// half-closes; the read direction keeps delivering records until the peer
+/// ends them.
 pub(super) fn spawn_relay(stream: Box<dyn Stream>, dp: DataPhase) -> Box<dyn Stream> {
     let (client, proxy) = duplex(RELAY_BUF);
     let (rd, wr) = tokio::io::split(stream);
@@ -380,7 +388,7 @@ pub(super) fn spawn_relay(stream: Box<dyn Stream>, dp: DataPhase) -> Box<dyn Str
     } = dp;
 
     let read_key = united_key.clone();
-    tokio::spawn(read_loop(
+    let read_task = tokio::spawn(read_loop(
         rd,
         proxy_wr,
         peer_aead,
@@ -391,14 +399,51 @@ pub(super) fn spawn_relay(stream: Box<dyn Stream>, dp: DataPhase) -> Box<dyn Str
         use_aes,
         reset_cache,
     ));
-    tokio::spawn(write_loop(
+    let write_task = tokio::spawn(write_loop(
         wr, proxy_rd, aead, write_ctr, pre_write, united_key, use_aes,
     ));
 
-    Box::new(client)
+    let read_abort = read_task.abort_handle();
+    let write_abort = write_task.abort_handle();
+
+    // Same supervisor contract as the vmess relay: when the read side ends
+    // on a FATAL path — decode failure, transport error — the exchange is
+    // over; stop the write side instead of leaving it pumping into a dead
+    // transport until the client endpoint drops (issue #514 review). A
+    // clean EOF — peer FIN exactly between records — only half-closes the
+    // exchange: the client may still be uploading, so the write side keeps
+    // running until the caller half-closes or drops the endpoint (issue
+    // #514 review follow-up). If the endpoint is dropped first,
+    // `TaskedDuplex` aborts both tasks and this supervisor resolves.
+    tokio::spawn(async move {
+        let clean_eof = match read_task.await {
+            Ok(clean) => clean,
+            Err(e) => {
+                if e.is_panic() {
+                    tracing::error!("vless encryption: read task panicked: {e}");
+                }
+                false
+            }
+        };
+        if !clean_eof {
+            write_abort.abort();
+        }
+    });
+
+    Box::new(crate::tasked_duplex::TaskedDuplex::new(
+        client, read_abort, write_task,
+    ))
 }
 
 /// Read records from `rd`, decrypt, and forward plaintext to `proxy_wr`.
+///
+/// Returns `true` when the exchange ended on a clean EOF — the peer sent
+/// FIN exactly on a record boundary — so the write direction is still
+/// legitimate (TCP half-close: the peer stopped sending but may keep
+/// receiving). Returns `false` on every fatal path — handshake failure,
+/// truncated record, decode error, or the client endpoint gone — where
+/// the supervisor must stop the write side too (issue #514 review
+/// follow-up).
 #[allow(clippy::too_many_arguments)]
 async fn read_loop(
     mut rd: ReadHalf<Box<dyn Stream>>,
@@ -410,7 +455,7 @@ async fn read_loop(
     united_key: Vec<u8>,
     use_aes: bool,
     reset_cache: Option<Arc<Mutex<TicketCache>>>,
-) {
+) -> bool {
     // A 0-RTT rejection surfaces as a decode failure on the very first record
     // (the server sends deliberate noise). Until one record decodes cleanly,
     // treat an early failure as "ticket rejected" and drop it so the next dial
@@ -428,8 +473,10 @@ async fn read_loop(
         Some(a) => a,
         None => {
             let mut sr = [0u8; 16];
-            if rd.read_exact(&mut sr).await.is_err() {
-                return;
+            if let Err(e) = rd.read_exact(&mut sr).await {
+                tracing::debug!("vless encryption: server random read failed: {e}");
+                let _ = proxy_wr.shutdown().await;
+                return false;
             }
             if xor {
                 read_ctr = Some(new_ctr(&united_key, &sr));
@@ -438,30 +485,72 @@ async fn read_loop(
         }
     };
 
-    // 1-RTT: consume the server's padding body (decrypt + discard).
+    // 1-RTT: consume the server's padding body (decrypt + discard). A
+    // failure here is post-handshake corruption, not an expected 0-RTT
+    // rejection — warn.
     if peer_padding_len > 0 {
         let mut pad = vec![0u8; peer_padding_len];
-        if rd.read_exact(&mut pad).await.is_err() || peer_aead.open(&pad).is_err() {
-            return;
+        if let Err(e) = rd.read_exact(&mut pad).await {
+            tracing::warn!("vless encryption: server padding read failed: {e}");
+            let _ = proxy_wr.shutdown().await;
+            return false;
+        }
+        if peer_aead.open(&pad).is_err() {
+            tracing::warn!("vless encryption: server padding failed to authenticate");
+            let _ = proxy_wr.shutdown().await;
+            return false;
         }
     }
 
+    let mut clean_eof = false;
+    let mut data = Vec::with_capacity(MAX_RECORD_BODY);
     loop {
+        // Two-phase header read: a bare `read` returning 0 means FIN at a
+        // record boundary — the clean half-close. `read_exact` alone cannot
+        // tell that apart from a mid-record truncation (both surface as
+        // UnexpectedEof), and truncation is fatal.
         let mut hdr = [0u8; 5];
-        if rd.read_exact(&mut hdr).await.is_err() {
-            break;
+        match rd.read(&mut hdr).await {
+            Ok(0) => {
+                clean_eof = true;
+                break;
+            }
+            Ok(n) => {
+                if let Err(e) = rd.read_exact(&mut hdr[n..]).await {
+                    tracing::warn!(
+                        "vless encryption: record header truncated by peer EOF \
+                         ({n}/{} bytes): {e}",
+                        hdr.len()
+                    );
+                    break;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("vless encryption: record header read failed: {e}");
+                break;
+            }
         }
         if let Some(ctr) = read_ctr.as_mut() {
             ctr.apply_keystream(&mut hdr);
         }
         let Ok(l) = decode_header(&hdr) else {
-            if !first_record_ok {
+            if first_record_ok {
+                tracing::warn!("vless encryption: undecodable record header");
+            } else {
+                // A first-record decode failure is the expected shape of a
+                // 0-RTT ticket rejection (the server answers deliberate
+                // noise) — invalidate quietly, do not warn.
                 invalidate(&reset_cache);
+                tracing::debug!(
+                    "vless encryption: first record header undecodable \
+                     (0-rtt ticket rejected?)"
+                );
             }
             break;
         };
-        let mut data = vec![0u8; l];
-        if rd.read_exact(&mut data).await.is_err() {
+        data.resize(l, 0);
+        if let Err(e) = rd.read_exact(&mut data).await {
+            tracing::warn!("vless encryption: record body truncated: {e}");
             break;
         }
         let rekey = peer_aead.is_exhausted().then(|| {
@@ -470,9 +559,15 @@ async fn read_loop(
             ctx.extend_from_slice(&data);
             Aead::new(&ctx, &united_key, use_aes)
         });
-        let Ok(plain) = peer_aead.open_ad(&data, &hdr) else {
-            if !first_record_ok {
+        let Ok(()) = peer_aead.open_ad_in_place(&mut data, &hdr) else {
+            if first_record_ok {
+                tracing::warn!("vless encryption: record authentication failed");
+            } else {
                 invalidate(&reset_cache);
+                tracing::debug!(
+                    "vless encryption: first record failed to authenticate \
+                     (0-rtt ticket rejected?)"
+                );
             }
             break;
         };
@@ -480,11 +575,12 @@ async fn read_loop(
         if let Some(next) = rekey {
             peer_aead = next;
         }
-        if proxy_wr.write_all(&plain).await.is_err() {
+        if proxy_wr.write_all(&data).await.is_err() {
             break;
         }
     }
     let _ = proxy_wr.shutdown().await;
+    clean_eof
 }
 
 /// Read plaintext from `proxy_rd`, record-frame + encrypt, and write to `wr`.
@@ -493,11 +589,13 @@ async fn write_loop(
     mut proxy_rd: ReadHalf<DuplexStream>,
     mut aead: Aead,
     mut write_ctr: Option<Aes256Ctr>,
-    mut pre_write: Vec<u8>,
+    pre_write: Vec<u8>,
     united_key: Vec<u8>,
     use_aes: bool,
 ) {
     let mut buf = vec![0u8; MAX_CHUNK];
+    let mut out = Vec::with_capacity(pre_write.len() + 5 + MAX_CHUNK + TAG_LEN);
+    let mut first_record = true;
     loop {
         let n = match proxy_rd.read(&mut buf).await {
             Ok(0) | Err(_) => break,
@@ -505,25 +603,25 @@ async fn write_loop(
         };
         let body = &buf[..n];
 
-        let mut header = encode_header(body.len() + TAG_LEN);
+        let header = encode_header(body.len() + TAG_LEN);
         let exhausted = aead.is_exhausted();
-        let sealed = aead.seal_ad(body, &header);
+        out.clear();
+        if first_record {
+            out.extend_from_slice(&pre_write);
+            first_record = false;
+        }
+        let header_start = out.len();
+        out.extend_from_slice(&header);
+        aead.seal_ad_append(body, &header, &mut out);
         if exhausted {
-            let mut ctx = Vec::with_capacity(5 + sealed.len());
-            ctx.extend_from_slice(&header);
-            ctx.extend_from_slice(&sealed);
+            let mut ctx = Vec::with_capacity(out.len() - header_start);
+            ctx.extend_from_slice(&out[header_start..]);
             aead = Aead::new(&ctx, &united_key, use_aes);
         }
         if let Some(ctr) = write_ctr.as_mut() {
-            ctr.apply_keystream(&mut header);
+            ctr.apply_keystream(&mut out[header_start..header_start + 5]);
         }
 
-        let mut out = Vec::with_capacity(pre_write.len() + 5 + sealed.len());
-        if !pre_write.is_empty() {
-            out.append(&mut pre_write);
-        }
-        out.extend_from_slice(&header);
-        out.extend_from_slice(&sealed);
         if wr.write_all(&out).await.is_err() {
             break;
         }

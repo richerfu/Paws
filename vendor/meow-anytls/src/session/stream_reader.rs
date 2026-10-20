@@ -146,6 +146,44 @@ impl StreamReader {
 // StreamReader 不需要实现 Clone
 // 因为它包含 UnboundedReceiver（不可 Clone）
 
+/// `AsyncRead` over the same state machine as [`read`](Self::read) —
+/// lets shared parsers (`uot` address headers) drive the reader
+/// generically alongside `tokio::io::ReadHalf`.
+impl tokio::io::AsyncRead for StreamReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        use std::task::Poll;
+
+        if self.eof && self.reader_buffer.is_empty() {
+            return Poll::Ready(Ok(()));
+        }
+        if !self.reader_buffer.is_empty() {
+            let n = std::cmp::min(self.reader_buffer.len(), buf.remaining());
+            buf.put_slice(&self.reader_buffer[..n]);
+            self.reader_buffer.drain(..n);
+            return Poll::Ready(Ok(()));
+        }
+        match self.reader_rx.poll_recv(cx) {
+            Poll::Ready(Some(data)) => {
+                let n = std::cmp::min(data.len(), buf.remaining());
+                buf.put_slice(&data[..n]);
+                if n < data.len() {
+                    self.reader_buffer.extend_from_slice(&data[n..]);
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(None) => {
+                self.eof = true;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

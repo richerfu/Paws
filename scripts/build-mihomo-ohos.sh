@@ -12,7 +12,8 @@ if [ -z "${CLASH_META_ROOT:-}" ]; then
 fi
 GO_OHOS_ROOT="${GO_OHOS_ROOT:-$WORKSPACE_PARENT/go-ohos-1.24.7-compat}"
 OHOS_NDK_HOME="${OHOS_NDK_HOME:-/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony}"
-GO_BIN="$GO_OHOS_ROOT/bin/go"
+GO_COMPILER_ROOT="$(sh "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$GO_OHOS_ROOT")"
+GO_BIN="$GO_COMPILER_ROOT/bin/go"
 CC_BIN="$OHOS_NDK_HOME/native/llvm/bin/clang"
 CXX_BIN="$OHOS_NDK_HOME/native/llvm/bin/clang++"
 SYSROOT="$OHOS_NDK_HOME/native/sysroot"
@@ -42,14 +43,15 @@ cp -R "$ROOT_DIR/vendor/mihomo-bridge/." "$BUILD_STAGE/core/"
 ln -s "$CLASH_META_ROOT" "$BUILD_STAGE/core/Clash.Meta"
 
 if grep -Fq '_ = syscall.Close(fd)' "$BUILD_STAGE/core/tun/tun.go"; then
-  git -C "$BUILD_STAGE" apply --check "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch"
-  git -C "$BUILD_STAGE" apply "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch"
+  patch --dry-run -p1 -F 0 -d "$BUILD_STAGE" -i "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch"
+  patch -p1 -F 0 -d "$BUILD_STAGE" -i "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch"
 fi
 
-GVISOR_DIR="$(cd "$BUILD_STAGE/core" && env GOTOOLCHAIN=local "$GO_BIN" mod download -json "$GVISOR_MOD" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Dir"])')"
+GVISOR_DIR="$(cd "$BUILD_STAGE/core" && env GOTOOLCHAIN=local "$GO_BIN" mod download -json "$GVISOR_MOD" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["Dir"]) if "Dir" in data else sys.exit(data.get("Error", "Go module download did not return a source directory"))')"
 cp -R "$GVISOR_DIR" "$BUILD_STAGE/.dart_tool/ohos/gvisor"
 chmod -R u+w "$BUILD_STAGE/.dart_tool/ohos/gvisor"
-git -C "$BUILD_STAGE/.dart_tool/ohos/gvisor" apply "$ROOT_DIR/patches/gvisor-fstat.patch"
+patch --dry-run -p1 -F 0 -d "$BUILD_STAGE/.dart_tool/ohos/gvisor" -i "$ROOT_DIR/patches/gvisor-fstat.patch"
+patch -p1 -F 0 -d "$BUILD_STAGE/.dart_tool/ohos/gvisor" -i "$ROOT_DIR/patches/gvisor-fstat.patch"
 
 cd "$BUILD_STAGE/core"
 env GOTOOLCHAIN=local GOOS=openharmony GOARCH=arm64 CGO_ENABLED=1 \

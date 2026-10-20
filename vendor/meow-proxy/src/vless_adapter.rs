@@ -58,6 +58,7 @@ pub struct VlessAdapter {
     flow: Option<VlessFlow>,
     udp: bool,
     transport: Arc<TransportChain>,
+    dialer: Arc<dyn crate::dialer::TcpDialer>,
     /// sing-mux compatible connection multiplexing (optional).
     #[cfg(feature = "mux")]
     mux: Option<Arc<MuxClient>>,
@@ -74,6 +75,10 @@ impl VlessAdapter {
     /// `uuid_bytes` — 16-byte binary UUID.
     /// `transport`  — pre-built chain (TLS, WS, etc.).
     /// `flow`       — None for plain VLESS, Some(XtlsRprxVision) for Vision.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "dialer param for pluggable TcpDialer"
+    )]
     pub fn new(
         name: &str,
         server: &str,
@@ -82,6 +87,7 @@ impl VlessAdapter {
         flow: Option<VlessFlow>,
         udp: bool,
         transport: TransportChain,
+        dialer: Arc<dyn crate::dialer::TcpDialer>,
     ) -> Self {
         Self {
             name: SmolStr::from(name),
@@ -92,6 +98,7 @@ impl VlessAdapter {
             flow,
             udp,
             transport: Arc::new(transport),
+            dialer,
             #[cfg(feature = "mux")]
             mux: None,
             #[cfg(feature = "vless-encryption")]
@@ -119,6 +126,7 @@ impl VlessAdapter {
         let uuid_bytes = self.uuid_bytes;
         let transport = StdArc::clone(&self.transport);
         let flow = self.flow;
+        let dialer = Arc::clone(&self.dialer);
         let protocol = options.protocol;
         #[cfg(feature = "vless-encryption")]
         let encryption = self.encryption.clone();
@@ -126,13 +134,18 @@ impl VlessAdapter {
         let dial: crate::mux::DialFn = StdArc::new(move || {
             let server = server.clone();
             let transport = StdArc::clone(&transport);
+            let dialer = Arc::clone(&dialer);
             #[cfg(feature = "vless-encryption")]
             let encryption = encryption.clone();
             Box::pin(async move {
-                let tcp = meow_common::connect_tcp_host(&server, port)
+                // Mux session dial — `internal: false`: a shared mux conn
+                // exists to serve user streams regardless of which dial
+                // triggered its establishment.
+                let stream = dialer
+                    .dial(&server, port, false)
                     .await
                     .map_err(MeowError::Io)?;
-                let stream = transport.connect(Box::new(tcp)).await?;
+                let stream = transport.connect(stream).await?;
                 #[cfg(feature = "vless-encryption")]
                 let stream = match &encryption {
                     Some(encryption) => encryption.handshake(stream).await?,
@@ -210,67 +223,39 @@ impl VlessAdapter {
 
     /// Dial a raw TCP + transport-chain stream to the VLESS server, then run the
     /// VLESS Encryption handshake if one is configured.
-    async fn dial_stream(&self) -> Result<Box<dyn meow_transport::Stream>> {
-        let tcp = meow_common::connect_tcp_host(&self.server, self.port)
+    async fn dial_stream(&self, internal: bool) -> Result<Box<dyn meow_transport::Stream>> {
+        let stream = self
+            .dialer
+            .dial(&self.server, self.port, internal)
             .await
             .map_err(MeowError::Io)?;
-        let stream = self.transport.connect(Box::new(tcp)).await?;
+        self.wrap_stream(stream).await
+    }
+
+    /// Apply the configured transport chain (TLS → WS → …) and the VLESS
+    /// Encryption handshake on top of `stream`.  `stream` must already
+    /// terminate at this adapter's server — `dial_tcp` obtains it from
+    /// `dialer.dial`, `connect_over` receives it from the relay chain.
+    async fn wrap_stream(
+        &self,
+        stream: Box<dyn meow_transport::Stream>,
+    ) -> Result<Box<dyn meow_transport::Stream>> {
+        let stream = self.transport.connect(stream).await?;
         #[cfg(feature = "vless-encryption")]
         if let Some(encryption) = &self.encryption {
             return encryption.handshake(stream).await;
         }
         Ok(stream)
     }
-}
 
-// ─── ProxyAdapter impl ────────────────────────────────────────────────────────
-
-#[async_trait]
-impl ProxyAdapter for VlessAdapter {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn adapter_type(&self) -> AdapterType {
-        AdapterType::Vless
-    }
-
-    fn addr(&self) -> &str {
-        &self.addr_str
-    }
-
-    fn support_udp(&self) -> bool {
-        // With mux enabled, UDP rides the mux TCP session (unless
-        // `only-tcp` forces the plain path) — mirrors mihomo's
-        // SingMux.SupportUDP.
-        self.udp || {
-            #[cfg(feature = "mux")]
-            {
-                self.mux.as_ref().is_some_and(|mux| mux.supports_udp())
-            }
-            #[cfg(not(feature = "mux"))]
-            {
-                false
-            }
-        }
-    }
-
-    async fn dial_tcp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyConn>> {
-        debug!(
-            "VLESS connecting to {} via {} flow={:?}",
-            metadata.remote_address(),
-            self.addr_str,
-            self.flow
-        );
-
-        #[cfg(feature = "mux")]
-        if let Some(mux) = &self.mux {
-            let conn = mux.open_stream_for(metadata, "vless").await?;
-            return Ok(Box::new(conn));
-        }
-
-        let stream = self.dial_stream().await?;
-        let addr = addr_from_metadata(metadata);
+    /// Run the VLESS request exchange targeting `metadata` on `stream`
+    /// (already transport-wrapped).  Shared by `dial_tcp` and `connect_over`.
+    async fn handshake_tcp(
+        &self,
+        stream: Box<dyn meow_transport::Stream>,
+        metadata: &Metadata,
+    ) -> Result<Box<dyn ProxyConn>> {
+        let addr = addr_from_metadata(metadata).map_err(MeowError::NotSupported)?;
 
         // Choose flow string for the request header addon.
         let flow_str = match self.flow {
@@ -321,6 +306,76 @@ impl ProxyAdapter for VlessAdapter {
         };
         Ok(conn)
     }
+}
+
+// ─── ProxyAdapter impl ────────────────────────────────────────────────────────
+
+#[async_trait]
+impl ProxyAdapter for VlessAdapter {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn adapter_type(&self) -> AdapterType {
+        AdapterType::Vless
+    }
+
+    fn addr(&self) -> &str {
+        &self.addr_str
+    }
+
+    fn support_udp(&self) -> bool {
+        // With mux enabled, UDP rides the mux TCP session (unless
+        // `only-tcp` forces the plain path) — mirrors mihomo's
+        // SingMux.SupportUDP.
+        self.udp || {
+            #[cfg(feature = "mux")]
+            {
+                self.mux.as_ref().is_some_and(|mux| mux.supports_udp())
+            }
+            #[cfg(not(feature = "mux"))]
+            {
+                false
+            }
+        }
+    }
+
+    async fn dial_tcp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyConn>> {
+        debug!(
+            "VLESS connecting to {} via {} flow={:?}",
+            metadata.remote_address(),
+            self.addr_str,
+            self.flow
+        );
+
+        #[cfg(feature = "mux")]
+        if let Some(mux) = &self.mux {
+            let conn = mux.open_stream_for(metadata, "vless").await?;
+            return Ok(Box::new(conn));
+        }
+
+        let stream = self.dial_stream(metadata.is_internal()).await?;
+        self.handshake_tcp(stream, metadata).await
+    }
+
+    /// Run the VLESS handshake over an existing stream (relay chain).
+    ///
+    /// The stream already terminates at this VLESS server, so the full
+    /// transport chain (TLS/WS/Reality) and the VLESS Encryption handshake
+    /// still apply — only the raw dial is skipped.  Mux pooling is bypassed:
+    /// a relay-supplied stream is single-use and cannot be re-dialled.
+    async fn connect_over(
+        &self,
+        stream: Box<dyn ProxyConn>,
+        metadata: &Metadata,
+    ) -> Result<Box<dyn ProxyConn>> {
+        #[cfg(feature = "mux")]
+        if self.mux.is_some() {
+            debug!("VLESS mux bypassed on relay-supplied stream (single-use)");
+        }
+        let stream = self.wrap_stream(Box::new(stream)).await?;
+        self.handshake_tcp(stream, metadata).await
+    }
 
     async fn dial_udp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyPacketConn>> {
         #[cfg(feature = "mux")]
@@ -344,12 +399,26 @@ impl ProxyAdapter for VlessAdapter {
             self.addr_str
         );
 
-        let stream = self.dial_stream().await?;
-        let addr = addr_from_metadata(metadata);
+        // A >255-byte host cannot ride the one-byte domain length — refuse
+        // as `NotSupported` so a chained `dial_udp_conn` caller falls back to
+        // a locally-resolved `UdpTarget::Addr` instead of a truncated wire
+        // frame (issue #657).  Checked before dialing so the refusal costs
+        // no handshake.
+        let addr = addr_from_metadata(metadata).map_err(MeowError::NotSupported)?;
+        let stream = self.dial_stream(metadata.is_internal()).await?;
 
         let conn = VlessPacketConn::new(stream, &self.uuid_bytes, metadata.dst_port, &addr).await?;
 
         Ok(Box::new(conn))
+    }
+
+    /// Issue #695: close every pooled mux session so the next dial opens a
+    /// fresh physical connection (see `MuxClient::reset`).
+    #[cfg(feature = "mux")]
+    fn reset_sessions(&self) {
+        if let Some(mux) = &self.mux {
+            mux.reset();
+        }
     }
 
     fn health(&self) -> &ProxyHealth {
@@ -362,6 +431,7 @@ impl ProxyAdapter for VlessAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dialer::DirectDialer;
     use meow_common::AdapterType;
 
     fn make_adapter(flow: Option<VlessFlow>, udp: bool) -> VlessAdapter {
@@ -373,6 +443,7 @@ mod tests {
             flow,
             udp,
             TransportChain::empty(),
+            Arc::new(DirectDialer),
         )
     }
 
@@ -417,7 +488,16 @@ mod tests {
         let tls_cfg = TlsConfig::new("example.com");
         let tls_layer = TlsLayer::new(&tls_cfg).expect("TlsLayer");
         chain.push(Box::new(tls_layer));
-        let a = VlessAdapter::new("t", "127.0.0.1", 1, [0u8; 16], None, false, chain);
+        let a = VlessAdapter::new(
+            "t",
+            "127.0.0.1",
+            1,
+            [0u8; 16],
+            None,
+            false,
+            chain,
+            Arc::new(DirectDialer),
+        );
         assert_eq!(a.transport.len(), 1, "TLS-only chain must have 1 layer");
     }
 
@@ -437,7 +517,16 @@ mod tests {
             })
             .expect("WsLayer::new"),
         ));
-        let a = VlessAdapter::new("t", "127.0.0.1", 1, [0u8; 16], None, false, chain);
+        let a = VlessAdapter::new(
+            "t",
+            "127.0.0.1",
+            1,
+            [0u8; 16],
+            None,
+            false,
+            chain,
+            Arc::new(DirectDialer),
+        );
         assert_eq!(a.transport.len(), 2, "TLS+WS chain must have 2 layers");
     }
 

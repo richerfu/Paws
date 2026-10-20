@@ -27,6 +27,7 @@ use meow_common::{
 };
 use smol_str::SmolStr;
 use std::fmt;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::debug;
 
@@ -51,13 +52,17 @@ pub struct HttpAdapter {
     /// Extra headers injected into the CONNECT request only.
     extra_headers: Vec<(String, String)>,
     health: ProxyHealth,
+    dialer: Arc<dyn crate::dialer::TcpDialer>,
 }
-
 impl HttpAdapter {
     /// Create an `HttpAdapter`.
     ///
     /// `auth` — `Some((username, password))` for Basic auth; `None` for no auth.
     /// Both username and password must be set or neither (validated at parse time).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "dialer param for pluggable TcpDialer"
+    )]
     pub fn new(
         name: &str,
         server: &str,
@@ -66,6 +71,7 @@ impl HttpAdapter {
         tls: bool,
         skip_cert_verify: bool,
         extra_headers: Vec<(String, String)>,
+        dialer: Arc<dyn crate::dialer::TcpDialer>,
     ) -> Self {
         // Hoisted out of the dial path: TlsLayer::new clones the webpki root
         // store and builds verifier + crypto provider — per-adapter, not
@@ -89,23 +95,39 @@ impl HttpAdapter {
             tls_layer,
             extra_headers,
             health: ProxyHealth::new(),
+            dialer,
         }
     }
 
     /// Dial TCP to the proxy server, optionally wrapping in TLS.
-    async fn dial_stream(&self) -> Result<Box<dyn meow_transport::Stream>> {
-        let tcp = meow_common::connect_tcp_host(&self.server, self.port)
+    async fn dial_stream(&self, internal: bool) -> Result<Box<dyn meow_transport::Stream>> {
+        let tcp = self
+            .dialer
+            .dial(&self.server, self.port, internal)
             .await
             .map_err(MeowError::Io)?;
+        self.wrap_tls(tcp).await
+    }
 
+    /// Apply the configured TLS layer to `stream` if `tls: true`.
+    /// `stream` must already terminate at this HTTP proxy — `dial_tcp`
+    /// obtains it from `dialer.dial`, `connect_over` receives it from the
+    /// relay chain.
+    async fn wrap_tls(
+        &self,
+        stream: Box<dyn meow_transport::Stream>,
+    ) -> Result<Box<dyn meow_transport::Stream>> {
         if let Some(tls_layer) = &self.tls_layer {
             use meow_transport::Transport;
             tls_layer
-                .connect(Box::new(tcp))
+                .connect(Box::new(stream))
                 .await
-                .map_err(|e| MeowError::Proxy(e.to_string()))
+                .map_err(|e| match e {
+                    meow_transport::TransportError::Io(e) => MeowError::Io(e),
+                    other => MeowError::Proxy(other.to_string()),
+                })
         } else {
-            Ok(Box::new(tcp))
+            Ok(stream)
         }
     }
 
@@ -225,7 +247,7 @@ impl ProxyAdapter for HttpAdapter {
             target, self.server, self.port
         );
 
-        let mut stream = self.dial_stream().await?;
+        let mut stream = self.dial_stream(metadata.is_internal()).await?;
         self.run_connect(&mut stream, &target).await?;
         Ok(Box::new(StreamConn(stream)))
     }
@@ -238,13 +260,15 @@ impl ProxyAdapter for HttpAdapter {
 
     /// Run the HTTP CONNECT handshake over an already-established stream.
     ///
-    /// TLS-wrapping is intentionally skipped — the passed stream is already
-    /// inside the relay chain's encryption.
+    /// The stream already terminates at this HTTP proxy — it carries
+    /// whichever outer transport the relay's preceding hop established, so
+    /// the adapter's own TLS layer (when `tls: true`) still applies before
+    /// CONNECT.
     ///
     /// upstream: `adapter/outbound/http.go` — `DialContextWithDialer`
     async fn connect_over(
         &self,
-        mut stream: Box<dyn ProxyConn>,
+        stream: Box<dyn ProxyConn>,
         metadata: &Metadata,
     ) -> Result<Box<dyn ProxyConn>> {
         let target = connect_target(metadata);
@@ -252,8 +276,9 @@ impl ProxyAdapter for HttpAdapter {
             "http proxy: CONNECT (relay) {} over existing stream",
             target
         );
+        let mut stream = self.wrap_tls(Box::new(stream)).await?;
         self.run_connect(&mut stream, &target).await?;
-        Ok(stream)
+        Ok(Box::new(StreamConn(stream)))
     }
 
     fn health(&self) -> &ProxyHealth {
@@ -415,7 +440,16 @@ mod tests {
     }
 
     fn make_adapter_no_auth(server: &str, port: u16) -> HttpAdapter {
-        HttpAdapter::new(server, server, port, None, false, false, vec![])
+        HttpAdapter::new(
+            server,
+            server,
+            port,
+            None,
+            false,
+            false,
+            vec![],
+            Arc::new(crate::dialer::DirectDialer),
+        )
     }
 
     // ─── http_connect_no_auth_succeeds ────────────────────────────────────────
@@ -473,6 +507,7 @@ mod tests {
             false,
             false,
             vec![],
+            Arc::new(crate::dialer::DirectDialer),
         );
         let meta = make_metadata("example.com", 443);
         let _ = adapter.dial_tcp(&meta).await.expect("dial_tcp");
@@ -556,6 +591,7 @@ mod tests {
             false,
             false,
             vec![("X-Foo".into(), "bar".into())],
+            Arc::new(crate::dialer::DirectDialer),
         );
         let meta = make_metadata("example.com", 443);
         let _ = adapter.dial_tcp(&meta).await.expect("dial_tcp");
@@ -577,6 +613,7 @@ mod tests {
             false,
             false,
             vec![("X-Foo".into(), "bar\r\nX-Injected: yes".into())],
+            Arc::new(crate::dialer::DirectDialer),
         );
         let (mut client, _server) = tokio::io::duplex(64);
         let target = "example.com:443";
@@ -629,6 +666,7 @@ mod tests {
             false,
             false,
             vec![("X-Long".into(), long_value.clone())],
+            Arc::new(crate::dialer::DirectDialer),
         );
         let meta = make_metadata("example.com", 443);
         let _ = adapter.dial_tcp(&meta).await.expect("dial_tcp");

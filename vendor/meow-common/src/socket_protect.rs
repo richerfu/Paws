@@ -323,9 +323,14 @@ pub async fn connect_tcp(addr: SocketAddr) -> io::Result<TcpStream> {
     // TUN global-route loop avoidance (#375): when an outbound interface is
     // installed, bind the socket to it before connect() so the SYN already
     // takes the physical route past the TUN default routes.
-    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    #[cfg(all(
+        not(target_env = "ohos"),
+        any(target_os = "linux", target_os = "macos", target_os = "windows")
+    ))]
     {
-        if crate::outbound_iface::outbound_interface().is_some() {
+        if crate::outbound_iface::binds_peer(addr.ip())
+            && crate::outbound_iface::outbound_interface().is_some()
+        {
             return connect_tcp_iface_bound(addr).await;
         }
     }
@@ -336,17 +341,18 @@ pub async fn connect_tcp(addr: SocketAddr) -> io::Result<TcpStream> {
 }
 
 /// Dial with the socket bound to the installed outbound interface
-/// (`SO_BINDTODEVICE`) before `connect()`. Uses `tokio::net::TcpSocket` for
-/// the async connect so connection errors surface here, not on first I/O.
-#[cfg(target_os = "linux")]
-async fn connect_tcp_iface_bound(addr: SocketAddr) -> io::Result<TcpStream> {
+/// (`SO_BINDTODEVICE` / `IP_BOUND_IF` / `IP_UNICAST_IF`) before `connect()`.
+/// Uses `tokio::net::TcpSocket` for the async connect so connection errors
+/// surface here, not on first I/O.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub(crate) async fn connect_tcp_iface_bound(addr: SocketAddr) -> io::Result<TcpStream> {
     let domain = if addr.is_ipv4() {
         socket2::Domain::IPV4
     } else {
         socket2::Domain::IPV6
     };
     let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))?;
-    crate::outbound_iface::apply_outbound_interface(&socket)?;
+    crate::outbound_iface::apply_outbound_interface(&socket, domain)?;
     socket.set_nonblocking(true)?;
     let tokio_socket = tokio::net::TcpSocket::from_std_stream(socket.into());
     tokio_socket.connect(addr).await
@@ -371,7 +377,10 @@ async fn connect_tcp_iface_bound(addr: SocketAddr) -> io::Result<TcpStream> {
 ///
 /// Never returns an empty `Vec`.
 async fn resolve_addrs(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
-    if let Ok(ip) = host.parse::<IpAddr>() {
+    // `metadata_ip_literal` folds bracketed IPv6 display forms (`[::1]`)
+    // into the literal — a `server:`/`BND.ADDR` string may arrive in that
+    // shape and must not fall through to DNS (issue #701).
+    if let Some(ip) = crate::metadata_ip_literal(host) {
         return Ok(vec![SocketAddr::new(ip, port)]);
     }
 
@@ -473,7 +482,12 @@ pub async fn connect_tcp_host(host: &str, port: u16) -> io::Result<TcpStream> {
     for addr in &addrs {
         match connect_tcp(*addr).await {
             Ok(stream) => return Ok(stream),
-            Err(e) => last_err = Some(e),
+            Err(e) => {
+                // An errno-backed failure (e.g. EMFILE on socket()) must
+                // not be masked by a later errno-less error — it carries
+                // the local-vs-member classification (issue #668).
+                last_err = crate::MeowError::prefer_errno_io(last_err, e);
+            }
         }
     }
     // Every candidate failed — drop any cached system entry so the next dial
@@ -530,7 +544,10 @@ pub async fn bind_udp<A: ToSocketAddrs>(local: A) -> io::Result<UdpSocket> {
     // TUN global-route loop avoidance (#375): bind the socket to the
     // installed outbound interface before the local-address bind, mirroring
     // `connect_tcp` — so the first datagram already bypasses the TUN routes.
-    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    #[cfg(all(
+        not(target_env = "ohos"),
+        any(target_os = "linux", target_os = "macos", target_os = "windows")
+    ))]
     {
         if crate::outbound_iface::outbound_interface().is_some() {
             let resolved = tokio::net::lookup_host(local)
@@ -549,16 +566,20 @@ pub async fn bind_udp<A: ToSocketAddrs>(local: A) -> io::Result<UdpSocket> {
 }
 
 /// Bind a UDP socket to the installed outbound interface
-/// (`SO_BINDTODEVICE`), then to `local`.
-#[cfg(target_os = "linux")]
-fn bind_udp_iface_bound(local: SocketAddr) -> io::Result<UdpSocket> {
+/// (`SO_BINDTODEVICE` / `IP_BOUND_IF` / `IP_UNICAST_IF`), then to `local`.
+/// A socket pinned to a loopback `local` address is left unbound where the
+/// platform's binding would break it (see `outbound_iface::binds_peer`).
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+pub(crate) fn bind_udp_iface_bound(local: SocketAddr) -> io::Result<UdpSocket> {
     let domain = if local.is_ipv4() {
         socket2::Domain::IPV4
     } else {
         socket2::Domain::IPV6
     };
     let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
-    crate::outbound_iface::apply_outbound_interface(&socket)?;
+    if crate::outbound_iface::binds_peer(local.ip()) {
+        crate::outbound_iface::apply_outbound_interface(&socket, domain)?;
+    }
     socket.bind(&local.into())?;
     socket.set_nonblocking(true)?;
     UdpSocket::from_std(socket.into())
@@ -785,6 +806,25 @@ mod tests {
         assert_eq!(counter.count(), 1, "protector still applies to literal");
 
         clear_socket_protector();
+        clear_host_resolver();
+    }
+
+    /// Issue #701: a bracketed IPv6 display form (`server: "[::1]"`) must
+    /// fold to the literal inside `resolve_addrs` — never reach the
+    /// resolver, which would fail on the bracketed "domain".
+    #[tokio::test]
+    async fn connect_tcp_host_with_bracketed_ipv6_literal_skips_resolver() {
+        let _g = LOCK.lock().await;
+        clear_socket_protector();
+        clear_host_resolver();
+        set_host_resolver(Arc::new(FailingResolver) as Arc<dyn HostResolver>);
+
+        let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accept = tokio::spawn(async move { listener.accept().await.unwrap() });
+        let _stream = connect_tcp_host("[::1]", port).await.expect("connect");
+        let _ = accept.await.unwrap();
+
         clear_host_resolver();
     }
 

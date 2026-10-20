@@ -16,10 +16,12 @@
 //!      `skip-cert-verify=true` on the client.
 
 use meow_common::{Metadata, Network, ProxyAdapter};
+use meow_proxy::dialer::DirectDialer;
 use meow_proxy::ShadowsocksAdapter;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::Stdio;
+use std::sync::Arc;
 use tempfile::NamedTempFile;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -209,6 +211,8 @@ async fn test_ss_v2ray_plugin_websocket_mux() {
         false,
         Some("v2ray-plugin"),
         Some("mode=websocket;mux=1;host=example.com;path=/ws"),
+        None,
+        Arc::new(DirectDialer),
     )
     .expect("failed to create adapter with built-in v2ray-plugin");
 
@@ -249,6 +253,8 @@ async fn test_ss_v2ray_plugin_tls_websocket_mux() {
         false,
         Some("v2ray-plugin"),
         Some("mode=websocket;tls;mux=1;host=example.com;path=/ws;skip-cert-verify=true"),
+        None,
+        Arc::new(DirectDialer),
     )
     .expect("failed to create adapter with built-in v2ray-plugin (tls)");
 

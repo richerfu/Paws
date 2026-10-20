@@ -546,6 +546,17 @@ impl MuxCoolSession {
     }
 }
 
+impl MuxCoolSession {
+    /// Tear the session down now even while streams still hold it: the
+    /// driver exits and drops the VLESS connection, so every stream fails.
+    /// Used by pool resets (issue #695). Idempotent.
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        // notify_one: see `Drop` below.
+        self.done.notify_one();
+    }
+}
+
 impl Drop for MuxCoolSession {
     fn drop(&mut self) {
         self.closed.store(true, Ordering::SeqCst);
@@ -1978,8 +1989,14 @@ mod tests {
         )
         .await;
         assert!(opened.is_err(), "open must wait for outbound capacity");
-        // The cancellation guard removes the entry asynchronously.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The cancellation guard removes the entry asynchronously — poll
+        // for it instead of racing a fixed sleep on a loaded runner.
+        for _ in 0..100 {
+            if session.streams.lock().await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert!(
             session.streams.lock().await.is_empty(),
             "the cancelled open must not leave its stream-map entry"
@@ -2500,8 +2517,10 @@ mod tests {
             l.end_frames.contains(&sid)
         })
         .await;
-        // Give a duplicate End a chance to appear, then pin exactly-once.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Give a duplicate End a chance to appear, then pin exactly-once
+        // (a wait-for-absence can't be polled — a wider window is the
+        // only way to shrink the false-pass margin).
+        tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(
             log.lock()
                 .unwrap()
@@ -2564,6 +2583,7 @@ mod tests {
             kind: SessionKind::MuxCool(Arc::clone(&session)),
             streams: std::sync::atomic::AtomicUsize::new(1),
             last_used_ms: meow_common::atomic::AtomicU::new(0),
+            generation: 0,
         });
         let parts = session
             .open_stream_parts("a.example", 80, true)
@@ -2643,6 +2663,7 @@ mod tests {
             kind: super::super::client::SessionKind::MuxCool(Arc::clone(&session)),
             streams: AtomicUsize::new(1),
             last_used_ms: meow_common::atomic::AtomicU::new(0),
+            generation: 0,
         });
         let parts = session
             .open_stream_parts("127.0.0.1", 18082, true)

@@ -15,7 +15,8 @@ use arkit::shadcn::components::{
     Select, Separator, Spinner, Switch, TabsList, TabsTrigger, Textarea,
 };
 use arkit::shadcn::theme::{
-    control, radius, spacing, typography, use_theme, Theme, ThemeMode, ThemePreset, ThemeProvider,
+    control, radius, shadow, spacing, typography, use_theme, with_alpha, Theme, ThemeMode,
+    ThemePreset, ThemeProvider,
 };
 use std::cell::{Cell, RefCell};
 use std::future::Future;
@@ -23,6 +24,8 @@ use std::rc::Rc;
 
 #[path = "view/pages/mod.rs"]
 mod pages;
+#[path = "view/press.rs"]
+mod press;
 #[path = "view/route.rs"]
 mod route;
 
@@ -31,7 +34,11 @@ use pages::{
     privacy_page, profiles_page, proxies_page, requests_page, resources_page, settings_page,
     subscription_converter_page, tools_page, traffic_page, ManualRuleDialog,
 };
+use press::PressState;
 use route::Route;
+
+const COMPACT_CONTENT_MAX_WIDTH: f32 = 640.0;
+const DESKTOP_SIDEBAR_WIDTH: f32 = 248.0;
 
 fn bg() -> u32 {
     use_theme().colors.background
@@ -430,10 +437,13 @@ pub(crate) fn App(initial_safe_area: bridge::InitialSafeArea) -> Element {
         // The full Arkit tree remains edge-to-edge. AppShell applies the safe
         // area to business layout; root portals such as NotificationHost read
         // the same window metrics independently and therefore avoid only once.
-        ThemeProvider {
-            theme,
-            Router::<Route> {}
-            NotificationHost { center: notifications }
+        AdaptiveProvider {
+            config: AdaptiveConfig::new(AdaptiveMode::Auto),
+            ThemeProvider {
+                theme,
+                Router::<Route> {}
+                NotificationHost { center: notifications }
+            }
         }
     }
 }
@@ -741,10 +751,15 @@ fn use_system_preferences_provider(stores: UiStores, tokio: tokio::runtime::Hand
     );
 }
 
+#[derive(Clone, Copy)]
+struct ProfileImportIntent(Signal<bool>);
+
 #[component]
 fn AppShell() -> Element {
+    use_context_provider(|| ProfileImportIntent(Signal::new(false)));
     let initial_safe_area = use_context::<bridge::InitialSafeArea>().0;
     let window_metrics = arkit::use_window_metrics();
+    let adaptive = use_adaptive_layout();
     let safe_area = if window_metrics.content_rect.is_empty() {
         initial_safe_area
     } else {
@@ -762,17 +777,148 @@ fn AppShell() -> Element {
             padding_right: safe_area.right,
             padding_bottom: safe_area.bottom,
             padding_left: safe_area.left,
-            column {
-                width: "100%",
-                height: "100%",
-                column {
-                    layout_weight: 1.0,
+            if adaptive.is_pc() {
+                row {
                     width: "100%",
-                    AnimatedOutlet::<Route> {}
+                    height: "100%",
+                    DesktopSidebar {}
+                    column {
+                        layout_weight: 1.0,
+                        height: "100%",
+                        min_width: 0.0,
+                        AnimatedOutlet::<Route> {}
+                    }
                 }
-                BottomBar {}
+            } else {
+                column {
+                    width: "100%",
+                    height: "100%",
+                    column {
+                        layout_weight: 1.0,
+                        width: "100%",
+                        AnimatedOutlet::<Route> {}
+                    }
+                    BottomBar {}
+                }
             }
             DashboardVpnFloatingAction {}
+        }
+    }
+}
+
+#[component]
+fn DesktopSidebar() -> Element {
+    let locale = use_context::<UiStores>().preferences.read().locale;
+    let route = use_route::<Route>();
+    let navigator = use_navigator();
+    let theme = use_theme();
+    let selected = route.bottom_index();
+
+    rsx! {
+        column {
+            width: DESKTOP_SIDEBAR_WIDTH,
+            height: "100%",
+            padding: spacing::MD,
+            background_color: theme.colors.sidebar,
+            border_width: "0,1,0,0",
+            border_color: theme.colors.sidebar_border,
+            border_style: "solid",
+            row {
+                width: "100%",
+                height: 52.0,
+                padding_left: spacing::SM,
+                align_items: "center",
+                row {
+                    width: 32.0,
+                    height: 32.0,
+                    align_items: "center",
+                    justify_content: "center",
+                    background_color: theme.colors.sidebar_primary,
+                    border_radius: theme.radii.lg,
+                    {arkit::icon("paw-print", 18.0, theme.colors.sidebar_primary_foreground)}
+                }
+                text {
+                    content: "Paws",
+                    margin_left: spacing::SM,
+                    font_size: typography::LG,
+                    line_height: 24.0,
+                    font_weight: 700,
+                    font_color: theme.colors.sidebar_foreground,
+                }
+            }
+            Separator {}
+            text {
+                content: match locale {
+                    UiLocale::ZhCn => "功能".to_owned(),
+                    UiLocale::En => "Navigation".to_owned(),
+                },
+                margin_top: spacing::LG,
+                margin_right: spacing::SM,
+                margin_bottom: spacing::XS,
+                margin_left: spacing::SM,
+                font_size: typography::XS,
+                line_height: 16.0,
+                font_weight: 600,
+                font_color: theme.colors.muted_foreground,
+            }
+            column {
+                width: "100%",
+                for (index, target) in Route::bottom_routes().into_iter().enumerate() {
+                    Button {
+                        key: "desktop-navigation-{index}",
+                        variant: if selected == index { ButtonVariant::Secondary } else { ButtonVariant::Ghost },
+                        height: Some(40.0),
+                        border_radius: Some(theme.radii.md),
+                        full: true,
+                        onclick: move |_| {
+                            navigator.replace(Route::bottom_routes()[index].clone());
+                        },
+                        row {
+                            width: "100%",
+                            align_items: "center",
+                            justify_content: "start",
+                            row {
+                                width: 3.0,
+                                height: 18.0,
+                                margin_right: spacing::SM,
+                                background_color: if selected == index {
+                                    theme.colors.sidebar_primary
+                                } else {
+                                    0x00000000
+                                },
+                                border_radius: theme.radii.full,
+                            }
+                            {arkit::icon(
+                                target.icon(),
+                                17.0,
+                                if selected == index {
+                                    theme.colors.sidebar_accent_foreground
+                                } else {
+                                    theme.colors.sidebar_foreground
+                                },
+                            )}
+                            text {
+                                content: target.title(locale),
+                                margin_left: spacing::SM,
+                                font_size: typography::SM,
+                                line_height: 20.0,
+                                font_weight: if selected == index { 600 } else { 500 },
+                                font_color: theme.colors.sidebar_foreground,
+                            }
+                        }
+                    }
+                    row { height: spacing::XXS }
+                }
+            }
+            column { layout_weight: 1.0 }
+            text {
+                content: format!("Paws {}", env!("CARGO_PKG_VERSION")),
+                margin_left: spacing::SM,
+                margin_bottom: spacing::SM,
+                font_size: typography::XS,
+                line_height: 16.0,
+                font_color: theme.colors.muted_foreground,
+            }
         }
     }
 }
@@ -805,8 +951,9 @@ fn BottomBar() -> Element {
 #[component]
 fn DashboardVpnFloatingAction() -> Element {
     let route = use_route::<Route>();
+    let adaptive = use_adaptive_layout();
     let session = use_context::<UiStores>().session.read().clone();
-    if !matches!(route, Route::Dashboard {}) {
+    if !matches!(route, Route::Dashboard {}) || adaptive.is_pc() {
         return rsx! {};
     }
     rsx! { VpnFloatingAction { session } }
@@ -814,8 +961,31 @@ fn DashboardVpnFloatingAction() -> Element {
 
 #[component]
 fn VpnFloatingAction(session: SessionProjection) -> Element {
+    rsx! {
+        column {
+            width: "100%",
+            height: "100%",
+            padding_right: spacing::XXL,
+            padding_bottom: 92.0,
+            align_items: "end",
+            justify_content: "end",
+            hit_test_behavior: "transparent",
+            VpnPowerButton { session, size: 56.0 }
+        }
+    }
+}
+
+/// Paws-owned VPN action built on the semantic button primitive. The native
+/// button stays visually transparent; the inner circle owns every visual
+/// state so platform defaults cannot leak into the product design.
+#[component]
+fn VpnPowerButton(session: SessionProjection, size: f32) -> Element {
     let services = use_context::<UiServices>();
+    let locale = use_context::<UiStores>().preferences.read().locale;
     let theme = use_theme();
+    let adaptive = use_adaptive_layout();
+    let mut hovering = use_signal(|| false);
+    let mut focused = use_signal(|| false);
     let operation = use_context::<UiOperationStores>().vpn.read().active.clone();
     let starting = operation.as_ref().map_or_else(
         || matches!(session.lifecycle, VpnLifecycle::Starting),
@@ -837,7 +1007,7 @@ fn VpnFloatingAction(session: SessionProjection) -> Element {
     let active = session.vpn_running && !stopping;
     let disabled = operation.is_some() || matches!(session.lifecycle, VpnLifecycle::Starting);
     let icon = if active { "square" } else { "power" };
-    let background = if disabled {
+    let base_background = if disabled {
         theme.colors.muted
     } else if active {
         theme.colors.destructive
@@ -851,36 +1021,53 @@ fn VpnFloatingAction(session: SessionProjection) -> Element {
     } else {
         theme.colors.primary_foreground
     };
+    let background = if !disabled && (hovering() || focused()) {
+        with_alpha(base_background, 0xE6)
+    } else {
+        base_background
+    };
+    let label = if active {
+        translate_ui(locale, tr::dashboard_stop_vpn())
+    } else {
+        translate_ui(locale, tr::dashboard_start_vpn())
+    };
+    let corner_radius = size / 2.0;
     rsx! {
-        column {
-            width: "100%",
-            height: "100%",
-            padding_right: spacing::XXL,
-            padding_bottom: 92.0,
-            align_items: "end",
-            justify_content: "end",
-            hit_test_behavior: "transparent",
-            button {
-                button_type: "normal",
-                width: 56.0,
-                height: 56.0,
-                background_color: background,
-                border_width: 0.0,
-                border_radius: theme.radii.full,
-                enabled: !disabled,
-                opacity: if disabled { 0.6 } else { 1.0 },
-                onclick: move |_| services.toggle_vpn(),
-                row {
-                    width: "100%",
-                    height: "100%",
-                    align_items: "center",
-                    justify_content: "center",
-                    if starting || stopping {
-                        Spinner { size: 22.0, color: Some(foreground) }
-                    } else {
-                        {arkit::icon(icon, 22.0, foreground)}
-                    }
+        button {
+            width: size,
+            height: size,
+            padding: 0.0,
+            background_color: 0x00000000,
+            border_width: 0.0,
+            border_radius: corner_radius,
+            clip: true,
+            enabled: !disabled,
+            focusable: !disabled,
+            focus_on_touch: false,
+            opacity: if disabled { 0.6 } else { 1.0 },
+            onhover: move |event| {
+                if !disabled {
+                    hovering.set(event.data().is_hovering);
                 }
+            },
+            onfocus: move |_| focused.set(true),
+            onblur: move |_| focused.set(false),
+            onclick: move |_| services.toggle_vpn(),
+            row {
+                width: "100%",
+                height: "100%",
+                align_items: "center",
+                justify_content: "center",
+                background_color: background,
+                border_radius: corner_radius,
+                clip: true,
+                shadow: if adaptive.is_pc() { shadow::SM },
+                if starting || stopping {
+                    Spinner { size: size * 0.4, color: Some(foreground) }
+                } else {
+                    {arkit::icon(icon, size * 0.4, foreground)}
+                }
+                text { content: label, width: 0.0, height: 0.0, opacity: 0.0 }
             }
         }
     }
@@ -910,19 +1097,26 @@ fn scaffold_layout(
     use_parent_back_handler(parent.clone());
     let navigator = use_navigator();
     let theme = use_theme();
+    let adaptive = use_adaptive_layout();
+    let content_max_width =
+        adaptive.select(COMPACT_CONTENT_MAX_WIDTH, page.desktop_content_width());
+    let page_padding = adaptive.select(spacing::LG, spacing::XXL);
     rsx! {
         column {
             layout_weight: 1.0,
             width: "100%",
             background_color: theme.colors.background,
             row {
-                height: 56.0,
+                height: adaptive.select(56.0, 64.0),
                 width: "100%",
-                padding_left: spacing::LG,
-                padding_right: spacing::LG,
                 align_items: "center",
+                justify_content: "center",
                 background_color: theme.colors.background,
                 row {
+                    width: "100%",
+                    max_width_constraint: content_max_width,
+                    padding_left: page_padding,
+                    padding_right: page_padding,
                     align_items: "center",
                     if let Some(parent) = parent {
                         FlatButton {
@@ -939,44 +1133,54 @@ fn scaffold_layout(
                         }
                         row { width: spacing::XXS }
                     }
-                    text {
-                        content: page.title(locale),
-                        font_size: typography::XL,
-                        line_height: 28.0,
-                        font_weight: 600,
-                        font_color: theme.colors.foreground,
-                        text_letter_spacing: -0.3,
+                    row {
+                        layout_weight: 1.0,
+                        align_items: "center",
+                        text {
+                            content: page.title(locale),
+                            font_size: typography::XL,
+                            line_height: 28.0,
+                            font_weight: 600,
+                            font_color: theme.colors.foreground,
+                            text_letter_spacing: -0.3,
+                        }
                     }
+                    {actions}
                 }
-                row { layout_weight: 1.0 }
-                {actions}
             }
             Separator {}
             column {
                 layout_weight: 1.0,
                 width: "100%",
+                align_items: "center",
                 if scrollable {
                     // RouteProvider records ArkUI's per-frame scroll deltas and
                     // restores the route's saved position when the page is
                     // mounted again after navigation back.
                     RouteProvider {
-                        column {
+                        row {
                             width: "100%",
-                            padding: spacing::LG,
-                            align_items: "start",
-                            justify_content: "start",
-                            {body}
-                            row { height: spacing::MD }
+                            justify_content: "center",
+                            column {
+                                width: "100%",
+                                max_width_constraint: content_max_width,
+                                padding: page_padding,
+                                align_items: "start",
+                                justify_content: "start",
+                                {body}
+                                row { height: spacing::MD }
+                            }
                         }
                     }
                 } else {
                     column {
                         layout_weight: 1.0,
                         width: "100%",
-                        padding_top: spacing::LG,
-                        padding_right: spacing::LG,
+                        max_width_constraint: content_max_width,
+                        padding_top: page_padding,
+                        padding_right: page_padding,
                         padding_bottom: if flush_fixed_bottom { 0.0 } else { spacing::LG },
-                        padding_left: spacing::LG,
+                        padding_left: page_padding,
                         align_items: "start",
                         justify_content: "start",
                         {body}
@@ -1012,9 +1216,10 @@ fn use_parent_back_handler(parent: Option<Route>) {
 
 fn card(title: impl Into<String>, subtitle: Option<String>, body: Element) -> Element {
     let title = title.into();
+    let shadow = use_adaptive_layout().is_pc();
     rsx! {
         Card {
-            shadow: Some(false),
+            shadow: Some(shadow),
             column {
                 width: "100%",
                 padding: spacing::LG,
@@ -1048,9 +1253,10 @@ fn traffic_metrics(
     let upload_label = upload_label.into();
     let upload_value = upload_value.into();
     let theme = use_theme();
+    let shadow = use_adaptive_layout().is_pc();
     rsx! {
         Card {
-            shadow: Some(false),
+            shadow: Some(shadow),
             row {
                 width: "100%",
                 height: 92.0,
@@ -1097,9 +1303,10 @@ fn traffic_metrics(
 fn usage_summary_card(title: impl Into<String>, upload: u64, download: u64) -> Element {
     let title = title.into();
     let theme = use_theme();
+    let shadow = use_adaptive_layout().is_pc();
     rsx! {
         Card {
-            shadow: Some(false),
+            shadow: Some(shadow),
             column {
                 width: "100%",
                 height: 126.0,
@@ -1248,9 +1455,10 @@ fn empty_state(
     let title = title.into();
     let subtitle = subtitle.into();
     let theme = use_theme();
+    let shadow = use_adaptive_layout().is_pc();
     rsx! {
         Card {
-            shadow: Some(false),
+            shadow: Some(shadow),
             column {
                 width: "100%",
                 height: 190.0,

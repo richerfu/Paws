@@ -193,7 +193,7 @@ fn platform_vpn_state_uses_one_event_pump_and_in_process_subscribers() {
 }
 
 #[test]
-fn native_profile_prepare_overlaps_tun_creation() {
+fn native_profile_prepare_waits_for_process_network_protection() {
     assert!(NAPI_TYPES.contains("prepareVpn(attemptId: string): Promise<boolean>"));
     let start = section(
         VPN_ABILITY,
@@ -209,8 +209,16 @@ fn native_profile_prepare_overlaps_tun_creation() {
         .expect("native prepare await");
     let native_start = start.find("pawsUi.startVpn").expect("native VPN start");
 
-    assert!(prepare < create);
-    assert!(create < await_prepare);
+    let protect = start
+        .find(".protectProcessNet()")
+        .expect("process protection");
+    let protected = start
+        .find("pawsUi.setPlatformNetworkProtected(attemptId, true)")
+        .expect("protection acknowledgement");
+    assert!(create < protect);
+    assert!(protect < protected);
+    assert!(protected < prepare);
+    assert!(prepare < await_prepare);
     assert!(await_prepare < native_start);
 }
 
@@ -425,7 +433,7 @@ fn cleanup_recovery_requires_confirmed_os_stop_and_released_exact_lease() {
         .find("claimCurrentPlatformVpnStop(intentEpoch)")
         .expect("durable owner claim");
     let cleanup = start
-        .find("performStopVpn(recoverableSessionId, intentEpoch)")
+        .find("performStopVpn(recoverableSessionId, intentEpoch, undefined, false, true)")
         .expect("orphan OS cleanup");
     let begin = start
         .find("beginPlatformVpnStartForIntent(intentEpoch)")

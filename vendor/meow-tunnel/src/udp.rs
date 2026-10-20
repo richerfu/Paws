@@ -1,8 +1,7 @@
-use crate::tunnel::TunnelInner;
+use crate::tunnel::{ResolvedTarget, TunnelInner};
 use dashmap::DashMap;
-use meow_common::adapter::ProxyAdapter;
 use meow_common::atomic::AtomicU;
-use meow_common::{Metadata, ProxyPacketConn};
+use meow_common::{with_dial_timeout, Metadata, ProxyPacketConn};
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -80,6 +79,62 @@ pub fn new_nat_table() -> NatTable {
     Arc::new(DashMap::new())
 }
 
+/// One UDP flow's handle on the tunnel's flush signal (issue #695).
+///
+/// The listeners own their UDP flow tables (TUN, SOCKS5, TProxy and the
+/// Shadowsocks inbound each run one task per flow), so the tunnel cannot
+/// close those flows directly. Each flow takes a watch from
+/// [`TunnelInner::udp_flush_watch`] *before* dialling its outbound and adds
+/// [`flushed`](Self::flushed) to its relay `select!`: once
+/// [`Tunnel::close_all_udp_sessions`](crate::Tunnel::close_all_udp_sessions)
+/// runs, the flow ends and closes its outbound conn, and the client's next
+/// datagram opens a fresh flow with a fresh dial. A live watch is what the
+/// flush counts as a listener-owned flow.
+pub struct UdpFlushWatch(tokio::sync::watch::Receiver<u64>);
+
+impl UdpFlushWatch {
+    pub(crate) fn new(receiver: tokio::sync::watch::Receiver<u64>) -> Self {
+        Self(receiver)
+    }
+
+    /// Resolve once a flush has been issued since this watch was taken —
+    /// immediately if one landed while the flow was still dialling.
+    /// Cancel-safe. Never resolves once the tunnel is gone.
+    pub async fn flushed(&mut self) {
+        if self.0.changed().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    /// Whether a flush has been issued since this watch was taken.
+    pub fn is_flushed(&self) -> bool {
+        self.0.has_changed().unwrap_or(false)
+    }
+}
+
+/// Evict sessions idle for more than `idle` from `table`, returning the
+/// eviction count. Split out of the sweeper loop so tests can exercise the
+/// decision synchronously instead of racing a real-time ticker.
+fn sweep_idle_sessions(table: &NatTable, idle: Duration) -> usize {
+    let before = table.len();
+    if before == 0 {
+        return 0;
+    }
+    table.retain(|_key, session| session.idle_for() < idle);
+    // A concurrent `handle_udp` insert can land between the `before`
+    // snapshot and the post-retain `len()`, so saturating-sub is load
+    // bearing — plain subtraction would panic in dev builds and kill the
+    // detached sweeper task.
+    let evicted = before.saturating_sub(table.len());
+    if evicted > 0 {
+        debug!(
+            "UDP NAT sweeper: evicted {evicted} idle sessions (remaining {})",
+            table.len()
+        );
+    }
+    evicted
+}
+
 /// Spawn the background sweeper that evicts UDP NAT sessions idle for more
 /// than `idle`. Scans every `interval`. The task exits when the caller drops
 /// the returned `JoinHandle`'s aborter (or the last Arc to the table is
@@ -101,18 +156,7 @@ pub fn spawn_nat_sweeper(
                 debug!("UDP NAT sweeper: table dropped, exiting");
                 return;
             };
-            let before = table.len();
-            if before == 0 {
-                continue;
-            }
-            table.retain(|_key, session| session.idle_for() < idle);
-            let evicted = before.saturating_sub(table.len());
-            if evicted > 0 {
-                debug!(
-                    "UDP NAT sweeper: evicted {evicted} idle sessions (remaining {})",
-                    table.len()
-                );
-            }
+            sweep_idle_sessions(&table, idle);
         }
     })
 }
@@ -125,8 +169,15 @@ pub async fn handle_udp(
     mut metadata: Metadata,
 ) {
     // Fake-IP → host rewrite (no-op outside fake-IP mode aside from a
-    // snooping-cache hostname fill-in).
-    tunnel.pre_handle_metadata(&mut metadata);
+    // snooping-cache hostname fill-in). An unmapped fake-IP destination
+    // is dropped — dialing it loops back into a fake-IP-routed inbound
+    // (issue #618).
+    if matches!(
+        tunnel.pre_handle_metadata(&mut metadata),
+        crate::tunnel::PreHandleVerdict::Drop
+    ) {
+        return;
+    }
 
     // Pre-resolve metadata (host -> real IP if rules need it). UDP keeps
     // the eager pre_resolve + resolve_proxy pair (no lazy enrichment): the
@@ -138,7 +189,7 @@ pub async fn handle_udp(
     // address for its NAT key and outbound packet API, including after a
     // fake-IP was rewritten back to a hostname under domain-only rules.
     if metadata.dst_ip.is_none() && !metadata.host.is_empty() {
-        metadata.dst_ip = tunnel.resolver.resolve_ip_real(&metadata.host).await;
+        metadata.dst_ip = tunnel.resolver().resolve_ip_real(&metadata.host).await;
     }
 
     // Build destination SocketAddr for the NAT key.
@@ -190,25 +241,18 @@ pub async fn handle_udp(
         return;
     }
 
-    // Slow path: new session — match rules and dial.
-    //
-    // UDP DNS bypass: any UDP packet destined for port 53 short-circuits
-    // rule matching and is dialled DIRECT. Routing client DNS through a
-    // proxy would defeat the whole point of the in-process DNS resolver
-    // (rule-set selection, fake-IP, snooping) and on Android would push
-    // queries through the VPN tun rather than over the protected fd.
-    let (proxy, rule_name, rule_payload) = if metadata.dst_port == 53 {
-        (
-            Arc::clone(&tunnel.direct) as Arc<dyn ProxyAdapter>,
-            smol_str::SmolStr::new_static("DnsBypass"),
-            smol_str::SmolStr::default(),
-        )
-    } else {
-        let Some(matched) = tunnel.resolve_proxy(&metadata) else {
-            warn!("no matching rule for UDP {}", metadata.remote_address());
-            return;
-        };
-        matched
+    // Slow path: all client UDP, including port 53, follows routing policy.
+    // `_route` pins this generation's dialer registry across the dial
+    // (issue #533 review).
+    let Some(ResolvedTarget {
+        adapter: proxy,
+        rule_name,
+        rule_payload,
+        route: _route,
+    }) = tunnel.resolve_proxy(&metadata).await
+    else {
+        warn!("no matching rule for UDP {}", metadata.remote_address());
+        return;
     };
 
     info!(
@@ -220,7 +264,20 @@ pub async fn handle_udp(
         proxy.name()
     );
 
-    match proxy.dial_udp(&metadata).await {
+    // Taken before the dial: a session dialled across a flush may sit on a
+    // socket that predates the new outbound binding (issue #695).
+    let flush = tunnel.udp_flush_watch();
+    // Bounded like mihomo's `C.DefaultUDPTimeout`. An unbounded dial here is
+    // worse than on TCP: the key is still unclaimed (see below), so every
+    // datagram of the flow starts its own stalled dial.
+    match with_dial_timeout(proxy.name(), proxy.dial_udp(&metadata)).await {
+        Ok(conn) if flush.is_flushed() => {
+            debug!(
+                "UDP {} -> {}: sessions flushed during the dial; dropping datagram",
+                src, dst_addr
+            );
+            let _ = conn.close();
+        }
         Ok(conn) => {
             let session = Arc::new(UdpSession::new(conn, Arc::from(proxy.name())));
             // Claim the key atomically before the first write. The dial above
@@ -273,6 +330,7 @@ mod tests {
     use super::*;
     use crate::tunnel::Tunnel;
     use async_trait::async_trait;
+    use meow_common::adapter::ProxyAdapter;
     use meow_common::error::Result as MeowResult;
     use meow_common::{
         AdapterType, DelayHistory, DnsMode, MeowError, Network, Proxy, ProxyConn, ProxyHealth,
@@ -290,6 +348,7 @@ mod tests {
             DnsMode::Normal,
             meow_trie::DomainTrie::new(),
             false,
+            true,
         ));
         Tunnel::new(resolver)
     }
@@ -302,6 +361,53 @@ mod tests {
             dst_ip: Some(dst.ip()),
             dst_port: dst.port(),
             ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn udp_port_53_obeys_reject_rule() {
+        let tunnel = mk_tunnel();
+        let res = meow_config::rebuild_from_raw(&Default::default()).unwrap();
+        tunnel.update_proxies(res.proxies, res.dialer_registry);
+        tunnel.update_rules(vec![Box::new(meow_rules::final_rule::FinalRule::new(
+            "REJECT",
+        ))]);
+        let src = "127.0.0.1:12345".parse().unwrap();
+        for port in [53, 5353] {
+            let dst = SocketAddr::from(([127, 0, 0, 1], port));
+            handle_udp(
+                tunnel.inner(),
+                b"not a DNS query",
+                src,
+                mk_metadata(src, dst),
+            )
+            .await;
+            let session = tunnel.inner().nat_table.get(&(src, dst)).unwrap();
+            assert_eq!(&*session.proxy_name, "REJECT");
+            assert!(
+                session.conn.local_addr().is_err(),
+                "must not open a DIRECT socket"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn udp_port_53_obeys_proxy_rule_and_global_mode() {
+        for mode in [TunnelMode::Rule, TunnelMode::Global] {
+            let tunnel = mk_tunnel();
+            tunnel.set_mode(mode);
+            let proxy = Arc::new(SlowDialProxy::new());
+            let mut proxies: HashMap<SmolStr, Arc<dyn Proxy>> = HashMap::new();
+            proxies.insert("GLOBAL".into(), Arc::clone(&proxy) as Arc<dyn Proxy>);
+            tunnel.update_proxies(proxies, Default::default());
+            tunnel.update_rules(vec![Box::new(meow_rules::final_rule::FinalRule::new(
+                "GLOBAL",
+            ))]);
+            let src = "127.0.0.1:12345".parse().unwrap();
+            let dst = "127.0.0.1:53".parse().unwrap();
+            handle_udp(tunnel.inner(), b"query", src, mk_metadata(src, dst)).await;
+            assert_eq!(proxy.dials.load(Ordering::SeqCst), 1);
+            assert_eq!(proxy.conns.lock().unwrap()[0].0.load(Ordering::SeqCst), 1);
         }
     }
 
@@ -365,26 +471,70 @@ mod tests {
         let _handle =
             spawn_nat_sweeper(&table, Duration::from_millis(50), Duration::from_millis(20));
 
-        // Wait past the idle threshold; sweeper runs every 20ms.
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(table.len(), 0, "idle sessions should have been swept");
+        // Poll instead of racing a fixed sleep: the sweep needs one tick
+        // past the idle threshold (~70ms), but a loaded CI runner may
+        // stall the ticker far longer than that.
+        for _ in 0..100 {
+            if table.is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("idle sessions should have been swept");
     }
 
-    #[tokio::test(start_paused = false)]
-    async fn touched_sessions_are_kept() {
+    /// The sweep decision itself is deterministic once activity stamps are
+    /// injected — exercise `sweep_idle_sessions` directly rather than racing
+    /// `touch()` calls against a real-time ticker (a >55ms scheduler stall
+    /// between touches used to evict the session mid-test).
+    #[test]
+    fn sweep_keeps_fresh_evicts_stale() {
         let table = new_nat_table();
+        let fresh = mk_session();
+        let stale = mk_session();
+        // `idle_for` subtracts with wrapping arithmetic, so a wrapped-back
+        // stamp reads as "60s ago" even when the process monotonic clock
+        // is younger than that.
+        stale.last_activity_ms.store(
+            monotonic_ms().wrapping_sub(60_000) as meow_common::atomic::Uint,
+            Ordering::Relaxed,
+        );
+        table.insert(mk_key(1), Arc::clone(&fresh));
+        table.insert(mk_key(2), Arc::clone(&stale));
+        table.insert(mk_key(3), mk_session());
+
+        // A 5s horizon leaves the stale stamp (60s) safely evictable while
+        // making the "fresh" side immune to any realistic test-thread
+        // stall between stamping and retain.
+        let evicted = sweep_idle_sessions(&table, Duration::from_secs(5));
+        assert_eq!(evicted, 1);
+        assert_eq!(table.len(), 2);
+        assert!(table.contains_key(&mk_key(1)), "fresh session kept");
+        assert!(table.contains_key(&mk_key(3)), "fresh session kept");
+
+        // Even a previously-fresh entry goes once its activity ages past
+        // `idle`, while the still-fresh key-3 session survives.
+        fresh.last_activity_ms.store(
+            monotonic_ms().wrapping_sub(60_000) as meow_common::atomic::Uint,
+            Ordering::Relaxed,
+        );
+        assert_eq!(sweep_idle_sessions(&table, Duration::from_secs(5)), 1);
+        assert_eq!(table.len(), 1);
+        assert!(table.contains_key(&mk_key(3)));
+    }
+
+    /// `touch()` must refresh the same monotonic stamp the sweeper reads —
+    /// pinned directly since the real-time `touch`-vs-ticker race it used
+    /// to be covered by was flaky.
+    #[test]
+    fn touch_refreshes_the_sweep_clock() {
         let session = mk_session();
-        table.insert(mk_key(1), Arc::clone(&session));
-
-        let _handle =
-            spawn_nat_sweeper(&table, Duration::from_millis(80), Duration::from_millis(20));
-
-        // Touch repeatedly so the session stays young.
-        for _ in 0..6 {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            session.touch();
-        }
-        assert_eq!(table.len(), 1, "active session must not be evicted");
+        session.last_activity_ms.store(
+            monotonic_ms().wrapping_sub(60_000) as meow_common::atomic::Uint,
+            Ordering::Relaxed,
+        );
+        session.touch();
+        assert!(session.idle_for() < Duration::from_secs(1));
     }
 
     #[tokio::test(start_paused = false)]
@@ -394,11 +544,13 @@ mod tests {
         let handle = spawn_nat_sweeper(&table, Duration::from_secs(60), Duration::from_millis(20));
         drop(table);
         // Allow the next tick to observe the dropped table.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(
-            handle.is_finished(),
-            "sweeper should exit once the table is dropped"
-        );
+        for _ in 0..100 {
+            if handle.is_finished() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("sweeper should exit once the table is dropped");
     }
 
     /// Regression: a fast-path write failure on an existing session must evict
@@ -550,7 +702,7 @@ mod tests {
             SmolStr::new_static("GLOBAL"),
             Arc::clone(&proxy) as Arc<dyn Proxy>,
         );
-        tunnel.update_proxies(proxies);
+        tunnel.update_proxies(proxies, Default::default());
 
         let src = SocketAddr::from(([127, 0, 0, 1], 6666));
         let dst = SocketAddr::from(([198, 51, 100, 8], 443));
@@ -652,5 +804,170 @@ mod tests {
             current.is_some_and(|s| Arc::ptr_eq(&s, &replacement)),
             "the fresh replacement session must survive the failed session's eviction"
         );
+    }
+
+    /// A proxy whose dial never resolves — a server that completes the TCP/QUIC
+    /// handshake and then goes silent mid-protocol.
+    struct StalledDialProxy {
+        health: ProxyHealth,
+    }
+
+    #[async_trait]
+    impl ProxyAdapter for StalledDialProxy {
+        fn name(&self) -> &str {
+            "stalled-mock"
+        }
+        fn adapter_type(&self) -> AdapterType {
+            AdapterType::Direct
+        }
+        fn addr(&self) -> &str {
+            ""
+        }
+        fn support_udp(&self) -> bool {
+            true
+        }
+        async fn dial_tcp(&self, _metadata: &Metadata) -> MeowResult<Box<dyn ProxyConn>> {
+            std::future::pending().await
+        }
+        async fn dial_udp(&self, _metadata: &Metadata) -> MeowResult<Box<dyn ProxyPacketConn>> {
+            std::future::pending().await
+        }
+        fn health(&self) -> &ProxyHealth {
+            &self.health
+        }
+    }
+
+    impl Proxy for StalledDialProxy {
+        fn alive(&self) -> bool {
+            true
+        }
+        fn alive_for_url(&self, _url: &str) -> bool {
+            true
+        }
+        fn last_delay(&self) -> u16 {
+            0
+        }
+        fn last_delay_for_url(&self, _url: &str) -> u16 {
+            0
+        }
+        fn delay_history(&self) -> Vec<DelayHistory> {
+            Vec::new()
+        }
+    }
+
+    /// A dial that never completes must not park the caller forever. Without
+    /// the `DIAL_TIMEOUT` bound this test hangs: every datagram of the flow
+    /// spawns another immortal task, since the NAT key is only claimed after
+    /// the dial returns.
+    #[tokio::test(start_paused = true)]
+    async fn a_stalled_dial_gives_up_instead_of_parking_the_flow() {
+        let tunnel = mk_tunnel();
+        tunnel.set_mode(TunnelMode::Global);
+        let mut proxies: HashMap<SmolStr, Arc<dyn Proxy>> = HashMap::new();
+        proxies.insert(
+            SmolStr::new_static("GLOBAL"),
+            Arc::new(StalledDialProxy {
+                health: ProxyHealth::new(),
+            }) as Arc<dyn Proxy>,
+        );
+        tunnel.update_proxies(proxies, Default::default());
+
+        let src = SocketAddr::from(([127, 0, 0, 1], 8888));
+        let dst = SocketAddr::from(([198, 51, 100, 10], 443));
+
+        let start = tokio::time::Instant::now();
+        handle_udp(tunnel.inner(), b"ping", src, mk_metadata(src, dst)).await;
+
+        assert_eq!(start.elapsed(), meow_common::DIAL_TIMEOUT);
+        assert!(
+            tunnel.inner().nat_table.is_empty(),
+            "a dial that never completed must not leave a session behind"
+        );
+    }
+
+    fn recording_session() -> (Arc<UdpSession>, Arc<AtomicBool>) {
+        let closed = Arc::new(AtomicBool::new(false));
+        let conn = RecordingPacketConn {
+            writes: Arc::new(AtomicUsize::new(0)),
+            closed: Arc::clone(&closed),
+        };
+        (
+            Arc::new(UdpSession::new(Box::new(conn), Arc::from("test"))),
+            closed,
+        )
+    }
+
+    /// Issue #695: `close_all_udp_sessions` closes and evicts every NAT
+    /// session and signals every listener flow (or dial) holding a flush
+    /// watch, counting both; watches taken after it see no flush.
+    #[tokio::test]
+    async fn close_all_udp_sessions_drains_nat_and_signals_listener_flows() {
+        let tunnel = mk_tunnel();
+        let (first, first_closed) = recording_session();
+        let (second, second_closed) = recording_session();
+        tunnel.inner().nat_table.insert(mk_key(1000), first);
+        tunnel.inner().nat_table.insert(mk_key(1001), second);
+
+        let mut established = tunnel.inner().udp_flush_watch();
+        let flow = tokio::spawn(async move { established.flushed().await });
+        let dialling = tunnel.inner().udp_flush_watch();
+        assert!(!dialling.is_flushed());
+
+        assert_eq!(tunnel.close_all_udp_sessions(), 4);
+        assert!(tunnel.inner().nat_table.is_empty());
+        assert!(first_closed.load(Ordering::SeqCst));
+        assert!(second_closed.load(Ordering::SeqCst));
+        tokio::time::timeout(Duration::from_secs(2), flow)
+            .await
+            .expect("a listener flow must observe the flush")
+            .unwrap();
+        assert!(dialling.is_flushed());
+        assert!(!tunnel.inner().udp_flush_watch().is_flushed());
+
+        drop(dialling);
+        let _late = tunnel.inner().udp_flush_watch();
+        assert_eq!(tunnel.close_all_udp_sessions(), 1);
+    }
+
+    /// Issue #695: a session whose dial straddles a flush may ride a socket
+    /// created before the new outbound binding, so it is closed instead of
+    /// cached; the next datagram dials afresh.
+    #[tokio::test(start_paused = true)]
+    async fn a_session_dialled_across_a_flush_is_not_cached() {
+        let tunnel = mk_tunnel();
+        tunnel.set_mode(TunnelMode::Global);
+        let proxy = Arc::new(SlowDialProxy::new());
+        let mut proxies: HashMap<SmolStr, Arc<dyn Proxy>> = HashMap::new();
+        proxies.insert(
+            SmolStr::new_static("GLOBAL"),
+            Arc::clone(&proxy) as Arc<dyn Proxy>,
+        );
+        tunnel.update_proxies(proxies, Default::default());
+
+        let src = SocketAddr::from(([127, 0, 0, 1], 6667));
+        let dst = SocketAddr::from(([198, 51, 100, 10], 443));
+        let flush = async {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            tunnel.close_all_udp_sessions()
+        };
+        let ((), flushed) = tokio::join!(
+            handle_udp(tunnel.inner(), b"ping", src, mk_metadata(src, dst)),
+            flush,
+        );
+        assert_eq!(flushed, 1, "the in-flight dial holds a flush watch");
+        assert!(tunnel.inner().nat_table.is_empty());
+        {
+            let conns = proxy.conns.lock().unwrap();
+            assert_eq!(conns.len(), 1);
+            assert!(conns[0].1.load(Ordering::SeqCst), "stale conn is closed");
+            assert_eq!(conns[0].0.load(Ordering::SeqCst), 0, "and never written");
+        }
+
+        handle_udp(tunnel.inner(), b"ping", src, mk_metadata(src, dst)).await;
+        assert_eq!(proxy.dials.load(Ordering::SeqCst), 2);
+        assert_eq!(tunnel.inner().nat_table.len(), 1);
+        let conns = proxy.conns.lock().unwrap();
+        assert!(!conns[1].1.load(Ordering::SeqCst));
+        assert_eq!(conns[1].0.load(Ordering::SeqCst), 1);
     }
 }

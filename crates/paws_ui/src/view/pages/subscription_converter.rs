@@ -121,6 +121,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                                 required: true,
                             }
                             Textarea {
+                                click_to_focus: true,
                                 value: Some(value.source_sub_url.clone()),
                                 placeholder: Some(translate_ui(locale, tr::hard_zh_041())),
                                 height: Some(108.0),
@@ -164,6 +165,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                             Field {
                                 FieldLabel { content: translate_ui(locale, tr::page_tr_046()) }
                                 Input {
+                                    click_to_focus: true,
                                     value: Some(value.backend.clone()),
                                     placeholder: Some("http://127.0.0.1:25500/sub?".to_owned()),
                                     width: Some("100%".into()),
@@ -248,6 +250,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                             Field {
                                 FieldLabel { content: translate_ui(locale, tr::page_tr_052()) }
                                 Input {
+                                    click_to_focus: true,
                                     value: Some(value.remote_config.clone()),
                                     placeholder: Some(translate_ui(locale, tr::page_tr_053())),
                                     width: Some("100%".into()),
@@ -262,6 +265,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                             Field {
                                 FieldLabel { content: "Include".to_owned() }
                                 Input {
+                                    click_to_focus: true,
                                     value: Some(value.include_remarks.clone()),
                                     placeholder: Some(translate_ui(locale, tr::page_tr_054())),
                                     width: Some("100%".into()),
@@ -276,6 +280,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                             Field {
                                 FieldLabel { content: "Exclude".to_owned() }
                                 Input {
+                                    click_to_focus: true,
                                     value: Some(value.exclude_remarks.clone()),
                                     placeholder: Some(translate_ui(locale, tr::page_tr_055())),
                                     width: Some("100%".into()),
@@ -290,6 +295,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                             Field {
                                 FieldLabel { content: "FileName".to_owned() }
                                 Input {
+                                    click_to_focus: true,
                                     value: Some(value.filename.clone()),
                                     placeholder: Some(translate_ui(locale, tr::page_tr_056())),
                                     width: Some("100%".into()),
@@ -304,6 +310,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                             Field {
                                 FieldLabel { content: translate_ui(locale, tr::page_tr_057()) }
                                 Textarea {
+                                    click_to_focus: true,
                                     value: Some(custom_params_value.clone()),
                                     placeholder: Some(translate_ui(locale, tr::hard_zh_043())),
                                     height: Some(88.0),
@@ -403,6 +410,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                         Field {
                             FieldLabel { content: translate_ui(locale, tr::page_tr_073()) }
                             Textarea {
+                                click_to_focus: true,
                                 value: Some(generated_value.clone()),
                                 placeholder: Some(translate_ui(locale, tr::page_tr_074())),
                                 height: Some(82.0),
@@ -467,6 +475,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                         Field {
                             FieldLabel { content: translate_ui(locale, tr::page_tr_080()) }
                             Input {
+                                click_to_focus: true,
                                 value: Some(short_value.clone()),
                                 placeholder: Some(translate_ui(locale, tr::page_tr_081())),
                                 width: Some("100%".into()),
@@ -507,6 +516,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                     column {
                         width: "100%",
                         Textarea {
+                            click_to_focus: true,
                             value: Some(parse_value.clone()),
                             placeholder: Some("https://…/sub?target=clash&url=…".to_owned()),
                             height: Some(82.0),
@@ -569,6 +579,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                         Field {
                             FieldLabel { content: translate_ui(locale, tr::page_tr_089()) }
                             Input {
+                                click_to_focus: true,
                                 value: Some(value.short_url_api.clone()),
                                 width: Some("100%".into()),
                                 disabled: is_busy,
@@ -582,6 +593,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                         Field {
                             FieldLabel { content: translate_ui(locale, tr::page_tr_090()) }
                             Input {
+                                click_to_focus: true,
                                 value: Some(value.config_upload_api.clone()),
                                 width: Some("100%".into()),
                                 disabled: is_busy,
@@ -595,6 +607,7 @@ pub(crate) fn subscription_converter_page() -> Element {
                         Field {
                             FieldLabel { content: translate_ui(locale, tr::page_tr_091()) }
                             Textarea {
+                                click_to_focus: true,
                                 value: Some(upload_value.clone()),
                                 placeholder: Some(translate_ui(locale, tr::page_tr_092())),
                                 height: Some(112.0),

@@ -346,6 +346,11 @@ pub(super) fn platform_vpn_state(state: &CoreState) -> PlatformVpnState {
         running: state.platform_vpn_running,
         network_protected: state.platform_network_protected,
         network_protect_error: state.platform_network_protect_error.clone(),
+        engine: state.platform_vpn_engine,
+        app_http_proxy: state
+            .platform_app_http_proxy
+            .clone()
+            .filter(|_| state.platform_vpn_running),
         updated_at: state.platform_vpn_state_updated_at,
     }
 }

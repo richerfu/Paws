@@ -4,6 +4,10 @@
 //! HTTP, SOCKS5, Direct, and Reject, plus Selector, URLTest, Fallback,
 //! LoadBalance, and Relay groups.
 
+/// BoringSSL record-layer AEAD shared by Snell, VMess and VLESS encryption.
+#[cfg(any(feature = "snell", feature = "vmess", feature = "vless-encryption"))]
+mod aead;
+pub mod dialer;
 pub mod direct;
 #[cfg(feature = "ss")]
 mod first_flight;
@@ -17,18 +21,33 @@ pub mod reject;
 mod socket_trace;
 pub mod socks5_adapter;
 pub mod stream_conn;
+#[cfg(any(feature = "vmess", feature = "vless-encryption"))]
+pub(crate) mod tasked_duplex;
 pub mod transport_chain;
 
 #[cfg(feature = "ech-tls-tunnel")]
 pub mod ech_tls_tunnel;
 #[cfg(feature = "ss")]
+pub mod gost_plugin;
+#[cfg(feature = "ss")]
+pub mod jls_plugin;
+#[cfg(feature = "kcptun")]
+pub mod kcptun_plugin;
+#[cfg(feature = "ss")]
+mod plugin_util;
+#[cfg(feature = "ss")]
+pub mod restls_plugin;
+#[cfg(feature = "ss")]
+pub mod shadow_tls_plugin;
+#[cfg(feature = "ss")]
 pub mod shadowsocks_adapter;
-// simple-obfs is shared with the snell adapter (which reuses the
-// http / tls obfuscation codecs verbatim).
-#[cfg(any(feature = "ss", feature = "snell"))]
-pub mod simple_obfs;
 #[cfg(feature = "ss")]
 pub mod v2ray_plugin;
+
+/// `uot.AddrParser` per-packet address headers — shared by the anytls and
+/// kcptun UDP-over-TCP relays.
+#[cfg(any(feature = "anytls", feature = "kcptun"))]
+mod uot;
 
 #[cfg(feature = "trojan")]
 pub mod trojan;
@@ -36,7 +55,7 @@ pub mod trojan;
 #[cfg(feature = "snell")]
 pub mod snell;
 #[cfg(feature = "snell")]
-pub use snell::{SnellAdapter, SnellObfs, SnellVersion};
+pub use snell::{SnellAdapter, SnellObfs, SnellV6Mode, SnellVersion};
 
 #[cfg(feature = "anytls")]
 pub mod anytls_adapter;
@@ -84,6 +103,83 @@ pub use vless::encryption::{parse_client_encryption, ClientInstance as VlessEncr
 #[cfg(feature = "vmess")]
 pub use vmess::VmessAdapter;
 
+// ─── Stream-desync poison ────────────────────────────────────────────────────
+
+/// Drop guard shared by stream-framed UDP packet conns (trojan, vless,
+/// anytls-uot, kcptun-uot, snell).
+/// Unless `complete` is set, dropping the guard — via an early `?` return
+/// OR the future being cancelled mid-frame — marks the conn desynced:
+/// consumed read bytes cannot be un-read and a partially written frame
+/// leaves the peer parsing garbage, so either way the only safe recovery
+/// is to fail fast and let the tunnel tear the session down and re-dial
+/// (issue #514).
+#[cfg(any(
+    feature = "trojan",
+    feature = "vless",
+    feature = "anytls",
+    feature = "kcptun",
+    feature = "snell"
+))]
+pub(crate) struct PoisonOnIncomplete<'a> {
+    flag: &'a std::sync::atomic::AtomicBool,
+    pub(crate) complete: bool,
+}
+
+#[cfg(any(
+    feature = "trojan",
+    feature = "vless",
+    feature = "anytls",
+    feature = "kcptun",
+    feature = "snell"
+))]
+impl<'a> PoisonOnIncomplete<'a> {
+    pub(crate) fn new(flag: &'a std::sync::atomic::AtomicBool) -> Self {
+        Self {
+            flag,
+            complete: false,
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "trojan",
+    feature = "vless",
+    feature = "anytls",
+    feature = "kcptun",
+    feature = "snell"
+))]
+impl Drop for PoisonOnIncomplete<'_> {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+/// Fail-fast check shared by the stream-framed packet conns. Every consumer
+/// calls it at `read_packet`/`write_packet` entry; consumers whose parked
+/// operations could otherwise miss the poison re-check after acquiring the
+/// direction lock. Consumers that cannot tear their direction's framing
+/// skip the re-check deliberately (e.g. snell/vless reads — the codec keeps
+/// mid-frame state internally; see call sites).
+#[cfg(any(
+    feature = "trojan",
+    feature = "vless",
+    feature = "anytls",
+    feature = "kcptun",
+    feature = "snell"
+))]
+pub(crate) fn check_not_desynced(
+    flag: &std::sync::atomic::AtomicBool,
+) -> Result<(), meow_common::MeowError> {
+    if flag.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(meow_common::MeowError::Proxy(
+            "udp-over-tcp: connection desynced by an earlier incomplete frame".into(),
+        ));
+    }
+    Ok(())
+}
+
 // ─── Error bridge ────────────────────────────────────────────────────────────
 
 /// Convert a `TransportError` into a `MeowError`.
@@ -91,13 +187,20 @@ pub use vmess::VmessAdapter;
 /// A `From<TransportError> for MeowError` blanket impl is not possible here
 /// due to Rust's orphan rules (neither type is local to `meow-proxy`).
 /// Adapters call `.map_err(transport_to_proxy_err)?` at the connection
-/// boundary instead — this is the single conversion point.
+/// boundary instead — or hand-roll the identical `Io`-arm-preserving
+/// match inline where a per-site context string is needed (e.g.
+/// `socks5_adapter`, `anytls_adapter`).
 ///
 /// ADR-0001 §1 invariants still hold:
 /// - No adapter constructs `TransportError` variants by hand.
 /// - No `anyhow::Error` crosses the `meow-transport` boundary.
-#[cfg(any(feature = "ss", feature = "trojan", feature = "vless"))]
 #[allow(clippy::needless_pass_by_value)] // used as map_err(fn) callback — must take by value
 pub(crate) fn transport_to_proxy_err(e: meow_transport::TransportError) -> meow_common::MeowError {
-    meow_common::MeowError::Proxy(e.to_string())
+    // An `Io` arm carries the real io error — `raw_os_error` survives for
+    // `DialFailureTracker`'s local-resource classification (issue #668);
+    // stringifying it would dead-mark members for EMFILE & friends.
+    match e {
+        meow_transport::TransportError::Io(e) => meow_common::MeowError::Io(e),
+        other => meow_common::MeowError::Proxy(other.to_string()),
+    }
 }

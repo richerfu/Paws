@@ -1,13 +1,21 @@
 [workspace]
 members = ["crates/*", "vendor/meow-tunnel", "vendor/meow-common"]
-exclude = ["vendor/meow-proxy", "vendor/meow-anytls", "vendor/meow-listener"]
+exclude = ["vendor/meow-proxy", "vendor/meow-anytls", "vendor/meow-listener", "vendor/meow-transport"]
 resolver = "2"
 
 [workspace.package]
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 license = "MIT"
-rust-version = "1.89"
+rust-version = "1.90"
+
+# Keep debug HAPs debuggable without running the proxy kernel and TLS at -O0.
+[profile.dev]
+opt-level = 1
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [workspace.dependencies]
 paws_model = { path = "crates/paws_model" }
@@ -15,24 +23,26 @@ paws_profile = { path = "crates/paws_profile" }
 paws_core = { path = "crates/paws_core" }
 paws_vpn = { path = "crates/paws_vpn" }
 
-# arkit mainline; declarative `#[entry(plugins = [...])]` bridge-plugin
-# registration (no hand-written init/render needed).
-arkit = { git = "https://github.com/richerfu/arkit.git", rev = "1d4163f2168a49aba1a6fd8ea6ca81406212c4e9", features = ["router", "shadcn", "barcode"] }
+# Use published releases for the native UI and its matching Ability bridge.
+arkit = { version = "=0.0.1-beta.0", features = ["router", "shadcn", "barcode"] }
 ohos-ashmem-binding = "0.1.0"
+ohos-hilog-binding = "0.2.3"
+ohos-fileuri-binding = "0.2.4"
+ohos-fileshare-binding = "0.2.4"
+ohos-resource-manager-binding = "0.3.4"
 
-# Pluginized platform capabilities from openharmony-ability. These published
-# plugin releases resolve to the openharmony-ability version selected by Arkit.
-openharmony-ability-plugin-files = "1.0.0-beta.1"
-openharmony-ability-plugin-url = "1.0.0-beta.1"
+openharmony-ability-plugin-files = "=1.0.0-beta.3"
+openharmony-ability-plugin-url = "=1.0.0-beta.3"
 
-meow-api = "0.21.2"
-meow-common = "0.21.2"
-meow-config = { version = "0.21.2", features = ["anytls", "boring-tls"] }
-meow-dns = "0.21.2"
-meow-listener = "0.21.2"
-meow-proxy = { version = "0.21.2", features = ["anytls"] }
-meow-trie = "0.21.2"
-meow-tunnel = "0.21.2"
+meow-api = "=0.22.0"
+meow-common = "=0.22.0"
+meow-config = { version = "=0.22.0", features = ["anytls", "boring-tls"] }
+meow-dns = "=0.22.0"
+meow-listener = "=0.22.0"
+meow-proxy = { version = "=0.22.0", features = ["anytls"] }
+meow-trie = "=0.22.0"
+meow-transport = { version = "=0.22.0", default-features = false, features = ["simple-obfs"] }
+meow-tunnel = "=0.22.0"
 
 anyhow = "1"
 async-trait = "0.1"
@@ -44,7 +54,7 @@ futures = "0.3"
 getrandom = "0.2"
 ipnet = "2"
 libc = "0.2"
-lwip = { package = "meow-lwip", version = "0.21.2" }
+lwip = { package = "meow-lwip", version = "=0.22.0" }
 netstack-smoltcp = "0.2"
 napi-build-ohos = "1.2.0"
 napi-derive-ohos = "1.2.0"
@@ -52,7 +62,7 @@ napi-ohos = { version = "1.2.0", features = ["napi8", "tokio_rt"] }
 once_cell = "1"
 parking_lot = "0.12"
 percent-encoding = "2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "cookies", "gzip", "brotli", "json", "multipart"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "cookies", "gzip", "brotli", "json", "multipart", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -60,8 +70,9 @@ serde_yaml = "0.9"
 shadowsocks = { version = "1.24", default-features = false, features = ["aead-cipher"] }
 thiserror = "2"
 time = { version = "0.3", features = ["formatting"] }
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "net", "fs", "io-util"] }
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+toml = "0.9"
 tracing = "0.1"
 tracing-appender = "0.2.5"
 tracing-subscriber = "0.3"
@@ -81,3 +92,4 @@ meow-common = { path = "vendor/meow-common" }
 meow-anytls = { path = "vendor/meow-anytls" }
 meow-proxy = { path = "vendor/meow-proxy" }
 meow-tunnel = { path = "vendor/meow-tunnel" }
+meow-transport = { path = "vendor/meow-transport" }

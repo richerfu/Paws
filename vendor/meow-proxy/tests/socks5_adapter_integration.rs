@@ -5,8 +5,10 @@
 //! No TLS — the adapter's TLS-wrap branch is covered by source-level units.
 
 use meow_common::{ConnType, MeowError, Metadata, Network, ProxyAdapter};
+use meow_proxy::dialer::DirectDialer;
 use meow_proxy::Socks5Adapter;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{timeout, Duration};
@@ -63,7 +65,10 @@ async fn start_socks5(policy: AuthPolicy) -> (SocketAddr, tokio::task::JoinHandl
     (addr, h)
 }
 
-async fn serve_socks5(mut client: TcpStream, policy: AuthPolicy) -> std::io::Result<()> {
+async fn serve_socks5<S>(mut client: S, policy: AuthPolicy) -> std::io::Result<()>
+where
+    S: AsyncReadExt + AsyncWriteExt + Unpin,
+{
     // ── Method negotiation ──
     let mut hdr = [0u8; 2];
     client.read_exact(&mut hdr).await?;
@@ -160,7 +165,7 @@ async fn serve_socks5(mut client: TcpStream, policy: AuthPolicy) -> std::io::Res
     };
 
     // ── Dial upstream and splice ──
-    let Ok(upstream) = TcpStream::connect(&target).await else {
+    let Ok(mut upstream) = TcpStream::connect(&target).await else {
         // Connection refused / host unreachable.
         client
             .write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
@@ -174,13 +179,7 @@ async fn serve_socks5(mut client: TcpStream, policy: AuthPolicy) -> std::io::Res
         .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
         .await?;
 
-    let (mut cr, mut cw) = client.into_split();
-    let (mut ur, mut uw) = upstream.into_split();
-    tokio::spawn(async move {
-        let _ = tokio::io::copy(&mut cr, &mut uw).await;
-        let _ = uw.shutdown().await;
-    });
-    let _ = tokio::io::copy(&mut ur, &mut cw).await;
+    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
     Ok(())
 }
 
@@ -210,7 +209,15 @@ fn metadata_for_host(host: &str, port: u16) -> Metadata {
 async fn no_auth_tunnel_round_trips_through_echo() {
     let (echo, _e) = start_echo().await;
     let (s5, _h) = start_socks5(AuthPolicy::None).await;
-    let adapter = Socks5Adapter::new("p", "127.0.0.1", s5.port(), None, false, false);
+    let adapter = Socks5Adapter::new(
+        "p",
+        "127.0.0.1",
+        s5.port(),
+        None,
+        false,
+        false,
+        Arc::new(DirectDialer),
+    );
     let mut conn = timeout(TIMEOUT, adapter.dial_tcp(&metadata_for(echo)))
         .await
         .expect("dial timed out")
@@ -235,6 +242,7 @@ async fn correct_userpass_succeeds_and_tunnels() {
         Some(("alice".into(), "p@ss".into())),
         false,
         false,
+        Arc::new(DirectDialer),
     );
     let mut conn = timeout(TIMEOUT, adapter.dial_tcp(&metadata_for(echo)))
         .await
@@ -260,6 +268,7 @@ async fn wrong_password_fails_with_proxy_auth_failed() {
         Some(("alice".into(), "wrong".into())),
         false,
         false,
+        Arc::new(DirectDialer),
     );
     let err = timeout(TIMEOUT, adapter.dial_tcp(&metadata_for(echo)))
         .await
@@ -279,7 +288,15 @@ async fn missing_auth_to_authed_server_fails() {
     // succeed.
     let (echo, _e) = start_echo().await;
     let (s5, _h) = start_socks5(AuthPolicy::UserPass("alice", "p")).await;
-    let adapter = Socks5Adapter::new("p", "127.0.0.1", s5.port(), None, false, false);
+    let adapter = Socks5Adapter::new(
+        "p",
+        "127.0.0.1",
+        s5.port(),
+        None,
+        false,
+        false,
+        Arc::new(DirectDialer),
+    );
     let res = timeout(TIMEOUT, adapter.dial_tcp(&metadata_for(echo)))
         .await
         .expect("dial timed out");
@@ -291,7 +308,15 @@ async fn unreachable_target_surfaces_proxy_error() {
     // Server can speak SOCKS5 but the target it tries to dial is closed →
     // SOCKS5 reply rep=0x05 (connection refused). Adapter must not return Ok.
     let (s5, _h) = start_socks5(AuthPolicy::None).await;
-    let adapter = Socks5Adapter::new("p", "127.0.0.1", s5.port(), None, false, false);
+    let adapter = Socks5Adapter::new(
+        "p",
+        "127.0.0.1",
+        s5.port(),
+        None,
+        false,
+        false,
+        Arc::new(DirectDialer),
+    );
     // High port nothing listens on (claim+drop trick).
     let dead = {
         let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -312,7 +337,15 @@ async fn hostname_atyp_03_is_sent_when_dst_ip_absent() {
     // ("localhost") itself.
     let (echo, _e) = start_echo().await;
     let (s5, _h) = start_socks5(AuthPolicy::None).await;
-    let adapter = Socks5Adapter::new("p", "127.0.0.1", s5.port(), None, false, false);
+    let adapter = Socks5Adapter::new(
+        "p",
+        "127.0.0.1",
+        s5.port(),
+        None,
+        false,
+        false,
+        Arc::new(DirectDialer),
+    );
     let mut conn = timeout(
         TIMEOUT,
         adapter.dial_tcp(&metadata_for_host("localhost", echo.port())),
@@ -327,4 +360,105 @@ async fn hostname_atyp_03_is_sent_when_dst_ip_absent() {
         .expect("read timed out")
         .expect("echo");
     assert_eq!(&got, b"via-hostname");
+}
+
+// ─── Issue #570: relay-chain final hop (connect_over) ───────────────────────
+
+/// Plain `connect_over`: auth negotiation + CONNECT run on the supplied stream.
+#[tokio::test]
+async fn connect_over_plain_runs_socks5_handshake() {
+    let (echo, _e) = start_echo().await;
+    let (s5, _h) = start_socks5(AuthPolicy::None).await;
+    let adapter = Socks5Adapter::new(
+        "test-s5-co",
+        &s5.ip().to_string(),
+        s5.port(),
+        None,
+        false,
+        false,
+        Arc::new(DirectDialer),
+    );
+
+    let upstream = TcpStream::connect(s5).await.expect("upstream connect");
+    let mut conn = timeout(
+        TIMEOUT,
+        adapter.connect_over(Box::new(upstream), &metadata_for(echo)),
+    )
+    .await
+    .expect("connect_over timed out")
+    .expect("connect_over failed");
+
+    let payload = b"socks5 connect_over round-trip";
+    conn.write_all(payload).await.expect("write failed");
+    conn.flush().await.expect("flush failed");
+    let mut buf = vec![0u8; payload.len()];
+    conn.read_exact(&mut buf).await.expect("read_exact failed");
+    assert_eq!(&buf, payload, "echo mismatch through connect_over");
+}
+
+/// `tls: true` `connect_over`: the adapter must wrap the supplied stream in
+/// TLS *before* SOCKS5 negotiation — the mock terminates TLS via rustls, so
+/// plaintext greeting bytes would fail the TLS handshake outright. This is
+/// the regression test for the pre-fix behaviour that skipped the TLS layer.
+#[tokio::test]
+async fn connect_over_tls_wraps_supplied_stream() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = rustls::pki_types::CertificateDer::from(ck.cert.der().to_vec());
+    let key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
+        rustls::pki_types::PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der()),
+    );
+    let tls_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
+
+    let (echo, _e) = start_echo().await;
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let s5 = l.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((tcp, _)) = l.accept().await else {
+                break;
+            };
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(tls) = acceptor.accept(tcp).await else {
+                    eprintln!("tls-socks5: TLS accept failed — plaintext greeting?");
+                    return;
+                };
+                if let Err(e) = serve_socks5(tls, AuthPolicy::None).await {
+                    eprintln!("tls-socks5: {e}");
+                }
+            });
+        }
+    });
+
+    let adapter = Socks5Adapter::new(
+        "test-s5-co-tls",
+        "localhost", // SNI matches the self-signed cert SAN
+        s5.port(),
+        None,
+        true, // tls
+        true, // skip_cert_verify
+        Arc::new(DirectDialer),
+    );
+
+    let upstream = TcpStream::connect(s5).await.expect("upstream connect");
+    let mut conn = timeout(
+        TIMEOUT,
+        adapter.connect_over(Box::new(upstream), &metadata_for(echo)),
+    )
+    .await
+    .expect("connect_over timed out")
+    .expect("connect_over failed");
+
+    let payload = b"socks5+tls connect_over round-trip";
+    conn.write_all(payload).await.expect("write failed");
+    conn.flush().await.expect("flush failed");
+    let mut buf = vec![0u8; payload.len()];
+    conn.read_exact(&mut buf).await.expect("read_exact failed");
+    assert_eq!(&buf, payload, "echo mismatch through TLS connect_over");
 }

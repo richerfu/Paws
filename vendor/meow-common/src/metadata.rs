@@ -57,6 +57,60 @@ pub struct Metadata {
     pub in_user: Option<SmolStr>,
     #[serde(rename = "specialProxy")]
     pub special_proxy: SmolStr,
+    /// Marks housekeeping traffic that is not a user connection: health
+    /// probes, provider/geodata/subscription fetches, and DNS-via-proxy
+    /// exchanges.
+    ///
+    /// Routing, rules, and the /connections API still classify the conn by
+    /// `conn_type`; the flag exists purely so usage accounting can tell
+    /// internal dials apart from user traffic without abusing `conn_type`
+    /// (an HTTP provider fetch is genuinely `Http`, not `Tunnel`).  Lazy
+    /// proxy groups skip it so background maintenance cannot keep a group
+    /// permanently "in use" — mihomo threads the same distinction via an
+    /// explicit `touch` flag on its group dials.
+    ///
+    /// Internal only: never serialized — it is a routing hint, not a conn
+    /// attribute, and external metadata (API, configs) has no business
+    /// claiming it.
+    #[serde(skip)]
+    pub internal: bool,
+}
+
+impl Metadata {
+    /// Whether this metadata describes internal housekeeping traffic rather
+    /// than a user connection: either flagged `internal` or carrying the
+    /// legacy `ConnType::Tunnel` probe marker.
+    pub fn is_internal(&self) -> bool {
+        self.internal || self.conn_type == ConnType::Tunnel
+    }
+
+    /// Swap the source and destination address fields — upstream
+    /// `Metadata.SwapSrcDst` (`constant/metadata.go`). Used by
+    /// `RULE-SET,...,src` so a provider's dst-axis matchers evaluate the
+    /// source tuple. Upstream also swaps `SrcIPASN`/`DstIPASN` strings;
+    /// `Metadata` carries no ASN pair — ASN rules range-match the IP
+    /// itself.
+    pub fn swap_src_dst(&mut self) {
+        std::mem::swap(&mut self.src_ip, &mut self.dst_ip);
+        std::mem::swap(&mut self.src_port, &mut self.dst_port);
+        std::mem::swap(&mut self.src_geo_ip, &mut self.dst_geo_ip);
+    }
+
+    /// A *domain-carrying* UDP association request (`dialer-proxy` inner
+    /// hops, issue #657): `host` set, `dst_ip` absent.
+    ///
+    /// Listener-facing UDP dispatch always resolves `dst_ip` before calling
+    /// `dial_udp`, so a host-only destination only ever arrives via the
+    /// dialer layer asking the front to bind an association to the *name* —
+    /// the front resolves it with its own (remote-server) view, matching
+    /// where the chained TCP leg landed. An adapter that cannot express a
+    /// domain target on the wire must answer `NotSupported` — never bind a
+    /// conn whose `write_packet` stamps the caller's `SocketAddr` arg,
+    /// since the caller holds no literal for a `Name` target.
+    pub fn domain_udp_target(&self) -> Option<(&SmolStr, u16)> {
+        (self.network == Network::Udp && self.dst_ip.is_none() && !self.host.is_empty())
+            .then_some((&self.host, self.dst_port))
+    }
 }
 
 impl Default for Metadata {
@@ -81,6 +135,7 @@ impl Default for Metadata {
             in_port: 0,
             in_user: None,
             special_proxy: SmolStr::default(),
+            internal: false,
         }
     }
 }
@@ -206,6 +261,7 @@ impl Metadata {
             in_port: 0,
             in_user: None,
             special_proxy: SmolStr::default(),
+            internal: self.internal,
         }
     }
 }
@@ -239,5 +295,88 @@ impl fmt::Display for Metadata {
                 self.network
             )
         }
+    }
+}
+
+/// Parse a metadata `host`/`sniff_host`-style string as an IP literal,
+/// tolerating the `[v6]` brackets HTTP listeners retain in `host`
+/// (`host_to_ip` strips them for `dst_ip` only, e.g.
+/// `CONNECT [fc00::5]:443`).
+///
+/// Shared with the inbound UDP demux loops: they apply this same cheap
+/// fold to derive a flow key without touching the resolver, before any
+/// `pre_handle_metadata` rewrite (issue #648).
+pub fn metadata_ip_literal(s: &str) -> Option<IpAddr> {
+    s.parse::<IpAddr>().ok().or_else(|| {
+        s.strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .and_then(|s| s.parse::<IpAddr>().ok())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Plain and bracketed IP literals parse; names and malformed
+    /// brackets do not — the UDP demux fast path keys on exactly this
+    /// fold (issue #648).
+    #[test]
+    fn metadata_ip_literal_parses_plain_and_bracketed() {
+        assert_eq!(
+            metadata_ip_literal("203.0.113.7"),
+            Some("203.0.113.7".parse().unwrap())
+        );
+        assert_eq!(
+            metadata_ip_literal("2001:db8::1"),
+            Some("2001:db8::1".parse().unwrap())
+        );
+        assert_eq!(
+            metadata_ip_literal("[2001:db8::1]"),
+            Some("2001:db8::1".parse().unwrap())
+        );
+        assert_eq!(metadata_ip_literal("example.com"), None);
+        assert_eq!(metadata_ip_literal(""), None);
+        assert_eq!(metadata_ip_literal("[2001:db8::1"), None);
+        assert_eq!(metadata_ip_literal("203.0.113.7]"), None);
+    }
+
+    /// `swap_src_dst` exchanges exactly the source/destination tuple —
+    /// ip, port, geo-ip — and leaves host/process/inbound fields alone,
+    /// mirroring upstream `Metadata.SwapSrcDst` (there is no ASN pair to
+    /// swap; ASN rules range-match the IP itself).
+    #[test]
+    fn swap_src_dst_swaps_only_src_dst_pairs() {
+        let mut m = Metadata {
+            src_ip: Some("10.0.0.1".parse().unwrap()),
+            dst_ip: Some("203.0.113.7".parse().unwrap()),
+            src_port: 12345,
+            dst_port: 443,
+            src_geo_ip: vec!["CN".into()],
+            dst_geo_ip: vec!["US".into()],
+            host: "example.com".into(),
+            process: "curl".into(),
+            in_name: "mixed".into(),
+            ..Default::default()
+        };
+        let before = m.clone();
+        m.swap_src_dst();
+        assert_eq!(m.src_ip, before.dst_ip);
+        assert_eq!(m.dst_ip, before.src_ip);
+        assert_eq!(m.src_port, before.dst_port);
+        assert_eq!(m.dst_port, before.src_port);
+        assert_eq!(m.src_geo_ip, before.dst_geo_ip);
+        assert_eq!(m.dst_geo_ip, before.src_geo_ip);
+        // Everything else is untouched.
+        assert_eq!(m.host, before.host);
+        assert_eq!(m.sniff_host, before.sniff_host);
+        assert_eq!(m.process, before.process);
+        assert_eq!(m.in_name, before.in_name);
+        // A second swap restores the original tuple.
+        m.swap_src_dst();
+        assert_eq!(m.src_ip, before.src_ip);
+        assert_eq!(m.dst_ip, before.dst_ip);
+        assert_eq!(m.src_port, before.src_port);
+        assert_eq!(m.dst_port, before.dst_port);
     }
 }

@@ -5,7 +5,8 @@
 //! listener using the fake IP (28.x / 198.18.x) as the target — the only thing
 //! it knows. `handle_socks5_inner` must call `pre_handle_metadata` to recover
 //! the real hostname from the fake-IP reverse map before rule matching and
-//! dialing; otherwise the flow dials the dead fake IP (and rule matching sees
+//! dialing; otherwise the flow dials the dead fake IP — or, since #618, is
+//! dropped outright when no reverse mapping survives (and rule matching sees
 //! the placeholder, so every fake-IP'd domain falls through to MATCH()/final).
 //!
 //! The fixture seeds the resolver cache so the recovered hostname resolves to a
@@ -83,8 +84,8 @@ async fn socks5_connect_to_fake_ip_reverse_maps_and_dials_real_host() {
     assert_eq!(reply[3], 0x00, "CONNECT must succeed (REP_SUCCESS)");
 
     // The relay is up only if the dial reached the echo server. Without the
-    // reverse-map the relay would have dialed the dead fake IP and this
-    // round-trip would hang (and the timeout below would fire).
+    // reverse-map the flow would have been dropped (pre-#618: dialed the
+    // dead fake IP) and this round-trip would hang or fail outright.
     let probe = b"fakeip-revmap";
     client_stream.write_all(probe).await.unwrap();
     let mut echo_buf = [0u8; 13];

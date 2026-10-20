@@ -1,0 +1,70 @@
+[package]
+name = "meow-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Core traits and types (ProxyAdapter, Rule, Metadata) for the meow-rs proxy kernel."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+smol_str = { workspace = true }
+parking_lot = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+httparse = { version = "1", default-features = false }
+ipnet = { workspace = true }
+subtle = { workspace = true }
+
+# fs_util's dead-pid scratch sweep uses `kill(pid, 0)`; the per-OS entries
+# below keep libc on their platforms for other modules.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "android")'.dependencies]
+socket2 = { workspace = true }
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+socket2 = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libproc = "0.14"
+libc = "0.2"
+# outbound_iface: `IP_BOUND_IF` / `IPV6_BOUND_IF` (#375).
+socket2 = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# outbound_iface: `IP_UNICAST_IF` / `IPV6_UNICAST_IF` need raw `setsockopt`
+# (WinSock) and the alias → LUID → index conversion (Ndis) (#375).
+socket2 = { workspace = true }
+windows-sys = { version = "0.60", features = [
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+    "Win32_System_Threading",
+    "Win32_Foundation",
+] }
+
+# Unix-only dev deps used by socket_protect's `#[cfg(all(test, unix))]` tests:
+# they exercise the protector hook against real loopback sockets on the CI
+# host instead of waiting for an Android emulator.
+[target.'cfg(unix)'.dev-dependencies]
+socket2 = { workspace = true }
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "net"] }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

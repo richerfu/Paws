@@ -11,9 +11,10 @@ use std::time::Duration;
 pub const EXTERNAL_HTTP_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const EXTERNAL_HTTP_ERROR_BODY_BYTES: usize = 64 * 1024;
 const APP_USER_AGENT: &str = concat!("Paws/", env!("CARGO_PKG_VERSION"));
-const SUBSCRIPTION_USER_AGENT: &str = concat!("clash.meta/0.21.2 Paws/", env!("CARGO_PKG_VERSION"));
+const SUBSCRIPTION_USER_AGENT: &str = concat!("clash.meta/0.22.0 Paws/", env!("CARGO_PKG_VERSION"));
 const SUBSCRIPTION_ACCEPT: &str =
     "application/yaml, text/yaml, text/plain, application/octet-stream, */*";
+const MAX_PROXY_CLIENTS: usize = 4;
 
 static SHARED_EXTERNAL_HTTP: Lazy<Result<ExternalHttpClientPool, ExternalHttpError>> =
     Lazy::new(ExternalHttpClientPool::new);
@@ -116,6 +117,11 @@ impl ExternalHttpClientPool {
             return Ok(client.clone());
         }
         let client = build_client(self.cookie_jar.clone(), Some(proxy_url))?;
+        // Private VPN endpoints rotate on reconnect. Do not retain every old
+        // endpoint, credential and connection pool for the process lifetime.
+        if clients.len() >= MAX_PROXY_CLIENTS {
+            clients.clear();
+        }
         clients.insert(proxy_url.to_owned(), client.clone());
         Ok(client)
     }
@@ -126,6 +132,62 @@ pub fn shared_external_http_client() -> Result<&'static ExternalHttpClientPool, 
         Ok(client) => Ok(client),
         Err(error) => Err(error.clone()),
     }
+}
+
+/// A newly started automatic proxy group can replace its initial member after
+/// health checks complete. Replay only idempotent GETs whose connection was
+/// reset, through the same proxy, with a bounded startup grace.
+pub(crate) async fn send_external_get(
+    request: RequestBuilder,
+    route: ExternalHttpRoute,
+) -> Result<Response, reqwest::Error> {
+    const BACKOFF_MS: [u64; 4] = [250, 750, 1500, 3000];
+    let started = std::time::Instant::now();
+    let replay = request.try_clone();
+    let mut current = request;
+    for attempt in 0..=BACKOFF_MS.len() {
+        match current.send().await {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                let next = replay.as_ref().and_then(RequestBuilder::try_clone);
+                if route != ExternalHttpRoute::CurrentProxy
+                    || !connection_was_reset(&error)
+                    || attempt == BACKOFF_MS.len()
+                    || next.is_none()
+                    || started.elapsed() + Duration::from_millis(BACKOFF_MS[attempt])
+                        > Duration::from_secs(10)
+                {
+                    return Err(error);
+                }
+                let delay = BACKOFF_MS[attempt];
+                tracing::warn!(target: "paws_core::http_client",
+                    "external GET connection reset via current proxy; retry {} in {delay} ms",
+                    attempt + 1);
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                current = next.expect("replay was checked above");
+            }
+        }
+    }
+    unreachable!("the bounded final attempt returns")
+}
+
+fn connection_was_reset(error: &reqwest::Error) -> bool {
+    use std::error::Error;
+    let mut source = error.source();
+    while let Some(cause) = source {
+        if cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            )
+        }) {
+            return true;
+        }
+        source = cause.source();
+    }
+    false
 }
 
 pub async fn read_external_text_response(
@@ -165,6 +227,7 @@ fn build_client(
         HeaderValue::from_static("zh-CN, zh;q=0.9, en;q=0.6"),
     );
     let mut builder = Client::builder()
+        .no_proxy()
         .user_agent(APP_USER_AGENT)
         .default_headers(default_headers)
         .cookie_provider(cookie_jar)
@@ -201,7 +264,7 @@ async fn read_limited_body(
         let chunk = chunk.map_err(|error| {
             ExternalHttpError::new(format!(
                 "{context} response body read failed: {}",
-                error.without_url()
+                request_error_message(error, None)
             ))
         })?;
         if body.len().saturating_add(chunk.len()) > max_body_bytes {
@@ -212,6 +275,46 @@ async fn read_limited_body(
         body.extend_from_slice(&chunk);
     }
     Ok(body)
+}
+
+pub(crate) fn request_error_message(error: reqwest::Error, proxy_url: Option<&str>) -> String {
+    use std::error::Error;
+    let request_url = error.url().cloned();
+    let error = error.without_url();
+    let mut parts = vec![error.to_string()];
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let part = cause.to_string();
+        if !parts.contains(&part) {
+            parts.push(part);
+        }
+        source = cause.source();
+    }
+    let mut message = parts.join(": ");
+    let proxy_url = proxy_url.and_then(|value| Url::parse(value).ok());
+    for url in request_url.iter().chain(proxy_url.iter()) {
+        message = message.replace(url.as_str(), "[URL redacted]");
+        for secret in [
+            url.password(),
+            url.path_segments()
+                .and_then(|mut parts| parts.next_back())
+                .filter(|part| part.len() >= 16),
+        ] {
+            if let Some(secret) = secret.filter(|secret| !secret.is_empty()) {
+                message = message.replace(secret, "[redacted]");
+            }
+        }
+        for (key, value) in url.query_pairs() {
+            if matches!(
+                key.to_ascii_lowercase().as_str(),
+                "token" | "key" | "secret" | "auth" | "password"
+            ) && !value.is_empty()
+            {
+                message = message.replace(value.as_ref(), "[redacted]");
+            }
+        }
+    }
+    message
 }
 
 fn http_status_error(
@@ -279,6 +382,72 @@ mod tests {
     use axum::response::IntoResponse;
     use axum::routing::get;
     use axum::Router;
+
+    #[tokio::test]
+    async fn proxy_get_recovers_from_a_reset_while_direct_get_is_not_replayed() {
+        use std::os::fd::AsRawFd;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for route in [ExternalHttpRoute::CurrentProxy, ExternalHttpRoute::Direct] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut first, _) = listener.accept().await.unwrap();
+                let mut byte = [0u8; 1];
+                first.read_exact(&mut byte).await.unwrap();
+                let linger = libc::linger {
+                    l_onoff: 1,
+                    l_linger: 0,
+                };
+                // Closing with an unread request and zero linger generates an
+                // actual TCP RST, matching the cold automatic-group failure.
+                assert_eq!(
+                    unsafe {
+                        libc::setsockopt(
+                            first.as_raw_fd(),
+                            libc::SOL_SOCKET,
+                            libc::SO_LINGER,
+                            (&linger as *const libc::linger).cast(),
+                            std::mem::size_of_val(&linger) as libc::socklen_t,
+                        )
+                    },
+                    0
+                );
+                drop(first);
+                let next = tokio::time::timeout(Duration::from_secs(2), listener.accept()).await;
+                if route == ExternalHttpRoute::Direct {
+                    assert!(next.is_err(), "direct requests must not be replayed");
+                    return;
+                }
+                let (mut stream, _) = next.unwrap().unwrap();
+                let mut buf = [0u8; 2048];
+                stream.read(&mut buf).await.unwrap();
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nready",
+                    )
+                    .await
+                    .unwrap();
+            });
+            let client = Client::builder().no_proxy().build().unwrap();
+            let request = if route == ExternalHttpRoute::CurrentProxy {
+                let client = Client::builder()
+                    .no_proxy()
+                    .proxy(reqwest::Proxy::all(format!("http://{address}")).unwrap())
+                    .build()
+                    .unwrap();
+                client.get("http://acceptance.invalid/subscription")
+            } else {
+                client.get(format!("http://{address}/subscription"))
+            };
+            let response = send_external_get(request, route).await;
+            if route == ExternalHttpRoute::CurrentProxy {
+                assert_eq!(response.unwrap().text().await.unwrap(), "ready");
+            } else {
+                assert!(response.is_err());
+            }
+            server.await.unwrap();
+        }
+    }
 
     #[test]
     fn cloudflare_error_diagnostics_do_not_echo_body() {
@@ -348,7 +517,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(response.body.contains("ua=clash.meta/0.21.2 Paws/"));
+            assert!(response.body.contains("ua=clash.meta/0.22.0 Paws/"));
             assert_eq!(
                 response.body.contains("cookie=true"),
                 expected_cookie,

@@ -117,6 +117,12 @@ fn write_server_files(dir: &Path, port: u16) -> PathBuf {
 }
 
 fn ensure_hysteria_binary(dir: &Path) -> Option<PathBuf> {
+    // Allow the same pinned release binary to be supplied locally when the
+    // Docker registry is unavailable. CI still uses IMAGE_HYSTERIA by default.
+    if let Some(path) = std::env::var_os("MEOW_HYSTERIA_BIN") {
+        let path = PathBuf::from(path);
+        return path.is_file().then_some(path);
+    }
     let bin = dir.join("hysteria");
     if bin.exists() {
         return Some(bin);
@@ -174,18 +180,20 @@ fn ensure_hysteria_binary(dir: &Path) -> Option<PathBuf> {
 }
 
 fn start_hysteria_server(port: u16) -> Option<HysteriaServer> {
-    if !cfg!(target_os = "linux") {
-        skip_or_panic("test requires Linux");
+    // The Docker image only yields a Linux binary; any platform can run with a
+    // native binary supplied through MEOW_HYSTERIA_BIN.
+    if !cfg!(target_os = "linux") && std::env::var_os("MEOW_HYSTERIA_BIN").is_none() {
+        skip_or_panic("test requires Linux or MEOW_HYSTERIA_BIN");
         return None;
     }
-    if !docker_available() {
+    if std::env::var_os("MEOW_HYSTERIA_BIN").is_none() && !docker_available() {
         skip_or_panic("docker daemon is not available");
         return None;
     }
 
     let dir = TempDir::new().unwrap();
     let Some(hysteria_bin) = ensure_hysteria_binary(dir.path()) else {
-        skip_or_panic("failed to extract hysteria server binary from docker image");
+        skip_or_panic("failed to locate hysteria server binary");
         return None;
     };
     let config_path = write_server_files(dir.path(), port);
@@ -198,13 +206,20 @@ fn start_hysteria_server(port: u16) -> Option<HysteriaServer> {
         }
     };
 
-    // Run hysteria in-process on the test host. Quinn cannot complete the QUIC
-    // handshake against a server started with `docker --network container:…`
-    // in nested container environments (e.g. Gitpod), while quic-go clients
-    // such as mihomo are unaffected.
+    // Run hysteria in-process on the test host. The quiche client dials the
+    // server over loopback; running the server on the host (rather than via
+    // `docker --network container:…`) keeps the QUIC path simple in nested
+    // container environments (e.g. Gitpod).
     let stdout = log_file.try_clone().map_or(Stdio::null(), Stdio::from);
     let child = match Command::new(&hysteria_bin)
-        .args(["server", "-c", &config_path.to_string_lossy()])
+        .args([
+            "server",
+            "--disable-update-check",
+            "--log-level",
+            "debug",
+            "-c",
+            &config_path.to_string_lossy(),
+        ])
         .stdout(stdout)
         .stderr(Stdio::from(log_file))
         .spawn()
@@ -245,12 +260,26 @@ async fn start_tcp_echo_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     (addr, handle)
 }
 
+async fn start_tcp_banner_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let _ = stream.write_all(b"server banner").await;
+            });
+        }
+    });
+    (addr, handle)
+}
+
 async fn start_udp_echo_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let addr = socket.local_addr().unwrap();
     let handle = tokio::spawn(async move {
         let mut buf = [0u8; 4096];
         while let Ok((n, peer)) = socket.recv_from(&mut buf).await {
+            tracing::debug!(bytes = n, "UDP echo target received packet");
             let _ = socket.send_to(&buf[..n], peer).await;
         }
     });
@@ -304,14 +333,34 @@ async fn dial_tcp_with_retry(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn hysteria2_docker_tcp_and_udp_round_trip() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let server_port = free_udp_port();
     let Some(server) = start_hysteria_server(server_port) else {
         return;
     };
     sleep(Duration::from_millis(500)).await;
     let (tcp_echo, _tcp_h) = start_tcp_echo_server().await;
+    let (tcp_banner, _tcp_banner_h) = start_tcp_banner_server().await;
     let (udp_echo, _udp_h) = start_udp_echo_server().await;
     let adapter = adapter(server_port);
+
+    // Fast Open must send the TCP request while dialing, even when the local
+    // client has no bytes to write. Otherwise server-speaks-first protocols
+    // deadlock before their banner reaches the client.
+    let banner_metadata = metadata_for(tcp_banner, Network::Tcp);
+    let mut banner_conn = timeout(T, dial_tcp_with_retry(&adapter, &banner_metadata))
+        .await
+        .expect("hysteria2 banner TCP dial timed out")
+        .unwrap_or_else(|e| panic!("hysteria2 banner TCP dial failed: {e}\n{}", server.logs()));
+    let mut banner = [0u8; 13];
+    timeout(T, banner_conn.read_exact(&mut banner))
+        .await
+        .expect("server-first banner read timed out")
+        .expect("server-first banner read failed");
+    assert_eq!(&banner, b"server banner");
 
     let tcp_metadata = metadata_for(tcp_echo, Network::Tcp);
     let mut conn = match timeout(T, dial_tcp_with_retry(&adapter, &tcp_metadata)).await {
@@ -341,16 +390,32 @@ async fn hysteria2_docker_tcp_and_udp_round_trip() {
         .await
         .expect("udp associate timed out")
         .unwrap_or_else(|e| panic!("udp associate failed: {e}\n{}", server.logs()));
-    let udp_payload = b"meow hysteria2 udp";
-    timeout(T, packet_conn.write_packet(udp_payload, &udp_echo))
-        .await
-        .expect("udp write timed out")
-        .expect("udp write failed");
-    let mut udp_buf = [0u8; 1500];
-    let (n, src) = timeout(T, packet_conn.read_packet(&mut udp_buf))
-        .await
-        .expect("udp read timed out")
-        .expect("udp read failed");
-    assert_eq!(src, udp_echo);
-    assert_eq!(&udp_buf[..n], udp_payload);
+    // Exercise many packets across sizes. This is the regression guard for the
+    // HTTP/3-datagram bug: when the client advertised SETTINGS_H3_DATAGRAM,
+    // quic-go started an HTTP/3 datagram receiver that stole the raw QUIC relay
+    // datagrams, so nearly every UDP packet was lost. A single lucky packet
+    // could still slip through by racing that receiver, hence the repetition.
+    //
+    // Every payload here fits in one QUIC DATAGRAM, which is what hysteria2's
+    // UDP relay delivers reliably. A UDP message large enough to be fragmented
+    // over several DATAGRAMs is best-effort: QUIC datagrams are not
+    // retransmitted, and against a real v2.6+ server the oversized return
+    // fragments are dropped while the path MTU is still being probed. The
+    // client's fragmentation and reassembly are covered deterministically by
+    // the driver unit test `raw_udp_round_trip_without_http3_datagrams`, which
+    // round-trips a 4096-byte payload through an in-process echo peer.
+    for (i, size) in [17, 64, 512, 1100].into_iter().cycle().take(16).enumerate() {
+        let udp_payload = vec![i as u8; size];
+        timeout(T, packet_conn.write_packet(&udp_payload, &udp_echo))
+            .await
+            .expect("udp write timed out")
+            .expect("udp write failed");
+        let mut udp_buf = [0u8; 4096];
+        let (n, src) = timeout(T, packet_conn.read_packet(&mut udp_buf))
+            .await
+            .unwrap_or_else(|e| panic!("udp read {i} timed out: {e}\n{}", server.logs()))
+            .expect("udp read failed");
+        assert_eq!(src, udp_echo);
+        assert_eq!(&udp_buf[..n], udp_payload);
+    }
 }
