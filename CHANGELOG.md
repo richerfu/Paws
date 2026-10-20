@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Restore the Paws product name and 1.2.0 application version metadata.
+- Reintegrate multi-engine settings, connection diagnostics, automatic recovery,
+  and local/WebDAV backup into the 1.2.0 navigation and shadcn components.
+  Keep text fields click-focused during scrolling and give settings entries,
+  dividers, helper text, and actions consistent spacing.
+- Report the actual VPN session's engine and startup checks instead of showing
+  the configured preference or cached checks from another session.
+- Complete the VPN start receipt as soon as the tunnel is connected; run HTTPS
+  health checks in the background with session-scoped fallback. Handle Stop
+  events before Go-engine configuration reloads, and retain the control
+  subscription after a configuration error.
+- Show Mihomo, sing-box, and meow-rs versions and open-source links in About.
+  Include the pinned Mihomo and sing-box license notices and complete GPL v3
+  text in the repository, with explicit third-party license references.
 - Keep automatic engine selection on the verified Mihomo production baseline.
   Profiles with unaudited proxy providers also retain candidate fallback instead
   of treating a missing inline plugin as evidence of compatibility.

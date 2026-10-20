@@ -559,6 +559,19 @@ struct ExternalTrafficFrame {
 }
 
 #[napi]
+pub fn update_sing_box_vpn_traffic() -> Result<()> {
+    let sample = sing_box::traffic().map_err(|error| Error::new(Status::GenericFailure, error))?;
+    paws_core::shared_core()
+        .update_external_vpn_traffic(
+            sample.upload_speed,
+            sample.download_speed,
+            sample.upload_total,
+            sample.download_total,
+        )
+        .map_err(to_napi_error)
+}
+
+#[napi]
 pub fn update_external_vpn_traffic(traffic_json: String) -> Result<()> {
     let frame: ExternalTrafficFrame = serde_json::from_str(&traffic_json)
         .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?;

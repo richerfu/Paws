@@ -2,23 +2,23 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "TinyPaws proxy client"
+      "value": "Paws proxy client"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "TinyPaws"
+      "value": "Paws"
     },
     {
       "name": "EntryAbility_label",
-      "value": "TinyPaws"
+      "value": "Paws"
     },
     {
       "name": "grant_internet",
-      "value": "TinyPaws needs network access to connect proxy servers and update subscriptions."
+      "value": "Paws needs network access to connect proxy servers and update subscriptions."
     },
     {
       "name": "grant_keep_background_running",
-      "value": "TinyPaws keeps the VPN data channel active while the app is in the background."
+      "value": "Paws keeps the VPN data channel active while the app is in the background."
     }
   ]
 }

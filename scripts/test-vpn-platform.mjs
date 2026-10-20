@@ -76,8 +76,10 @@ test('URL capability forwards About links through the actual packaged plugin', a
   const context = { abilityContext: { async openLink(url) { opened.push(url); } }, isActive: () => true };
   const about = readFileSync(resolve(root, 'crates/paws_ui/src/view/pages/tools.rs'), 'utf8')
     .split('pub(crate) fn about_page')[1].split('pub(crate) fn privacy_page')[0];
-  const links = [...about.matchAll(/open_external_url\("([^"]+)"/g)].map(match => match[1]);
-  assert.equal(links.length, 2, 'exercise both production About repository links');
+  const links = [...about.matchAll(/\b(?:source_url|license_url|url): "(https:\/\/[^\"]+)"/g)].map(match => match[1]);
+  assert.equal(links.length, 10, 'exercise every production source, license and attribution link');
+  assert.ok(links.some(url => url.includes('chen08209/Clash.Meta')));
+  assert.ok(links.some(url => url.includes('SagerNet/sing-box')));
   for (const url of links) {
     const result = await plugin.invokeAsync('open-url', { typeName: 'ohos.url.OpenRequest', value: { url } }, context);
     assert.equal(result.typeName, 'ohos.url.OpenResponse');
@@ -507,6 +509,7 @@ function extensionFixture({ clock, engine = 'meow' } = {}) {
     prepareMihomoVpn(...args) { calls.push(['prepare-mihomo', ...args]); return JSON.stringify({ initParams: '{}', setupParams: '{}' }); },
     resolveVpnEngine() { return engine; },
     startExternalVpn(...args) { nativeRunning = true; calls.push(['external-start', ...args]); },
+    stopSingBox() { calls.push(['sing-box-stop']); },
     async startVpn(fd, _options, ...args) {
       nativeRunning = true;
       calls.push(['native-start', activeAttempt, fd, ...args]);
@@ -519,6 +522,7 @@ function extensionFixture({ clock, engine = 'meow' } = {}) {
     },
     completePlatformVpnCleanup(attempt) { calls.push(['cleanup-complete', attempt]); return attempt === activeAttempt; },
     extensionTick() {
+      if (terminalAttempts.has(activeAttempt)) return 'stopping';
       if (nativeRunning) return 'connected';
       return activeAttempt.length > 0 ? 'starting' : 'disconnected';
     },
@@ -526,6 +530,8 @@ function extensionFixture({ clock, engine = 'meow' } = {}) {
     cancelPlatformChangeWait() {},
     syncPlatformChanges() {},
     persistVpnTelemetry() {},
+    updateSingBoxVpnTraffic() { calls.push(['sing-box-traffic']); },
+    updateExternalVpnTraffic(frame) { calls.push(['external-traffic', JSON.parse(frame)]); },
     queryVpnSpeed() { calls.push(['speed-only']); return JSON.stringify({ traffic: { uploadSpeed: 1024, downloadSpeed: 2048 } }); },
     queryTrafficSpeed() { calls.push(['speed-snapshot']); return JSON.stringify({ uploadSpeed: 0, downloadSpeed: 0 }); },
     snapshot() { return JSON.stringify({ traffic: { uploadSpeed: 0, downloadSpeed: 0 }, vpnRunning: nativeRunning }); },
@@ -579,7 +585,9 @@ function extensionFixture({ clock, engine = 'meow' } = {}) {
   const config = configModule();
   const want = (attempt, fd) => config.buildVpnWant(config.DEFAULT_OPTIONS_JSON, { ashmemFd: fd, notificationFd: fd + 1 }, attempt);
   return {
-    extension, connections, calls, want,
+    extension, connections, calls, want, native,
+    mihomo: overrides['libcore.so'],
+    emitPlatformEvent() { pendingEvents.resolve(true); },
     setLatestAttempt(attempt) { latestAttempt = attempt; },
     markTerminal(attempt) { terminalAttempts.add(attempt); },
     state() { return { activeAttempt, nativeRunning, protectedNetwork }; },
@@ -591,6 +599,31 @@ test('VPN extension telemetry never publishes a second system notification', () 
   fixture.extension.persistTelemetry();
   assert.equal(fixture.calls.filter(c => c[0] === 'speed-only').length, 0);
   assert.equal(fixture.calls.filter(c => c[0] === 'notification').length, 0);
+});
+
+test('sing-box telemetry samples native counters on every tick', () => {
+  const fixture = extensionFixture({ engine: 'sing-box' });
+  fixture.extension.activeEngine = 'sing-box';
+  for (let i = 0; i < 3; i++) fixture.extension.persistTelemetry();
+  assert.equal(fixture.calls.filter(c => c[0] === 'sing-box-traffic').length, 3);
+  assert.equal(fixture.calls.filter(c => c[0] === 'external-traffic').length, 0);
+  fixture.native.updateSingBoxVpnTraffic = () => { throw new Error('counter unavailable'); };
+  fixture.extension.persistTelemetry();
+  assert.ok(fixture.calls.some(c => c[0] === 'warn' && c.some(value => String(value).includes('counter unavailable'))));
+});
+
+test('mihomo telemetry forwards native rates and totals, including idle samples', () => {
+  const fixture = extensionFixture({ engine: 'mihomo' });
+  fixture.extension.activeEngine = 'mihomo';
+  fixture.mihomo.getTraffic = () => '{"up":1024,"down":4096}';
+  fixture.mihomo.getTotalTraffic = () => '{"up":8192,"down":65536}';
+  fixture.extension.persistTelemetry();
+  fixture.mihomo.getTraffic = () => '{"up":0,"down":0}';
+  fixture.extension.persistTelemetry();
+  assert.deepEqual(fixture.calls.filter(c => c[0] === 'external-traffic').map(c => c[1]), [
+    { uploadSpeed: 1024, downloadSpeed: 4096, uploadTotal: 8192, downloadTotal: 65536 },
+    { uploadSpeed: 0, downloadSpeed: 0, uploadTotal: 8192, downloadTotal: 65536 },
+  ]);
 });
 
 test('repeated background telemetry cannot call notification services', () => {
@@ -1313,6 +1346,7 @@ test('failed candidate health rolls back exactly once after cleaning its session
   const fixture = pluginFixture({healthSequence:[{success:false,actualEngine:'sing-box',rollbackToBaseline:true,stage:'https'}]});
   fixture.cleanup.resolve();
   await fixture.plugin.requestStartVpn('{}');
+  await until(() => fixture.calls.filter(c => c[0] === 'health-probe').length === 2, 'background baseline validation');
   assert.equal(fixture.calls.filter(c=>c[0]==='begin').length,2);
   assert.equal(fixture.calls.filter(c=>c[0]==='stop-extension').length,1);
   assert.equal(fixture.calls.filter(c=>c[0]==='health-probe').length,2);
@@ -1347,8 +1381,80 @@ test('changing engine during an older health probe supersedes it without rolling
   await fixture.plugin.requestStartVpn('{"engine":"mihomo"}');
   health.reject(new Error('old engine session replaced'));
   await original;
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(fixture.calls.filter(c=>c[0]==='begin').length,2);
   assert.equal(fixture.calls.filter(c=>c[0]==='health-probe').length,2);
+});
+
+test('confirmed VPN start settles its bridge receipt while HTTPS validation is still pending', async () => {
+  const health = deferred();
+  const fixture = pluginFixture({ healthSequence: [health.promise] });
+  const receipt = await fixture.plugin.invokeAsync('start-vpn', {
+    typeName: 'paws.VpnStartRequest', value: { requestId: 'start-before-health', optionsJson: '{}' },
+  }, {});
+  await until(() => fixture.calls.some(c => c[0] === 'health-probe'), 'pending health probe');
+  const result = await fixture.waitOnce(receipt.value.operationId);
+  assert.equal(result.value.status, 'succeeded', 'HTTPS must not keep an established tunnel in Starting');
+  health.resolve({ success: true, actualEngine: 'mihomo', rollbackToBaseline: false, stage: 'return-traffic' });
+});
+
+test('user Stop during fallback cleanup prevents the older health task from restarting VPN', async () => {
+  const fixture = pluginFixture({ healthSequence: [{ success: false, actualEngine: 'sing-box', rollbackToBaseline: true, stage: 'https' }] });
+  await fixture.plugin.requestStartVpn('{}');
+  await until(() => fixture.calls.some(c => c[0] === 'await-cleanup'), 'fallback cleanup');
+  const userStop = fixture.plugin.requestStopVpn();
+  fixture.cleanup.resolve();
+  await userStop;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.calls.filter(c => c[0] === 'begin').length, 1);
+});
+
+for (const engine of ['mihomo', 'sing-box']) {
+  test(`${engine} Stop is handled before preparing or reloading its configuration`, async () => {
+    const fixture = extensionFixture({ engine });
+    fixture.native.bindPlatformVpnStart('attempt-a');
+    fixture.native.startExternalVpn();
+    fixture.markTerminal('attempt-a');
+    fixture.extension.activeEngine = engine;
+    fixture.extension.activeAttemptId = 'attempt-a';
+    fixture.extension.tunFd = 31;
+    fixture.extension.platformSubscriptionActive = true;
+    fixture.extension.platformSubscriptionGeneration = 1;
+    fixture.extension.reloadMihomoConfig = async () => { throw new Error('must not reload after Stop'); };
+    fixture.extension.reloadSingBoxConfig = async () => { throw new Error('must not reload after Stop'); };
+    const listening = fixture.extension.runPlatformSubscription(1);
+    fixture.emitPlatformEvent();
+    await listening;
+    await fixture.extension.requestChain;
+    assert.equal(fixture.calls.filter(c => c[0] === 'native-stop').length, 1);
+    assert.equal(fixture.calls.filter(c => c[0] === 'cleanup-complete').length, 1);
+    assert.equal(fixture.calls.some(c => c[0] === 'warn' && String(c).includes('config synchronization failed')), false);
+  });
+}
+
+test('a Go configuration error leaves the subscription available for the next Stop event', async () => {
+  const fixture = extensionFixture({ engine: 'mihomo' });
+  fixture.native.bindPlatformVpnStart('attempt-a');
+  fixture.native.startExternalVpn();
+  fixture.extension.activeEngine = 'mihomo';
+  fixture.extension.activeAttemptId = 'attempt-a';
+  fixture.extension.tunFd = 31;
+  fixture.extension.platformSubscriptionActive = true;
+  fixture.extension.platformSubscriptionGeneration = 1;
+  const update = deferred();
+  const stop = deferred();
+  let waits = 0;
+  fixture.native.waitForPlatformChangeEvent = () => ++waits === 1 ? update.promise : stop.promise;
+  fixture.extension.reloadMihomoConfig = async () => { throw new Error('configuration unavailable'); };
+  const listening = fixture.extension.runPlatformSubscription(1);
+  update.resolve(true);
+  await until(() => waits === 2, 'subscription after config failure');
+  assert.equal(fixture.extension.platformSubscriptionActive, true);
+  fixture.markTerminal('attempt-a');
+  stop.resolve(true);
+  await listening;
+  await fixture.extension.requestChain;
+  assert.equal(fixture.calls.filter(c => c[0] === 'cleanup-complete').length, 1);
 });
 
 

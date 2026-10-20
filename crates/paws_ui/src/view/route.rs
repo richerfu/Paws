@@ -32,6 +32,10 @@ pub(super) enum Route {
     Logs {},
     #[route("/settings/diagnostics")]
     Diagnostics {},
+    #[route("/settings/backups")]
+    Backups {},
+    #[route("/settings/advanced-diagnostics")]
+    AdvancedDiagnostics {},
     #[route("/settings/about")]
     About {},
     #[route("/settings/about/privacy")]
@@ -49,10 +53,9 @@ impl Route {
             Self::Traffic {} => translate_ui(locale, tr::nav_traffic()),
             Self::Resources {} => translate_ui(locale, tr::nav_resources()),
             Self::Logs {} => translate_ui(locale, tr::nav_logs()),
-            Self::Diagnostics {} => match locale {
-                UiLocale::ZhCn => "诊断与备份".into(),
-                UiLocale::En => "Diagnostics & Backup".into(),
-            },
+            Self::Diagnostics {} => translate_ui(locale, tr::diagnostics_title()),
+            Self::Backups {} => translate_ui(locale, tr::backup_title()),
+            Self::AdvancedDiagnostics {} => translate_ui(locale, tr::diagnostics_advanced_title()),
             Self::Tools {} => translate_ui(locale, tr::nav_tools()),
             Self::Appearance {} => translate_ui(locale, tr::page_tr_001()),
             Self::Settings {} => translate_ui(locale, tr::nav_settings()),
@@ -73,6 +76,8 @@ impl Route {
             Self::Resources {} => "database",
             Self::Logs {} => "scroll-text",
             Self::Diagnostics {} => "shield-check",
+            Self::Backups {} => "archive",
+            Self::AdvancedDiagnostics {} => "stethoscope",
             Self::Tools {} => "settings",
             Self::Appearance {} => "palette",
             Self::Settings {} => "settings",
@@ -89,6 +94,8 @@ impl Route {
             Self::Traffic {} => 2,
             Self::Tools {}
             | Self::Diagnostics {}
+            | Self::Backups {}
+            | Self::AdvancedDiagnostics {}
             | Self::Appearance {}
             | Self::Settings {}
             | Self::SubscriptionConverter {}
@@ -105,6 +112,8 @@ impl Route {
         match self {
             Self::Proxies {} => Some(Self::Profiles {}),
             Self::Diagnostics {}
+            | Self::Backups {}
+            | Self::AdvancedDiagnostics {}
             | Self::Appearance {}
             | Self::Settings {}
             | Self::SubscriptionConverter {}
@@ -140,6 +149,8 @@ impl Route {
             }
             Self::Tools {}
             | Self::Diagnostics {}
+            | Self::Backups {}
+            | Self::AdvancedDiagnostics {}
             | Self::Appearance {}
             | Self::Settings {}
             | Self::SubscriptionConverter {}
@@ -222,4 +233,14 @@ fn Privacy() -> Element {
 #[component]
 fn Diagnostics() -> Element {
     diagnostics_page()
+}
+
+#[component]
+fn Backups() -> Element {
+    backups_page()
+}
+
+#[component]
+fn AdvancedDiagnostics() -> Element {
+    advanced_diagnostics_page()
 }

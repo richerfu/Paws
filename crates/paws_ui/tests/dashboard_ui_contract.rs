@@ -34,7 +34,8 @@ fn dashboard_stays_flat_and_decision_focused() {
     assert_eq!(page.matches("dashboard_connection_row(").count(), 3);
     assert!(page.contains("height: 44.0"));
     assert!(page.contains("width: 68.0"));
-    assert!(page.contains("Route::Diagnostics {}"));
+    assert!(!page.contains("Route::Diagnostics {}"));
+    assert!(!page.contains("engine_status_label"));
     assert_eq!(page.matches("Separator {}").count(), 1);
     assert!(!page.contains("VPN IP"));
     assert!(!page.contains("vpn_options.addresses"));

@@ -813,6 +813,8 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     this.stopTelemetry();
     const connection = this.vpnConnection;
     const attemptId = this.activeAttemptId;
+    const engine = this.activeEngine;
+    const nativeStopStartedAt = Date.now();
     if (this.activeEngine === 'mihomo') {
       try {
         mihomoCore.stopTun();
@@ -826,6 +828,8 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
         hilog.warn(LOG_DOMAIN, LOG_TAG, 'sing-box stop failed %{public}s', describeError(err));
       }
     }
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase native stop finished in %{public}d ms engine=%{public}s',
+      Date.now() - nativeStopStartedAt, engine);
     this.activeEngine = '';
     this.activeOptionsJson = '';
     this.activeUnderlyingNetId = 0;
@@ -884,10 +888,23 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
         const changed = await pawsUi.waitForPlatformChangeEvent();
         if (this.platformSubscriptionActive && generation === this.platformSubscriptionGeneration) {
           pawsUi.syncPlatformChanges();
-          if (this.activeEngine === 'mihomo' && this.activeAttemptId.length > 0) {
-            await this.reloadMihomoConfig(false);
-          } else if (this.activeEngine === 'sing-box' && this.activeAttemptId.length > 0) {
-            await this.reloadSingBoxConfig(false);
+          // A Stop frame has priority over configuration/provider I/O. Go
+          // engines previously prepared/reloaded first, delaying cooperative
+          // teardown or throwing before the terminal state could be observed.
+          this.reconcileExtensionTerminal();
+          if (!this.platformSubscriptionActive || generation !== this.platformSubscriptionGeneration) {
+            return;
+          }
+          try {
+            if (this.activeEngine === 'mihomo' && this.activeAttemptId.length > 0) {
+              await this.reloadMihomoConfig(false);
+            } else if (this.activeEngine === 'sing-box' && this.activeAttemptId.length > 0) {
+              await this.reloadSingBoxConfig(false);
+            }
+          } catch (err) {
+            // A config error must not disconnect the control subscription;
+            // later Stop frames still need to reach this exact owner.
+            hilog.warn(LOG_DOMAIN, LOG_TAG, 'VPN config synchronization failed %{public}s', describeError(err));
           }
           this.reconcileExtensionTerminal();
           if (!changed) {
@@ -1149,12 +1166,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
           downloadTotal: Math.max(0, total.down),
         }));
       } else if (this.activeEngine === 'sing-box') {
-        pawsUi.updateExternalVpnTraffic(JSON.stringify({
-          uploadSpeed: 0,
-          downloadSpeed: 0,
-          uploadTotal: 0,
-          downloadTotal: 0,
-        }));
+        pawsUi.updateSingBoxVpnTraffic();
       } else {
         pawsUi.persistVpnTelemetry();
       }

@@ -21,8 +21,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--sing-box-root', type=Path, default=ROOT.parent / 'sing-box-ohos')
-    parser.add_argument('--mihomo-root', type=Path, default=ROOT.parent / 'FlClash-ohos-upstream/core/Clash.Meta')
+    parser.add_argument('--sing-box-root', type=Path,
+                        default=os.environ.get('SING_BOX_ROOT') or ROOT / 'target/engine-sources/sing-box-ohos',
+                        help='sing-box checkout (default: SING_BOX_ROOT or target/engine-sources/sing-box-ohos)')
+    parser.add_argument('--mihomo-root', type=Path,
+                        default=os.environ.get('CLASH_META_ROOT') or ROOT / 'target/engine-sources/Clash.Meta',
+                        help='Mihomo checkout (default: CLASH_META_ROOT or target/engine-sources/Clash.Meta)')
     parser.add_argument('--timeout', type=int, default=180)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--node-file', type=Path)

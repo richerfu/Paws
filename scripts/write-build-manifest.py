@@ -314,7 +314,7 @@ def main(argv=None):
         manifest = build_manifest(ROOT, args.hap_mode, args.native_profile)
         if args.hap_path is not None:
             attach_hap_provenance(manifest, args.hap_path, args.signed_hap_path)
-        write_manifest(ROOT / 'dist/TinyPaws-build-manifest.json', manifest)
+        write_manifest(ROOT / 'dist/Paws-build-manifest.json', manifest)
     except ProvenanceError as error:
         print('build manifest generation failed: ' + str(error), file=sys.stderr)
         return 1

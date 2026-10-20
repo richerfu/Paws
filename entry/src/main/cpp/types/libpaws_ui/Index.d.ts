@@ -537,6 +537,8 @@ export declare function unfixProxy(group: string): Promise<void>
 
 export declare function updateExternalVpnTraffic(trafficJson: string): void
 
+export declare function updateSingBoxVpnTraffic(): void
+
 export declare function validateEngineStartup(session: string): Promise<string>
 
 export declare function validatePlatformVpnStartRequest(ashmemFd: number, notificationFd: number, attemptId: string): void

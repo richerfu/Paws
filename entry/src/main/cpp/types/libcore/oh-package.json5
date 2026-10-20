@@ -2,5 +2,5 @@
   "name": "libcore.so",
   "types": "./Index.d.ts",
   "version": "1.0.0",
-  "description": "TinyPaws mihomo compatibility engine bridge"
+  "description": "Paws mihomo compatibility engine bridge"
 }

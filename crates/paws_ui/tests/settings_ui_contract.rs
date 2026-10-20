@@ -1,6 +1,38 @@
 use std::fs;
 
 #[test]
+fn scrollable_editors_wait_for_a_click_before_requesting_focus() {
+    let mut pages = fs::read_dir("src/view/pages")
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+        .collect::<Vec<_>>();
+    pages.sort();
+    let mut editors = 0;
+    for page in pages {
+        let source = fs::read_to_string(&page).unwrap();
+        for widget in ["Input {", "Textarea {"] {
+            for (offset, _) in source.match_indices(widget) {
+                editors += 1;
+                // ArkUI's default focus-on-touch steals focus as a drag starts.
+                // Keep this explicit on every editor, including new feature pages.
+                assert!(
+                    source[offset + widget.len()..]
+                        .trim_start()
+                        .starts_with("click_to_focus: true,"),
+                    "{}: editor must wait for a completed click",
+                    page.display()
+                );
+            }
+        }
+    }
+    assert!(
+        editors > 0,
+        "the editor inventory must not silently become empty"
+    );
+}
+
+#[test]
 fn application_root_keeps_overlays_edge_to_edge_and_insets_only_app_layout() {
     let source = fs::read_to_string("src/view.rs").unwrap();
     let ability =
@@ -82,8 +114,21 @@ fn about_page_constrains_long_values_and_aligns_repositories() {
     let view = fs::read_to_string("src/view.rs").unwrap();
 
     assert!(page.contains("middle_truncate_text(&about.arkit_version, 18)"));
-    assert!(page.matches("width: Some(\"46%\".into())").count() >= 2);
-    assert!(page.matches("width: 18.0").count() >= 2);
+    let about = page
+        .split("pub(crate) fn about_page")
+        .nth(1)
+        .unwrap()
+        .split("pub(crate) fn privacy_page")
+        .next()
+        .unwrap();
+    for version in ["mihomo_version", "sing_box_version", "meow_rs_version"] {
+        assert!(about.contains(&format!("version: about.{version}")));
+    }
+    assert!(about.contains("source_url:"));
+    assert!(about.contains("license_url:"));
+    assert!(about.contains("ButtonVariant::Outline"));
+    assert!(about.contains("accessibility_label:"));
+    assert!(!about.contains("46%"));
     assert!(page.contains("layout_weight: 1.0"));
     assert!(view.contains("fn middle_truncate_text"));
     assert!(view.contains("max_lines: 1"));
@@ -171,7 +216,7 @@ fn network_stack_is_a_bounded_selector_with_two_real_backends() {
         .split("tr::page_tr_231()")
         .nth(1)
         .expect("network stack field")
-        .split("FieldLabel { content: \"仅这些应用")
+        .split("tr::vpn_apps_trusted()")
         .next()
         .unwrap();
 

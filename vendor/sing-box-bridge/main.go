@@ -2,6 +2,7 @@ package main
 
 /*
 #cgo LDFLAGS: -lnet_connection
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <network/netmanager/net_connection.h>
@@ -49,6 +50,7 @@ var runtimeState struct {
 	lastErr   string
 	log       *ringLog
 	directory string
+	traffic   *trafficTracker
 }
 
 type ringLog struct {
@@ -218,6 +220,7 @@ func stopLocked() error {
 		runtimeState.cancel()
 		runtimeState.cancel = nil
 	}
+	runtimeState.traffic = nil
 	if runtimeState.log != nil && runtimeState.directory != "" {
 		runtimeState.log.Lock()
 		if runtimeState.log.traceFile != nil {
@@ -285,6 +288,8 @@ func TinyPawsSingStart(tunFD C.int, netID C.int, configJSON *C.char, workDir *C.
 		cancel()
 		return setLastError(err)
 	}
+	traffic := newTrafficTracker(time.Now())
+	instance.Router().AppendTracker(traffic)
 	if err = instance.Start(); err != nil {
 		_ = instance.Close()
 		cancel()
@@ -292,11 +297,30 @@ func TinyPawsSingStart(tunFD C.int, netID C.int, configJSON *C.char, workDir *C.
 	}
 	runtimeState.instance = instance
 	runtimeState.cancel = cancel
+	runtimeState.traffic = traffic
 	go func() {
 		runtime.GC()
 		debug.FreeOSMemory()
 	}()
 	return setLastError(nil)
+}
+
+//export TinyPawsSingTraffic
+func TinyPawsSingTraffic(uploadSpeed, downloadSpeed, uploadTotal, downloadTotal *C.uint64_t) C.int {
+	if uploadSpeed == nil || downloadSpeed == nil || uploadTotal == nil || downloadTotal == nil {
+		return -1
+	}
+	runtimeState.Lock()
+	defer runtimeState.Unlock()
+	var sample trafficSnapshot
+	if runtimeState.traffic != nil {
+		sample = runtimeState.traffic.sample(time.Now())
+	}
+	*uploadSpeed = C.uint64_t(sample.uploadSpeed)
+	*downloadSpeed = C.uint64_t(sample.downloadSpeed)
+	*uploadTotal = C.uint64_t(sample.uploadTotal)
+	*downloadTotal = C.uint64_t(sample.downloadTotal)
+	return 0
 }
 
 //export TinyPawsSingCopyLog
