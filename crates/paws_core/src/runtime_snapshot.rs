@@ -8,16 +8,16 @@ pub(super) fn about_snapshot() -> AboutSnapshot {
         arkit_version: ARKIT_VERSION.to_owned(),
         rust_version: RUST_VERSION.to_owned(),
         privacy_summary: vec![
-            "数据控制者：Paws 不要求注册账号，不接入广告、行为分析或远程遥测服务，也没有用于收集用户数据的 Paws 后端。".to_owned(),
-            "配置数据：订阅地址与内容、YAML 和备份、规则、节点选择及资源缓存保存在应用私有目录，用于代理运行；Paws 不会主动把这些数据上传到 Paws 或其他分析服务。".to_owned(),
+            "数据控制者：TinyPaws 不要求注册账号，不接入广告、行为分析或远程遥测服务，也没有用于收集用户数据的 TinyPaws 后端。".to_owned(),
+            "配置数据：订阅地址与内容、YAML 和备份、规则、节点选择及资源缓存保存在应用私有目录，用于代理运行；TinyPaws 不会主动把这些数据上传到 TinyPaws 或其他分析服务。".to_owned(),
             "运行诊断：DNS 查询记录、连接目标与代理链、流量统计和当前运行日志只在本机内存或应用进程间共享，用于页面展示和排错，不会发送到远程遥测服务。".to_owned(),
-            "订阅与规则提供方：只有在导入、刷新或运行用户配置的远程资源时，Paws 才会访问对应 URL。服务方可能获得当前出口 IP、标准 HTTP 请求信息，以及 URL 中由用户自行配置的鉴权参数；Paws 不会把订阅内容转交给其他服务。".to_owned(),
+            "订阅与规则提供方：只有在导入、刷新或运行用户配置的远程资源时，TinyPaws 才会访问对应 URL。服务方可能获得当前出口 IP、标准 HTTP 请求信息，以及 URL 中由用户自行配置的鉴权参数；TinyPaws 不会把订阅内容转交给其他服务。".to_owned(),
             "出口 IP 查询：仅在 VPN 已连接且页面需要刷新时，经当前混合代理并发请求本页列出的 HTTPS 服务；混合代理不可用时会尝试系统 VPN 路径。服务方会获得当前公网出口 IP 和标准请求头，但请求不包含订阅、节点、规则、DNS 记录或连接记录。".to_owned(),
-            "出口 IP 结果：首个有效服务返回的公网 IP、国家或地区、国家代码和服务名称仅保存在运行内存中用于首页展示；断开 VPN 会清除，Paws 不会将结果上传到其他服务。".to_owned(),
+            "出口 IP 结果：首个有效服务返回的公网 IP、国家或地区、国家代码和服务名称仅保存在运行内存中用于首页展示；断开 VPN 会清除，TinyPaws 不会将结果上传到其他服务。".to_owned(),
             "日志与导出：持久化日志记录需要用户主动开启，开启后日志写入应用私有目录；用户可以在应用内清理或导出。导出文件离开私有目录后由用户自行保管和删除，分享前应检查其中的域名、IP 或节点信息。".to_owned(),
             "局域网控制器：默认只监听 127.0.0.1。启用局域网访问后，控制器会监听 0.0.0.0 并使用随机密钥鉴权；持有密钥的局域网设备可能读取运行状态或控制代理，请勿在不可信网络启用或泄露密钥。".to_owned(),
             "删除与保留：可在应用内删除配置、规则和日志；卸载应用时，应用私有目录按系统规则移除。此前主动导出的文件不会随卸载自动删除。".to_owned(),
-            "外部链接：Paws 只会在用户点击后打开项目或第三方服务文档；离开应用后适用对应网站的隐私政策。隐私说明最后更新于 2026-08-07。".to_owned(),
+            "外部链接：TinyPaws 只会在用户点击后打开项目或第三方服务文档；离开应用后适用对应网站的隐私政策。隐私说明最后更新于 2026-08-07。".to_owned(),
         ],
         exit_ip_services: exit_ip_service_summaries(),
     }
@@ -46,6 +46,13 @@ pub(super) fn active_connections_from_tunnel(tunnel: &Tunnel) -> Vec<ConnectionS
                 format!("{}({})", connection.rule, rule_payload)
             };
             ConnectionSummary {
+                domain_source: if !connection.metadata.sniff_host.is_empty() {
+                    "TLS SNI / HTTP Host".into()
+                } else if !connection.metadata.rule_host().is_empty() {
+                    "DNS 映射或配置（未记录具体解析器）".into()
+                } else {
+                    "纯 IP / 未识别".into()
+                },
                 id: connection.id.to_string(),
                 host: connection.metadata.remote_address().to_string(),
                 domain: connection.metadata.rule_host().to_owned(),
@@ -84,6 +91,7 @@ pub(super) fn record_request_history(state: &mut CoreState, connections: &[Conne
         {
             request.host = connection.host.clone();
             request.domain = connection.domain.clone();
+            request.domain_source = connection.domain_source.clone();
             request.destination_ip = connection.destination_ip.clone();
             request.destination_port = connection.destination_port;
             request.network = connection.network.clone();
@@ -97,6 +105,7 @@ pub(super) fn record_request_history(state: &mut CoreState, connections: &[Conne
         }
 
         state.request_history.push_back(RequestSummary {
+            domain_source: connection.domain_source.clone(),
             id: connection.id.clone(),
             host: connection.host.clone(),
             domain: connection.domain.clone(),

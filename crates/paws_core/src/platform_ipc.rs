@@ -217,7 +217,15 @@ impl PlatformIpc {
         let content = serde_json::to_vec(envelope)?;
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         self.write_frame(self.role, generation, &content)?;
-        self.notification.notify()
+        match self.notification.notify() {
+            Ok(()) => Ok(()),
+            // When the UI Ability exits or is swiped away while the background
+            // VPN Extension remains active, the Ashmem frame is still the
+            // source of truth; a closed UI notification socket must not abort
+            // extension heartbeats or telemetry publication.
+            Err(PlatformIpcError::Notification(_)) if self.role == PlatformRole::Vpn => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     fn initialize_region(&self) -> Result<()> {
@@ -504,11 +512,14 @@ impl SocketNotification {
             if error.kind() == io::ErrorKind::WouldBlock {
                 return Ok(());
             }
-            if self.listener.is_some()
-                && matches!(error.raw_os_error(), Some(libc::EPIPE | libc::ECONNRESET))
-            {
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::EPIPE | libc::ECONNRESET | libc::ENOTCONN)
+            ) {
                 self.clear_connection(&connection)?;
-                return Ok(());
+                if self.listener.is_some() {
+                    return Ok(());
+                }
             }
             return Err(PlatformIpcError::Notification(error.to_string()));
         }

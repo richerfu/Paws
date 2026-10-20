@@ -6,6 +6,7 @@ use route_status::latest_active_rule_node;
 
 fn connection(started_at: &str, chains: &[&str]) -> ConnectionSummary {
     ConnectionSummary {
+        domain_source: String::new(),
         id: started_at.to_owned(),
         host: "example.com:443".to_owned(),
         domain: "example.com".to_owned(),

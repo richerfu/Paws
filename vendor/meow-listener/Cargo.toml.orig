@@ -1,0 +1,77 @@
+[package]
+name = "meow-listener"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Inbound protocol listeners (Mixed/HTTP/SOCKS5/TProxy/TUN) for the meow-rs proxy kernel."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["listener-http", "listener-socks5", "listener-mixed", "listener-tproxy"]
+listener-http = []
+listener-socks5 = []
+listener-tproxy = []
+listener-mixed = ["listener-http", "listener-socks5"]
+# TUN inbound (issue #326) — transparent proxy on platforms without a
+# tproxy/REDIRECT firewall (Windows). Off by default: pulls in the device,
+# userspace-stack, and route-control deps below.
+listener-tun = [
+    "dep:tun-rs",
+    "dep:lwip",
+    "dep:futures",
+    "dep:route_manager",
+    "dep:meow-dns",
+    "dep:ipnet",
+]
+# Shadowsocks encrypted-server inbound. Reuses the `shadowsocks` crate's
+# server-side ProxyListener/ProxySocket (the same crate already used by the
+# outbound `ss` adapter) and the shared simple-obfs codec from meow-transport.
+# Off by default (server scenario); excluded from the app's `full`/`minimal`
+# bundles — enable with an explicit `--features listener-shadowsocks`.
+listener-shadowsocks = [
+    "dep:shadowsocks",
+    "dep:meow-transport",
+    "meow-transport/simple-obfs",
+]
+
+[dependencies]
+meow-common = { workspace = true }
+meow-trie = { workspace = true }
+meow-tunnel = { workspace = true }
+base64 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+libc = "0.2"
+smallvec = { workspace = true }
+smol_str = { workspace = true }
+tun-rs = { workspace = true, optional = true }
+lwip = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+route_manager = { workspace = true, optional = true }
+meow-dns = { workspace = true, optional = true }
+ipnet = { workspace = true, optional = true }
+# listener-shadowsocks
+shadowsocks = { workspace = true, optional = true }
+meow-transport = { workspace = true, optional = true }
+parking_lot.workspace = true
+
+[dev-dependencies]
+meow-config = { workspace = true }
+meow-rules = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+meow-dns = { workspace = true }
+meow-trie = { workspace = true }
+ipnet = { workspace = true }
+shadowsocks = { workspace = true }
+async-trait = { workspace = true }
+tracing-subscriber = { workspace = true }
+smol_str = { workspace = true }
+
+[[test]]
+name = "ss_listener_integration"
+required-features = ["listener-shadowsocks"]
+
+[lints]
+workspace = true

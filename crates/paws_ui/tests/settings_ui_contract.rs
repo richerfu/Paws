@@ -171,7 +171,7 @@ fn network_stack_is_a_bounded_selector_with_two_real_backends() {
         .split("tr::page_tr_231()")
         .nth(1)
         .expect("network stack field")
-        .split("row { height: 12.0 }")
+        .split("FieldLabel { content: \"仅这些应用")
         .next()
         .unwrap();
 
@@ -210,13 +210,13 @@ fn network_ports_are_editable_and_lan_access_requires_a_secret() {
     assert!(callbacks.contains("expected_config_revision: expected_config_revision.to_string()"));
     assert!(model.contains("pub const DEFAULT_MIXED_PORT: u16 = 7890"));
     assert!(model.contains("pub const DEFAULT_CONTROLLER_PORT: u16 = 9090"));
-    assert!(core.contains("restart_mixed_listener(tunnel, mixed_port)"));
+    assert!(core.contains("mixed_enabled.then_some(mixed_port)"));
     assert!(core.contains("probe_exit_location(&proxy_url)"));
     assert!(callbacks.contains("pub(crate) async fn copy_text"));
 }
 
 #[test]
-fn per_app_vpn_is_absent_from_ui_permissions_and_runtime_config() {
+fn per_app_vpn_uses_explicit_bundle_names_without_privileged_app_enumeration() {
     let page = fs::read_to_string("src/view/pages/settings.rs").unwrap();
     let tools = fs::read_to_string("src/view/pages/tools.rs").unwrap();
     let route = fs::read_to_string("src/view/route.rs").unwrap();
@@ -231,6 +231,8 @@ fn per_app_vpn_is_absent_from_ui_permissions_and_runtime_config() {
     assert!(!route.contains("PerApp"));
     assert!(!entry.contains("listInstalledApplications"));
     assert!(!module.contains("GET_BUNDLE_INFO"));
-    assert!(!vpn_config.contains("trustedApplications"));
-    assert!(!vpn_config.contains("blockedApplications"));
+    assert!(vpn_config.contains("trustedApplications"));
+    assert!(vpn_config.contains("blockedApplications"));
+    assert!(page.contains("values.vpn.trusted"));
+    assert!(page.contains("values.vpn.blocked"));
 }

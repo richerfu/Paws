@@ -7,6 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+async-trait.workspace = true
 axum.workspace = true
 dashmap.workspace = true
 futures.workspace = true
@@ -26,6 +27,7 @@ once_cell.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 serde_yaml.workspace = true
 thiserror.workspace = true
 time.workspace = true
@@ -39,6 +41,7 @@ ohos-ashmem-binding.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
+meow-transport.workspace = true
 shadowsocks.workspace = true
 
 [build-dependencies]

@@ -2,6 +2,13 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -z "${OHOS_NDK_HOME:-}" ] && [ -d /Applications/DevEco-Studio.app/Contents/sdk/default/openharmony ]; then
+  export OHOS_NDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony
+fi
+if [ -z "${DEVECO_SDK_HOME:-}" ] && [ -d /Applications/DevEco-Studio.app/Contents/sdk ]; then
+  export DEVECO_SDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk
+fi
+test -d "${OHOS_NDK_HOME:-}/native" || { echo "OpenHarmony NDK is unavailable" >&2; exit 1; }
 cd "$ROOT_DIR"
 OHRS_BIN=${OHRS:-ohrs}
 OHRS_LOG=$(mktemp "${TMPDIR:-/tmp}/paws-ohrs-build.XXXXXX")

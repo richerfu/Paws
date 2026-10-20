@@ -1,0 +1,259 @@
+diff --git a/protocol/mixed/inbound.go b/protocol/mixed/inbound.go
+--- a/protocol/mixed/inbound.go
++++ b/protocol/mixed/inbound.go
+@@ -118,6 +118,11 @@
+ 		}
+ 		conn = tlsConn
+ 	}
++	if tinyProbeEnabled(h.Tag(), metadata.Source.Addr) {
++		conn = newTinyProbeConn(conn, func(id string) {
++			h.logger.InfoContext(ctx, "benchmark-probe probeId=", id)
++		})
++	}
+ 	reader := std_bufio.NewReader(conn)
+ 	headerBytes, err := reader.Peek(1)
+ 	if err != nil {
+diff --git a/protocol/mixed/tiny_probe.go b/protocol/mixed/tiny_probe.go
+new file mode 100644
+--- /dev/null
++++ b/protocol/mixed/tiny_probe.go
+@@ -0,0 +1,111 @@
++package mixed
++
++import (
++	"bytes"
++	"net"
++	"net/netip"
++	"os"
++	"strconv"
++	"sync"
++)
++
++const tinyProbeHeaderLimit = 8192
++
++// Rust maps the compile-time raw diagnostic flag to this runtime bridge flag.
++// Use the same signal as sing-box socket tracing, never an unset compile flag.
++func tinyProbeEnabled(tag string, source netip.Addr) bool {
++	return tag == "sing-box-benchmark" && source.IsLoopback() && os.Getenv("PAWS_SOCKET_TRACE") == "1"
++}
++
++// tinyProbeConn observes the first CONNECT header while preserving every Read byte
++// and error. It never pre-reads, buffers application data, or logs other headers.
++type tinyProbeConn struct {
++	net.Conn
++	readMu sync.Mutex
++	head   []byte
++	done   bool
++	emit   func(string)
++}
++
++func newTinyProbeConn(conn net.Conn, emit func(string)) net.Conn {
++	return &tinyProbeConn{Conn: conn, emit: emit}
++}
++
++func (c *tinyProbeConn) Read(p []byte) (int, error) {
++	c.readMu.Lock()
++	defer c.readMu.Unlock()
++	n, err := c.Conn.Read(p)
++	if !c.done && n > 0 {
++		keep := n
++		if available := tinyProbeHeaderLimit - len(c.head); keep > available {
++			keep = available
++		}
++		c.head = append(c.head, p[:keep]...)
++		prefix := []byte("CONNECT ")
++		check := len(c.head)
++		if check > len(prefix) {
++			check = len(prefix)
++		}
++		if !bytes.Equal(c.head[:check], prefix[:check]) {
++			c.done = true
++		} else if end := bytes.Index(c.head, []byte("\r\n\r\n")); end >= 0 {
++			c.done = true
++			if id := parseTinyProbeHeader(c.head[:end+4]); id != "" {
++				c.emit(id)
++			}
++		} else if len(c.head) == tinyProbeHeaderLimit {
++			c.done = true
++		}
++		if c.done {
++			c.head = nil
++		}
++	}
++	if err != nil {
++		c.done = true
++		c.head = nil
++	}
++	return n, err
++}
++
++func parseTinyProbeHeader(head []byte) string {
++	var id string
++	seen := false
++	for _, line := range bytes.Split(head, []byte("\r\n"))[1:] {
++		colon := bytes.IndexByte(line, ':')
++		if colon < 0 || !bytes.EqualFold(line[:colon], []byte("X-TinyPaws-Probe")) {
++			continue
++		}
++		if seen {
++			return ""
++		}
++		seen = true
++		value := bytes.Trim(line[colon+1:], " \t")
++		if !validTinyProbeID(value) {
++			return ""
++		}
++		id = string(value)
++	}
++	return id
++}
++
++func validTinyProbeID(value []byte) bool {
++	if len(value) < 21 || len(value) > 30 || !bytes.Equal(value[:3], []byte("tp-")) || value[19] != '-' {
++		return false
++	}
++	for _, b := range value[3:19] {
++		if !(b >= '0' && b <= '9' || b >= 'a' && b <= 'f') {
++			return false
++		}
++	}
++	decimal := value[20:]
++	if decimal[0] == '0' {
++		return false
++	}
++	for _, b := range decimal {
++		if b < '0' || b > '9' {
++			return false
++		}
++	}
++	id, err := strconv.ParseUint(string(decimal), 10, 32)
++	return err == nil && id <= 1_000_000_000
++}
+diff --git a/protocol/mixed/tiny_probe_test.go b/protocol/mixed/tiny_probe_test.go
+new file mode 100644
+--- /dev/null
++++ b/protocol/mixed/tiny_probe_test.go
+@@ -0,0 +1,123 @@
++package mixed
++
++import (
++	"bytes"
++	"errors"
++	"io"
++	"net"
++	"net/netip"
++	"strings"
++	"testing"
++)
++
++type probeTestConn struct {
++	net.Conn
++	r io.Reader
++}
++
++func (c *probeTestConn) Read(p []byte) (int, error) { return c.r.Read(p) }
++
++type errorWithData struct {
++	data []byte
++	sent bool
++}
++
++var probeTestError = errors.New("test-close")
++
++func (r *errorWithData) Read(p []byte) (int, error) {
++	if r.sent {
++		return 0, probeTestError
++	}
++	r.sent = true
++	return copy(p, r.data), probeTestError
++}
++
++func TestTinyProbeReadPassesEveryByteAndError(t *testing.T) {
++	payload := "CONNECT cp.cloudflare.com:443 HTTP/1.1\r\nX-TinyPaws-Probe: tp-0123456789abcdef-19\r\nAuthorization: secret\r\n\r\nTLS-application-bytes"
++	var emitted []string
++	conn := newTinyProbeConn(&probeTestConn{r: strings.NewReader(payload)}, func(id string) { emitted = append(emitted, id) })
++	var actual bytes.Buffer
++	buf := make([]byte, 3)
++	for {
++		n, err := conn.Read(buf)
++		actual.Write(buf[:n])
++		if err == io.EOF {
++			break
++		}
++		if err != nil {
++			t.Fatal(err)
++		}
++	}
++	if actual.String() != payload {
++		t.Fatal("Read changed bytes")
++	}
++	if len(emitted) != 1 || emitted[0] != "tp-0123456789abcdef-19" {
++		t.Fatalf("invalid emitted IDs: %#v", emitted)
++	}
++	reader := &errorWithData{data: []byte(payload)}
++	conn = newTinyProbeConn(&probeTestConn{r: reader}, func(string) {})
++	buf = make([]byte, len(payload))
++	n, err := conn.Read(buf)
++	if n != len(payload) || err != probeTestError || string(buf[:n]) != payload {
++		t.Fatal("Read changed count/error/data")
++	}
++}
++
++func TestTinyProbeRejectsLongInvalidAndDuplicateHeaders(t *testing.T) {
++	valid := "tp-0123456789abcdef-1"
++	inputs := []string{
++		"CONNECT a:443 HTTP/1.1\r\nX-Padding: " + strings.Repeat("x", tinyProbeHeaderLimit) + "\r\nX-TinyPaws-Probe: " + valid + "\r\n\r\n",
++		"CONNECT a:443 HTTP/1.1\r\nX-TinyPaws-Probe: " + valid + "\r\nX-TinyPaws-Probe: " + valid + "\r\n\r\n",
++		"CONNECT a:443 HTTP/1.1\r\nX-TinyPaws-Probe: token=secret\r\n\r\n",
++		"GET / HTTP/1.1\r\nX-TinyPaws-Probe: " + valid + "\r\n\r\n",
++	}
++	for i, payload := range inputs {
++		count := 0
++		c := newTinyProbeConn(&probeTestConn{r: strings.NewReader(payload)}, func(string) { count++ })
++		actual, err := io.ReadAll(c)
++		if err != nil || string(actual) != payload {
++			t.Fatal("passthrough failed")
++		}
++		if count != 0 {
++			t.Fatalf("case %d logged unsafe value", i)
++		}
++		if len(c.(*tinyProbeConn).head) != 0 {
++			t.Fatal("retained header")
++		}
++	}
++	for _, id := range []string{"tp-0123456789abcdef-0", "tp-0123456789abcdef-01", "tp-0123456789abcdeF-1", "tp-0123456789abcdef-1000000001", "tp-0123456789abcdef-1 secret"} {
++		if validTinyProbeID([]byte(id)) {
++			t.Fatal("accepted invalid ID")
++		}
++	}
++}
++
++func TestTinyProbeGateUsesActualRustBridgeRuntimeFlag(t *testing.T) {
++	t.Setenv("PAWS_SOCKET_TRACE", "")
++	t.Setenv("PAWS_RAW_ENGINE_DIAGNOSTIC", "1")
++	loopback := netip.MustParseAddr("127.0.0.1")
++	if tinyProbeEnabled("sing-box-benchmark", loopback) {
++		t.Fatal("compile-only environment must not enable runtime tap")
++	}
++	t.Setenv("PAWS_SOCKET_TRACE", "1")
++	t.Setenv("PAWS_RAW_ENGINE_DIAGNOSTIC", "")
++	if !tinyProbeEnabled("sing-box-benchmark", loopback) {
++		t.Fatal("actual Rust bridge flag must enable tap")
++	}
++	if !tinyProbeEnabled("sing-box-benchmark", netip.MustParseAddr("::1")) {
++		t.Fatal("IPv6 loopback should be admitted")
++	}
++	if tinyProbeEnabled("public-mixed", loopback) {
++		t.Fatal("public listener admitted")
++	}
++	if tinyProbeEnabled("sing-box-benchmark", netip.MustParseAddr("192.0.2.1")) {
++		t.Fatal("non-loopback admitted")
++	}
++	if tinyProbeEnabled("sing-box-benchmark", netip.Addr{}) {
++		t.Fatal("invalid source admitted")
++	}
++	t.Setenv("PAWS_SOCKET_TRACE", "0")
++	if tinyProbeEnabled("sing-box-benchmark", loopback) {
++		t.Fatal("disabled runtime flag admitted")
++	}
++}

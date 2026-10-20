@@ -1,0 +1,73 @@
+diff --git a/constant/features/android.go b/constant/features/android.go
+index c1174f0..005a32f 100644
+--- a/constant/features/android.go
++++ b/constant/features/android.go
+@@ -1,4 +1,4 @@
+-//go:build android
++//go:build android || openharmony
+ 
+ package features
+ 
+diff --git a/constant/features/android_stub.go b/constant/features/android_stub.go
+index 282493e..7d4815b 100644
+--- a/constant/features/android_stub.go
++++ b/constant/features/android_stub.go
+@@ -1,4 +1,4 @@
+-//go:build !android
++//go:build !android && !openharmony
+ 
+ package features
+ 
+diff --git a/dns/patch_openharmony.go b/dns/patch_openharmony.go
+new file mode 100644
+index 0000000..f7771d8
+--- /dev/null
++++ b/dns/patch_openharmony.go
+@@ -0,0 +1,37 @@
++//go:build openharmony
++
++package dns
++
++import (
++	"github.com/metacubex/mihomo/component/resolver"
++)
++
++var systemResolver []dnsClient
++
++func FlushCacheWithDefaultResolver() {
++	resolver.ClearCache()
++	resolver.ResetConnection()
++}
++
++func UpdateSystemDNS(addr []string) {
++	if len(addr) == 0 {
++		systemResolver = nil
++	}
++
++	ns := make([]NameServer, 0, len(addr))
++	for _, d := range addr {
++		ns = append(ns, NameServer{Addr: d})
++	}
++
++	systemResolver = transform(ns, nil)
++}
++
++func (c *systemClient) getDnsClients() ([]dnsClient, error) {
++	return systemResolver, nil
++}
++
++func (c *systemClient) ResetConnection() {
++	for _, r := range systemResolver {
++		r.ResetConnection()
++	}
++}
+diff --git a/dns/system_common.go b/dns/system_common.go
+index 78c4a86..599138d 100644
+--- a/dns/system_common.go
++++ b/dns/system_common.go
+@@ -1,4 +1,4 @@
+-//go:build !android
++//go:build !android && !openharmony
+ 
+ package dns
+ 

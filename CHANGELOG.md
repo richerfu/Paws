@@ -2,9 +2,53 @@
 
 ## Unreleased
 
+- Keep automatic engine selection on the verified Mihomo production baseline.
+  Profiles with unaudited proxy providers also retain candidate fallback instead
+  of treating a missing inline plugin as evidence of compatibility.
+- Keep an established VPN alive when HarmonyOS cancels the auxiliary
+  `dataTransfer` continuous task for low traffic or stale progress. The task
+  protects active transfers but no longer owns the VPN lifetime.
+- Replace packaged Mihomo geodata atomically and disable its independent
+  geodata updater so a live memory-mapped `Country.mmdb` cannot be truncated
+  during configuration reload.
+- Keep the HarmonyOS-owned TUN descriptor open in the Mihomo bridge and close
+  only its duplicate, preventing FDSAN aborts during VPN teardown.
 - Allow profile export as a QR code with PNG saving. Subscription profiles share
   their URL; local profiles share YAML when it fits in one code, and scanned
   YAML profiles can be imported.
+
+## 1.2.7-tiny — 2026-10-14
+
+- Omit absent HarmonyOS application-routing arrays instead of sending
+  `undefined` values through the VPN binder; ANCO/出境易 containers continue
+  to use the documented device-wide compatibility route.
+- Align the Rust simple-obfs HTTP handshake header order and wire casing with
+  mihomo for strict deployed frontends, while retaining automatic mihomo
+  selection for plugin profiles until the alternative engines pass the same
+  device route gate.
+- Apply that capability gate to explicit Meow and sing-box preferences as well,
+  preventing unsupported plugin paths from reporting a false Connected state.
+- Monitor default-network changes while connected and reload or reset the
+  active data plane after a debounced handover.
+- Make the full verification script discover the installed DevEco SDK and add
+  progress plus a declared 99.5% acceptance threshold to 1,000/10,000 request
+  device benchmarks.
+
+## 1.2.6-tiny — 2026-10-14
+
+- Rename the installed product to TinyPaws while preserving the existing
+  `com.richerfu.paws` data and signing identity for in-place upgrades.
+- Add generic DNS-to-flow hostname recovery, including fragmented TLS, and fix
+  app-managed DNS listener/self-reference conflicts.
+- Add configuration preflight, target-service health/failover, public-exit
+  status, redacted diagnostics, process/OS-exit evidence and quantified memory
+  trends.
+- Add HarmonyOS per-application VPN policy, one system continuous-task
+  notification, Live View, service card, portable backup and WebDAV backup.
+- Package mihomo and sing-box bridges while retaining mihomo as the automatic
+  choice for plugin transports that have passed physical-device validation.
+- Add a route-proven device benchmark which checks controller chain, request
+  reliability, latency and VPN process identity without exporting public IPs.
 
 ## 1.1.0 — 2026-09-16
 

@@ -13,6 +13,10 @@ interface PawsAutomationParams {
   pawsProfileUrl?: string;
   pawsProfileName?: string;
   pawsAutoStartVpn?: string | boolean;
+  pawsEngine?: string;
+  pawsMode?: string;
+  pawsSelectGroup?: string;
+  pawsSelectProxy?: string;
   pawsWaitForVpnBeforeProbes?: string | boolean;
   pawsDelayProxy?: string;
   pawsDelayUrl?: string;
@@ -58,13 +62,23 @@ async function run(
   const profileName = wantString(want, 'pawsProfileName') || 'Paws Smoke Profile';
   const delayProxy = wantString(want, 'pawsDelayProxy');
   const echoProxy = wantString(want, 'pawsEchoProxy');
+  const mode = wantString(want, 'pawsMode');
+  const selectGroup = wantString(want, 'pawsSelectGroup');
+  const selectProxy = wantString(want, 'pawsSelectProxy');
+  const selectionRequested = automationParam(want, 'pawsSelectGroup') !== undefined ||
+    automationParam(want, 'pawsSelectProxy') !== undefined;
+  if (selectionRequested && (selectGroup.trim().length === 0 || selectProxy.trim().length === 0)) {
+    throw new Error('diagnostic proxy selection requires both pawsSelectGroup and pawsSelectProxy');
+  }
   if (
     profileContent.length === 0 &&
     profileUrl.length === 0 &&
     !wantBool(want, 'pawsAutoStartVpn') &&
     delayProxy.length === 0 &&
-    echoProxy.length === 0
-    && !wantBool(want, 'pawsVerifyAppHttp')
+    echoProxy.length === 0 &&
+    mode.length === 0 &&
+    !selectionRequested &&
+    !wantBool(want, 'pawsVerifyAppHttp')
   ) {
     return;
   }
@@ -81,9 +95,27 @@ async function run(
     hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation profile ready %{public}s', profileId);
   }
 
+  if (mode.length > 0) {
+    if (!['rule', 'global', 'direct'].includes(mode)) { throw new Error('invalid diagnostic mode'); }
+    await pawsUi.setMode(mode);
+  }
+
+  if (selectionRequested) {
+    await pawsUi.selectProxy(selectGroup, selectProxy);
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation proxy selection committed');
+  }
+
   if (wantBool(want, 'pawsAutoStartVpn')) {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation requested VPN start');
-    const vpnStart: Promise<void> = startVpn(activeVpnOptionsJson());
+    let optionsJson = activeVpnOptionsJson();
+    const engine = wantString(want, 'pawsEngine');
+    if (engine.length > 0) {
+      if (!['mihomo', 'meow', 'sing-box'].includes(engine)) { throw new Error('invalid diagnostic engine'); }
+      const options = JSON.parse(optionsJson) as Record<string, Object>;
+      options['engine'] = engine === 'sing-box' ? 'singbox' : engine;
+      optionsJson = JSON.stringify(options);
+    }
+    const vpnStart: Promise<void> = startVpn(optionsJson);
     if (wantBool(want, 'pawsWaitForVpnBeforeProbes') || wantBool(want, 'pawsVerifyAppHttp')) {
       await vpnStart;
       hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation VPN connected before probes');
@@ -186,6 +218,14 @@ function automationParam(want: Want, key: keyof PawsAutomationParams): string | 
       return params.pawsProfileUrl;
     case 'pawsProfileName':
       return params.pawsProfileName;
+    case 'pawsEngine':
+      return params.pawsEngine;
+    case 'pawsMode':
+      return params.pawsMode;
+    case 'pawsSelectGroup':
+      return params.pawsSelectGroup;
+    case 'pawsSelectProxy':
+      return params.pawsSelectProxy;
     case 'pawsAutoStartVpn':
       return params.pawsAutoStartVpn;
     case 'pawsWaitForVpnBeforeProbes':

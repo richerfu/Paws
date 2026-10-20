@@ -30,6 +30,8 @@ pub(super) enum Route {
     Resources {},
     #[route("/settings/logs")]
     Logs {},
+    #[route("/settings/diagnostics")]
+    Diagnostics {},
     #[route("/settings/about")]
     About {},
     #[route("/settings/about/privacy")]
@@ -47,6 +49,10 @@ impl Route {
             Self::Traffic {} => translate_ui(locale, tr::nav_traffic()),
             Self::Resources {} => translate_ui(locale, tr::nav_resources()),
             Self::Logs {} => translate_ui(locale, tr::nav_logs()),
+            Self::Diagnostics {} => match locale {
+                UiLocale::ZhCn => "诊断与备份".into(),
+                UiLocale::En => "Diagnostics & Backup".into(),
+            },
             Self::Tools {} => translate_ui(locale, tr::nav_tools()),
             Self::Appearance {} => translate_ui(locale, tr::page_tr_001()),
             Self::Settings {} => translate_ui(locale, tr::nav_settings()),
@@ -66,6 +72,7 @@ impl Route {
             Self::Traffic {} => "activity",
             Self::Resources {} => "database",
             Self::Logs {} => "scroll-text",
+            Self::Diagnostics {} => "shield-check",
             Self::Tools {} => "settings",
             Self::Appearance {} => "palette",
             Self::Settings {} => "settings",
@@ -81,6 +88,7 @@ impl Route {
             Self::Profiles {} | Self::Proxies {} => 1,
             Self::Traffic {} => 2,
             Self::Tools {}
+            | Self::Diagnostics {}
             | Self::Appearance {}
             | Self::Settings {}
             | Self::SubscriptionConverter {}
@@ -96,7 +104,8 @@ impl Route {
     pub(super) fn parent(&self) -> Option<Self> {
         match self {
             Self::Proxies {} => Some(Self::Profiles {}),
-            Self::Appearance {}
+            Self::Diagnostics {}
+            | Self::Appearance {}
             | Self::Settings {}
             | Self::SubscriptionConverter {}
             | Self::Requests {}
@@ -130,6 +139,7 @@ impl Route {
                 1180.0
             }
             Self::Tools {}
+            | Self::Diagnostics {}
             | Self::Appearance {}
             | Self::Settings {}
             | Self::SubscriptionConverter {}
@@ -207,4 +217,9 @@ fn About() -> Element {
 #[component]
 fn Privacy() -> Element {
     privacy_page()
+}
+
+#[component]
+fn Diagnostics() -> Element {
+    diagnostics_page()
 }

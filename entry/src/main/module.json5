@@ -22,6 +22,9 @@
         "startWindowIcon": "$media:startIcon",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
+        "backgroundModes": [
+          "dataTransfer"
+        ],
         "skills": [
           {
             "entities": [
@@ -35,6 +38,13 @@
       }
     ],
     "extensionAbilities": [
+      {
+        "name": "TinyPawsFormAbility",
+        "srcEntry": "./ets/widget/TinyPawsFormAbility.ets",
+        "type": "form",
+        "exported": true,
+        "metadata": [{ "name": "ohos.extension.form", "resource": "$profile:tinypaws_forms" }]
+      },
       {
         "name": "EntryBackupAbility",
         "srcEntry": "./ets/entrybackupability/EntryBackupAbility.ets",
@@ -68,6 +78,10 @@
       },
       {
         "name": "ohos.permission.GET_NETWORK_INFO"
+      },
+      {
+        "name": "ohos.permission.KEEP_BACKGROUND_RUNNING",
+        "reason": "$string:grant_keep_background_running"
       },
       {
         "name": "ohos.permission.FILE_ACCESS_PERSIST"

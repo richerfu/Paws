@@ -1,0 +1,55 @@
+[package]
+name = "meow-tunnel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Core routing engine (TCP/UDP relay, rule dispatch, connection statistics) for the meow-rs proxy kernel."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+meow-common = { workspace = true }
+meow-dns = { workspace = true, default-features = false }
+meow-rules = { workspace = true }
+meow-proxy = { workspace = true, default-features = false }
+meow-trie = { workspace = true }
+ipnet = { workspace = true }
+regex = { workspace = true }
+tokio = { workspace = true }
+dashmap = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+serde = { workspace = true }
+smol_str = { workspace = true }
+smallvec = { workspace = true }
+time = { workspace = true }
+
+[[bench]]
+name = "udp_bench"
+harness = false
+
+[[bench]]
+name = "rules_bench"
+harness = false
+
+[[bench]]
+name = "stats_bench"
+harness = false
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
+meow-trie = { workspace = true }
+criterion = { workspace = true }
+dashmap = { workspace = true }
+ipnet = { workspace = true }
+meow-config = { workspace = true }
+meow-rules = { workspace = true }
+serde_yaml = { workspace = true }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

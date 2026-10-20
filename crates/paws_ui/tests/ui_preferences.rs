@@ -17,6 +17,7 @@ static NEXT_TEMP_PATH: AtomicU64 = AtomicU64::new(0);
 fn preferences_round_trip_and_keep_system_defaults() {
     let path = temporary_path();
     let preferences = UiPreferences {
+        advanced: false,
         language: LanguagePreference::En,
         theme: ThemePreference::Dark,
     };

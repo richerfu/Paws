@@ -1,0 +1,18 @@
+{
+  "forms": [{
+    "name": "TinyPawsStatus",
+    "displayName": "$string:EntryAbility_label",
+    "description": "$string:EntryAbility_desc",
+    "src": "./ets/widget/TinyPawsCard.ets",
+    "uiSyntax": "arkts",
+    "window": {"designWidth": 300, "autoDesignWidth": true},
+    "colorMode": "auto",
+    "isDefault": true,
+    "updateEnabled": true,
+    "scheduledUpdateTime": "00:00",
+    "updateDuration": 1,
+    "defaultDimension": "2*2",
+    "supportDimensions": ["2*2"],
+    "formConfigAbility": "ability://EntryAbility"
+  }]
+}

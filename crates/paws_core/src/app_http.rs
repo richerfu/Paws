@@ -169,6 +169,42 @@ mod tests {
     }
 
     #[test]
+    fn external_engines_keep_app_http_available_with_public_services_disabled() {
+        let root =
+            std::env::temp_dir().join(format!("paws-external-http-test-{}", now_unix_nanos()));
+        let core = CoreHandle::new_with_profile_root(&root);
+        for engine in [VpnEngine::Mihomo, VpnEngine::SingBox] {
+            {
+                let mut state = core.lock_state().unwrap();
+                state.platform_vpn_running = true;
+                state.platform_vpn_engine = Some(engine);
+                assert!(!state.network_ports.mixed_enabled);
+                assert!(!state.network_ports.controller_enabled);
+                // The UI process must learn the actual selected engine over IPC.
+                let frame = serde_json::to_string(&platform_vpn_state(&state)).unwrap();
+                let remote: PlatformVpnState = serde_json::from_str(&frame).unwrap();
+                assert_eq!(remote.engine, Some(engine));
+            }
+            let (url, route) = core.external_http_route().unwrap();
+            assert_eq!(
+                url,
+                Some(format!(
+                    "http://127.0.0.1:{}",
+                    engine_policy::benchmark_port(engine)
+                ))
+            );
+            assert_eq!(route, http_client::ExternalHttpRoute::CurrentProxy);
+        }
+        core.lock_state().unwrap().platform_vpn_running = false;
+        assert_eq!(
+            core.external_http_route().unwrap(),
+            (None, http_client::ExternalHttpRoute::Direct)
+        );
+        drop(core);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn endpoint_credentials_stay_out_of_debug_diagnostics() {
         let endpoint = AppHttpProxyEndpoint {
             port: 10240,

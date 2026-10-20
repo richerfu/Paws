@@ -1,7 +1,15 @@
-# Paws
+# TinyPaws
 
-Paws is a Clash/mihomo HarmonyOS client with a native ArkUI interface, powered
-by [meow-rs 0.22.0](https://github.com/meow-rs/meow-rs) and a Rust userspace TUN stack.
+Current device release: **1.2.7-tiny** (versionCode **1002007**). See the
+[changelog](CHANGELOG.md) for release notes and the
+[delivery record](docs/TinyPaws-1.2.7-delivery.md) for physical-device evidence.
+
+TinyPaws is a Clash/mihomo HarmonyOS client with a native ArkUI interface,
+powered by [meow-rs 0.22.0](https://github.com/meow-rs/meow-rs), a Rust userspace TUN
+stack, and optional mihomo and sing-box compatibility engines.
+Profiles that use plugin transports are resolved through the route-validated
+mihomo engine even when a candidate engine is selected, so a compatibility
+preference cannot produce a false Connected state.
 Its product flow follows
 [Meow for Android](https://github.com/meow-rs/meow-android), while the HarmonyOS UI,
 VPN lifecycle, native bridge, packaging, and device validation are implemented
@@ -17,11 +25,12 @@ HarmonyOS abilities (ArkTS)
     |  EntryAbility + VpnExtensionAbility
     |  VpnConnection TUN + protectProcessNet()
     v
-Paws Rust runtime
+TinyPaws Rust runtime
     |  paws_core + paws_profile
     |  paws_vpn + netstack-smoltcp/lwIP
     v
-meow-rs
+engine adapter
+    |  meow-rs (native Rust), mihomo, or sing-box
     |  Config, rule engine, proxy, DNS, external controller
     v
 Network
@@ -45,6 +54,14 @@ Network
   provider refresh, GEOIP, GEOSITE, and ASN data.
 - **VPN and DNS**: HarmonyOS `VpnExtensionAbility`, userspace TCP/UDP forwarding,
   in-TUN DNS handling, cache diagnostics, and process-network protection.
+- **HarmonyOS integration**: one system continuous-task notification, service
+  card, Live View, per-application VPN allow/bypass lists, lifecycle journal,
+  and bounded process/exit evidence.
+- **Configuration safety**: subscription source, persistent user overrides and
+  Harmony runtime adaptation remain separate; preflight reports changed paths
+  without exporting credentials.
+- **Operations**: target-service health checks, cooled-down automatic failover,
+  portable/WebDAV backup, public-exit health, and a redacted diagnostic export.
 - **Runtime views**: proxy selection and delay test, live traffic, connections,
   requests, logs, resources, and VPN lifecycle diagnostics.
 - **Native UI**: phone, tablet, and 2-in-1 device targets built with
@@ -90,6 +107,10 @@ This runs Rust formatting checks, workspace tests, ArkTS platform tests,
 local protocol profile generation, and an OpenHarmony `aarch` build.
 
 ### Build an unsigned release HAP
+
+Prepare the Go engines from the vendored bridges and pinned upstream sources;
+see [Native engine builds](docs/native-engines-build.md) for the OHOS Go
+toolchain and patch setup. A separate FlClash checkout is no longer required.
 
 Provision the GeoData files required by GEOIP, GEOSITE, and ASN rules, then
 package the app:
@@ -154,6 +175,23 @@ scripts/harmony-smoke.sh \
   --hap entry/build/default/outputs/default/entry-default-release-signed.hap \
   --require-protect-success
 ```
+
+For a route-proven performance sample on a connected phone, use:
+
+```sh
+python3 scripts/benchmark-harmony-vpn.py \
+  --target <device-ip:hdc-port> \
+  --engine mihomo \
+  --force-global \
+  --requests 1000 \
+  --minimum-success-rate 99.5
+```
+
+The benchmark fails if it cannot observe the selected proxy in the controller
+chain (or independently prove a changed public exit), if the VPN process
+restarts, or if the declared success-rate threshold is missed. Public IP values
+are stored only as hashes, and the request URL is recorded for reproducibility.
+See [the 2026-10-14 engine evaluation](docs/engine-evaluation-2026-10-14.md).
 
 ## OpenHarmony QEMU
 

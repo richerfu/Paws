@@ -1,0 +1,582 @@
+//! AnyTLS Client implementation
+
+use crate::client::{SessionPool, SessionPoolConfig};
+use crate::padding::{PaddingFactory, SharedPaddingFactory};
+use crate::session::{Session, SessionHeartbeatConfig};
+use crate::util::{
+    AnyTlsError, Result, TlsConnect, configure_tcp_stream, hash_password, send_authentication,
+};
+use bytes::Bytes;
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::Arc;
+use tokio::time::Duration;
+
+/// Client manages connections to AnyTLS servers
+///
+/// TLS is supplied by the host through [`TlsConnect`]; the client dials TCP,
+/// hands the socket to the hook, and speaks AnyTLS over whatever stream
+/// comes back.
+pub struct Client {
+    password_hash: [u8; 32],
+    server_addr: String,
+    tls: Arc<dyn TlsConnect>,
+    /// Padding factory in force for this server, shared with every session the
+    /// client opens so an `UpdatePaddingScheme` push outlives the session that
+    /// received it.
+    padding: SharedPaddingFactory,
+    session_pool: Arc<SessionPool>,
+    pool_config: SessionPoolConfig,
+}
+
+impl Client {
+    /// Create a new client with default session pool configuration
+    pub fn new(
+        password: &str,
+        server_addr: String,
+        tls: Arc<dyn TlsConnect>,
+        padding: Arc<PaddingFactory>,
+    ) -> Self {
+        Self::with_pool_config(
+            password,
+            server_addr,
+            tls,
+            padding,
+            crate::client::SessionPoolConfig::default(),
+        )
+    }
+
+    /// Create a new client with custom session pool configuration
+    pub fn with_pool_config(
+        password: &str,
+        server_addr: String,
+        tls: Arc<dyn TlsConnect>,
+        padding: Arc<PaddingFactory>,
+        pool_config: crate::client::SessionPoolConfig,
+    ) -> Self {
+        let password_hash = hash_password(password);
+        let session_pool = Arc::new(SessionPool::with_config(pool_config.clone()));
+
+        tracing::debug!("[Client] Creating new client for server: {}", server_addr);
+
+        Self {
+            password_hash,
+            server_addr,
+            tls,
+            padding: padding.into_shared(),
+            session_pool,
+            pool_config,
+        }
+    }
+
+    /// Create a new stream by establishing or reusing a session
+    /// Returns (stream, session) so the caller can use session.write_data_frame for writing
+    pub async fn create_proxy_stream(
+        &self,
+        destination: (String, u16),
+    ) -> Result<(Arc<crate::session::Stream>, Arc<crate::session::Session>)> {
+        self.create_proxy_stream_with_payload(destination, None)
+            .await
+    }
+
+    /// Create a new stream like [`Client::create_proxy_stream`], but write
+    /// `payload` to the wire right after the destination address, **before**
+    /// waiting for SYNACK.
+    ///
+    /// Required for udp-over-tcp: sing-box's anytls inbound reads the UoT
+    /// request inside `RouteConnectionEx` and only reports handshake success
+    /// (SYNACK) once it has it, so a client that returns the stream first and
+    /// writes the request later deadlocks — client waits SYNACK, server waits
+    /// request (meow-rs issue #535). Servers that SYNACK unconditionally are
+    /// unaffected either way.
+    pub async fn create_proxy_stream_with_payload(
+        &self,
+        destination: (String, u16),
+        payload: Option<Bytes>,
+    ) -> Result<(Arc<crate::session::Stream>, Arc<crate::session::Session>)> {
+        tracing::debug!(
+            "[Client] create_proxy_stream: {}:{}",
+            destination.0,
+            destination.1
+        );
+
+        // Get or create a session
+        let session = self.create_stream().await?;
+        tracing::debug!("[Client] Got session for proxy stream");
+
+        let stream = Self::open_proxy_stream(&session, destination, payload).await?;
+        Ok((stream, session))
+    }
+
+    /// Open a proxy stream on an already-established session: open the
+    /// stream, write the SOCKS5-form destination, flush the optional eager
+    /// payload, and wait for SYNACK.
+    async fn open_proxy_stream(
+        session: &Arc<Session>,
+        destination: (String, u16),
+        payload: Option<Bytes>,
+    ) -> Result<Arc<crate::session::Stream>> {
+        // Open a new stream in the session
+        let (stream, synack_rx) = session.open_stream().await?;
+        let mut guard = crate::session::stream::OpeningStreamGuard::new(Arc::clone(&stream));
+        tracing::debug!(
+            "[Client] Opened stream {} in session, waiting for SYNACK",
+            stream.id()
+        );
+
+        // Write destination address to stream (SOCKS5 format)
+        // Use session's write_data_frame to send data without needing to unwrap Arc<Stream>
+        tracing::debug!(
+            "[Client] Writing destination address to stream {}: {}:{}",
+            stream.id(),
+            destination.0,
+            destination.1
+        );
+
+        // Prepare the SOCKS5 address bytes
+        let (addr, port) = destination;
+        let mut addr_bytes = Vec::new();
+
+        if let Ok(ipv4) = addr.parse::<Ipv4Addr>() {
+            // IPv4
+            tracing::trace!("[Client] Writing IPv4 address: {:?}", ipv4);
+            addr_bytes.push(0x01); // ATYP_IPV4
+            addr_bytes.extend_from_slice(&ipv4.octets());
+        } else if let Ok(ipv6) = addr.parse::<Ipv6Addr>() {
+            // IPv6
+            tracing::trace!("[Client] Writing IPv6 address: {:?}", ipv6);
+            addr_bytes.push(0x04); // ATYP_IPV6
+            addr_bytes.extend_from_slice(&ipv6.octets());
+        } else {
+            // Domain name
+            tracing::trace!("[Client] Writing domain name: {}", addr);
+            let domain_bytes = addr.as_bytes();
+            if domain_bytes.len() > 255 {
+                return Err(AnyTlsError::Protocol("Domain name too long".to_string()));
+            }
+            addr_bytes.push(0x03); // ATYP_DOMAIN
+            addr_bytes.push(domain_bytes.len() as u8);
+            addr_bytes.extend_from_slice(domain_bytes);
+        }
+
+        // Write port (2 bytes, big-endian)
+        tracing::trace!("[Client] Writing port: {}", port);
+        addr_bytes.extend_from_slice(&port.to_be_bytes());
+
+        // Use session's write_data_frame to send the address bytes
+        // This avoids the need to unwrap Arc<Stream> which fails when multiple references exist
+        let stream_id = stream.id();
+        tracing::debug!(
+            "[Client] Writing destination address ({} bytes) to stream {}",
+            addr_bytes.len(),
+            stream_id
+        );
+
+        // Disable buffering before writing first data frame
+        // This is critical: in Go version, buffering is disabled when proxy writes SocksAddr
+        // This ensures buffered Settings frame is flushed along with the first data
+        session.disable_buffering();
+        tracing::debug!("[Client] Buffering disabled, buffer will be flushed");
+
+        session
+            .write_data_frame(stream_id, Bytes::from(addr_bytes))
+            .await?;
+
+        tracing::debug!(
+            "[Client] Successfully wrote destination address to stream {}",
+            stream_id
+        );
+
+        // Eager payload (e.g. the udp-over-tcp request) goes out in its own
+        // frame, still ahead of the SYNACK wait — same byte order on the
+        // wire as the reference client's lazy first write.
+        if let Some(payload) = payload
+            && !payload.is_empty()
+        {
+            tracing::debug!(
+                "[Client] Writing {} eager payload bytes to stream {}",
+                payload.len(),
+                stream_id
+            );
+            session.write_data_frame(stream_id, payload).await?;
+        }
+        tracing::debug!(
+            "[Client] Waiting for SYNACK from server for stream {}...",
+            stream_id
+        );
+
+        // Wait for SYNACK with timeout (30 seconds default)
+        const DEFAULT_SYNACK_TIMEOUT: Duration = Duration::from_secs(30);
+
+        match tokio::time::timeout(DEFAULT_SYNACK_TIMEOUT, synack_rx).await {
+            Ok(Ok(Ok(()))) => {
+                guard.disarm();
+                tracing::debug!(
+                    "[Client] SYNACK received for stream {} - stream ready",
+                    stream_id
+                );
+                Ok(stream)
+            }
+            Ok(Ok(Err(e))) => {
+                tracing::error!("[Client] SYNACK error for stream {}: {}", stream_id, e);
+                let error_msg = e.to_string();
+                let error = AnyTlsError::Protocol(error_msg.clone());
+                stream.close_with_error(error);
+                Err(AnyTlsError::Protocol(error_msg))
+            }
+            Ok(Err(_)) => {
+                tracing::error!("[Client] SYNACK channel closed for stream {}", stream_id);
+                let error = AnyTlsError::Protocol("SYNACK channel closed".into());
+                stream.close_with_error(error);
+                Err(AnyTlsError::Protocol("SYNACK channel closed".into()))
+            }
+            Err(_) => {
+                tracing::error!(
+                    "[Client] SYNACK timeout for stream {} after {}s",
+                    stream_id,
+                    DEFAULT_SYNACK_TIMEOUT.as_secs()
+                );
+                let error_msg =
+                    format!("SYNACK timeout after {}s", DEFAULT_SYNACK_TIMEOUT.as_secs());
+                let error = AnyTlsError::Protocol(error_msg.clone());
+                stream.close_with_error(error);
+                Err(AnyTlsError::Protocol(error_msg))
+            }
+        }
+    }
+
+    /// Create a new stream by establishing or reusing a session
+    pub async fn create_stream(&self) -> Result<Arc<Session>> {
+        // Try to get an idle session from pool
+        if let Some(session) = self.session_pool.get_idle_session().await {
+            tracing::debug!("[Client] Reusing idle session from pool");
+            return Ok(session);
+        }
+
+        tracing::debug!("[Client] No idle session found, creating new session");
+        // A pool reset landing mid-dial discards the new session (its socket
+        // may predate the host's new outbound binding); redial once.
+        for _ in 0..2 {
+            if let Some(session) = self.create_new_session().await? {
+                return Ok(session);
+            }
+        }
+        Err(AnyTlsError::SessionClosed)
+    }
+
+    /// Close every pooled session so the next stream dials a fresh
+    /// connection (see [`SessionPool::reset`]). Non-blocking.
+    pub fn reset_sessions(&self) {
+        self.session_pool.reset();
+    }
+
+    /// Create a new session with the server. `None` when a pool reset ran
+    /// while it was being dialled: the session was closed, not pooled.
+    async fn create_new_session(&self) -> Result<Option<Arc<Session>>> {
+        tracing::debug!("[Client] Creating new session to {}", self.server_addr);
+        let generation = self.session_pool.generation();
+
+        // Establish TCP connection
+        tracing::trace!(
+            "[Client] Connecting TCP to {} (this may trigger DNS lookup)",
+            self.server_addr
+        );
+        // Dial via the socket-protect helper: an installed `TcpDialer`
+        // (host-app bridge, e.g. meow-common's resolver + protector stack)
+        // takes the whole resolve+connect path; otherwise the fallback
+        // applies the `SocketProtector` (Android) around a system-resolver
+        // dial, degrading to plain `TcpStream::connect` off-Android. The
+        // dialer hook matters inside VPN apps whose system DNS is a fake-IP
+        // server — `lookup_host` there returns unroutable fake IPs.
+        let tcp_stream = match crate::util::socket_protect::connect_tcp_addr(&self.server_addr)
+            .await
+        {
+            Ok(stream) => stream,
+            Err(e) => {
+                tracing::error!("[Client] Failed to connect to {}: {}", self.server_addr, e);
+
+                // Provide helpful error messages
+                let error_str = format!("{}", e);
+                if error_str.contains("lookup")
+                    || error_str.contains("DNS")
+                    || error_str.contains("Try again")
+                {
+                    tracing::error!("[Client] DNS resolution failed for '{}'", self.server_addr);
+                    tracing::error!("[Client] Troubleshooting steps:");
+                    tracing::error!(
+                        "[Client]   1. Check if server address is correct: {}",
+                        self.server_addr
+                    );
+                    tracing::error!("[Client]   2. Try using IP address instead of hostname");
+                    tracing::error!(
+                        "[Client]   3. Test DNS: nslookup $(echo {} | cut -d: -f1)",
+                        self.server_addr
+                    );
+                    tracing::error!(
+                        "[Client]   4. Test TCP connection: nc -zv $(echo {} | cut -d: -f1) $(echo {} | cut -d: -f2)",
+                        self.server_addr,
+                        self.server_addr
+                    );
+                } else if error_str.contains("Connection refused") {
+                    tracing::error!(
+                        "[Client] Connection refused. Server may not be running or not listening on {}",
+                        self.server_addr
+                    );
+                } else if error_str.contains("Connection timed out") {
+                    tracing::error!(
+                        "[Client] Connection timed out. Check network connectivity and firewall settings"
+                    );
+                }
+
+                return Err(AnyTlsError::Io(e));
+            }
+        };
+        configure_tcp_stream(&tcp_stream, &self.server_addr);
+
+        tracing::debug!(
+            "[Client] TCP connection established to {}",
+            self.server_addr
+        );
+
+        // Perform TLS handshake through the host-supplied hook
+        tracing::trace!("[Client] Starting TLS handshake");
+        let tls_stream = self.tls.connect(tcp_stream).await.map_err(|e| {
+            tracing::error!("[Client] TLS handshake failed: {}", e);
+            e
+        })?;
+        tracing::debug!("[Client] TLS handshake successful");
+
+        let session = self.session_over_transport(tls_stream).await?;
+
+        // The session's background tasks keep it alive on their own, so
+        // dropping this future while the pool-add is still pending would
+        // orphan a running session that no reaper owns. Close it on drop.
+        let mut guard = SessionCloseGuard::new(session.clone());
+
+        // Store in pool
+        if !self
+            .session_pool
+            .add_idle_session_from(session.clone(), generation)
+            .await
+        {
+            tracing::debug!("[Client] Pool reset during dial; closing the new session");
+            return Ok(None);
+        }
+        guard.disarm();
+        tracing::debug!("[Client] Session added to pool");
+
+        Ok(Some(session))
+    }
+
+    /// Build and start a client session on an already-handshaken TLS
+    /// stream: split it, send authentication, create and start the session.
+    ///
+    /// Does **not** touch the session pool — callers decide whether the
+    /// session is poolable (`create_new_session`) or single-purpose
+    /// ([`create_proxy_stream_on_tls`]).
+    async fn session_over_transport<S>(&self, tls_stream: S) -> Result<Arc<Session>>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+    {
+        // Send authentication
+        // Split TLS stream into reader and writer
+        let (reader, mut writer) = tokio::io::split(tls_stream);
+        tracing::trace!("[Client] Sending authentication");
+        let padding = {
+            let guard = self.padding.read().await;
+            Arc::clone(&guard)
+        };
+        send_authentication(&mut writer, &self.password_hash, &padding).await?;
+        tracing::debug!("[Client] Authentication sent successfully");
+
+        // Create session with reader and writer
+        let heartbeat_config = SessionHeartbeatConfig {
+            interval: self.pool_config.check_interval,
+            timeout: self.pool_config.idle_timeout,
+        };
+        let session = Arc::new(Session::new_client(
+            reader,
+            writer,
+            Arc::clone(&self.padding),
+            Some(heartbeat_config),
+        ));
+
+        // Set sequence number for pool ordering (use timestamp-based counter)
+        static SEQ_COUNTER: meow_common::atomic::AtomicU = meow_common::atomic::AtomicU::new(0);
+        #[allow(
+            clippy::useless_conversion,
+            reason = "identity on 64-bit; widens u32 on targets without 64-bit atomics"
+        )]
+        let seq: u64 = SEQ_COUNTER
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .into();
+        session.set_seq(seq);
+        tracing::debug!("[Client] Session created with seq={}", seq);
+
+        // Start session (send settings and start loops)
+        tracing::trace!("[Client] Starting client session");
+        session.clone().start_client().await?;
+        tracing::debug!("[Client] Client session started successfully");
+
+        Ok(session)
+    }
+
+    /// Open a proxy stream on a caller-supplied, already-handshaken TLS
+    /// stream to this server.
+    ///
+    /// Used by relay chaining (`ProxyAdapter::connect_over`): the preceding
+    /// hop's stream already terminates at this server and carries whatever
+    /// outer transport the chain established, so only the AnyTLS
+    /// authentication + session setup run here.
+    ///
+    /// The created session is deliberately **not** added to the shared pool:
+    /// it is bound to the passed stream's lifetime, and pooling it would let
+    /// a later direct `dial_tcp` silently reuse the relay channel. The
+    /// caller owns the returned `Arc<Session>` and should close it when the
+    /// stream is dropped.
+    ///
+    /// Cancellation-safe: the host's dial timeout (5 s) drops this future
+    /// well inside the 30 s SYNACK wait, so the guard — not the `Err`
+    /// branch — is what closes the session on the common abort path.
+    pub async fn create_proxy_stream_on_tls<S>(
+        &self,
+        tls_stream: S,
+        destination: (String, u16),
+    ) -> Result<(Arc<crate::session::Stream>, Arc<Session>)>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+    {
+        let session = self.session_over_transport(tls_stream).await?;
+        // Once `start_client` has run, the session's background tasks hold
+        // `Arc<Session>` references of their own: dropping this future no
+        // longer destroys it. The unpooled session is invisible to the pool
+        // reaper and a live server keeps answering heartbeats, so without a
+        // guard it leaks (with the whole relay leg) indefinitely.
+        let mut guard = SessionCloseGuard::new(session.clone());
+        // No inline `session.close()` on `Err`: `Session::close` sets
+        // `is_closed` in its first poll, so a close that is itself
+        // cancelled mid-flight (same dial timeout) would leave the flag
+        // set with the teardown half-done — and the guard's retry would
+        // then early-return on `already_closed`. Dropping the armed guard
+        // instead spawns a detached close that runs to completion.
+        let stream = Self::open_proxy_stream(&session, destination, None).await?;
+        guard.disarm();
+        Ok((stream, session))
+    }
+
+    /// Stop the background cleanup task in the session pool (primarily for tests)
+    pub async fn stop_session_pool_cleanup(&self) {
+        self.session_pool.stop_cleanup_task().await;
+    }
+}
+
+/// Close a session whose ownership has not been handed off yet if the
+/// owning future is dropped.
+///
+/// `Session::start_client` spawns background tasks (recv loop, stream
+/// writer, heartbeat) that each retain an `Arc<Session>`: once they exist,
+/// dropping the caller's handle no longer destroys the session. When the
+/// host's dial timeout cancels the open, or an early `?` returns, this
+/// guard closes the session so the transport and tasks die with it.
+///
+/// `Drop` cannot `.await`, so the close is spawned — the same pattern
+/// `AnytlsConn`'s `Drop` uses for its owned session. Without a runtime
+/// handle the session persists until its transport dies; every caller runs
+/// inside one.
+struct SessionCloseGuard(Option<Arc<Session>>);
+
+impl SessionCloseGuard {
+    fn new(session: Arc<Session>) -> Self {
+        Self(Some(session))
+    }
+
+    /// Ownership successfully handed to the caller/pool: leave the session
+    /// running.
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for SessionCloseGuard {
+    fn drop(&mut self) {
+        let Some(session) = self.0.take() else {
+            return;
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    if let Err(e) = session.close().await {
+                        tracing::debug!("[Client] guarded session close failed: {e}");
+                    }
+                });
+            }
+            // Every caller runs inside a runtime; if one ever doesn't,
+            // don't leave the leak silent.
+            Err(_) => tracing::warn!(
+                "[Client] session guard dropped without a tokio runtime; unpooled session leaks"
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::{AnyTlsError, TlsConnectFuture};
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpStream;
+
+    /// `create_proxy_stream_on_tls` never touches the TLS hook (the caller
+    /// supplies an already-handshaken stream), so a stub suffices.
+    struct NoTls;
+
+    impl TlsConnect for NoTls {
+        fn connect(&self, _tcp: TcpStream) -> TlsConnectFuture<'_> {
+            Box::pin(async { Err(AnyTlsError::Protocol("NoTls stub".into())) })
+        }
+    }
+
+    /// Regression: a cancelled unpooled open must close its session — and
+    /// with it the transport. The dial timeout drops the open future while
+    /// it is parked in the 30 s SYNACK wait; without `SessionCloseGuard`
+    /// the session's recv/writer/heartbeat tasks keep it (and the whole
+    /// relay leg underneath) alive indefinitely.
+    #[tokio::test]
+    async fn cancelled_unpooled_open_closes_session_and_transport() {
+        let client = Client::new(
+            "password",
+            "127.0.0.1:1".to_string(),
+            Arc::new(NoTls),
+            PaddingFactory::default(),
+        );
+        let (tls_half, mut peer) = tokio::io::duplex(64 * 1024);
+
+        {
+            let open = client.create_proxy_stream_on_tls(tls_half, ("example.com".into(), 443));
+            tokio::pin!(open);
+
+            // Drive the open until handshake bytes reach the peer — the
+            // session has started and the open is now parked in (or about
+            // to enter) the SYNACK wait, i.e. inside the guarded window.
+            let mut first = [0u8; 16];
+            tokio::select! {
+                _res = &mut open => panic!("open completed unexpectedly"),
+                res = peer.read(&mut first) => {
+                    res.expect("peer must see the client's handshake bytes");
+                }
+            }
+            // `open` is dropped at scope end: cancellation.
+        }
+
+        // The guard must close the session: writer shutdown propagates EOF
+        // to the peer. Without the fix this read pends forever.
+        let mut drained = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), peer.read_to_end(&mut drained))
+            .await
+            .expect("session close must propagate EOF to the transport")
+            .expect("read_to_end must succeed once the transport closes");
+        assert!(
+            !drained.is_empty(),
+            "auth + settings + SYN bytes must have reached the peer"
+        );
+    }
+}

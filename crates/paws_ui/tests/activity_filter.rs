@@ -8,6 +8,7 @@ use paws_model::{ConnectionSummary, RequestSummary};
 
 fn connection(host: &str, rule: &str, proxy: &str) -> ConnectionSummary {
     ConnectionSummary {
+        domain_source: String::new(),
         id: "conn-1".to_owned(),
         host: host.to_owned(),
         domain: host.split(':').next().unwrap_or(host).to_owned(),
@@ -26,6 +27,7 @@ fn connection(host: &str, rule: &str, proxy: &str) -> ConnectionSummary {
 
 fn request(active: bool, host: &str, rule: &str, proxy: &str) -> RequestSummary {
     RequestSummary {
+        domain_source: String::new(),
         id: "req-1".to_owned(),
         host: host.to_owned(),
         domain: host.split(':').next().unwrap_or(host).to_owned(),

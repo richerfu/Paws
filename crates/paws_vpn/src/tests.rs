@@ -1077,3 +1077,109 @@ fn push_dns_name(packet: &mut Vec<u8>, name: &str) {
     }
     packet.push(0);
 }
+
+#[tokio::test]
+async fn unmapped_flow_recovers_hostname_and_preserves_every_consumed_byte() {
+    let payload = b"GET / HTTP/1.1\r\nHost: trace.example.test\r\n\r\n".to_vec();
+    let (mut client, mut server) = tokio::io::duplex(4096);
+    client.write_all(&payload).await.unwrap();
+    client.shutdown().await.unwrap();
+    let mut metadata = Metadata {
+        dst_ip: Some("108.160.167.148".parse().unwrap()),
+        dst_port: 80,
+        ..Metadata::default()
+    };
+    let prefix = recover_unmapped_destination(&mut server, &mut metadata).await;
+    let mut replay = ReplayConn::new(server, prefix);
+    let mut received = Vec::new();
+    replay.read_to_end(&mut received).await.unwrap();
+    assert_eq!(received, payload);
+    assert_eq!(metadata.host, "trace.example.test");
+    assert_eq!(metadata.sniff_host, "trace.example.test");
+    assert_eq!(metadata.dst_ip.unwrap().to_string(), "108.160.167.148");
+}
+
+#[tokio::test]
+async fn unmapped_fragmented_tls_recovers_x_hostname_without_losing_bytes() {
+    let payload = tls_client_hello("api.x.com");
+    let expected = payload.clone();
+    let (mut client, mut server) = tokio::io::duplex(4096);
+    let writer = tokio::spawn(async move {
+        client.write_all(&payload[..12]).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        client.write_all(&payload[12..]).await.unwrap();
+        client.shutdown().await.unwrap();
+    });
+    let mut metadata = Metadata {
+        dst_ip: Some("103.246.246.144".parse().unwrap()),
+        dst_port: 443,
+        ..Metadata::default()
+    };
+    let prefix = recover_unmapped_destination(&mut server, &mut metadata).await;
+    let mut replay = ReplayConn::new(server, prefix);
+    let mut received = Vec::new();
+    replay.read_to_end(&mut received).await.unwrap();
+    writer.await.unwrap();
+    assert_eq!(received, expected);
+    assert_eq!(metadata.host, "api.x.com");
+    assert_eq!(metadata.sniff_host, "api.x.com");
+    assert_eq!(metadata.dst_ip.unwrap().to_string(), "103.246.246.144");
+}
+
+#[tokio::test]
+async fn unmapped_unrecognized_protocol_preserves_ip_and_payload() {
+    let payload = b"not a TLS client hello";
+    let (mut client, mut server) = tokio::io::duplex(4096);
+    client.write_all(payload).await.unwrap();
+    client.shutdown().await.unwrap();
+    let mut metadata = Metadata {
+        dst_ip: Some("203.0.113.1".parse().unwrap()),
+        dst_port: 443,
+        ..Metadata::default()
+    };
+    let prefix = recover_unmapped_destination(&mut server, &mut metadata).await;
+    let mut replay = ReplayConn::new(server, prefix);
+    let mut received = Vec::new();
+    replay.read_to_end(&mut received).await.unwrap();
+    assert_eq!(received, payload);
+    assert!(metadata.host.is_empty());
+    assert!(metadata.sniff_host.is_empty());
+}
+
+#[tokio::test]
+async fn hostname_recovery_is_generic_and_mapped_tls_handles_fragmentation() {
+    for domain in [
+        "github.com",
+        "www.youtube.com",
+        "api.telegram.org",
+        "example.net",
+    ] {
+        for mapped in [false, true] {
+            let payload = tls_client_hello(domain);
+            let expected = payload.clone();
+            let (mut client, mut server) = tokio::io::duplex(4096);
+            let writer = tokio::spawn(async move {
+                client.write_all(&payload[..10]).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                client.write_all(&payload[10..]).await.unwrap();
+                client.shutdown().await.unwrap();
+            });
+            let mut metadata = Metadata {
+                dst_ip: Some("203.0.113.9".parse().unwrap()),
+                dst_port: 443,
+                ..Metadata::default()
+            };
+            let prefix = if mapped {
+                sniff_dns_mapped_destination(&mut server, &mut metadata).await
+            } else {
+                recover_unmapped_destination(&mut server, &mut metadata).await
+            };
+            let mut replay = ReplayConn::new(server, prefix);
+            let mut received = Vec::new();
+            replay.read_to_end(&mut received).await.unwrap();
+            writer.await.unwrap();
+            assert_eq!(metadata.host, domain);
+            assert_eq!(received, expected);
+        }
+    }
+}

@@ -30,8 +30,8 @@ mod press;
 mod route;
 
 use pages::{
-    about_page, appearance_page, connections_page, dashboard_page, logs_page, privacy_page,
-    profiles_page, proxies_page, requests_page, resources_page, settings_page,
+    about_page, appearance_page, connections_page, dashboard_page, diagnostics_page, logs_page,
+    privacy_page, profiles_page, proxies_page, requests_page, resources_page, settings_page,
     subscription_converter_page, tools_page, traffic_page, ManualRuleDialog,
 };
 use press::PressState;
@@ -430,6 +430,7 @@ pub(crate) fn App(initial_safe_area: bridge::InitialSafeArea) -> Element {
         }
     });
     use_runtime_projection_provider(stores, notifications, runtime.tokio().clone());
+    use_vpn_auto_recovery_provider(runtime.tokio().clone());
     use_system_preferences_provider(stores, runtime.tokio().clone());
 
     rsx! {
@@ -445,6 +446,33 @@ pub(crate) fn App(initial_safe_area: bridge::InitialSafeArea) -> Element {
             }
         }
     }
+}
+
+/// Observes runtime revisions directly on the Tokio runtime without sending
+/// frames through the UI's bounded Vsync channel, ensuring background VPN
+/// auto-recovery still fires when the window is paused in the background.
+fn use_vpn_auto_recovery_provider(tokio: tokio::runtime::Handle) {
+    use_tokio_subscription(
+        tokio,
+        move |_updates: tokio::sync::mpsc::Sender<()>| async move {
+            let core = paws_core::shared_core();
+            let mut revisions = core.subscribe_runtime_revisions();
+            loop {
+                let _ = *revisions.borrow_and_update();
+                if let Some(options_json) = core.claim_platform_vpn_auto_recovery().ok().flatten() {
+                    tokio::spawn(async move {
+                        if let Err(error) = crate::bridge::request_start_vpn(options_json).await {
+                            paws_core::shared_core().rearm_platform_vpn_auto_recovery(&error);
+                        }
+                    });
+                }
+                if revisions.changed().await.is_err() {
+                    break;
+                }
+            }
+        },
+        move |()| {},
+    );
 }
 
 /// Messages cross the Tokio/UI boundary as owned data. Dioxus signals and the

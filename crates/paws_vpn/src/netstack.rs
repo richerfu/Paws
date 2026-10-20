@@ -510,7 +510,7 @@ pub(super) async fn handle_tcp_stream<S>(
     } else {
         match sniffer {
             Some(sniffer) => sniffer.sniff(&mut stream, &mut metadata).await,
-            None => Vec::new(),
+            None => recover_unmapped_destination(&mut stream, &mut metadata).await,
         }
     };
     let proxy_conn: Box<dyn ProxyConn> = Box::new(ReplayConn::new(stream, prefix));
@@ -565,22 +565,67 @@ where
     let Some(protocol) = dns_mapping_sniff_protocol(metadata.dst_port) else {
         return Vec::new();
     };
-    let mut prefix = vec![0_u8; SNIFF_BUFFER_SIZE];
-    let Ok(Ok(size)) =
-        tokio::time::timeout(Duration::from_millis(100), stream.read(&mut prefix)).await
-    else {
-        return Vec::new();
-    };
-    prefix.truncate(size);
-    let host = match protocol {
-        SniffProtocol::Tls => sniff_tls(&prefix),
-        SniffProtocol::Http => sniff_http(&prefix),
-    };
+    let (prefix, host) = sniff_bounded_client_prefix(stream, protocol).await;
     if let Some(host) = host {
         metadata.host = host.as_str().into();
-        metadata.sniff_host = host;
+        metadata.sniff_host = host.into();
     }
     prefix
+}
+
+// Recover the intended hostname when an application uses cached or private
+// DNS and the flow is absent from our DNS table. Keep the IP as evidence but
+// route/dial by the client-provided TLS SNI or HTTP Host, just as mapped flows do.
+pub(super) async fn recover_unmapped_destination<S>(
+    stream: &mut S,
+    metadata: &mut Metadata,
+) -> Vec<u8>
+where
+    S: AsyncRead + Unpin,
+{
+    let Some(protocol) = dns_mapping_sniff_protocol(metadata.dst_port) else {
+        return Vec::new();
+    };
+    let (prefix, host) = sniff_bounded_client_prefix(stream, protocol).await;
+    if let Some(host) = &host {
+        metadata.host = host.as_str().into();
+        metadata.sniff_host = host.as_str().into();
+    }
+    tracing::info!(
+        "unmapped flow recovered: source={} destination={} observed_host={} prefix_bytes={}",
+        metadata.source_address(),
+        metadata.remote_address(),
+        host.as_deref().unwrap_or("<not available>"),
+        prefix.len()
+    );
+    prefix
+}
+
+async fn sniff_bounded_client_prefix<S>(
+    stream: &mut S,
+    protocol: SniffProtocol,
+) -> (Vec<u8>, Option<String>)
+where
+    S: AsyncRead + Unpin,
+{
+    let deadline = Instant::now() + Duration::from_millis(100);
+    let mut prefix = Vec::new();
+    let mut host = None;
+    while prefix.len() < SNIFF_BUFFER_SIZE {
+        let mut chunk = vec![0u8; SNIFF_BUFFER_SIZE - prefix.len()];
+        match tokio::time::timeout_at(deadline, stream.read(&mut chunk)).await {
+            Ok(Ok(n)) if n > 0 => prefix.extend_from_slice(&chunk[..n]),
+            _ => break,
+        }
+        host = match protocol {
+            SniffProtocol::Tls => sniff_tls(&prefix),
+            SniffProtocol::Http => sniff_http(&prefix),
+        };
+        if host.is_some() {
+            break;
+        }
+    }
+    (prefix, host.map(|value| value.to_string()))
 }
 
 pub(super) struct HarmonyTcpSniffer {

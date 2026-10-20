@@ -509,7 +509,7 @@ pub(crate) async fn export_log(
     export_text("log", suggested_name, content).await
 }
 
-async fn export_text(
+pub(crate) async fn export_text(
     export_kind: &str,
     suggested_name: String,
     content: String,
@@ -604,7 +604,9 @@ pub(crate) async fn pick_profile_text() -> std::result::Result<Option<(String, S
     let options = FileDialogOptions::new(dialog_type::OPEN_FILE)
         .allow_many(false)
         .filters(vec![
-            FileDialogFilter::new().name("YAML").pattern(".yaml,.yml"),
+            FileDialogFilter::new()
+                .name("YAML / TinyPaws backup")
+                .pattern(".yaml,.yml,.json"),
             FileDialogFilter::new().name("Text").pattern(".txt"),
             FileDialogFilter::new().name("All").pattern("*"),
         ]);
@@ -642,6 +644,9 @@ pub(crate) async fn scan_subscription_code() -> std::result::Result<String, Stri
 // --- Picker URI helpers ---
 
 fn read_text_from_path(path: &PathBuf) -> std::result::Result<String, String> {
+    if std::fs::metadata(path).map_err(|e| e.to_string())?.len() > 20 * 1024 * 1024 {
+        return Err("File exceeds 20 MiB limit".into());
+    }
     let bytes = std::fs::read(path)
         .map_err(|err| format!("failed to read profile file {}: {err}", path.display()))?;
     if bytes.is_empty() {

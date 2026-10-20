@@ -1101,6 +1101,97 @@ impl UiServices {
         });
     }
 
+    pub(crate) fn apply_service_dns_policy(&self, domains: String, group: String) {
+        let domains: Vec<String> = domains
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|d| !d.is_empty())
+            .map(|d| {
+                d.trim_start_matches("+.")
+                    .trim_start_matches('.')
+                    .to_ascii_lowercase()
+            })
+            .collect();
+        if domains.is_empty()
+            || domains.len() > 32
+            || domains.iter().any(|d| {
+                !d.contains('.')
+                    || d.len() > 253
+                    || !d
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+            })
+        {
+            self.notify("请输入最多 32 个有效域名，逗号分隔");
+            return;
+        }
+        let core = paws_core::shared_core();
+        let config = match core.config_projection() {
+            Ok(c) => c,
+            Err(e) => {
+                self.notify(e.to_string());
+                return;
+            }
+        };
+        let Some(profile) = config.active_profile.clone() else {
+            self.notify("请先启用订阅");
+            return;
+        };
+        if !self
+            .stores
+            .proxies
+            .peek()
+            .groups
+            .iter()
+            .any(|g| g.name == group)
+        {
+            self.notify("请选择有效策略组");
+            return;
+        }
+        let mut policy = config.vpn_options.dns_nameserver_policy.clone();
+        for domain in domains {
+            policy.insert(
+                format!("+.{domain}"),
+                vec![format!("https://1.1.1.1/dns-query#{group}")],
+            );
+        }
+        let (owner, operation) = self
+            .begin_owned_vpn_operation(self.connected_session_owner(), VpnCommandAction::Restart);
+        self.run_durable_mutation(
+            async move {
+                let saved = core
+                    .set_profile_dns_config_checked(
+                        &profile,
+                        config.revisions.config_revision,
+                        config.vpn_options.dns_servers,
+                        config.vpn_options.dns_fallbacks,
+                        policy,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                Ok(Self::restart_config_projection(owner, &saved).await)
+            },
+            move |services, result| {
+                services.refresh_config();
+                services.refresh_status();
+                match result {
+                    Ok(restart) => {
+                        let (_, error, unconfirmed) =
+                            services.finish_vpn_followup(operation, restart);
+                        services.notify(unconfirmed.or(error).unwrap_or_else(|| {
+                            "域名 DNS 策略已保存，订阅更新后继续保留；仍需验证目标服务".into()
+                        }));
+                    }
+                    Err(e) => {
+                        if let Some(id) = operation {
+                            services.finish_vpn_failure(id);
+                        }
+                        services.notify(e);
+                    }
+                }
+            },
+        );
+    }
+
     pub(crate) fn flush_dns_cache(&self) {
         let locale = self.locale();
         self.run_diagnostic("dns".to_owned(), async move {

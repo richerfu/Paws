@@ -50,6 +50,46 @@ impl TryFrom<&str> for RuntimeMode {
 pub const SUPPORTED_VPN_STACKS: &[VpnStack] = &[VpnStack::Smoltcp, VpnStack::Lwip];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VpnEngine {
+    Auto,
+    Meow,
+    Mihomo,
+    SingBox,
+}
+
+impl VpnEngine {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Meow => "meow",
+            Self::Mihomo => "mihomo",
+            Self::SingBox => "sing-box",
+        }
+    }
+}
+
+impl Default for VpnEngine {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl TryFrom<&str> for VpnEngine {
+    type Error = PawsError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "meow" | "meow-rs" | "rust" => Ok(Self::Meow),
+            "mihomo" | "compatibility" => Ok(Self::Mihomo),
+            "sing-box" | "singbox" | "sing" => Ok(Self::SingBox),
+            other => Err(PawsError::Core(format!("unsupported VPN engine: {other}"))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum VpnStack {
     Smoltcp,
@@ -88,6 +128,12 @@ impl TryFrom<&str> for VpnStack {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VpnOptions {
+    #[serde(default)]
+    pub engine: VpnEngine,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_applications: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_applications: Vec<String>,
     #[serde(default = "default_vpn_addresses")]
     pub addresses: Vec<String>,
     pub mtu: u16,
@@ -157,6 +203,9 @@ impl Default for DnsSnapshot {
 impl Default for VpnOptions {
     fn default() -> Self {
         Self {
+            engine: VpnEngine::Auto,
+            trusted_applications: Vec::new(),
+            blocked_applications: Vec::new(),
             addresses: default_vpn_addresses(),
             mtu: 1500,
             ipv6: false,
@@ -520,6 +569,8 @@ pub struct LogEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionSummary {
+    #[serde(default)]
+    pub domain_source: String,
     pub id: String,
     pub host: String,
     #[serde(default)]
@@ -544,6 +595,8 @@ pub struct ConnectionSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestSummary {
+    #[serde(default)]
+    pub domain_source: String,
     pub id: String,
     pub host: String,
     #[serde(default)]

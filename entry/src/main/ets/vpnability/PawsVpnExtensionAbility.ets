@@ -1,31 +1,55 @@
-import { Want, wantAgent, WantAgent } from '@kit.AbilityKit';
-import { vpnExtension, VpnExtensionAbility } from '@kit.NetworkKit';
-import { notificationManager } from '@kit.NotificationKit';
+import { SystemExitRecorder } from './SystemExitRecorder';
+import { updateTinyPawsForms } from '../widget/TinyPawsFormUpdate';
+import { LifecycleJournal } from './LifecycleJournal';
+import { AbilityConstant, Want, bundleManager } from '@kit.AbilityKit';
+import { connection, vpnExtension, VpnExtensionAbility } from '@kit.NetworkKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import pawsUi from 'libpaws_ui.so';
+import * as mihomoCore from 'libcore.so';
 import {
   PawsVpnConfig,
   PawsPlatformSharedMemoryFds,
-  PAWS_ENTRY_ABILITY,
-  PAWS_MODULE_NAME,
   parseOptions,
   readPlatformSharedMemoryFds,
   readPlatformHandoffToken,
   readPlatformStartAttemptId,
   readOptionsJson,
-  currentPawsBundleName,
   setPawsBundleName,
 } from './VpnConfig';
 
+import { getPhysicalNetwork } from './UnderlyingNetwork';
+
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'PawsVpn';
-const VPN_SPEED_NOTIFICATION_ID: number = 1001;
-const NOTIFICATION_RETRY_DELAY_MS: number = 30000;
 const PLATFORM_OPERATION_TIMEOUT_MS: number = 30000;
 
 interface PawsPlatformVpnHandoffPayload {
   attemptId: string;
   optionsJson: string;
+}
+
+interface MihomoVpnPlan {
+  initParams: string;
+  setupParams: string;
+}
+
+interface SingBoxVpnPlan {
+  configJson: string;
+  workDir: string;
+  proxyCount: number;
+  groupCount: number;
+  ruleCount: number;
+  skippedRuleCount: number;
+}
+
+interface MihomoTraffic {
+  up: number;
+  down: number;
+}
+
+interface NativePrepareResult {
+  error: string;
+  planJson: string;
 }
 
 function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
@@ -52,12 +76,6 @@ function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string)
     });
   });
 }
-
-interface PawsTrafficSnapshot {
-  downloadSpeed?: number;
-  uploadSpeed?: number;
-}
-
 
 interface PawsErrorLike {
   code?: number;
@@ -89,42 +107,21 @@ function describeError(err: Error | Object | string | number | boolean | null | 
   return json && json !== '{}' ? json : err.toString();
 }
 
-function formatSpeed(bytesPerSecond: number | undefined): string {
-  const value = Math.max(0, bytesPerSecond ?? 0);
-  if (value < 1024) {
-    return `${Math.round(value)} B/s`;
-  }
-  if (value < 1024 * 1024) {
-    const kilobytes = value / 1024;
-    return `${kilobytes < 10 ? kilobytes.toFixed(1) : Math.round(kilobytes)} KB/s`;
-  }
-  if (value < 1024 * 1024 * 1024) {
-    const megabytes = value / (1024 * 1024);
-    return `${megabytes < 10 ? megabytes.toFixed(1) : Math.round(megabytes)} MB/s`;
-  }
-  const gigabytes = value / (1024 * 1024 * 1024);
-  return `${gigabytes < 10 ? gigabytes.toFixed(1) : Math.round(gigabytes)} GB/s`;
-}
-
 export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   private vpnConnection?: vpnExtension.VpnConnection;
   private tunFd: number = -1;
   private starting: boolean = false;
   private telemetryTimer: number = -1;
-  private notificationPublishing: boolean = false;
-  private notificationFailureLogged: boolean = false;
-  private notificationRetryAt: number = 0;
-  private notificationGeneration: number = 0;
-  private lastNotificationText: string = '';
-  private notificationWantAgent?: WantAgent;
-  private notificationWantAgentRequest?: Promise<WantAgent>;
   private platformSubscriptionActive: boolean = false;
   private platformSubscriptionGeneration: number = 0;
   private requestGeneration: number = 0;
   private inFlightAttemptId: string = '';
   private pendingHandoffAttemptId: string = '';
   private activeAttemptId: string = '';
+  private journal: LifecycleJournal = new LifecycleJournal();
+  private systemExitRecorder: SystemExitRecorder = new SystemExitRecorder();
   private heartbeatTimer: number = -1;
+  private heartbeatTicks: number = 0;
   private requestChain: Promise<void> = Promise.resolve();
   private pendingPlatformOperation?: Promise<void>;
   private pendingPlatformOperationConnection?: vpnExtension.VpnConnection;
@@ -132,9 +129,25 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   private pendingNativePrepareAttemptId: string = '';
   private pendingCleanup?: Promise<string>;
   private pendingCleanupConnection?: vpnExtension.VpnConnection;
+  private activeEngine: string = '';
+  private activeOptionsJson: string = '';
+  private activeUnderlyingNetId: number = 0;
+  private lastMihomoSetupParams: string = '';
+  private lastSingBoxConfigJson: string = '';
+  private reloadChain: Promise<void> = Promise.resolve();
+  private uidBundleNameMap: Map<number, string> = new Map<number, string>();
+  private defaultNetworkConnection?: connection.NetConnection;
+  private networkRefreshTimer: number = -1;
+  private networkMonitorGeneration: number = 0;
+  private networkMonitorStartedAt: number = 0;
+  private knownNetworkIds: Set<number> = new Set<number>();
 
   public onCreate(want: Want): void {
     super.onCreate(want);
+    this.configureNativeHome();
+    this.journal.open(this.context.filesDir);
+    try { this.systemExitRecorder.start(this.context.filesDir, undefined, true); }
+    catch (_) { hilog.warn(LOG_DOMAIN, LOG_TAG, 'VPN system exit recorder unavailable'); }
     hilog.info(LOG_DOMAIN, LOG_TAG, 'onCreate');
     this.startFromWant(want);
   }
@@ -144,13 +157,19 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   }
 
   public onDestroy(): void {
+    this.journal.record('extension-destroy-requested', this.tunFd >= 0);
     this.requestGeneration += 1;
     this.pendingHandoffAttemptId = '';
     this.stopHeartbeat();
     this.stopPlatformSubscription();
+    this.stopDefaultNetworkMonitor();
     this.destroyVpn().catch((err: Error): void => {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'onDestroy cleanup failed %{public}s', describeError(err));
     });
+  }
+
+  public onMemoryLevel(level: AbilityConstant.MemoryLevel): void {
+    this.trimEngineMemory(`memory-level-${String(level)}`);
   }
 
   private configureNativeHome(): boolean {
@@ -433,19 +452,36 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     }
 
     const options = parseOptions(optionsJson);
-    const config = new PawsVpnConfig(options);
-    const connection = vpnExtension.createVpnConnection(this.context);
-    this.vpnConnection = connection;
+    const engine = pawsUi.resolveVpnEngine(optionsJson);
+    if (engine !== 'meow' && engine !== 'mihomo' && engine !== 'sing-box') {
+      throw new Error(`unsupported resolved VPN engine: ${engine}`);
+    }
+    // The embedded mihomo wrapper uses a 9000-byte userspace TUN, matching
+    // FlClash's HarmonyOS service. Keep the Rust engine's configured MTU for
+    // meow-rs, but give mihomo the interface shape it was built and tested
+    // against.
+    const config = new PawsVpnConfig(options, engine === 'meow' ? undefined : 9000);
+    let underlyingNetId = 0;
+    if (engine === 'sing-box' || engine === 'meow' || engine === 'mihomo') {
+      const underlyingNetwork: connection.NetHandle = await getPhysicalNetwork();
+      underlyingNetId = underlyingNetwork.netId;
+      pawsUi.setPhysicalNetwork(underlyingNetId);
+      if (underlyingNetId <= 0) {
+        throw new Error('could not resolve the underlying physical network');
+      }
+    }
+    const vpnOwner = vpnExtension.createVpnConnection(this.context);
+    this.vpnConnection = vpnOwner;
     const startedAt = Date.now();
 
     let createOperation: Promise<number>;
     try {
-      createOperation = connection.create(config);
+      createOperation = vpnOwner.create(config);
     } catch (err) {
       throw new Error(`VpnConnection.create rejected synchronously: ${describeError(err)}`);
     }
-    const fd = await this.awaitPlatformOperation(connection, createOperation, 'VpnConnection.create');
-    if (!this.isCurrentRequest(generation, attemptId) || this.vpnConnection !== connection) {
+    const fd = await this.awaitPlatformOperation(vpnOwner, createOperation, 'VpnConnection.create');
+    if (!this.isCurrentRequest(generation, attemptId) || this.vpnConnection !== vpnOwner) {
       await this.destroyVpn();
       throw new Error('stale VPN request generation after TUN create');
     }
@@ -455,9 +491,9 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
 
     const protectStartedAt = Date.now();
     try {
-      await this.awaitPlatformOperation(connection, connection.protectProcessNet(),
+      await this.awaitPlatformOperation(vpnOwner, vpnOwner.protectProcessNet(),
         'VpnConnection.protectProcessNet');
-      this.requireCurrentRequest(generation, attemptId, connection);
+      this.requireCurrentRequest(generation, attemptId, vpnOwner);
       if (!pawsUi.setPlatformNetworkProtected(attemptId, true)) {
         throw new Error('platform VPN protection result belongs to a stale attempt');
       }
@@ -469,13 +505,27 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       throw new Error(message);
     }
 
-    // Config loading can fetch providers, GeoData and ECH. Start it only
-    // after process egress is protected from the newly installed VPN routes.
+    // Config/provider IO must use the protected physical network.
     const prepareStartedAt = Date.now();
-    const nativePrepare: Promise<string> = pawsUi.prepareVpn(attemptId)
-      .then((_loaded: boolean): string => '')
-      .catch((err: Error): string => describeError(err) || 'prepare native VPN failed');
-    const nativePrepareBarrier: Promise<void> = nativePrepare.then((_error: string): void => {});
+    const nativePrepare: Promise<NativePrepareResult> = (engine === 'mihomo'
+      ? Promise.resolve().then((): NativePrepareResult => ({
+          error: '',
+          planJson: pawsUi.prepareMihomoVpn(optionsJson, attemptId),
+        }))
+      : engine === 'sing-box'
+        ? Promise.resolve().then((): NativePrepareResult => ({
+            error: '',
+            planJson: pawsUi.prepareSingBoxVpn(optionsJson, attemptId),
+          }))
+      : pawsUi.prepareVpn(attemptId).then((_loaded: boolean): NativePrepareResult => ({
+          error: '',
+          planJson: '',
+        })))
+      .catch((err: Error): NativePrepareResult => ({
+        error: describeError(err) || 'prepare native VPN failed',
+        planJson: '',
+      }));
+    const nativePrepareBarrier: Promise<void> = nativePrepare.then((_result: NativePrepareResult): void => {});
     this.pendingNativePrepare = nativePrepareBarrier;
     this.pendingNativePrepareAttemptId = attemptId;
     nativePrepareBarrier.finally((): void => {
@@ -485,31 +535,174 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       }
     });
 
-    const prepareError = await this.awaitPlatformOperation(connection, nativePrepare, 'native VPN prepare');
-    if (prepareError.length > 0) {
-      throw new Error(prepareError);
+    const prepareResult = await this.awaitPlatformOperation(vpnOwner, nativePrepare, 'native VPN prepare');
+    if (prepareResult.error.length > 0) {
+      throw new Error(prepareResult.error);
     }
+    this.requireCurrentRequest(generation, attemptId, vpnOwner);
     hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase config finished in %{public}d ms', Date.now() - prepareStartedAt);
-    this.requireCurrentRequest(generation, attemptId, connection);
-    const nativeStartedAt = Date.now();
-    await this.awaitPlatformOperation(
-      connection,
-      pawsUi.startVpn(fd, optionsJson, attemptId),
-      'native VPN start',
-    );
-    this.requireCurrentRequest(generation, attemptId, connection);
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase native finished in %{public}d ms', Date.now() - nativeStartedAt);
+    this.activeEngine = engine;
+    this.activeOptionsJson = optionsJson;
+    this.activeUnderlyingNetId = underlyingNetId;
+    if (engine === 'mihomo') {
+      await this.awaitPlatformOperation(
+        vpnOwner,
+        this.startMihomo(fd, optionsJson, attemptId, prepareResult.planJson),
+        'mihomo VPN start',
+      );
+    } else if (engine === 'sing-box') {
+      await this.awaitPlatformOperation(
+        vpnOwner,
+        this.startSingBox(fd, underlyingNetId, optionsJson, attemptId, prepareResult.planJson),
+        'sing-box VPN start',
+      );
+    } else {
+      await this.awaitPlatformOperation(
+        vpnOwner,
+        pawsUi.startVpn(fd, optionsJson, attemptId),
+        'native VPN start',
+      );
+    }
+    this.requireCurrentRequest(generation, attemptId, vpnOwner);
     const lifecycle = pawsUi.extensionTick(attemptId);
     if (lifecycle !== 'connected') {
       throw new Error(`native VPN worker entered ${lifecycle}`);
     }
+    await pawsUi.persistEngineSession(attemptId, engine, underlyingNetId);
+    this.journal.record('vpn-connected', true);
+    updateTinyPawsForms(this.context.filesDir, 'VPN 已建立 · 联网状态请在应用检测');
     this.startTelemetry();
     this.startHeartbeat(generation, attemptId);
+    try {
+      this.startDefaultNetworkMonitor(generation, attemptId);
+    } catch (err) {
+      // Network-change reconciliation improves handovers but is not allowed to
+      // invalidate an already established system VPN on older SDK builds.
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'default network monitor start skipped %{public}s', describeError(err));
+    }
     hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN started in %{public}d ms', Date.now() - startedAt);
   }
 
+  private async startMihomo(
+    fd: number,
+    optionsJson: string,
+    attemptId: string,
+    planJson: string,
+  ): Promise<void> {
+    const plan = JSON.parse(planJson) as MihomoVpnPlan;
+    if (!plan.initParams || !plan.setupParams) {
+      throw new Error('mihomo startup plan is incomplete');
+    }
+    const setupError = await new Promise<string>((resolve: (value: string) => void): void => {
+      mihomoCore.quickSetup(resolve, plan.initParams, plan.setupParams);
+    });
+    if (setupError.length > 0) {
+      throw new Error(`mihomo setup failed: ${setupError}`);
+    }
+    this.lastMihomoSetupParams = plan.setupParams;
+    const options = parseOptions(optionsJson);
+    const addresses = options.addresses?.length ? options.addresses : ['172.19.0.1/30'];
+    const dnsAddresses = options.dnsHijacking === false
+      ? (options.dnsAddresses?.length ? options.dnsAddresses : ['172.19.0.2'])
+      : ['0.0.0.0'];
+    const owner = this.vpnConnection;
+    if (!owner) {
+      throw new Error('VpnConnection is unavailable for mihomo');
+    }
+    // Paws' Rust stack names are not mihomo stack names. "mixed" is the
+    // FlClash HarmonyOS default and combines the system TCP stack with the
+    // userspace UDP stack. Passing the Rust-only "netstack-smoltcp" value (or
+    // forcing gVisor) can make this wrapper reject an otherwise valid TUN.
+    const configuredStack = options.stack?.toLowerCase() ?? '';
+    const mihomoStack = configuredStack === 'gvisor' || configuredStack === 'system'
+      ? configuredStack
+      : 'mixed';
+    const started: boolean = mihomoCore.startTUN(
+      (socketFd: number): Promise<void> => owner.protect(socketFd),
+      (protocol: number, source: string, target: string): number =>
+        this.resolveUid(protocol, source, target),
+      (uid: number): string => this.resolvePackage(uid),
+      fd,
+      mihomoStack,
+      addresses.join(','),
+      dnsAddresses.join(','),
+    );
+    if (!started) {
+      throw new Error('mihomo rejected the HarmonyOS TUN descriptor');
+    }
+    try {
+      pawsUi.startExternalVpn(optionsJson, attemptId);
+    } catch (err) {
+      mihomoCore.stopTun();
+      throw new Error(describeError(err) || 'mihomo external VPN registration failed');
+    }
+    this.trimEngineMemory('mihomo-start');
+  }
+
+  private async startSingBox(
+    fd: number,
+    underlyingNetId: number,
+    optionsJson: string,
+    attemptId: string,
+    planJson: string,
+  ): Promise<void> {
+    const plan = JSON.parse(planJson) as SingBoxVpnPlan;
+    if (!plan.configJson || !plan.workDir) {
+      throw new Error('sing-box startup plan is incomplete');
+    }
+    pawsUi.startSingBox(fd, underlyingNetId, plan.configJson, plan.workDir);
+    this.lastSingBoxConfigJson = plan.configJson;
+    try {
+      pawsUi.startExternalVpn(optionsJson, attemptId);
+      hilog.info(
+        LOG_DOMAIN,
+        LOG_TAG,
+        'sing-box started %{public}d proxies %{public}d groups %{public}d rules %{public}d skipped',
+        plan.proxyCount,
+        plan.groupCount,
+        plan.ruleCount,
+        plan.skippedRuleCount,
+      );
+    } catch (err) {
+      pawsUi.stopSingBox();
+      throw new Error(describeError(err) || 'sing-box external VPN registration failed');
+    }
+  }
+
+  private toNetAddress(addr: string): connection.NetAddress {
+    const separator = addr.lastIndexOf(':');
+    const host = addr.slice(0, separator);
+    const port = Number(addr.slice(separator + 1));
+    const address = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+    const family = address.includes(':') ? 2 : 1;
+    return { address, family, port };
+  }
+
+  private resolveUid(protocol: number, source: string, target: string): number {
+    try {
+      return connection.getConnectOwnerUidSync(
+        protocol,
+        this.toNetAddress(source),
+        this.toNetAddress(target),
+      );
+    } catch (_) {
+      return -1;
+    }
+  }
+
+  private resolvePackage(uid: number): string {
+    if (!this.uidBundleNameMap.has(uid)) {
+      try {
+        this.uidBundleNameMap.set(uid, bundleManager.getBundleNameByUidSync(uid));
+      } catch (_) {
+        this.uidBundleNameMap.set(uid, '');
+      }
+    }
+    return this.uidBundleNameMap.get(uid) ?? '';
+  }
+
   private recordVpnFailureForAttempt(attemptId: string, message: string): void {
-    this.stopSpeedNotification();
+    this.journal.record('vpn-failure', this.tunFd >= 0);
     try {
       pawsUi.setPlatformVpnFailed(attemptId, message);
     } catch (err) {
@@ -593,8 +786,18 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     if (!cleanup) {
       return;
     }
-    const error = await cleanup;
-    if (this.pendingCleanup === cleanup && error.length === 0) {
+    let error = '';
+    try {
+      error = await withTimeout(cleanup, PLATFORM_OPERATION_TIMEOUT_MS, 'pending VPN cleanup');
+    } catch (err) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'pending VPN cleanup timed out, releasing barrier %{public}s', describeError(err));
+      if (this.pendingCleanup === cleanup) {
+        this.pendingCleanup = undefined;
+        this.pendingCleanupConnection = undefined;
+      }
+      return;
+    }
+    if (this.pendingCleanup === cleanup) {
       this.pendingCleanup = undefined;
       this.pendingCleanupConnection = undefined;
     }
@@ -606,10 +809,28 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   private async destroyVpn(): Promise<void> {
     this.stopHeartbeat();
     this.stopPlatformSubscription();
+    this.stopDefaultNetworkMonitor();
     this.stopTelemetry();
-    this.stopSpeedNotification();
     const connection = this.vpnConnection;
     const attemptId = this.activeAttemptId;
+    if (this.activeEngine === 'mihomo') {
+      try {
+        mihomoCore.stopTun();
+      } catch (err) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'mihomo stop failed %{public}s', describeError(err));
+      }
+    } else if (this.activeEngine === 'sing-box') {
+      try {
+        pawsUi.stopSingBox();
+      } catch (err) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'sing-box stop failed %{public}s', describeError(err));
+      }
+    }
+    this.activeEngine = '';
+    this.activeOptionsJson = '';
+    this.activeUnderlyingNetId = 0;
+    this.lastMihomoSetupParams = '';
+    this.lastSingBoxConfigJson = '';
     this.vpnConnection = undefined;
     this.tunFd = -1;
     this.starting = false;
@@ -620,6 +841,8 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       if (error.length > 0) {
         throw new Error(error);
       }
+      this.journal.record('vpn-cleanup-complete', false);
+      updateTinyPawsForms(this.context.filesDir, 'VPN 已停止');
       if (this.pendingCleanup === cleanup) {
         this.pendingCleanup = undefined;
         this.pendingCleanupConnection = undefined;
@@ -661,6 +884,11 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
         const changed = await pawsUi.waitForPlatformChangeEvent();
         if (this.platformSubscriptionActive && generation === this.platformSubscriptionGeneration) {
           pawsUi.syncPlatformChanges();
+          if (this.activeEngine === 'mihomo' && this.activeAttemptId.length > 0) {
+            await this.reloadMihomoConfig(false);
+          } else if (this.activeEngine === 'sing-box' && this.activeAttemptId.length > 0) {
+            await this.reloadSingBoxConfig(false);
+          }
           this.reconcileExtensionTerminal();
           if (!changed) {
             await new Promise<void>((resolve: () => void): void => {
@@ -677,18 +905,74 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     }
   }
 
+  private async reloadMihomoConfig(force: boolean = false): Promise<void> {
+    const run = async (): Promise<void> => {
+      if (this.activeEngine !== 'mihomo' || this.activeAttemptId.length === 0) {
+        return;
+      }
+      const planJson = pawsUi.prepareMihomoVpn(this.activeOptionsJson, this.activeAttemptId);
+      const plan = JSON.parse(planJson) as MihomoVpnPlan;
+      if (!force && plan.setupParams === this.lastMihomoSetupParams) {
+        return;
+      }
+      const error = await new Promise<string>((resolve: (value: string) => void): void => {
+        mihomoCore.quickSetup(resolve, plan.initParams, plan.setupParams);
+      });
+      if (error.length > 0) {
+        throw new Error(`mihomo config reload failed: ${error}`);
+      }
+      this.lastMihomoSetupParams = plan.setupParams;
+      this.trimEngineMemory('mihomo-reload');
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'mihomo config synchronized from platform control');
+    };
+    const next = this.reloadChain.then(run, run);
+    this.reloadChain = next.catch((): void => {});
+    await next;
+  }
+
+  private async reloadSingBoxConfig(force: boolean = false): Promise<void> {
+    const run = async (): Promise<void> => {
+      if (this.activeEngine !== 'sing-box' || this.activeAttemptId.length === 0) {
+        return;
+      }
+      if (this.tunFd < 0) {
+        throw new Error('sing-box reload has no TUN descriptor');
+      }
+      if (this.activeUnderlyingNetId <= 0) {
+        throw new Error('sing-box reload has no underlying network handle');
+      }
+      const planJson = pawsUi.prepareSingBoxVpn(this.activeOptionsJson, this.activeAttemptId);
+      const plan = JSON.parse(planJson) as SingBoxVpnPlan;
+      if (!force && plan.configJson === this.lastSingBoxConfigJson) {
+        return;
+      }
+      pawsUi.stopSingBox();
+      pawsUi.startSingBox(this.tunFd, this.activeUnderlyingNetId, plan.configJson, plan.workDir);
+      this.lastSingBoxConfigJson = plan.configJson;
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'sing-box config synchronized from platform control');
+    };
+    const next = this.reloadChain.then(run, run);
+    this.reloadChain = next.catch((): void => {});
+    await next;
+  }
+
   private startHeartbeat(generation: number, attemptId: string): void {
     this.stopHeartbeat();
     this.reconcileExtensionTerminal();
     if (!this.isCurrentRequest(generation, attemptId) || this.tunFd < 0) {
       return;
     }
+    this.heartbeatTicks = 0;
     this.heartbeatTimer = setInterval((): void => {
       if (!this.isCurrentRequest(generation, attemptId)) {
         this.stopHeartbeat();
         return;
       }
       this.reconcileExtensionTerminal();
+      this.heartbeatTicks += 1;
+      if (this.heartbeatTicks % 20 === 0) {
+        this.trimEngineMemory('heartbeat');
+      }
     }, 3000);
   }
 
@@ -696,6 +980,121 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     if (this.heartbeatTimer >= 0) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = -1;
+    }
+  }
+
+  /**
+   * Observe the underlying default network and rebuild engine-side dialers
+   * after Wi-Fi/mobile transitions. The initial callbacks emitted while the
+   * VPN interface is being created are ignored; later changes are debounced so
+   * a single handover cannot trigger multiple core reloads.
+   */
+  private startDefaultNetworkMonitor(generation: number, attemptId: string): void {
+    this.stopDefaultNetworkMonitor();
+    const monitor = connection.createNetConnection({
+      netCapabilities: { bearerTypes: [], networkCap: [connection.NetCap.NET_CAPABILITY_INTERNET, connection.NetCap.NET_CAPABILITY_NOT_VPN] },
+    });
+    const monitorGeneration = ++this.networkMonitorGeneration;
+    this.defaultNetworkConnection = monitor;
+    this.networkMonitorStartedAt = Date.now();
+    this.knownNetworkIds.clear();
+    monitor.on('netAvailable', (handle: connection.NetHandle): void => {
+      if (handle.netId !== undefined) {
+        this.knownNetworkIds.add(handle.netId);
+      }
+      this.scheduleDefaultNetworkRefresh(generation, attemptId, monitorGeneration, 'available');
+    });
+    monitor.on('netLost', (handle: connection.NetHandle): void => {
+      if (handle.netId !== undefined) {
+        this.knownNetworkIds.delete(handle.netId);
+      }
+      this.scheduleDefaultNetworkRefresh(generation, attemptId, monitorGeneration, 'lost');
+    });
+    monitor.register((err?: Error): void => {
+      if (err) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'default network monitor unavailable %{public}s', describeError(err));
+        if (this.defaultNetworkConnection === monitor) {
+          this.defaultNetworkConnection = undefined;
+        }
+      } else {
+        hilog.info(LOG_DOMAIN, LOG_TAG, 'default network monitor registered');
+      }
+    });
+  }
+
+  private scheduleDefaultNetworkRefresh(
+    generation: number,
+    attemptId: string,
+    monitorGeneration: number,
+    reason: string,
+  ): void {
+    if (monitorGeneration !== this.networkMonitorGeneration ||
+      !this.isCurrentRequest(generation, attemptId) ||
+      Date.now() - this.networkMonitorStartedAt < 3000) {
+      return;
+    }
+    if (this.networkRefreshTimer >= 0) {
+      clearTimeout(this.networkRefreshTimer);
+    }
+    this.networkRefreshTimer = setTimeout((): void => {
+      this.networkRefreshTimer = -1;
+      this.refreshAfterDefaultNetworkChange(generation, attemptId, monitorGeneration, reason)
+        .catch((err: Error): void => {
+          hilog.warn(LOG_DOMAIN, LOG_TAG, 'default network refresh failed %{public}s', describeError(err));
+        });
+    }, 1500);
+  }
+
+  private async refreshAfterDefaultNetworkChange(
+    generation: number,
+    attemptId: string,
+    monitorGeneration: number,
+    reason: string,
+  ): Promise<void> {
+    if (monitorGeneration !== this.networkMonitorGeneration ||
+      !this.isCurrentRequest(generation, attemptId)) {
+      return;
+    }
+    const physicalNetwork = await getPhysicalNetwork();
+    if (physicalNetwork.netId <= 0) {
+      return;
+    }
+    this.activeUnderlyingNetId = physicalNetwork.netId;
+    pawsUi.setPhysicalNetwork(physicalNetwork.netId);
+    if (this.activeEngine === 'mihomo') {
+      await this.reloadMihomoConfig(true);
+    } else if (this.activeEngine === 'sing-box') {
+      await this.reloadSingBoxConfig(true);
+    } else {
+      pawsUi.closeAllConnections();
+    }
+    this.journal.record(`network-${reason}-reconciled`, true);
+    updateTinyPawsForms(this.context.filesDir, '网络已切换 · VPN 连接已刷新');
+    hilog.info(
+      LOG_DOMAIN,
+      LOG_TAG,
+      'default network %{public}s reconciled engine=%{public}s networks=%{public}d',
+      reason,
+      this.activeEngine,
+      this.knownNetworkIds.size,
+    );
+  }
+
+  private stopDefaultNetworkMonitor(): void {
+    this.networkMonitorGeneration += 1;
+    if (this.networkRefreshTimer >= 0) {
+      clearTimeout(this.networkRefreshTimer);
+      this.networkRefreshTimer = -1;
+    }
+    const monitor = this.defaultNetworkConnection;
+    this.defaultNetworkConnection = undefined;
+    this.knownNetworkIds.clear();
+    if (monitor) {
+      monitor.unregister((err?: Error): void => {
+        if (err) {
+          hilog.info(LOG_DOMAIN, LOG_TAG, 'default network monitor unregister skipped %{public}s', describeError(err));
+        }
+      });
     }
   }
 
@@ -738,125 +1137,49 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     }
   }
 
-  private persistTelemetry(publishNotification: boolean = true): void {
+  private persistTelemetry(): void {
     try {
-      pawsUi.persistVpnTelemetry();
-      if (publishNotification) {
-        this.publishSpeedNotification();
+      if (this.activeEngine === 'mihomo') {
+        const speed = JSON.parse(mihomoCore.getTraffic(false)) as MihomoTraffic;
+        const total = JSON.parse(mihomoCore.getTotalTraffic(false)) as MihomoTraffic;
+        pawsUi.updateExternalVpnTraffic(JSON.stringify({
+          uploadSpeed: Math.max(0, speed.up),
+          downloadSpeed: Math.max(0, speed.down),
+          uploadTotal: Math.max(0, total.up),
+          downloadTotal: Math.max(0, total.down),
+        }));
+      } else if (this.activeEngine === 'sing-box') {
+        pawsUi.updateExternalVpnTraffic(JSON.stringify({
+          uploadSpeed: 0,
+          downloadSpeed: 0,
+          uploadTotal: 0,
+          downloadTotal: 0,
+        }));
+      } else {
+        pawsUi.persistVpnTelemetry();
       }
     } catch (err) {
       hilog.warn(LOG_DOMAIN, LOG_TAG, 'persist VPN telemetry failed %{public}s', describeError(err));
     }
   }
 
-  private getNotificationWantAgent(): Promise<WantAgent> {
-    if (this.notificationWantAgent) {
-      return Promise.resolve(this.notificationWantAgent);
-    }
-    if (this.notificationWantAgentRequest) {
-      return this.notificationWantAgentRequest;
-    }
-    let request: Promise<WantAgent>;
-    try {
-      request = wantAgent.getWantAgent({
-        wants: [
-          {
-            bundleName: currentPawsBundleName(),
-            moduleName: PAWS_MODULE_NAME,
-            abilityName: PAWS_ENTRY_ABILITY,
-            parameters: {
-              pawsNotification: true,
-            },
-          },
-        ],
-        actionType: wantAgent.OperationType.START_ABILITY,
-        requestCode: VPN_SPEED_NOTIFICATION_ID,
-        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG],
-      });
-    } catch (err) {
-      return Promise.reject(new Error(`create notification want agent failed: ${describeError(err)}`));
-    }
-    this.notificationWantAgentRequest = request;
-    request
-      .then((agent: WantAgent) => {
-        this.notificationWantAgent = agent;
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (this.notificationWantAgentRequest === request) {
-          this.notificationWantAgentRequest = undefined;
-        }
-      });
-    return request;
-  }
-
-  private async publishSpeedNotification(): Promise<void> {
-    if (this.notificationPublishing || Date.now() < this.notificationRetryAt) {
+  private trimEngineMemory(reason: string): void {
+    if (this.activeEngine !== 'mihomo') {
       return;
     }
-
-    let snapshot: PawsTrafficSnapshot;
     try {
-      snapshot = JSON.parse(pawsUi.queryTrafficSpeed()) as PawsTrafficSnapshot;
+      if (typeof mihomoCore.forceGC === 'function') {
+        mihomoCore.forceGC();
+      }
     } catch (err) {
-      hilog.warn(LOG_DOMAIN, LOG_TAG, 'read notification telemetry failed %{public}s', describeError(err));
-      return;
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        'trim engine memory (%{public}s) failed %{public}s',
+        reason,
+        describeError(err),
+      );
     }
-    const text = `↓ ${formatSpeed(snapshot.downloadSpeed)}  ·  ↑ ${formatSpeed(snapshot.uploadSpeed)}`;
-    if (text === this.lastNotificationText) {
-      return;
-    }
-
-    const generation = this.notificationGeneration;
-    this.notificationPublishing = true;
-    try {
-      const notificationWantAgent = await this.getNotificationWantAgent();
-      if (generation !== this.notificationGeneration) {
-        return;
-      }
-      const request: notificationManager.NotificationRequest = {
-        id: VPN_SPEED_NOTIFICATION_ID,
-        notificationSlotType: notificationManager.SlotType.SERVICE_INFORMATION,
-        isOngoing: true,
-        isUnremovable: true,
-        isAlertOnce: true,
-        tapDismissed: false,
-        showDeliveryTime: false,
-        wantAgent: notificationWantAgent,
-        content: {
-          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
-          normal: {
-            title: 'Paws · VPN',
-            text,
-            additionalText: '实时网速',
-          },
-        },
-      };
-      await notificationManager.publish(request);
-      if (generation !== this.notificationGeneration) {
-        notificationManager.cancel(VPN_SPEED_NOTIFICATION_ID).catch(() => {});
-        return;
-      }
-      this.lastNotificationText = text;
-      this.notificationFailureLogged = false;
-      this.notificationRetryAt = 0;
-    } catch (err) {
-      this.notificationRetryAt = Date.now() + NOTIFICATION_RETRY_DELAY_MS;
-      if (!this.notificationFailureLogged) {
-        hilog.warn(LOG_DOMAIN, LOG_TAG, 'publish VPN speed notification failed %{public}s', describeError(err));
-        this.notificationFailureLogged = true;
-      }
-    } finally {
-      this.notificationPublishing = false;
-    }
-  }
-
-  private stopSpeedNotification(): void {
-    this.notificationGeneration += 1;
-    this.lastNotificationText = '';
-    this.notificationRetryAt = 0;
-    this.notificationFailureLogged = false;
-    notificationManager.cancel(VPN_SPEED_NOTIFICATION_ID).catch(() => {});
   }
 
 }

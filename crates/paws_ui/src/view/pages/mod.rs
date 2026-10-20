@@ -22,3 +22,6 @@ pub(super) use settings::settings_page;
 pub(super) use subscription_converter::subscription_converter_page;
 pub(super) use tools::{about_page, privacy_page, tools_page};
 pub(super) use traffic::traffic_page;
+
+mod diagnostics;
+pub(super) use diagnostics::diagnostics_page;

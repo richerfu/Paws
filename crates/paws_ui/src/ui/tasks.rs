@@ -71,6 +71,7 @@ pub(super) async fn bootstrap_active_profile() -> Result<(), String> {
         core.prepare_active_vpn()
             .await
             .map_err(|error| error.to_string())?;
+        auto_recover_vpn_if_needed().await;
     }
     // Keep the refresh inside the root-owned Dioxus future. A nested Tokio
     // task would detach when the root is disposed and could outlive the UI
@@ -86,6 +87,16 @@ pub(super) async fn lookup_rule(query: String) -> Result<paws_core::RuleLookupRe
         .lookup_rule(&query)
         .await
         .map_err(|error| error.to_string())
+}
+
+pub(crate) async fn auto_recover_vpn_if_needed() {
+    let core = paws_core::shared_core();
+    let Ok(Some(options_json)) = core.claim_platform_vpn_auto_recovery() else {
+        return;
+    };
+    if let Err(error) = crate::bridge::request_start_vpn(options_json).await {
+        core.rearm_platform_vpn_auto_recovery(&error);
+    }
 }
 
 pub(super) async fn start_vpn_command(

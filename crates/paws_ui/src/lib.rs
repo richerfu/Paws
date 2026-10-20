@@ -25,6 +25,7 @@ mod route_status;
 mod rule_feedback;
 mod settings_draft;
 mod settings_feedback;
+mod sing_box;
 mod subscription_converter;
 mod subscription_scan;
 mod system_preferences;
@@ -64,6 +65,51 @@ fn app(handle: arkit::openharmony_ability::OpenHarmonyApp) -> Element {
 #[napi]
 pub fn configure_app_home(home_dir: String) -> Result<()> {
     paws_core::configure_app_home(std::path::Path::new(&home_dir)).map_err(to_napi_error)
+}
+
+#[napi]
+pub fn set_physical_network(net_id: i32) -> Result<()> {
+    paws_core::network_binding::configure_physical_network(net_id).map_err(to_napi_error)
+}
+
+#[napi]
+pub async fn persist_engine_session(session: String, engine: String, net_id: i32) -> Result<()> {
+    paws_core::shared_core()
+        .persist_engine_session(&session, &engine, net_id)
+        .await
+        .map_err(to_napi_error)
+}
+#[napi]
+pub fn engine_decision(options_json: String) -> Result<String> {
+    serde_json::to_string(
+        &paws_core::shared_core()
+            .engine_decision(&options_json)
+            .map_err(to_napi_error)?,
+    )
+    .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
+}
+#[napi]
+pub fn record_engine_health(session: String, success: bool, stage: String) -> Result<()> {
+    paws_core::shared_core()
+        .record_engine_health(&session, success, &stage)
+        .map_err(to_napi_error)
+}
+#[napi]
+pub fn record_engine_qualification(text: String) -> Result<()> {
+    paws_core::shared_core()
+        .record_engine_qualification(&text)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub async fn validate_engine_startup(session: String) -> Result<String> {
+    serde_json::to_string(
+        &paws_core::shared_core()
+            .validate_engine_startup(&session)
+            .await
+            .map_err(to_napi_error)?,
+    )
+    .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
 }
 
 #[napi]
@@ -395,6 +441,19 @@ pub fn claim_current_platform_vpn_stop(intent_epoch: String) -> Result<String> {
 }
 
 #[napi]
+pub fn claim_platform_vpn_auto_recovery() -> Result<String> {
+    Ok(paws_core::shared_core()
+        .claim_platform_vpn_auto_recovery()
+        .map_err(to_napi_error)?
+        .unwrap_or_default())
+}
+
+#[napi]
+pub fn rearm_platform_vpn_auto_recovery(error: String) {
+    paws_core::shared_core().rearm_platform_vpn_auto_recovery(&error);
+}
+
+#[napi]
 pub async fn prepare_vpn(attempt_id: String) -> Result<bool> {
     paws_core::shared_core()
         .prepare_platform_vpn(&attempt_id)
@@ -429,6 +488,87 @@ pub fn complete_platform_vpn_cleanup(attempt_id: String) -> Result<bool> {
 pub fn extension_tick(attempt_id: String) -> Result<String> {
     paws_core::shared_core()
         .extension_tick(&attempt_id)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn resolve_vpn_engine(options_json: String) -> Result<String> {
+    paws_core::shared_core()
+        .resolve_vpn_engine(&options_json)
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub fn prepare_mihomo_vpn(options_json: String, attempt_id: String) -> Result<String> {
+    let plan = paws_core::shared_core()
+        .prepare_mihomo_vpn(&options_json, &attempt_id)
+        .map_err(to_napi_error)?;
+    serde_json::to_string(&plan)
+        .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))
+}
+
+#[napi]
+pub fn prepare_sing_box_vpn(options_json: String, attempt_id: String) -> Result<String> {
+    let plan = paws_core::shared_core()
+        .prepare_sing_box_vpn(&options_json, &attempt_id)
+        .map_err(to_napi_error)?;
+    serde_json::to_string(&plan)
+        .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))
+}
+
+#[napi]
+pub fn start_sing_box(
+    tun_fd: i32,
+    underlying_net_id: i32,
+    config_json: String,
+    work_dir: String,
+) -> Result<()> {
+    sing_box::start(tun_fd, underlying_net_id, &config_json, &work_dir)
+        .map_err(|error| Error::new(Status::GenericFailure, error))
+}
+
+#[napi]
+pub fn stop_sing_box() -> Result<()> {
+    sing_box::stop().map_err(|error| Error::new(Status::GenericFailure, error))
+}
+
+#[napi]
+pub fn sing_box_version() -> Result<String> {
+    sing_box::version().map_err(|error| Error::new(Status::GenericFailure, error))
+}
+
+#[napi]
+pub fn sing_box_runtime_log() -> Result<String> {
+    sing_box::runtime_log().map_err(|error| Error::new(Status::GenericFailure, error))
+}
+
+#[napi]
+pub fn start_external_vpn(options_json: String, attempt_id: String) -> Result<()> {
+    paws_core::shared_core()
+        .start_external_platform_vpn(&options_json, &attempt_id)
+        .map_err(to_napi_error)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalTrafficFrame {
+    upload_speed: u64,
+    download_speed: u64,
+    upload_total: u64,
+    download_total: u64,
+}
+
+#[napi]
+pub fn update_external_vpn_traffic(traffic_json: String) -> Result<()> {
+    let frame: ExternalTrafficFrame = serde_json::from_str(&traffic_json)
+        .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?;
+    paws_core::shared_core()
+        .update_external_vpn_traffic(
+            frame.upload_speed,
+            frame.download_speed,
+            frame.upload_total,
+            frame.download_total,
+        )
         .map_err(to_napi_error)
 }
 
@@ -690,6 +830,13 @@ pub fn clear_request_history() -> Result<()> {
 #[napi]
 pub fn clear_logs() -> Result<()> {
     paws_core::shared_core().clear_logs().map_err(to_napi_error)
+}
+
+#[napi]
+pub fn query_vpn_speed() -> Result<String> {
+    paws_core::shared_core()
+        .vpn_speed_json()
+        .map_err(to_napi_error)
 }
 
 #[napi]

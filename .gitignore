@@ -26,3 +26,7 @@
 /smoke-logs
 /.ohos-sign/
 **/__pycache__/
+
+/local-protocol-tests/target/
+/local-protocol-tests/generated/*
+!/local-protocol-tests/generated/.gitkeep

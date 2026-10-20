@@ -8,6 +8,7 @@ import {
 } from '@ohos-rs/ability';
 import { vpnExtension } from '@kit.NetworkKit';
 import { notificationManager } from '@kit.NotificationKit';
+import { commonEventManager } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import pawsUi from 'libpaws_ui.so';
 import { describeError } from '../common/Errors';
@@ -18,6 +19,9 @@ import {
   isVpnEmulatorCompatibilityEnabled,
 } from '../vpnability/VpnEmulatorCompatibility';
 import { startVpnExtensionWithHandoff } from '../vpnability/VpnExtensionLauncher';
+import { vpnContinuousTask } from '../vpnability/VpnContinuousTask';
+
+interface EngineStartupHealth { success: boolean; actualEngine: string; rollbackToBaseline: boolean; stage: string; }
 
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'PawsVpn';
@@ -105,6 +109,7 @@ export class VpnPlugin extends AsyncPluginBase {
   readonly requires: BridgeContextRequirement[] = ['ability'];
 
   private vpnStartRequest: Promise<void> | undefined = undefined;
+  private vpnStartOptions: string = '';
   private pendingVpnStartDispatches: Map<string, Promise<void>> = new Map();
   private activeVpnStartAttemptId: string = '';
   private connectedVpnSessionId: string = '';
@@ -128,6 +133,7 @@ export class VpnPlugin extends AsyncPluginBase {
     this.initializePlatformSharedMemory();
     authorizeVpnForEmulatorDebug();
     this.startupVpnPreparation = this.prepareVpnForEmulatorDebug();
+    this.subscribeToSystemWakeupEvents();
     // Debug callers can be waiting since onCreate, before BridgeHost installs
     // ability plugins. Publish readiness only after the cleanup barrier exists.
     this.installedCallback?.();
@@ -389,6 +395,71 @@ export class VpnPlugin extends AsyncPluginBase {
     return this.requestStopVpnWithContext(this.getContext());
   }
 
+  onAbilityForeground(): void {
+    this.checkAndAutoRecoverVpn();
+    if (this.connectedVpnSessionId.length > 0) {
+      try {
+        this.startContinuousTaskProtection(this.getContext());
+      } catch (err) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG,
+          'foreground continuous task check skipped %{public}s', describeError(err));
+      }
+    }
+  }
+
+  checkAndAutoRecoverVpn(): void {
+    try {
+      const optionsJson = pawsUi.claimPlatformVpnAutoRecovery();
+      if (typeof optionsJson !== 'string' || optionsJson.length === 0) {
+        return;
+      }
+      hilog.warn(LOG_DOMAIN, LOG_TAG,
+        'platform wakeup claimed pending VPN auto-recovery; restarting VPN');
+      this.requestStartVpn(optionsJson).catch((err: Error): void => {
+        const message = describeError(err) || 'platform auto-recovery VPN start failed';
+        hilog.warn(LOG_DOMAIN, LOG_TAG,
+          'platform auto-recovery VPN start failed %{public}s', message);
+        try {
+          pawsUi.rearmPlatformVpnAutoRecovery(message);
+        } catch (innerErr) {
+          hilog.error(LOG_DOMAIN, LOG_TAG,
+            'rearm platform VPN auto-recovery failed %{public}s', describeError(innerErr));
+        }
+      });
+    } catch (err) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG,
+        'platform VPN auto-recovery check failed %{public}s', describeError(err));
+    }
+  }
+
+  private subscribeToSystemWakeupEvents(): void {
+    try {
+      commonEventManager.createSubscriber({
+        events: [
+          'usual.event.VPN_CONNECTION_STATUS_CHANGED',
+          'usual.event.SCREEN_ON',
+          'usual.event.SCREEN_UNLOCKED',
+          'usual.event.CONNECTIVITY_CHANGE',
+        ],
+      }).then((subscriber: commonEventManager.CommonEventSubscriber): void => {
+        commonEventManager.subscribe(subscriber, (err, data): void => {
+          if (err) {
+            return;
+          }
+          hilog.info(LOG_DOMAIN, LOG_TAG,
+            'system common event received %{public}s', data?.event ?? 'unknown');
+          this.onAbilityForeground();
+        });
+      }).catch((err: Error): void => {
+        hilog.warn(LOG_DOMAIN, LOG_TAG,
+          'subscribe system common events skipped %{public}s', describeError(err));
+      });
+    } catch (err) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG,
+        'create system common event subscriber skipped %{public}s', describeError(err));
+    }
+  }
+
   async requestRestartVpn(
     expectedSessionId: string,
     expectedConfigRevision: string,
@@ -412,7 +483,9 @@ export class VpnPlugin extends AsyncPluginBase {
       const stopped = await this.performStopVpn(expectedSessionId, intentEpoch, (): boolean =>
         generation === this.operationGeneration &&
           pawsUi.isPlatformVpnIntentCurrent(intentEpoch) &&
-          pawsUi.isPlatformVpnSessionCurrent(expectedSessionId, expectedConfigRevision));
+          pawsUi.isPlatformVpnSessionCurrent(expectedSessionId, expectedConfigRevision),
+        false,
+        true);
       if (!stopped) {
         return false;
       }
@@ -488,7 +561,7 @@ export class VpnPlugin extends AsyncPluginBase {
     context: BridgePluginContext,
   ): Promise<void> {
     await this.startupVpnPreparation;
-    if (this.vpnStartRequest) {
+    if (this.vpnStartRequest && this.vpnStartOptions === optionsJson) {
       return this.vpnStartRequest;
     }
     const intentEpoch = pawsUi.advancePlatformVpnIntent();
@@ -501,8 +574,28 @@ export class VpnPlugin extends AsyncPluginBase {
       await this.performStartVpn(optionsJson, context, generation, intentEpoch);
     });
     this.vpnStartRequest = request;
+    this.vpnStartOptions = optionsJson;
     try {
       await request;
+      if (generation !== this.operationGeneration || !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) { return; }
+      const sessionId = this.connectedVpnSessionId;
+      let health: EngineStartupHealth;
+      try { health = JSON.parse(await pawsUi.validateEngineStartup(sessionId)) as EngineStartupHealth; }
+      catch (err) {
+        if (generation !== this.operationGeneration || !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) { return; }
+        throw new Error(describeError(err));
+      }
+      if (generation !== this.operationGeneration || !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) {
+        return;
+      }
+      if (health.rollbackToBaseline && health.actualEngine !== 'mihomo') {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'candidate startup health failed stage=%{public}s; restoring last production baseline', health.stage);
+        await this.requestStopVpnWithContext(context);
+        this.vpnStartRequest = undefined;
+        // The recorded failure fences this candidate for five minutes. The
+        // queued restart therefore resolves the original preference to Mihomo.
+        await this.requestStartVpnWithContext(optionsJson, context);
+      }
     } finally {
       if (this.vpnStartRequest === request) {
         this.vpnStartRequest = undefined;
@@ -601,7 +694,7 @@ export class VpnPlugin extends AsyncPluginBase {
         // A cold/recreated UI may have no process-local session state while
         // the durable journal still owns a Pending or Attached attempt. Fence
         // and reconcile that exact owner before publishing a replacement.
-        await this.performStopVpn(recoverableSessionId, intentEpoch);
+        await this.performStopVpn(recoverableSessionId, intentEpoch, undefined, false, true);
         if (generation !== this.operationGeneration ||
           !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) {
           throw new Error('VPN start request was superseded');
@@ -620,12 +713,13 @@ export class VpnPlugin extends AsyncPluginBase {
       if (outcome !== 'connected') {
         throw new Error(`unexpected VPN start outcome: ${outcome}`);
       }
+      this.connectedVpnSessionId = attemptId;
       this.ensureSpeedNotificationPermission(context).catch((err: Error) => {
         hilog.warn(LOG_DOMAIN, LOG_TAG, 'deferred notification permission failed %{public}s',
           describeError(err));
       });
+      this.startContinuousTaskProtection(context);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN start completed attempt %{public}s', attemptId);
-      this.connectedVpnSessionId = attemptId;
     } catch (err) {
       const message = describeError(err) || 'request VPN start failed';
       if (attemptId.length > 0) {
@@ -647,6 +741,44 @@ export class VpnPlugin extends AsyncPluginBase {
         this.activeVpnStartAttemptId = '';
       }
     }
+  }
+
+  private startContinuousTaskProtection(context: BridgePluginContext): void {
+    vpnContinuousTask.start(
+      context.abilityContext,
+      (info): void => {
+        // DATA_TRANSFER is scheduler protection for active transfers, not the
+        // owner of the system VPN. HarmonyOS can cancel it for low throughput
+        // or stale progress while the VpnExtension and TUN are still healthy.
+        // Treating that cancellation as a user stop disconnected an idle VPN
+        // after roughly ten minutes. Keep the tunnel alive and retain the
+        // platform reason in hilog for diagnostics.
+        hilog.warn(
+          LOG_DOMAIN,
+          LOG_TAG,
+          'continuous task protection ended; VPN remains active reason=%{public}d detail=%{public}s',
+          info.reason,
+          info.detailedReason === undefined ? '' : info.detailedReason.toString(),
+        );
+        this.checkAndAutoRecoverVpn();
+        if (this.connectedVpnSessionId.length > 0) {
+          setTimeout((): void => {
+            if (this.connectedVpnSessionId.length > 0) {
+              this.startContinuousTaskProtection(context);
+            }
+          }, 250);
+        }
+      },
+      (): void => {
+        this.checkAndAutoRecoverVpn();
+      },
+    ).catch((err: Error): void => {
+      // VPN service remains usable if the platform rejects the background
+      // task, but the failure is explicit so diagnostics never claim that
+      // the process has continuous-task protection.
+      hilog.error(LOG_DOMAIN, LOG_TAG,
+        'continuous VPN task start failed %{public}s', describeError(err));
+    });
   }
 
   private async ensureSpeedNotificationPermission(context: BridgePluginContext): Promise<void> {
@@ -679,6 +811,7 @@ export class VpnPlugin extends AsyncPluginBase {
     intentEpoch: string,
     isStillAuthorized?: () => boolean,
     recoverUnattachedDebugOwner: boolean = false,
+    keepContinuousTask: boolean = false,
   ): Promise<boolean> {
     try {
       // The start Promise may remain pending indefinitely after authorization.
@@ -765,6 +898,12 @@ export class VpnPlugin extends AsyncPluginBase {
       }
       if (this.connectedVpnSessionId === sessionId) {
         this.connectedVpnSessionId = '';
+      }
+      if (!keepContinuousTask) {
+        await vpnContinuousTask.stop().catch((err: Error): void => {
+          hilog.warn(LOG_DOMAIN, LOG_TAG,
+            'continuous VPN task stop failed %{public}s', describeError(err));
+        });
       }
       if (sessionId.length > 0) {
         hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN stop cleanup confirmed attempt %{public}s', sessionId);
