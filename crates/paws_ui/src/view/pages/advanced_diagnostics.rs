@@ -41,17 +41,18 @@ pub(crate) fn advanced_diagnostics_page() -> Element {
                 FieldGroup {
                     Field {
                         FieldLabel { content: translate_ui(locale, tr::diagnostics_group()) }
-                        Select {
-                            options,
-                            accessibility_label: Some(translate_ui(locale, tr::diagnostics_group())),
-                            selected: Some(group.clone()),
-                            default_selected: group.clone(),
-                            default_open: false,
-                            disabled: busy || group.is_empty(),
-                            on_select: move |value| selected.set(value),
-                        }
                         if group.is_empty() {
                             FieldDescription { content: translate_ui(locale, tr::diagnostics_empty_groups()), inset: true }
+                        } else {
+                            Select {
+                                options,
+                                accessibility_label: Some(translate_ui(locale, tr::diagnostics_group())),
+                                selected: Some(group.clone()),
+                                default_selected: group.clone(),
+                                default_open: false,
+                                disabled: busy,
+                                on_select: move |value| selected.set(value),
+                            }
                         }
                     }
                     Field {
