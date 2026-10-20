@@ -577,29 +577,45 @@ export class VpnPlugin extends AsyncPluginBase {
     this.vpnStartOptions = optionsJson;
     try {
       await request;
-      if (generation !== this.operationGeneration || !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) { return; }
-      const sessionId = this.connectedVpnSessionId;
-      let health: EngineStartupHealth;
-      try { health = JSON.parse(await pawsUi.validateEngineStartup(sessionId)) as EngineStartupHealth; }
-      catch (err) {
-        if (generation !== this.operationGeneration || !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) { return; }
-        throw new Error(describeError(err));
-      }
-      if (generation !== this.operationGeneration || !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) {
-        return;
-      }
-      if (health.rollbackToBaseline && health.actualEngine !== 'mihomo') {
-        hilog.warn(LOG_DOMAIN, LOG_TAG, 'candidate startup health failed stage=%{public}s; restoring last production baseline', health.stage);
-        await this.requestStopVpnWithContext(context);
-        this.vpnStartRequest = undefined;
-        // The recorded failure fences this candidate for five minutes. The
-        // queued restart therefore resolves the original preference to Mihomo.
-        await this.requestStartVpnWithContext(optionsJson, context);
-      }
     } finally {
       if (this.vpnStartRequest === request) {
         this.vpnStartRequest = undefined;
       }
+    }
+  }
+
+  private isStartupHealthCurrent(sessionId: string, generation: number, intentEpoch: string): boolean {
+    return sessionId.length > 0 && generation === this.operationGeneration &&
+      pawsUi.isPlatformVpnIntentCurrent(intentEpoch) &&
+      this.connectedVpnSessionId === sessionId &&
+      pawsUi.currentPlatformVpnSessionId() === sessionId;
+  }
+
+  private async monitorStartupHealth(
+    sessionId: string,
+    optionsJson: string,
+    context: BridgePluginContext,
+    generation: number,
+    intentEpoch: string,
+  ): Promise<void> {
+    if (!this.isStartupHealthCurrent(sessionId, generation, intentEpoch)) {
+      return;
+    }
+    const health = JSON.parse(await pawsUi.validateEngineStartup(sessionId)) as EngineStartupHealth;
+    if (!this.isStartupHealthCurrent(sessionId, generation, intentEpoch)) {
+      return;
+    }
+    if (health.rollbackToBaseline && health.actualEngine !== 'mihomo') {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'candidate startup health failed stage=%{public}s; restoring last production baseline', health.stage);
+      const stop = this.requestStopVpnWithContext(context);
+      const rollbackGeneration = this.operationGeneration;
+      if (!await stop || rollbackGeneration !== this.operationGeneration) {
+        return;
+      }
+      // The recorded failure fences this candidate for five minutes. Recheck
+      // the generation after cleanup so a user Stop/Start during rollback
+      // cannot be replaced by this older health result.
+      await this.requestStartVpnWithContext(optionsJson, context);
     }
   }
 
@@ -720,6 +736,14 @@ export class VpnPlugin extends AsyncPluginBase {
       });
       this.startContinuousTaskProtection(context);
       hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN start completed attempt %{public}s', attemptId);
+      // Completion of the system tunnel is the start receipt. HTTPS health is
+      // independent evidence and must not hold the UI in Starting for 8 seconds.
+      this.monitorStartupHealth(attemptId, optionsJson, context, generation, intentEpoch)
+        .catch((err: Error): void => {
+          if (generation === this.operationGeneration) {
+            hilog.warn(LOG_DOMAIN, LOG_TAG, 'background VPN startup health failed %{public}s', describeError(err));
+          }
+        });
     } catch (err) {
       const message = describeError(err) || 'request VPN start failed';
       if (attemptId.length > 0) {
