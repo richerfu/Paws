@@ -37,11 +37,17 @@ SO_DST="$NATIVE_LIB_DIR/libpaws_ui.so"
 CXX_SHARED_DST="$NATIVE_LIB_DIR/libc++_shared.so"
 WORKSPACE_PARENT="$(cd "$ROOT_DIR/.." && pwd)"
 MIHOMO_OHOS_ROOT="${MIHOMO_OHOS_ROOT:-$WORKSPACE_PARENT/FlClash-ohos-upstream}"
-MIHOMO_WRAPPER_SRC="${MIHOMO_WRAPPER_SRC:-$MIHOMO_OHOS_ROOT/ohos/core/build/default/intermediates/libs/default/arm64-v8a/libcore.so}"
-MIHOMO_CORE_SRC="${MIHOMO_CORE_SRC:-$MIHOMO_OHOS_ROOT/ohos/core/libs/arm64-v8a/libclash.so}"
-MIHOMO_TUN_SRC="${MIHOMO_TUN_SRC:-$MIHOMO_OHOS_ROOT/core/tun/tun.go}"
 MIHOMO_WRAPPER_DST="$NATIVE_LIB_DIR/libcore.so"
 MIHOMO_CORE_DST="$NATIVE_LIB_DIR/libclash.so"
+if [ -d "$MIHOMO_OHOS_ROOT" ]; then
+  MIHOMO_WRAPPER_SRC="${MIHOMO_WRAPPER_SRC:-$MIHOMO_OHOS_ROOT/ohos/core/build/default/intermediates/libs/default/arm64-v8a/libcore.so}"
+  MIHOMO_CORE_SRC="${MIHOMO_CORE_SRC:-$MIHOMO_OHOS_ROOT/ohos/core/libs/arm64-v8a/libclash.so}"
+  MIHOMO_TUN_SRC="${MIHOMO_TUN_SRC:-$MIHOMO_OHOS_ROOT/core/tun/tun.go}"
+else
+  MIHOMO_WRAPPER_SRC="${MIHOMO_WRAPPER_SRC:-$MIHOMO_WRAPPER_DST}"
+  MIHOMO_CORE_SRC="${MIHOMO_CORE_SRC:-$MIHOMO_CORE_DST}"
+  MIHOMO_TUN_SRC="${MIHOMO_TUN_SRC:-$ROOT_DIR/vendor/mihomo-bridge/tun/tun.go}"
+fi
 SING_BOX_CORE_SRC="${SING_BOX_CORE_SRC:-$NATIVE_LIB_DIR/libsingbox.so}"
 SING_BOX_CORE_DST="$NATIVE_LIB_DIR/libsingbox.so"
 HAP_PATH="${HAP_PATH:-$ROOT_DIR/entry/build/default/outputs/default/entry-default-unsigned.hap}"
@@ -86,8 +92,11 @@ if [ ! -f "${CXX_SHARED_SRC:-}" ]; then
   exit 1
 fi
 if [ ! -f "$MIHOMO_WRAPPER_SRC" ] || [ ! -f "$MIHOMO_CORE_SRC" ]; then
-  echo "TinyPaws mihomo engine libraries were not found under $MIHOMO_OHOS_ROOT" >&2
-  echo "Build FlClash's ohos/core first or set MIHOMO_WRAPPER_SRC and MIHOMO_CORE_SRC." >&2
+  "$ROOT_DIR/scripts/build-mihomo-ohos.sh"
+fi
+if [ ! -f "$MIHOMO_WRAPPER_SRC" ] || [ ! -f "$MIHOMO_CORE_SRC" ]; then
+  echo "TinyPaws mihomo engine libraries were not found ($MIHOMO_CORE_SRC, $MIHOMO_WRAPPER_SRC)" >&2
+  echo "Run scripts/build-mihomo-ohos.sh or set MIHOMO_WRAPPER_SRC and MIHOMO_CORE_SRC." >&2
   exit 1
 fi
 if [ ! -f "$MIHOMO_TUN_SRC" ]; then
@@ -126,8 +135,8 @@ root=Path(sys.argv[1]); digest=hashlib.sha256()
 files=[Path(p) for p in sys.argv[2:]]+[root/'Cargo.lock', root/'Cargo.toml']
 for key in ['PAWS_RAW_ENGINE_DIAGNOSTIC','PAWS_BENCH_PEER_IP','PAWS_BENCH_NODE_FINGERPRINT','PAWS_SOCKET_WIRE_CAPTURE']:
     digest.update(key.encode()+b'\0'+os.environ.get(key,'').encode()+b'\0')
-for directory in ['vendor/meow-listener','vendor/meow-common','vendor/meow-proxy','vendor/meow-anytls','vendor/meow-tunnel','vendor/sing-box-bridge','patches','crates/paws_core/src','crates/paws_vpn/src']:
-    files.extend(p for p in (root/directory).rglob('*') if p.is_file() and p.suffix in ['.rs','.go','.toml','.patch'])
+for directory in ['vendor/meow-listener','vendor/meow-common','vendor/meow-proxy','vendor/meow-anytls','vendor/meow-tunnel','vendor/mihomo-bridge','vendor/sing-box-bridge','patches','crates/paws_core/src','crates/paws_vpn/src']:
+    files.extend(p for p in (root/directory).rglob('*') if p.is_file() and p.suffix in ['.rs','.go','.c','.cpp','.h','.toml','.patch'])
 for path in sorted(files):
     digest.update(path.name.encode()+b'\0'); digest.update(path.read_bytes())
 print(digest.hexdigest())
@@ -147,8 +156,12 @@ from pathlib import Path
 Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text().rstrip() + "\n")
 PY_TYPES
 cp "$CXX_SHARED_SRC" "$CXX_SHARED_DST"
-cp "$MIHOMO_WRAPPER_SRC" "$MIHOMO_WRAPPER_DST"
-cp "$MIHOMO_CORE_SRC" "$MIHOMO_CORE_DST"
+if [ "$MIHOMO_WRAPPER_SRC" != "$MIHOMO_WRAPPER_DST" ]; then
+  cp "$MIHOMO_WRAPPER_SRC" "$MIHOMO_WRAPPER_DST"
+fi
+if [ "$MIHOMO_CORE_SRC" != "$MIHOMO_CORE_DST" ]; then
+  cp "$MIHOMO_CORE_SRC" "$MIHOMO_CORE_DST"
+fi
 if [ "$SING_BOX_CORE_SRC" != "$SING_BOX_CORE_DST" ]; then
   cp "$SING_BOX_CORE_SRC" "$SING_BOX_CORE_DST"
 fi
