@@ -6,13 +6,14 @@ WORKSPACE_PARENT="$(cd "$ROOT_DIR/.." && pwd)"
 SING_BOX_ROOT="${SING_BOX_ROOT:-$WORKSPACE_PARENT/sing-box-ohos}"
 GO_OHOS_ROOT="${GO_OHOS_ROOT:-$WORKSPACE_PARENT/go-ohos-1.24.7-compat}"
 OHOS_NDK_HOME="${OHOS_NDK_HOME:-/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony}"
-GO_BIN="$GO_OHOS_ROOT/bin/go"
+GO_COMPILER_ROOT="$(sh "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$GO_OHOS_ROOT")"
+GO_BIN="$GO_COMPILER_ROOT/bin/go"
 CC_BIN="$OHOS_NDK_HOME/native/llvm/bin/aarch64-unknown-linux-ohos-clang"
 OUTPUT="${SING_BOX_OUTPUT:-$ROOT_DIR/entry/libs/arm64-v8a/libsingbox.so}"
 
 test -x "$GO_BIN" || { echo "OpenHarmony Go compiler not found: $GO_BIN" >&2; exit 1; }
 test -x "$CC_BIN" || { echo "OpenHarmony clang not found: $CC_BIN" >&2; exit 1; }
-test "$(git -C "$SING_BOX_ROOT" rev-parse v1.13.21)" = "628cb31ffa79cffffd34c2f9cde6cae044e4fc12" || {
+test "$(git -C "$SING_BOX_ROOT" rev-parse HEAD)" = "628cb31ffa79cffffd34c2f9cde6cae044e4fc12" || {
   echo "sing-box v1.13.21 source revision mismatch" >&2
   exit 1
 }

@@ -1,0 +1,11 @@
+--- a/pkg/tcpip/link/fdbased/endpoint.go
++++ b/pkg/tcpip/link/fdbased/endpoint.go
+@@ -474,7 +474,7 @@
+ func IsSocketFD(fd int) (bool, error) {
+ 	var stat unix.Stat_t
+ 	if err := unix.Fstat(fd, &stat); err != nil {
+-		return false, fmt.Errorf("unix.Fstat(%v,...) failed: %v", fd, err)
++		return false, nil
+ 	}
+ 	return (stat.Mode & unix.S_IFSOCK) == unix.S_IFSOCK, nil
+ }

@@ -66,11 +66,17 @@ SO_DST="$NATIVE_LIB_DIR/libpaws_ui.so"
 CXX_SHARED_DST="$NATIVE_LIB_DIR/libc++_shared.so"
 WORKSPACE_PARENT="$(cd "$ROOT_DIR/.." && pwd)"
 MIHOMO_OHOS_ROOT="${MIHOMO_OHOS_ROOT:-$WORKSPACE_PARENT/FlClash-ohos-upstream}"
-MIHOMO_WRAPPER_SRC="${MIHOMO_WRAPPER_SRC:-$MIHOMO_OHOS_ROOT/ohos/core/build/default/intermediates/libs/default/arm64-v8a/libcore.so}"
-MIHOMO_CORE_SRC="${MIHOMO_CORE_SRC:-$MIHOMO_OHOS_ROOT/ohos/core/libs/arm64-v8a/libclash.so}"
-MIHOMO_TUN_SRC="${MIHOMO_TUN_SRC:-$MIHOMO_OHOS_ROOT/core/tun/tun.go}"
 MIHOMO_WRAPPER_DST="$NATIVE_LIB_DIR/libcore.so"
 MIHOMO_CORE_DST="$NATIVE_LIB_DIR/libclash.so"
+if [ -d "$MIHOMO_OHOS_ROOT" ]; then
+  MIHOMO_WRAPPER_SRC="${MIHOMO_WRAPPER_SRC:-$MIHOMO_OHOS_ROOT/ohos/core/build/default/intermediates/libs/default/arm64-v8a/libcore.so}"
+  MIHOMO_CORE_SRC="${MIHOMO_CORE_SRC:-$MIHOMO_OHOS_ROOT/ohos/core/libs/arm64-v8a/libclash.so}"
+  MIHOMO_TUN_SRC="${MIHOMO_TUN_SRC:-$MIHOMO_OHOS_ROOT/core/tun/tun.go}"
+else
+  MIHOMO_WRAPPER_SRC="${MIHOMO_WRAPPER_SRC:-$MIHOMO_WRAPPER_DST}"
+  MIHOMO_CORE_SRC="${MIHOMO_CORE_SRC:-$MIHOMO_CORE_DST}"
+  MIHOMO_TUN_SRC="${MIHOMO_TUN_SRC:-$ROOT_DIR/vendor/mihomo-bridge/tun/tun.go}"
+fi
 SING_BOX_CORE_SRC="${SING_BOX_CORE_SRC:-$NATIVE_LIB_DIR/libsingbox.so}"
 SING_BOX_CORE_DST="$NATIVE_LIB_DIR/libsingbox.so"
 HAP_PATH="${HAP_PATH:-$ROOT_DIR/entry/build/default/outputs/default/entry-default-unsigned.hap}"
@@ -138,9 +144,22 @@ if [ ! -f "${CXX_SHARED_SRC:-}" ]; then
   echo "Set OHOS_NDK_HOME or CXX_SHARED_SRC to the active HarmonyOS arm64 runtime." >&2
   exit 1
 fi
+mihomo_stale=0
 if [ ! -f "$MIHOMO_WRAPPER_SRC" ] || [ ! -f "$MIHOMO_CORE_SRC" ]; then
-  echo "TinyPaws mihomo engine libraries were not found under $MIHOMO_OHOS_ROOT" >&2
-  echo "Build FlClash's ohos/core first or set MIHOMO_WRAPPER_SRC and MIHOMO_CORE_SRC." >&2
+  mihomo_stale=1
+elif [ "$MIHOMO_WRAPPER_SRC" = "$MIHOMO_WRAPPER_DST" ] && [ "$MIHOMO_CORE_SRC" = "$MIHOMO_CORE_DST" ]; then
+  # Rebuild repository-owned outputs after any bridge/toolchain patch changes.
+  for mihomo_input in "$ROOT_DIR/scripts/build-mihomo-ohos.sh" "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$ROOT_DIR/patches/mihomo-openharmony.patch" "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch" "$ROOT_DIR/patches/gvisor-fstat.patch" "$ROOT_DIR/patches/go-ohos-1.24.7-compat.patch"; do
+    if [ "$mihomo_input" -nt "$MIHOMO_CORE_SRC" ] || [ "$mihomo_input" -nt "$MIHOMO_WRAPPER_SRC" ]; then mihomo_stale=1; fi
+  done
+  if [ -n "$(find "$ROOT_DIR/vendor/mihomo-bridge" -type f \( -newer "$MIHOMO_CORE_SRC" -o -newer "$MIHOMO_WRAPPER_SRC" \) -print -quit)" ]; then mihomo_stale=1; fi
+fi
+if [ "$mihomo_stale" -eq 1 ]; then
+  "$ROOT_DIR/scripts/build-mihomo-ohos.sh"
+fi
+if [ ! -f "$MIHOMO_WRAPPER_SRC" ] || [ ! -f "$MIHOMO_CORE_SRC" ]; then
+  echo "TinyPaws mihomo engine libraries were not found ($MIHOMO_CORE_SRC, $MIHOMO_WRAPPER_SRC)" >&2
+  echo "Run scripts/build-mihomo-ohos.sh or set MIHOMO_WRAPPER_SRC and MIHOMO_CORE_SRC." >&2
   exit 1
 fi
 if [ ! -f "$MIHOMO_TUN_SRC" ]; then
@@ -158,7 +177,7 @@ if [ "$MIHOMO_TUN_SRC" -nt "$MIHOMO_CORE_SRC" ]; then
 fi
 sing_box_stale=0
 if [ ! -f "$SING_BOX_CORE_SRC" ]; then sing_box_stale=1; fi
-for bridge_source in "$ROOT_DIR"/patches/sing-box-*.patch "$ROOT_DIR"/vendor/sing-box-bridge/*.go "$ROOT_DIR"/vendor/sing-box-bridge/httpobfs/*.go "$ROOT_DIR"/vendor/sing-box-bridge/tlsretry/*.go; do
+for bridge_source in "$ROOT_DIR/scripts/build-sing-box-ohos.sh" "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$ROOT_DIR/patches/go-ohos-1.24.7-compat.patch" "$ROOT_DIR"/patches/sing-box-*.patch "$ROOT_DIR"/vendor/sing-box-bridge/*.go "$ROOT_DIR"/vendor/sing-box-bridge/httpobfs/*.go "$ROOT_DIR"/vendor/sing-box-bridge/tlsretry/*.go; do
   if [ "$bridge_source" -nt "$SING_BOX_CORE_SRC" ]; then sing_box_stale=1; fi
 done
 if [ "$sing_box_stale" -eq 1 ]; then "$ROOT_DIR/scripts/build-sing-box-ohos.sh"; fi
@@ -179,8 +198,8 @@ root=Path(sys.argv[1]); digest=hashlib.sha256()
 files=[Path(p) for p in sys.argv[2:]]+[root/'Cargo.lock', root/'Cargo.toml']
 for key in ['PAWS_RAW_ENGINE_DIAGNOSTIC','PAWS_BENCH_PEER_IP','PAWS_BENCH_NODE_FINGERPRINT','PAWS_SOCKET_WIRE_CAPTURE']:
     digest.update(key.encode()+b'\0'+os.environ.get(key,'').encode()+b'\0')
-for directory in ['vendor/meow-listener','vendor/meow-common','vendor/meow-proxy','vendor/meow-anytls','vendor/meow-tunnel','vendor/meow-transport','vendor/sing-box-bridge','patches','crates/paws_core/src','crates/paws_vpn/src']:
-    files.extend(p for p in (root/directory).rglob('*') if p.is_file() and p.suffix in ['.rs','.go','.toml','.patch'])
+for directory in ['vendor/meow-listener','vendor/meow-common','vendor/meow-proxy','vendor/meow-anytls','vendor/meow-tunnel','vendor/meow-transport','vendor/mihomo-bridge','vendor/sing-box-bridge','patches','crates/paws_core/src','crates/paws_vpn/src']:
+    files.extend(p for p in (root/directory).rglob('*') if p.is_file() and p.suffix in ['.rs','.go','.c','.cpp','.h','.toml','.patch'])
 for path in sorted(files):
     digest.update(path.name.encode()+b'\0'); digest.update(path.read_bytes())
 print(digest.hexdigest())
@@ -208,9 +227,17 @@ install_library() {
 install_library "$SO_SRC" "$SO_DST"
 install_library "$CXX_SHARED_SRC" "$CXX_SHARED_DST"
 test -s "$ROOT_DIR/crates/paws_ui/dist/index.d.ts"
-cp "$ROOT_DIR/crates/paws_ui/dist/index.d.ts" "$ROOT_DIR/entry/src/main/cpp/types/libpaws_ui/Index.d.ts"
-install_library "$MIHOMO_WRAPPER_SRC" "$MIHOMO_WRAPPER_DST"
-install_library "$MIHOMO_CORE_SRC" "$MIHOMO_CORE_DST"
+python3 - "$ROOT_DIR/crates/paws_ui/dist/index.d.ts" "$ROOT_DIR/entry/src/main/cpp/types/libpaws_ui/Index.d.ts" <<'PY_TYPES'
+import sys
+from pathlib import Path
+Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text().rstrip() + "\n")
+PY_TYPES
+if [ "$MIHOMO_WRAPPER_SRC" != "$MIHOMO_WRAPPER_DST" ]; then
+  install_library "$MIHOMO_WRAPPER_SRC" "$MIHOMO_WRAPPER_DST"
+fi
+if [ "$MIHOMO_CORE_SRC" != "$MIHOMO_CORE_DST" ]; then
+  install_library "$MIHOMO_CORE_SRC" "$MIHOMO_CORE_DST"
+fi
 if [ "$SING_BOX_CORE_SRC" != "$SING_BOX_CORE_DST" ]; then
   install_library "$SING_BOX_CORE_SRC" "$SING_BOX_CORE_DST"
 fi

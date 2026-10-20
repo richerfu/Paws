@@ -108,6 +108,10 @@ local protocol profile generation, and an OpenHarmony `aarch` build.
 
 ### Build an unsigned release HAP
 
+Prepare the Go engines from the vendored bridges and pinned upstream sources;
+see [Native engine builds](docs/native-engines-build.md) for the OHOS Go
+toolchain and patch setup. A separate FlClash checkout is no longer required.
+
 Provision the GeoData files required by GEOIP, GEOSITE, and ASN rules, then
 package the app:
 
