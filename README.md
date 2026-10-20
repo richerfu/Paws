@@ -190,7 +190,6 @@ The benchmark fails if it cannot observe the selected proxy in the controller
 chain (or independently prove a changed public exit), if the VPN process
 restarts, or if the declared success-rate threshold is missed. Public IP values
 are stored only as hashes, and the request URL is recorded for reproducibility.
-See [the 2026-10-14 engine evaluation](docs/engine-evaluation-2026-10-14.md).
 
 ## OpenHarmony QEMU
 
@@ -269,7 +268,7 @@ crates/
   paws_model/                 Shared data model
 local-protocol-tests/          Echo servers, mock proxies, and generated profiles
 scripts/                       Build, package, smoke, and regression automation
-docs/                          GeoData provisioning notes
+docs/                          Native engine build and GeoData provisioning guides
 ```
 
 ## License

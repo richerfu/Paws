@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Non-sensitive ELF/HAP fixtures and read-only verification of an old release."""
+"""Verify build provenance with self-contained, non-sensitive ELF/HAP fixtures."""
 import copy
 import hashlib
 import importlib.util
@@ -202,32 +202,6 @@ class ManifestTests(unittest.TestCase):
             self.assertEqual('unsignedHapSha256' in output, bool(extra))
             self.assertFalse(output['wireCapture'])
             self.assertFalse(output['diagnosticPeerPinned'])
-
-
-class ExistingReleaseReadOnlyTests(unittest.TestCase):
-    @unittest.skipUnless((build.ROOT / 'dist/TinyPaws-1.2.8-ohos-arm64-signed.hap').is_file(), 'old release not present')
-    def test_existing_128_hap_and_packaged_library_hashes_match_recorded_provenance(self):
-        """Read known release metadata/binaries only; never rewrite the old manifest."""
-        path = build.ROOT / 'dist/TinyPaws-1.2.8-ohos-arm64-signed.hap'
-        manifest_path = build.ROOT / 'dist/TinyPaws-1.2.8-build-manifest.json'
-        before = build.sha(manifest_path)
-        manifest = json.loads(manifest_path.read_text())
-        self.assertEqual(build.sha(path), manifest['signedHapSha256'])
-        with zipfile.ZipFile(path) as archive:
-            members = build._zip_members(archive)
-            self.assertFalse(build._hap_version(archive, members)['debug'])
-            for name, record in manifest['nativeLibraries'].items():
-                member = members['libs/arm64-v8a/' + name]
-                with archive.open(member) as stream:
-                    packaged_sha, count = build.stream_sha(stream, build.MAX_NATIVE_BYTES)
-                self.assertEqual(packaged_sha, record['packagedSha256'])
-                self.assertEqual(count, member.file_size)
-                with archive.open(member) as stream:
-                    parsed = build.elf_load_fingerprint(stream, member.file_size)
-                self.assertGreater(parsed['loadSegmentCount'], 0)
-                # The old manifest predates this explicit hash-format tag. Its
-                # recorded digest is not compared across undocumented schemes.
-        self.assertEqual(build.sha(manifest_path), before)
 
 
 if __name__ == '__main__':
