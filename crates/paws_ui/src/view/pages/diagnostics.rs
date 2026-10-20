@@ -120,7 +120,8 @@ pub(crate) fn diagnostics_page() -> Element {
                     {info_row(translate_ui(locale, tr::diagnostics_tunnel()), translate_ui(locale, if session.vpn_running { tr::diagnostics_connected() } else { tr::diagnostics_disconnected() }))}
                     {info_row(translate_ui(locale, tr::diagnostics_engine()), engine)}
                     {info_row("DNS", translate_ui(locale, tr::diagnostics_dns_counts(telemetry.dns.handled_packets.to_string(), telemetry.dns.cache_hits.to_string(), telemetry.dns.cache_misses.to_string())))}
-                    Separator {}
+                    row { height: spacing::MD }
+                    FieldSeparator {}
                     ConnectionChecks { session: session.clone(), health: telemetry.startup_health.clone(), locale }
                     if let Some(error) = session.network_protect_error.clone() {
                         OperationNotice { result: Some(Err(error)), locale }
@@ -133,7 +134,7 @@ pub(crate) fn diagnostics_page() -> Element {
                     Field {
                         FieldLabel { content: translate_ui(locale, tr::diagnostics_group()) }
                         if group.is_empty() {
-                            FieldDescription { content: translate_ui(locale, tr::diagnostics_empty_groups()), inset: true }
+                            FieldDescription { content: translate_ui(locale, tr::diagnostics_empty_groups()), inset: false }
                         } else {
                             Select {
                                 options,
@@ -232,7 +233,8 @@ pub(crate) fn diagnostics_page() -> Element {
                         }
                     }
                     if watch.enabled {
-                        FieldDescription { content: translate_ui(locale, tr::watch_current(watch.group.clone(), watch.url.clone())), inset: true }
+                        FieldDescription { content: translate_ui(locale, tr::watch_current(watch.group.clone(), watch.url.clone())), inset: false }
+                        row { height: spacing::MD }
                         OperationButton {
                             label: translate_ui(locale, tr::watch_save_target()),
                             icon: "save",
@@ -243,7 +245,9 @@ pub(crate) fn diagnostics_page() -> Element {
                         }
                     }
                     if !selector {
-                        FieldDescription { content: translate_ui(locale, tr::diagnostics_selector_only()), inset: true }
+                        Field {
+                            FieldDescription { content: translate_ui(locale, tr::diagnostics_selector_only()), inset: false }
+                        }
                     }
                     OperationNotice { result: watch_result(), locale }
                 }

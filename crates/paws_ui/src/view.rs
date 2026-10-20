@@ -12,8 +12,8 @@ use arkit::shadcn::components::{
     Alert, AlertDescription, AlertTitle, AlertVariant, Badge, BadgeVariant, BottomNavigation,
     BottomNavigationItem, Button, ButtonSize, ButtonVariant, Card, CardDescription, CardTitle,
     Dialog, DialogFooter, DialogHeader, Field, FieldContent, FieldDescription, FieldError,
-    FieldGroup, FieldLabel, FieldOrientation, FieldTitle, Input, RadioGroup, Select, Separator,
-    Spinner, Switch, TabsList, TabsTrigger, Textarea,
+    FieldGroup, FieldLabel, FieldOrientation, FieldSeparator, FieldTitle, Input, RadioGroup,
+    Select, Separator, Spinner, Switch, TabsList, TabsTrigger, Textarea,
 };
 use arkit::shadcn::theme::{
     control, radius, shadow, spacing, typography, use_theme, with_alpha, Theme, ThemeMode,

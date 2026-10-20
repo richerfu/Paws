@@ -42,7 +42,7 @@ pub(crate) fn advanced_diagnostics_page() -> Element {
                     Field {
                         FieldLabel { content: translate_ui(locale, tr::diagnostics_group()) }
                         if group.is_empty() {
-                            FieldDescription { content: translate_ui(locale, tr::diagnostics_empty_groups()), inset: true }
+                            FieldDescription { content: translate_ui(locale, tr::diagnostics_empty_groups()), inset: false }
                         } else {
                             Select {
                                 options,

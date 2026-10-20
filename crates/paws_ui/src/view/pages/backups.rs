@@ -41,7 +41,8 @@ pub(crate) fn backups_page() -> Element {
                 FieldGroup {
                     Field {
                         FieldLabel { content: translate_ui(locale, tr::backup_export_label()) }
-                        FieldDescription { content: translate_ui(locale, tr::backup_sensitive_hint()), inset: true }
+                        FieldDescription { content: translate_ui(locale, tr::backup_sensitive_hint()), inset: false }
+                        row { height: spacing::MD }
                         OperationButton {
                             label: translate_ui(locale, tr::backup_export()),
                             icon: "download",
@@ -60,10 +61,11 @@ pub(crate) fn backups_page() -> Element {
                             },
                         }
                     }
-                    Separator {}
+                    FieldSeparator {}
                     Field {
                         FieldLabel { content: translate_ui(locale, tr::backup_restore_label()) }
-                        FieldDescription { content: translate_ui(locale, tr::backup_restore_hint()), inset: true }
+                        FieldDescription { content: translate_ui(locale, tr::backup_restore_hint()), inset: false }
+                        row { height: spacing::MD }
                         OperationButton {
                             label: translate_ui(locale, tr::backup_restore()),
                             icon: "file-up",

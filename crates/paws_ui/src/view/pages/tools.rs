@@ -130,7 +130,7 @@ fn settings_route_row(page: Route, locale: UiLocale, subtitle: impl Into<String>
         button {
             button_type: "normal",
             width: "100%",
-            height: 60.0,
+            min_height: 64.0,
             padding: 0.0,
             background_color: if press().is_pressed() || hovering() || focused() {
                 theme.colors.accent
@@ -174,6 +174,8 @@ fn settings_route_row(page: Route, locale: UiLocale, subtitle: impl Into<String>
                 width: "100%",
                 padding_left: spacing::MD,
                 padding_right: spacing::MD,
+                padding_top: spacing::MD,
+                padding_bottom: spacing::MD,
                 align_items: "center",
                 row {
                     width: 34.0,
@@ -191,13 +193,15 @@ fn settings_route_row(page: Route, locale: UiLocale, subtitle: impl Into<String>
                     text {
                         content: page.title(locale),
                         font_size: typography::SM,
+                        line_height: 20.0,
                         font_weight: 600,
                         font_color: theme.colors.foreground,
                     }
                     text {
                         content: subtitle,
-                        margin_top: 3.0,
+                        margin_top: spacing::XS,
                         font_size: typography::XS,
+                        line_height: 18.0,
                         font_color: theme.colors.muted_foreground,
                         max_lines: 1,
                         text_overflow: "ellipsis",

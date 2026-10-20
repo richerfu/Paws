@@ -242,7 +242,7 @@ pub(crate) fn settings_page() -> Element {
                                 text { content: translate_ui(current.locale, tr::settings_remove_unsupported_bypass()), font_size: typography::XS }
                             }
                         }
-                        Separator {}
+                        FieldSeparator {}
                         Field {
                             FieldLabel { content: translate_ui(current.locale, tr::vpn_engine_label()) }
                             Select {
@@ -264,10 +264,6 @@ pub(crate) fn settings_page() -> Element {
                         }
                         Field {
                             FieldLabel { content: translate_ui(current.locale, tr::page_tr_231()) }
-                            FieldDescription {
-                                content: translate_ui(current.locale, tr::vpn_stack_hint()),
-                                inset: true,
-                            }
                             Select {
                                 options: stack_options,
                                 disabled: busy,
@@ -282,15 +278,15 @@ pub(crate) fn settings_page() -> Element {
                                     }
                                 },
                             }
+                            FieldDescription {
+                                content: translate_ui(current.locale, tr::vpn_stack_hint()),
+                                inset: true,
+                            }
                         }
-                        Separator {}
+                        FieldSeparator {}
                         Field {
                             invalid: per_app_conflict,
                             FieldLabel { content: translate_ui(current.locale, tr::vpn_apps_trusted()) }
-                            FieldDescription {
-                                content: translate_ui(current.locale, tr::vpn_apps_trusted_hint()),
-                                inset: true,
-                            }
                             Input {
                                 click_to_focus: true,
                                 accessibility_label: Some(translate_ui(current.locale, tr::vpn_apps_trusted())),
@@ -300,6 +296,10 @@ pub(crate) fn settings_page() -> Element {
                                 disabled: busy,
                                 width: Some("100%".into()),
                                 on_change: move |v| form.write().values.vpn.trusted = v,
+                            }
+                            FieldDescription {
+                                content: translate_ui(current.locale, tr::vpn_apps_trusted_hint()),
+                                inset: true,
                             }
                         }
                         Field {
@@ -318,7 +318,8 @@ pub(crate) fn settings_page() -> Element {
                             FieldDescription { content: translate_ui(current.locale, tr::vpn_apps_blocked_hint()), inset: true }
                         }
                         Field {
-                            FieldDescription { content: translate_ui(current.locale, tr::vpn_apps_draft_hint()), inset: true }
+                            FieldDescription { content: translate_ui(current.locale, tr::vpn_apps_draft_hint()), inset: false }
+                            row { height: spacing::MD }
                             OperationButton {
                                 label: translate_ui(current.locale, tr::vpn_apps_preset()),
                                 icon: "list-filter",
