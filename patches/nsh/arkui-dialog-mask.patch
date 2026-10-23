@@ -1,0 +1,43 @@
+--- a/src/api/dialog.rs
++++ b/src/api/dialog.rs
+@@ -124,6 +124,25 @@
+                 Err(ArkUIError::new(
+                     ArkUIErrorCode::AttributeOrEventNotSupported,
+                     "ArkUI_NativeDialogAPI_1::setBackgroundColor is None",
++                ))
++            }
++        }
++    }
++
++    pub(crate) fn set_mask_color(
++        &self,
++        dialog: ArkUI_NativeDialogHandle,
++        color: u32,
++    ) -> ArkUIResult<()> {
++        // SAFETY: Dialog owns the live controller and invokes this on the UI
++        // thread. A null rectangle asks ArkUI to mask the complete window.
++        unsafe {
++            if let Some(set_mask) = (*self.raw()).setMask {
++                check_arkui_status!(set_mask(dialog, color, std::ptr::null()))
++            } else {
++                Err(ArkUIError::new(
++                    ArkUIErrorCode::AttributeOrEventNotSupported,
++                    "ArkUI_NativeDialogAPI_1::setMask is None",
+                 ))
+             }
+         }
+--- a/src/dialog/mod.rs
++++ b/src/dialog/mod.rs
+@@ -236,6 +236,12 @@
+         Ok(())
+     }
+ 
++    /// Sets the full-window mask color in ARGB, independently of modality.
++    /// Use zero for a transparent mask while retaining native focus isolation.
++    pub fn mask_color(&self, color: u32) -> ArkUIResult<()> {
++        ARK_UI_NATIVE_DIALOG_API_1.with(|api| api.set_mask_color(self.raw, color))
++    }
++
+     /// Set content alignment, offset_x and offset_y will be set with 0.0
+     pub fn content_alignment(&self, alignment: Alignment) -> ArkUIResult<()> {
+         ARK_UI_NATIVE_DIALOG_API_1

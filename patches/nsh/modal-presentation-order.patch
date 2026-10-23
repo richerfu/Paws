@@ -1,0 +1,175 @@
+--- a/crates/nsh-platform-ohos/src/render/mount.rs
++++ b/crates/nsh-platform-ohos/src/render/mount.rs
+@@ -513,6 +513,7 @@
+                 modal.close(true)?;
+             }
+         }
++        let mut presentations = super::presentation::Presentations::default();
+         for item in batch.items {
+             match item {
+                 MountItem::Component { id, name } => {
+@@ -581,7 +582,11 @@
+                         parent.children.borrow().len()
+                     };
+                     if let Some(modal) = node.modal.borrow().as_ref() {
+-                        modal.present()?;
++                        if modal.is_visible() {
++                            modal.present()?;
++                        } else {
++                            presentations.insert(child);
++                        }
+                     } else {
+                         parent
+                             .child_container()
+@@ -603,11 +608,13 @@
+                     node.inserted(layout.as_ref())?;
+                 }
+                 MountItem::Remove { id } => {
++                    presentations.remove(id);
+                     if !self.node(id)?.removing(layout.as_ref())? {
+                         self.detach(id)?;
+                     }
+                 }
+                 MountItem::Delete { id } => {
++                    presentations.remove(id);
+                     self.node(id)?.removing(layout.as_ref())?;
+                     self.delete(id)?;
+                 }
+@@ -871,7 +878,21 @@
+             }
+         }
+         self.reconcile_navigation()?;
+-        self.flush_arkui()
++        self.flush_arkui()?;
++        // ArkUI copies controller options at show(). Insert precedes config and
++        // frame items, so a new dialog must wait for the complete mount batch.
++        for id in presentations.into_ids() {
++            let attached = super::presentation::attached_to_root(id, nsh_core::ROOT_ID, |id| {
++                self.node(id)
++                    .ok()
++                    .filter(|node| !node.pending_delete.get() && node.visible_in_tree())
++                    .map(|node| node.parent.get())
++            });
++            if attached && let Some(modal) = self.node(id)?.modal.borrow().as_ref() {
++                modal.present()?;
++            }
++        }
++        Ok(())
+     }
+ 
+     pub(crate) fn image_ready(&self, ready: crate::media::image::Ready) -> Result<()> {
+--- a/crates/nsh-platform-ohos/src/render/mod.rs
++++ b/crates/nsh-platform-ohos/src/render/mod.rs
+@@ -6,4 +6,5 @@
+ pub(crate) mod geometry;
+ pub(crate) mod mount;
+ pub(crate) mod node;
++pub(crate) mod presentation;
+ pub(crate) mod transition;
+--- /dev/null
++++ b/crates/nsh-platform-ohos/src/render/presentation.rs
+@@ -0,0 +1,95 @@
++//! New native dialogs open only after their mount batch has configured them.
++
++#[derive(Default)]
++pub(crate) struct Presentations {
++    ids: Vec<u32>,
++}
++
++impl Presentations {
++    pub(crate) fn insert(&mut self, id: u32) {
++        self.remove(id);
++        self.ids.push(id);
++    }
++
++    pub(crate) fn remove(&mut self, id: u32) {
++        self.ids.retain(|candidate| *candidate != id);
++    }
++
++    pub(crate) fn into_ids(self) -> impl Iterator<Item = u32> {
++        self.ids.into_iter()
++    }
++}
++
++/// Detached or retired ancestors cannot cause a queued dialog to appear.
++pub(crate) fn attached_to_root(
++    mut id: u32,
++    root: u32,
++    mut parent: impl FnMut(u32) -> Option<Option<u32>>,
++) -> bool {
++    let mut visited = Vec::new();
++    loop {
++        if visited.contains(&id) {
++            return false;
++        }
++        visited.push(id);
++        let Some(ancestor) = parent(id) else {
++            return false;
++        };
++        if id == root {
++            return true;
++        }
++        let Some(ancestor) = ancestor else {
++            return false;
++        };
++        id = ancestor;
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::collections::HashMap;
++
++    #[test]
++    fn show_observes_config_and_frame_from_the_complete_batch() {
++        // ArkUI captures controller state at show, so changing it afterwards
++        // cannot fix the already-created native mask or first frame.
++        let mut pending = Presentations::default();
++        let mut transparent = false;
++        let mut frame = (0, 0);
++        let mut shown = Vec::new();
++        pending.insert(7); // Insert emitted before ModalConfig and Frame.
++        assert!(shown.is_empty());
++        assert_eq!((transparent, frame), (false, (0, 0)));
++        transparent = true;
++        frame = (390, 844);
++        for id in pending.into_ids() {
++            shown.push((id, transparent, frame));
++        }
++        assert_eq!(shown, [(7, true, (390, 844))]);
++    }
++
++    #[test]
++    fn removed_and_deleted_dialogs_never_show_and_reinsertion_shows_once() {
++        let mut pending = Presentations::default();
++        pending.insert(4);
++        pending.insert(5);
++        pending.remove(4); // Remove.
++        pending.remove(5); // Delete.
++        pending.insert(6);
++        pending.insert(6);
++        assert_eq!(pending.into_ids().collect::<Vec<_>>(), [6]);
++    }
++
++    #[test]
++    fn removed_or_retired_ancestor_prevents_presentation() {
++        let mut tree = HashMap::from([(1, None), (2, Some(1)), (7, Some(2))]);
++        assert!(attached_to_root(7, 1, |id| tree.get(&id).copied()));
++        tree.insert(2, None); // The subtree was detached in the same batch.
++        assert!(!attached_to_root(7, 1, |id| tree.get(&id).copied()));
++        tree.remove(&2); // Retired/deleted ancestors are also ineligible.
++        assert!(!attached_to_root(7, 1, |id| tree.get(&id).copied()));
++        tree.insert(2, Some(7));
++        assert!(!attached_to_root(7, 1, |id| tree.get(&id).copied()));
++    }
++}
+--- a/crates/nsh-platform-ohos/tests/ohos/main.rs
++++ b/crates/nsh-platform-ohos/tests/ohos/main.rs
+@@ -29,3 +29,6 @@
+ 
+ #[path = "../../src/app/dev/presentation.rs"]
+ mod dev_presentation;
++
++#[path = "../../src/render/presentation.rs"]
++mod modal_presentation;

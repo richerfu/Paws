@@ -30,10 +30,6 @@ interface PawsAutomationParams {
   pawsVerifyAppHttp?: string | boolean;
 }
 
-interface PawsSnapshot {
-  vpnOptions?: Record<string, Object>;
-}
-
 /**
  * Debug/smoke automation driven by Ability Want parameters. Runs profile
  * import, optional VPN start, proxy delay and echo checks. Kept out of the
@@ -135,11 +131,12 @@ async function run(
 }
 
 function activeVpnOptionsJson(): string {
-  const snapshot = JSON.parse(pawsUi.querySnapshot()) as PawsSnapshot;
-  if (!snapshot || !snapshot.vpnOptions) {
-    throw new Error('active VPN options are missing from the runtime snapshot');
+  const optionsJson = pawsUi.queryActiveVpnOptions();
+  const options = JSON.parse(optionsJson) as Record<string, Object>;
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('active VPN options are unavailable');
   }
-  return JSON.stringify(snapshot.vpnOptions);
+  return optionsJson;
 }
 
 async function runDebugDelay(want: Want): Promise<void> {

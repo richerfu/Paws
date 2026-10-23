@@ -1,0 +1,113 @@
+--- a/crates/nsh-platform-ohos/src/interop/sdk.rs
++++ b/crates/nsh-platform-ohos/src/interop/sdk.rs
+@@ -194,6 +194,8 @@
+     pub height: f64,
+     pub placeholder: String,
+     pub font_size: f64,
++    /// Resolved line height, in the same units as font_size; absent uses natural height.
++    pub line_height: Option<f64>,
+     pub font_weight: u32,
+     pub font_family: Option<String>,
+     pub italic: bool,
+--- a/crates/nsh-platform-ohos/src/input/editor.rs
++++ b/crates/nsh-platform-ohos/src/input/editor.rs
+@@ -325,6 +325,8 @@
+             height: self.content.get().height as f64,
+             placeholder: config.placeholder.clone(),
+             font_size: config.style.font_size as f64,
++            line_height: (config.style.line_height > 0.0)
++                .then_some(config.style.line_height as f64),
+             font_weight: config.style.font_weight as u32,
+             font_family: config
+                 .style
+--- a/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
++++ b/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
+@@ -15,6 +15,7 @@
+   height: number;
+   placeholder: string;
+   fontSize: number;
++  lineHeight?: number | null;
+   fontWeight: number;
+   fontFamily?: string | null;
+   italic: boolean;
+@@ -169,6 +170,8 @@
+       .borderRadius(0)
+       .backgroundColor(Color.Transparent)
+       .fontSize(s.fontSize)
++      // API 12+: zero restores natural line height after a style is removed.
++      .lineHeight(s.lineHeight ?? 0)
+       .fontWeight(s.fontWeight)
+       .fontFamily(s.fontFamily ?? "HarmonyOS Sans")
+       .fontStyle(s.italic ? FontStyle.Italic : FontStyle.Normal)
+--- a/crates/nsh-platform-ohos/arkts/tests/editors.test.mjs
++++ b/crates/nsh-platform-ohos/arkts/tests/editors.test.mjs
+@@ -7,8 +7,11 @@
+ const source = await readFile(new URL('../src/main/ets/NativeEditors.ets', import.meta.url), 'utf8');
+ const event = source.slice(source.indexOf('class EditorEvent'), source.indexOf('class EditorModifier'));
+ const classes = source.slice(source.indexOf('class EditorSizeCallback'));
++const modifier = source.slice(source.indexOf('class EditorModifier'), source.indexOf('@Builder'));
+ const effects = `
+ const quarantinedEditors = new Set();
++const Color={Transparent:0}; const FontStyle={Italic:1,Normal:0}; const Direction={Rtl:1,Ltr:0};
++const enterType=x=>x, contentType=x=>x, areaType=x=>x, inputType=x=>x;
+ class FrameCallback {}
+ const hilog={warn(){}};
+ class TextInputController { selections=[]; setTextSelection(a,b){this.selections.push([a,b]);} getTextContentRect(){globalThis.sdkMeasure?.();return {width:10,height:20};} stopEditing(){} }
+@@ -17,8 +20,8 @@
+ const editorContent = () => {};
+ const wrapBuilder = value => value;
+ `;
+-const { EditorEntry, NativeEditors } = await import(`data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(effects+event+classes+'\nexport { EditorEntry };')).toString('base64')}`);
+-function fixture(id=1, ready=true) {
++const { EditorEntry, NativeEditors, EditorModifier } = await import(`data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(effects+event+modifier+classes+'\nexport { EditorEntry, EditorModifier };')).toString('base64')}`);
++function fixture(id=1, ready=true, multiline=false) {
+   const calls=[];
+   let active=true, accepted=true, count=0;
+   const ui={ postFrameCallback(){}, getFocusController(){return {requestFocus(){globalThis.sdkFocus?.();}}} };
+@@ -27,7 +30,7 @@
+     if(name==='editor-event' && value.event.kind==='change') count++;
+     return {accepted,count};
+   }};
+-  const settings={targetId:id, multiline:false, text:'initial',count:0};
++  const settings={targetId:id, multiline, text:'initial',count:0};
+   const entry=new EditorEntry(settings,context);
+   if (ready) { entry.create(); calls.length=0; }
+   return {entry,settings,calls,context,accept(value){accepted=value;},active(value){active=value;}};
+@@ -152,3 +155,37 @@
+   assert.equal(replacement.calls[0].value.targetId,33);
+   assert.equal(retired.calls.filter(c=>c.name==='editor-event').length,0); assert.equal(inactive.calls.length,0);
+ });
++
++function nativeAttributes() {
++  const calls=[];
++  const node=new Proxy({}, {get(_target,key){return (...args)=>{calls.push([key,...args]);return node;};}});
++  return {node,calls};
++}
++
++test('real EditorEntry and modifier apply and reset line height on the retained native node',()=>{
++  for (const multiline of [false,true]) {
++    const f=fixture(71+Number(multiline),true,multiline), native=nativeAttributes();
++    const node=f.entry.node,controller=f.entry.line;
++    globalThis.sdkUpdate=()=>new EditorModifier(f.entry).applyNormalAttribute(native.node);
++    try {
++      f.entry.update({...f.settings,multiline,lineHeight:20,fontSize:14});
++      f.entry.update({...f.settings,multiline,fontSize:14}); // NAPI object None omits the property.
++      f.entry.update({...f.settings,multiline,lineHeight:24,fontSize:14});
++      f.entry.update({...f.settings,multiline,lineHeight:null,fontSize:14});
++    } finally {globalThis.sdkUpdate=undefined;}
++    assert.deepEqual(native.calls.filter(c=>c[0]==='lineHeight').map(c=>c[1]),[20,0,24,0]);
++    assert.equal(f.entry.node,node);assert.equal(f.entry.line,controller);
++    assert.equal(node.updates,4);assert.equal(f.entry.text,'initial');assert.equal(f.calls.length,0);
++  }
++});
++
++test('line-height-only updates preserve pending native edits and FIFO change delivery',async()=>{
++  const f=fixture(81),native=nativeAttributes();
++  f.entry.change('user text');
++  globalThis.sdkUpdate=()=>new EditorModifier(f.entry).applyNormalAttribute(native.node);
++  try {f.entry.update({...f.settings,text:'stale',lineHeight:20,count:0});}
++  finally {globalThis.sdkUpdate=undefined;}
++  assert.equal(f.entry.text,'user text');assert.equal(f.calls.length,0);
++  assert.deepEqual(native.calls.filter(c=>c[0]==='lineHeight'),[['lineHeight',20]]);
++  await nextTask();assert.equal(f.calls[0].value.event.text,'user text');assert.equal(f.entry.count,1);
++});

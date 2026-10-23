@@ -1,0 +1,19 @@
+--- a/paws-patches/ohos-arkui-binding/src/api/node/mod.rs
++++ b/paws-patches/ohos-arkui-binding/src/api/node/mod.rs
+@@ -617,12 +617,11 @@
+         // keyed by (handle, event type); the native user_data slot stays
+         // untouched so it cannot dangle into registry-owned memory.
+         self.register_node_custom_event(node, event_type, target_id, std::ptr::null_mut())?;
++        // ArkUI invokes node-local and global receivers independently. Using
++        // our dispatcher in both slots doubles callbacks and recursively
++        // multiplies child measurement. The native node receiver set deduplicates
++        // this function pointer; do not register or overwrite a global receiver.
+         if let Err(err) = self.add_node_custom_event_receiver(node) {
+-            let _ = self.unregister_node_custom_event(node, event_type);
+-            return Err(err);
+-        }
+-        if let Err(err) = self.register_node_custom_event_receiver() {
+-            let _ = self.remove_node_custom_event_receiver(node);
+             let _ = self.unregister_node_custom_event(node, event_type);
+             return Err(err);
+         }

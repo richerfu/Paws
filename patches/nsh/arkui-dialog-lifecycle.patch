@@ -1,0 +1,248 @@
+--- a/paws-patches/ohos-arkui-binding/src/dialog/mod.rs
++++ b/paws-patches/ohos-arkui-binding/src/dialog/mod.rs
+@@ -1,6 +1,11 @@
+ //! Dialog builder and lifecycle callback wrappers.
+ 
+-use std::{any::Any, cell::RefCell, os::raw::c_void, rc::Rc};
++use std::{
++    any::Any,
++    cell::{Cell, RefCell},
++    os::raw::c_void,
++    rc::Rc,
++};
+ 
+ use crate::api::ARK_UI_NATIVE_DIALOG_API_1;
+ use crate::{Alignment, ArkUINode, ArkUIResult, DismissReason};
+@@ -27,7 +32,17 @@
+     }
+ }
+ 
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub(crate) enum Presentation {
++    Closed,
++    Open,
++    // System dismissal has been allowed, but the controller still retains its
++    // dialog reference. Only a successful native close relinquishes that edge.
++    SystemClosing,
++}
++
+ pub(crate) struct InnerDialogDismissData {
++    pub(crate) presentation: Cell<(u64, Presentation)>,
+     pub dismiss_handle: Option<fn(DialogDismissData) -> Option<bool>>,
+     pub data: Option<*mut c_void>,
+     pub(crate) data_owner: Option<Rc<dyn Any>>,
+@@ -63,17 +78,21 @@
+     pub fn new() -> ArkUIResult<Self> {
+         let dialog_controller = ARK_UI_NATIVE_DIALOG_API_1.with(|api| api.create())?;
+         let data = Rc::new(RefCell::new(InnerDialogDismissData {
++            presentation: Cell::new((0, Presentation::Closed)),
+             dismiss_handle: None,
+             data: None,
+             data_owner: None,
+             callback: None,
+         }));
+-        Ok(Dialog {
++        let dialog = Dialog {
+             raw: dialog_controller,
+             inner_dismiss_data: data,
+             content: RefCell::default(),
+             operation: Default::default(),
+-        })
++        };
++        // Observe system dismissal even when the caller has no user handler.
++        dialog.register_dismiss()?;
++        Ok(dialog)
+     }
+ 
+     fn register_dismiss(&self) -> ArkUIResult<()> {
+@@ -121,6 +140,11 @@
+     }
+ 
+     fn remove_content_inner(&self) -> ArkUIResult<()> {
++        if self.inner_dismiss_data.borrow().presentation.get().1 != Presentation::Closed {
++            return Err(invalid(
++                "close the dialog before detaching its native content",
++            ));
++        }
+         let attached = self
+             .content
+             .borrow()
+@@ -179,6 +203,9 @@
+             .operation
+             .enter()
+             .ok_or_else(|| invalid("dialog ownership operation is in progress"))?;
++        if self.inner_dismiss_data.borrow().presentation.get().1 != Presentation::Closed {
++            return Err(invalid("close the dialog before disposing its controller"));
++        }
+         self.remove_content_inner()?;
+         if self.raw.is_null() {
+             return Ok(());
+@@ -203,21 +230,49 @@
+         Ok(())
+     }
+ 
+-    /// Show the dialog in current window.
++    /// Shows a closed dialog in the current window.
+     pub fn show(&self) -> ArkUIResult<()> {
+-        ARK_UI_NATIVE_DIALOG_API_1.with(|api| api.show(self.raw, false))?;
+-        Ok(())
+-    }
+-
+-    /// Show the dialog in sub-window mode.
++        self.show_inner(false)
++    }
++
++    /// Shows a closed dialog in sub-window mode.
+     pub fn show_with_sub_window(&self) -> ArkUIResult<()> {
+-        ARK_UI_NATIVE_DIALOG_API_1.with(|api| api.show(self.raw, true))?;
+-        Ok(())
+-    }
+-
+-    /// Close the dialog.
++        self.show_inner(true)
++    }
++
++    fn show_inner(&self, sub_window: bool) -> ArkUIResult<()> {
++        let _active = self.begin()?;
++        let (generation, presentation) = self.inner_dismiss_data.borrow().presentation.get();
++        if self.raw.is_null() || presentation != Presentation::Closed {
++            return Err(invalid("show requires a live, closed dialog controller"));
++        }
++        let generation = generation
++            .checked_add(1)
++            .ok_or_else(|| invalid("dialog presentation generation exhausted"))?;
++        ARK_UI_NATIVE_DIALOG_API_1.with(|api| api.show(self.raw, sub_window))?;
++        self.inner_dismiss_data
++            .borrow()
++            .presentation
++            .set((generation, Presentation::Open));
++        Ok(())
++    }
++
++    /// Closes the current presentation. Repeated calls are harmless.
+     pub fn close(&self) -> ArkUIResult<()> {
++        let _active = self.begin()?;
++        let (generation, presentation) = self.inner_dismiss_data.borrow().presentation.get();
++        if presentation == Presentation::Closed {
++            return Ok(());
++        }
++        // Native CloseDialog clears its controller's dialogHandle on success;
++        // closing that presentation again would report ParamInvalid. A system
++        // dismissal does not clear that controller reference, so it still needs
++        // this native close, even after its visual disappearance.
+         ARK_UI_NATIVE_DIALOG_API_1.with(|api| api.close(self.raw))?;
++        self.inner_dismiss_data
++            .borrow()
++            .presentation
++            .set((generation, Presentation::Closed));
+         Ok(())
+     }
+ 
+@@ -308,20 +363,30 @@
+     }
+ }
+ 
++impl Dialog {
++    fn retain_native_owners(&mut self) {
++        std::mem::forget(self.inner_dismiss_data.clone());
++        if let Some(content) = self.content.get_mut().take() {
++            std::mem::forget(content);
++        }
++    }
++}
++
+ impl Drop for Dialog {
+     fn drop(&mut self) {
+         if !self.raw.is_null() {
+             if let Err(error) = self.close() {
+-                log::error!("Dialog Drop close failed: {error:?}");
++                log::error!("Dialog Drop close failed; retaining native owners: {error:?}");
++                // Native disposal does not close its latest visible dialog.
++                // Keep its content and callback alive when close needs retry.
++                self.retain_native_owners();
++                return;
+             }
+             if let Err(error) = self.dispose() {
+                 // The native controller can still reach its callback/content.
+                 // Retain the complete owners when native retirement fails.
+                 log::error!("Dialog Drop disposal failed; retaining native owners: {error:?}");
+-                std::mem::forget(self.inner_dismiss_data.clone());
+-                if let Some(content) = self.content.get_mut().take() {
+-                    std::mem::forget(content);
+-                }
++                self.retain_native_owners();
+             }
+         }
+     }
+--- a/paws-patches/ohos-arkui-binding/src/api/dialog.rs
++++ b/paws-patches/ohos-arkui-binding/src/api/dialog.rs
+@@ -341,26 +341,23 @@
+     let Ok(data) = user_data_rc.try_borrow() else {
+         return;
+     };
+-    if let Some(callback) = data.callback.clone() {
+-        drop(data);
+-        let reason = OH_ArkUI_DialogDismissEvent_GetDismissReason(event) as u32;
+-        let blocked =
++    let presentation = data.presentation.get();
++    let callback = data.callback.clone();
++    let handle = data.dismiss_handle;
++    let custom_data = data.data;
++    let _custom_owner = data.data_owner.clone();
++    drop(data);
++    let reason = OH_ArkUI_DialogDismissEvent_GetDismissReason(event) as u32;
++    let block = if let Some(callback) = callback {
++        Some(
+             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(reason.into())))
+                 .unwrap_or_else(|_| {
+                     log::error!("Dialog dismiss callback panicked; allowing dismissal");
+                     false
+-                });
+-        OH_ArkUI_DialogDismissEvent_SetShouldBlockDismiss(event, blocked);
+-        return;
+-    }
+-
+-    let handle = data.dismiss_handle;
+-    let custom_data = data.data;
+-    let _custom_owner = data.data_owner.clone();
+-    drop(data);
+-    if let Some(handle) = handle {
+-        let reason = OH_ArkUI_DialogDismissEvent_GetDismissReason(event) as u32;
+-        let ret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                }),
++        )
++    } else if let Some(handle) = handle {
++        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+             handle(DialogDismissData {
+                 dismiss_reason: reason.into(),
+                 data: custom_data,
+@@ -369,11 +366,24 @@
+         .unwrap_or_else(|_| {
+             log::error!("Dialog dismiss callback panicked; leaving native dismissal unchanged");
+             None
+-        });
+-        if let Some(block) = ret {
+-            if block {
+-                OH_ArkUI_DialogDismissEvent_SetShouldBlockDismiss(event, block);
+-            }
++        })
++    } else {
++        None
++    };
++    if let Some(block) = block {
++        OH_ArkUI_DialogDismissEvent_SetShouldBlockDismiss(event, block);
++    }
++    if !block.unwrap_or(false) {
++        let data = user_data_rc.borrow();
++        // Allowing willDismiss hands visual closure to ArkUI; it does not
++        // release the controller's native dialog reference. Keep all owners
++        // until close/dispose. A handler may close and reopen synchronously;
++        // the old event must not change that newer presentation's state.
++        if data.presentation.get() == presentation
++            && presentation.1 == crate::dialog::Presentation::Open
++        {
++            data.presentation
++                .set((presentation.0, crate::dialog::Presentation::SystemClosing));
+         }
+     }
+ }

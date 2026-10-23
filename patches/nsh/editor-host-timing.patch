@@ -1,0 +1,53 @@
+--- a/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
++++ b/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
+@@ -1,4 +1,5 @@
+ import { BuilderNode } from "@ohos.arkui.node";
++import hilog from "@ohos.hilog";
+ import { FrameCallback } from "@ohos.arkui.UIContext";
+ import {
+   BridgePluginContext,
+@@ -249,6 +250,12 @@
+     this.entry.measureSize();
+   }
+ }
++function reportEditorWork(phase: string, started: number, length: number): void {
++  const elapsed = Date.now() - started;
++  if (elapsed >= 16) {
++    hilog.warn(0x0000, "NshEditor", "%{public}s blocked host for %{public}d ms (%{public}d chars)", phase, elapsed, length);
++  }
++}
+ class EditorEntry {
+   readonly node: BuilderNode<[EditorEntry]>;
+   readonly line: TextInputController = new TextInputController();
+@@ -280,7 +287,9 @@
+     this.updating = true;
+     this.sdkBusy = true;
+     try {
++      const started = Date.now();
+       this.node.build(wrapBuilder(editorContent), this);
++      reportEditorWork("build", started, this.text.length);
+       if (this.closed || !this.context.isActive()) { throw new Error("Editor creation was cancelled"); }
+       const response = this.context.invokeNativeSync(
+         "native-node-ready",
+@@ -316,7 +325,9 @@
+     this.updating = true;
+     this.sdkBusy = true;
+     try {
++      const started = Date.now();
+       this.node.update(this);
++      reportEditorWork("update", started, this.text.length);
+     } finally {
+       this.updating = false;
+       this.sdkBusy = false;
+@@ -351,9 +362,11 @@
+     if (this.closed || !this.context.isActive()) {
+       return;
+     }
++    const started = Date.now();
+     const rect = this.settings.multiline
+       ? this.area.getTextContentRect()
+       : this.line.getTextContentRect();
++    reportEditorWork("measure", started, this.text.length);
+     if (rect.width !== this.contentWidth || rect.height !== this.contentHeight) {
+       this.contentWidth = rect.width;
+       this.contentHeight = rect.height;

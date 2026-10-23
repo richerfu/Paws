@@ -64,7 +64,7 @@ export class ExportPlugin extends AsyncPluginBase {
     return { typeName: EXPORT_RESPONSE_TYPE, value: {} };
   }
 
-  private async exportImage(payload: ExportImageRequest): Promise<void> {
+  async exportImage(payload: ExportImageRequest): Promise<void> {
     const bytes = new util.Base64Helper().decodeSync(payload.pngBase64);
     if (bytes.byteLength < 8 || bytes[0] !== 0x89 || bytes[1] !== 0x50 ||
       bytes[2] !== 0x4e || bytes[3] !== 0x47) {
@@ -104,7 +104,7 @@ export class ExportPlugin extends AsyncPluginBase {
     }
   }
 
-  private async exportText(payload: ExportTextRequest): Promise<void> {
+  async exportText(payload: ExportTextRequest): Promise<void> {
     let fallbackName: string;
     let extension: string;
     let acceptedExtensions: Array<string>;

@@ -27,6 +27,10 @@
   },
   "modules": [
     {
+      "name": "nsh_ohos",
+      "srcPath": "./target/ohos/arkts-deps/nsh"
+    },
+    {
       "name": "entry",
       "srcPath": "./entry",
       "targets": [
@@ -37,6 +41,46 @@
           ]
         }
       ]
+    },
+    {
+      "name": "native_ability",
+      "srcPath": "./target/ohos/arkts-deps/ability"
+    },
+    {
+      "name": "plugin_arkui",
+      "srcPath": "./target/ohos/arkts-deps/arkui"
+    },
+    {
+      "name": "plugin_video",
+      "srcPath": "./target/ohos/arkts-deps/video"
+    },
+    {
+      "name": "plugin_resource",
+      "srcPath": "./target/ohos/arkts-deps/resource"
+    },
+    {
+      "name": "plugin_clipboard",
+      "srcPath": "./target/ohos/arkts-deps/clipboard"
+    },
+    {
+      "name": "plugin_window",
+      "srcPath": "./target/ohos/arkts-deps/window"
+    },
+    {
+      "name": "plugin_url",
+      "srcPath": "./target/ohos/arkts-deps/url"
+    },
+    {
+      "name": "plugin_files",
+      "srcPath": "./target/ohos/arkts-deps/files"
+    },
+    {
+      "name": "plugin_accessibility",
+      "srcPath": "./target/ohos/arkts-deps/accessibility"
+    },
+    {
+      "name": "plugin_webview",
+      "srcPath": "./target/ohos/arkts-deps/webview"
     }
   ]
 }

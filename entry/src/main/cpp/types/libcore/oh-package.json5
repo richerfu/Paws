@@ -1,6 +1,0 @@
-{
-  "name": "libcore.so",
-  "types": "./Index.d.ts",
-  "version": "1.0.0",
-  "description": "Paws mihomo compatibility engine bridge"
-}

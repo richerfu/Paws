@@ -2,10 +2,10 @@ import {
   AsyncPluginBase,
   BridgeCallContext,
   BridgeContextRequirement,
-  BridgePluginContext,
   BridgePluginHookContext,
   BridgeTypedValue,
 } from '@ohos-rs/ability';
+import { common } from '@kit.AbilityKit';
 import { vpnExtension } from '@kit.NetworkKit';
 import { notificationManager } from '@kit.NotificationKit';
 import { commonEventManager } from '@kit.BasicServicesKit';
@@ -22,6 +22,10 @@ import { startVpnExtensionWithHandoff } from '../vpnability/VpnExtensionLauncher
 import { vpnContinuousTask } from '../vpnability/VpnContinuousTask';
 
 interface EngineStartupHealth { success: boolean; actualEngine: string; rollbackToBaseline: boolean; stage: string; }
+
+interface VpnHostContext {
+  abilityContext: common.UIAbilityContext;
+}
 
 const LOG_DOMAIN: number = 0x0000;
 const LOG_TAG: string = 'PawsVpn';
@@ -76,7 +80,7 @@ interface VpnOperationLookupRequest {
   requestId: string;
 }
 
-interface VpnOperationLookupResponse {
+export interface VpnOperationLookupResponse {
   status: string;
   operationId: string;
   operationStatus: string;
@@ -84,7 +88,7 @@ interface VpnOperationLookupResponse {
   error: string;
 }
 
-interface VpnOperationTerminal {
+export interface VpnOperationTerminal {
   status: string;
   result: boolean;
   error: string;
@@ -123,6 +127,10 @@ export class VpnPlugin extends AsyncPluginBase {
   private bridgeOperations: Map<string, VpnOperationRecord> = new Map();
   private requestOperations: Map<string, string> = new Map();
   private installedCallback?: () => void;
+  private hostContext?: VpnHostContext;
+  private initialized: boolean = false;
+  private hostDetached: boolean = false;
+  private systemSubscriber?: commonEventManager.CommonEventSubscriber;
 
   constructor(installedCallback?: () => void) {
     super();
@@ -130,10 +138,39 @@ export class VpnPlugin extends AsyncPluginBase {
   }
 
   onInstall(_context: BridgePluginHookContext): void {
+    this.initializeHost();
+  }
+
+  /** The NSH host owns VPN orchestration independently of bridge registration. */
+  attachHost(context: common.UIAbilityContext): void {
+    this.hostDetached = false;
+    this.hostContext = { abilityContext: context };
+    this.initializeHost();
+  }
+
+  detachHost(): void {
+    this.hostDetached = true;
+    this.hostContext = undefined;
+    if (this.systemSubscriber) {
+      try { commonEventManager.unsubscribe(this.systemSubscriber); } catch (_) {}
+      this.systemSubscriber = undefined;
+    }
+  }
+
+  private vpnContext(): VpnHostContext {
+    if (this.hostDetached) { throw new Error('VPN Ability host has been disposed'); }
+    return this.hostContext ?? this.getContext();
+  }
+
+  private initializeHost(): void {
+    if (this.initialized) {
+      return;
+    }
     this.initializePlatformSharedMemory();
     authorizeVpnForEmulatorDebug();
     this.startupVpnPreparation = this.prepareVpnForEmulatorDebug();
     this.subscribeToSystemWakeupEvents();
+    this.initialized = true;
     // Debug callers can be waiting since onCreate, before BridgeHost installs
     // ability plugins. Publish readiness only after the cleanup barrier exists.
     this.installedCallback?.();
@@ -382,24 +419,48 @@ export class VpnPlugin extends AsyncPluginBase {
     };
   }
 
+  /** The NSH host observes the same operation registry as the typed bridge. */
+  submitHostOperation(
+    requestId: string,
+    action: string,
+    fingerprint: string,
+    create: () => Promise<void | boolean>,
+  ): string {
+    return this.submitBridgeOperation(requestId, action, fingerprint, create);
+  }
+
+  lookupHostOperation(requestId: string): VpnOperationLookupResponse {
+    return this.lookupBridgeOperation(requestId);
+  }
+
+  async finishHostOperation(operationId: string): Promise<VpnOperationTerminal> {
+    const record = this.bridgeOperations.get(operationId);
+    if (!operationId.startsWith(`${this.bridgeSessionNonce}:`) || !record) {
+      return { status: 'unavailable', result: false, error: 'VPN operation receipt is unavailable' };
+    }
+    await record.settled;
+    return record.terminal ?? { status: 'unavailable', result: false, error: 'VPN operation receipt is unavailable' };
+  }
+
   /**
    * Public entry for in-app callers (debug automation). Resolves the plugin
    * session context that BridgeHost injected on install.
    */
   async requestStartVpn(optionsJson: string): Promise<void> {
-    await this.requestStartVpnWithContext(optionsJson, this.getContext());
+    await this.requestStartVpnWithContext(optionsJson, this.vpnContext());
   }
 
   /** Public entry for in-app callers (debug automation). */
   async requestStopVpn(): Promise<boolean> {
-    return this.requestStopVpnWithContext(this.getContext());
+    return this.requestStopVpnWithContext(this.vpnContext());
   }
 
   onAbilityForeground(): void {
+    if (this.hostDetached) { return; }
     this.checkAndAutoRecoverVpn();
     if (this.connectedVpnSessionId.length > 0) {
       try {
-        this.startContinuousTaskProtection(this.getContext());
+        this.startContinuousTaskProtection(this.vpnContext());
       } catch (err) {
         hilog.warn(LOG_DOMAIN, LOG_TAG,
           'foreground continuous task check skipped %{public}s', describeError(err));
@@ -442,6 +503,11 @@ export class VpnPlugin extends AsyncPluginBase {
           'usual.event.CONNECTIVITY_CHANGE',
         ],
       }).then((subscriber: commonEventManager.CommonEventSubscriber): void => {
+        if (this.hostDetached) {
+          commonEventManager.unsubscribe(subscriber);
+          return;
+        }
+        this.systemSubscriber = subscriber;
         commonEventManager.subscribe(subscriber, (err, data): void => {
           if (err) {
             return;
@@ -494,7 +560,7 @@ export class VpnPlugin extends AsyncPluginBase {
         !pawsUi.isRuntimeConfigRevisionCurrent(expectedConfigRevision)) {
         return false;
       }
-      await this.performStartVpn(optionsJson, this.getContext(), generation, intentEpoch);
+      await this.performStartVpn(optionsJson, this.vpnContext(), generation, intentEpoch);
       return true;
     });
   }
@@ -558,7 +624,7 @@ export class VpnPlugin extends AsyncPluginBase {
 
   private async requestStartVpnWithContext(
     optionsJson: string,
-    context: BridgePluginContext,
+    context: VpnHostContext,
   ): Promise<void> {
     await this.startupVpnPreparation;
     if (this.vpnStartRequest && this.vpnStartOptions === optionsJson) {
@@ -594,7 +660,7 @@ export class VpnPlugin extends AsyncPluginBase {
   private async monitorStartupHealth(
     sessionId: string,
     optionsJson: string,
-    context: BridgePluginContext,
+    context: VpnHostContext,
     generation: number,
     intentEpoch: string,
   ): Promise<void> {
@@ -647,7 +713,7 @@ export class VpnPlugin extends AsyncPluginBase {
   private dispatchVpnStart(
     optionsJson: string,
     attemptId: string,
-    context: BridgePluginContext,
+    context: VpnHostContext,
     generation: number,
     intentEpoch: string,
   ): void {
@@ -681,7 +747,7 @@ export class VpnPlugin extends AsyncPluginBase {
   private async runVpnStartDispatch(
     optionsJson: string,
     attemptId: string,
-    _context: BridgePluginContext,
+    _context: VpnHostContext,
     generation: number,
     intentEpoch: string,
   ): Promise<void> {
@@ -694,7 +760,7 @@ export class VpnPlugin extends AsyncPluginBase {
 
   private async performStartVpn(
     optionsJson: string,
-    context: BridgePluginContext,
+    context: VpnHostContext,
     generation: number,
     intentEpoch: string,
   ): Promise<void> {
@@ -767,7 +833,8 @@ export class VpnPlugin extends AsyncPluginBase {
     }
   }
 
-  private startContinuousTaskProtection(context: BridgePluginContext): void {
+  private startContinuousTaskProtection(context: VpnHostContext): void {
+    if (this.hostDetached) { return; }
     vpnContinuousTask.start(
       context.abilityContext,
       (info): void => {
@@ -805,7 +872,7 @@ export class VpnPlugin extends AsyncPluginBase {
     });
   }
 
-  private async ensureSpeedNotificationPermission(context: BridgePluginContext): Promise<void> {
+  private async ensureSpeedNotificationPermission(context: VpnHostContext): Promise<void> {
     try {
       if (await notificationManager.isNotificationEnabled()) {
         return;
@@ -818,7 +885,7 @@ export class VpnPlugin extends AsyncPluginBase {
     }
   }
 
-  private async requestStopVpnWithContext(_context: BridgePluginContext): Promise<boolean> {
+  private async requestStopVpnWithContext(_context: VpnHostContext): Promise<boolean> {
     const intentEpoch = pawsUi.advancePlatformVpnIntent();
     ++this.operationGeneration;
     // Core owns the cross-Plugin fence. In particular, a recreated Bridge has

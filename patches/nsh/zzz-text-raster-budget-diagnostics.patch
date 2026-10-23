@@ -1,0 +1,131 @@
+--- a/crates/nsh-platform-ohos/src/text/typography.rs
++++ b/crates/nsh-platform-ohos/src/text/typography.rs
+@@ -303,6 +303,7 @@
+         if width > 0 && height > 0 && u64::from(width) * u64::from(height) <= 4_194_304 {
+             let selection_bytes = if let Some(text) = &prepared.selectable {
+                 if text.len() > crate::text::selection::layout::MAX_TEXT_BYTES {
++                    log::error!(target: "nsh::perf", "NSHTextBudget reason=3 width={} height={} used={} requested={} selectionUtf8Bytes={} clusters=0", width, height, self.budget.load(Ordering::Relaxed), width as usize * height as usize * 12, text.len());
+                     raster.exhausted = true;
+                     return TextLayout(Arc::new(raster));
+                 }
+@@ -311,6 +312,7 @@
+                     .take(crate::text::selection::layout::MAX_CLUSTERS + 1)
+                     .count();
+                 if clusters > crate::text::selection::layout::MAX_CLUSTERS {
++                    log::error!(target: "nsh::perf", "NSHTextBudget reason=4 width={} height={} used={} requested={} selectionUtf8Bytes={} clusters={}", width, height, self.budget.load(Ordering::Relaxed), width as usize * height as usize * 12 + text.len() + clusters * 512, text.len(), clusters);
+                     raster.exhausted = true;
+                     return TextLayout(Arc::new(raster));
+                 }
+@@ -319,14 +321,14 @@
+                 0
+             };
+             let bytes = width as usize * height as usize * 12 + selection_bytes;
+-            if self
+-                .budget
+-                .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+-                    used.checked_add(bytes)
+-                        .filter(|next| *next <= RASTER_BUDGET)
+-                })
+-                .is_err()
++            if let Err(used) =
++                self.budget
++                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
++                        used.checked_add(bytes)
++                            .filter(|next| *next <= RASTER_BUDGET)
++                    })
+             {
++                log::error!(target: "nsh::perf", "NSHTextBudget reason=2 width={} height={} used={} requested={} selectionReserve={}", width, height, used, bytes, selection_bytes);
+                 raster.exhausted = true;
+                 return TextLayout(Arc::new(raster));
+             }
+@@ -351,6 +353,7 @@
+                     },
+                 );
+                 if raster.selection.is_none() {
++                    log::error!(target: "nsh::perf", "NSHTextBudget reason=5 width={} height={} used={} requested={} selectionReserve={}", width, height, self.budget.load(Ordering::Relaxed), bytes, selection_bytes);
+                     raster.exhausted = true;
+                     return TextLayout(Arc::new(raster));
+                 }
+@@ -399,6 +402,7 @@
+                 .collect();
+             raster.pixels = canvas.bitmap().expect("bitmap canvas").pixels().to_vec();
+         } else if width > 0 && height > 0 {
++            log::error!(target: "nsh::perf", "NSHTextBudget reason=1 width={} height={} used={} requestedPixels={} logicalWidth={} logicalHeight={} scale={} paddingTop={} bottom={}", width, height, self.budget.load(Ordering::Relaxed), u64::from(width) * u64::from(height), size.width, size.height, self.scale, padding_top, bottom);
+             raster.exhausted = true;
+             log::error!("OHOS text raster exceeds 4 megapixels: {width}x{height}");
+         }
+--- a/crates/nsh-platform-ohos/src/render/mount.rs
++++ b/crates/nsh-platform-ohos/src/render/mount.rs
+@@ -564,6 +564,8 @@
+             }
+         }
+         let mut presentations = super::presentation::Presentations::default();
++        let batch_items = batch.items.len();
++        let mut text_items_seen = 0_usize;
+         for item in batch.items {
+             match item {
+                 MountItem::Component { id, name } => {
+@@ -680,6 +682,7 @@
+                     text,
+                     ..
+                 } => {
++                    text_items_seen += 1;
+                     self.node(id)?
+                         .accessibility_state
+                         .text(self.node(id)?, &text.text);
+@@ -687,6 +690,32 @@
+                         .0
+                         .downcast_ref::<RasterText>()
+                         .ok_or(Error::Unsupported("foreign text layout"))?;
++                    if raster.exhausted {
++                        // Diagnose the existing fatal guard without retaining text
++                        // or scanning live slots during successful mount batches.
++                        let mut live_nodes = 0_usize;
++                        let mut live_rasters = 0_usize;
++                        let mut live_raster_bytes = 0_u64;
++                        let mut unreadable_rasters = 0_usize;
++                        for node in self.slots.iter().flatten() {
++                            live_nodes += 1;
++                            match node.raster.try_borrow() {
++                                Ok(layout) => {
++                                    if let Some(raster) = layout
++                                        .as_ref()
++                                        .and_then(|layout| layout.0.downcast_ref::<RasterText>())
++                                    {
++                                        live_rasters += 1;
++                                        live_raster_bytes += raster.pixels.len() as u64;
++                                    }
++                                }
++                                Err(_) => unreadable_rasters += 1,
++                            }
++                        }
++                        let retired_nodes: usize =
++                            self.retired.iter().map(|(_, nodes)| nodes.len()).sum();
++                        log::error!(target: "nsh::perf", "NSHTextMountFailure id={} utf8Bytes={} width={} height={} contentWidth={} contentHeight={} batchItems={} textItemsSeen={} liveNodes={} liveRasters={} liveRasterBytes={} unreadableRasters={} removedNodes={} retiredBatches={} retiredNodes={} pendingDeletes={}", id, text.text.len(), raster.width, raster.height, content.width, content.height, batch_items, text_items_seen, live_nodes, live_rasters, live_raster_bytes, unreadable_rasters, self.removed.len(), self.retired.len(), retired_nodes, self.pending_delete.len());
++                    }
+                     self.node(id)?.text(raster, content, layout.clone())?;
+                     self.node(id)?
+                         .set_events(self.node(id)?.interaction.mask())?;
+@@ -1041,15 +1070,22 @@
+             return None;
+         }
+         self.epoch += 1;
++        let removed_nodes = self.removed.len();
+         self.retired
+             .push_back((self.epoch, std::mem::take(&mut self.removed)));
++        let retired_nodes: usize = self.retired.iter().map(|(_, nodes)| nodes.len()).sum();
++        log::info!(target: "nsh::perf", "NSHTextRetire phase=1 epoch={} removedNodes={} retiredBatches={} retiredNodes={}", self.epoch, removed_nodes, self.retired.len(), retired_nodes);
+         Some(self.epoch)
+     }
+ 
+     pub(crate) fn reclaim(&mut self, epoch: u64) {
++        let before_batches = self.retired.len();
++        let before_nodes: usize = self.retired.iter().map(|(_, nodes)| nodes.len()).sum();
+         while self.retired.front().is_some_and(|(id, _)| *id <= epoch) {
+             self.retired.pop_front();
+         }
++        let after_nodes: usize = self.retired.iter().map(|(_, nodes)| nodes.len()).sum();
++        log::info!(target: "nsh::perf", "NSHTextRetire phase=2 epoch={} beforeBatches={} afterBatches={} beforeNodes={} afterNodes={}", epoch, before_batches, self.retired.len(), before_nodes, after_nodes);
+     }
+ }
+ 

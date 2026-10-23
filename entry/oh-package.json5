@@ -6,10 +6,18 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@ohos-rs/ability": "1.0.0-beta.3",
-    "@ohos-rs/ability-plugin-files": "1.0.0-beta.3",
-    "@ohos-rs/ability-plugin-url": "1.0.0-beta.3",
+    "@nsh/ohos": "file:../target/ohos/arkts-deps/nsh",
+    "@ohos-rs/ability": "file:../target/ohos/arkts-deps/ability",
+    "@ohos-rs/ability-plugin-files": "file:../target/ohos/arkts-deps/files",
+    "@ohos-rs/ability-plugin-url": "file:../target/ohos/arkts-deps/url",
     "libpaws_ui.so": "file:./src/main/cpp/types/libpaws_ui",
-    "libcore.so": "file:./src/main/cpp/types/libcore"
+    "@ohos-rs/ability-plugin-resource": "file:../target/ohos/arkts-deps/resource",
+    "@ohos-rs/ability-plugin-clipboard": "file:../target/ohos/arkts-deps/clipboard",
+    "@ohos-rs/ability-plugin-window": "file:../target/ohos/arkts-deps/window",
+    "@ohos-rs/ability-plugin-accessibility": "file:../target/ohos/arkts-deps/accessibility",
+    "@ohos-rs/ability-plugin-arkui": "file:../target/ohos/arkts-deps/arkui",
+    "@ohos-rs/ability-plugin-webview": "file:../target/ohos/arkts-deps/webview",
+    "@ohos-rs/ability-plugin-video": "file:../target/ohos/arkts-deps/video",
+    "libnsh_platform_ohos.so": "file:./src/main/cpp/types/libnsh_platform_ohos"
   }
 }
