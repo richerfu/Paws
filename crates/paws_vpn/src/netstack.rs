@@ -5,12 +5,11 @@ use tokio::io::unix::AsyncFd;
 pub(super) async fn run_netstack_vpn(
     stack_kind: VpnStack,
     fd: RawFd,
-    tunnel: Tunnel,
+    tunnel: Arc<dyn EngineTunnel>,
     stats: Arc<SharedStats>,
     running: Arc<AtomicBool>,
     shutdown: Arc<Notify>,
     dns_hijacking: bool,
-    sniffer_config: SnifferConfig,
     dns_table: DnsTable,
     dns_cache: DnsResponseCache,
 ) -> io::Result<()> {
@@ -34,7 +33,7 @@ pub(super) async fn run_netstack_vpn(
 
     let udp_sessions = UdpSessionMap::default();
     let flow_tasks: FlowTasks = Arc::new(Mutex::new(Vec::new()));
-    let sniffer = HarmonyTcpSniffer::from_config(sniffer_config).map(Arc::new);
+    let sniffer = HarmonyTcpSniffer::from_tunnel(tunnel.clone()).map(Arc::new);
     let runtime = match stack_kind {
         VpnStack::Smoltcp => spawn_smoltcp_backend(
             tunnel.clone(),
@@ -231,7 +230,7 @@ pub(super) struct NetstackRuntime {
 }
 
 pub(super) fn spawn_smoltcp_backend(
-    tunnel: Tunnel,
+    tunnel: Arc<dyn EngineTunnel>,
     stats: Arc<SharedStats>,
     dns_table: DnsTable,
     udp_sessions: UdpSessionMap,
@@ -367,7 +366,7 @@ pub(super) fn spawn_smoltcp_backend(
 }
 
 pub(super) fn spawn_lwip_backend(
-    tunnel: Tunnel,
+    tunnel: Arc<dyn EngineTunnel>,
     stats: Arc<SharedStats>,
     dns_table: DnsTable,
     udp_sessions: UdpSessionMap,
@@ -493,7 +492,7 @@ pub(super) async fn abort_flow_tasks(flow_tasks: &FlowTasks) {
 }
 
 pub(super) async fn handle_tcp_stream<S>(
-    tunnel: Tunnel,
+    tunnel: Arc<dyn EngineTunnel>,
     stream: S,
     src_addr: SocketAddr,
     dst_addr: SocketAddr,
@@ -506,16 +505,15 @@ pub(super) async fn handle_tcp_stream<S>(
     let mut stream = stream;
     let dns_mapped = dns_table.has_candidates(dst_addr.ip());
     let prefix = if dns_mapped && dns_mapping_sniff_protocol(dst_addr.port()).is_some() {
-        sniff_dns_mapped_destination(&mut stream, &mut metadata).await
+        sniff_dns_mapped_destination(tunnel.as_ref(), &mut stream, &mut metadata).await
     } else {
         match sniffer {
             Some(sniffer) => sniffer.sniff(&mut stream, &mut metadata).await,
-            None => recover_unmapped_destination(&mut stream, &mut metadata).await,
+            None => recover_unmapped_destination(tunnel.as_ref(), &mut stream, &mut metadata).await,
         }
     };
     let proxy_conn: Box<dyn ProxyConn> = Box::new(ReplayConn::new(stream, prefix));
-    let inner = tunnel.inner().clone();
-    meow_tunnel::tcp::handle_tcp(&inner, proxy_conn, metadata).await;
+    tunnel.handle_tcp(proxy_conn, metadata).await;
 }
 
 pub(super) fn tcp_metadata_for_stream(
@@ -534,17 +532,11 @@ pub(super) fn tcp_metadata_for_stream(
         src_port: src_addr.port(),
         dst_ip,
         dst_port: dst_addr.port(),
-        host: host.into(),
+        host,
         in_name: "paws-vpn".into(),
         in_port: 0,
         ..Metadata::default()
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) enum SniffProtocol {
-    Tls,
-    Http,
 }
 
 pub(super) fn dns_mapping_sniff_protocol(port: u16) -> Option<SniffProtocol> {
@@ -556,6 +548,7 @@ pub(super) fn dns_mapping_sniff_protocol(port: u16) -> Option<SniffProtocol> {
 }
 
 pub(super) async fn sniff_dns_mapped_destination<S>(
+    tunnel: &dyn EngineTunnel,
     stream: &mut S,
     metadata: &mut Metadata,
 ) -> Vec<u8>
@@ -565,10 +558,10 @@ where
     let Some(protocol) = dns_mapping_sniff_protocol(metadata.dst_port) else {
         return Vec::new();
     };
-    let (prefix, host) = sniff_bounded_client_prefix(stream, protocol).await;
+    let (prefix, host) = sniff_bounded_client_prefix(tunnel, stream, protocol).await;
     if let Some(host) = host {
-        metadata.host = host.as_str().into();
-        metadata.sniff_host = host.into();
+        metadata.host = host.clone();
+        metadata.sniff_host = host;
     }
     prefix
 }
@@ -577,6 +570,7 @@ where
 // DNS and the flow is absent from our DNS table. Keep the IP as evidence but
 // route/dial by the client-provided TLS SNI or HTTP Host, just as mapped flows do.
 pub(super) async fn recover_unmapped_destination<S>(
+    tunnel: &dyn EngineTunnel,
     stream: &mut S,
     metadata: &mut Metadata,
 ) -> Vec<u8>
@@ -586,7 +580,7 @@ where
     let Some(protocol) = dns_mapping_sniff_protocol(metadata.dst_port) else {
         return Vec::new();
     };
-    let (prefix, host) = sniff_bounded_client_prefix(stream, protocol).await;
+    let (prefix, host) = sniff_bounded_client_prefix(tunnel, stream, protocol).await;
     if let Some(host) = &host {
         metadata.host = host.as_str().into();
         metadata.sniff_host = host.as_str().into();
@@ -602,6 +596,7 @@ where
 }
 
 async fn sniff_bounded_client_prefix<S>(
+    tunnel: &dyn EngineTunnel,
     stream: &mut S,
     protocol: SniffProtocol,
 ) -> (Vec<u8>, Option<String>)
@@ -617,10 +612,7 @@ where
             Ok(Ok(n)) if n > 0 => prefix.extend_from_slice(&chunk[..n]),
             _ => break,
         }
-        host = match protocol {
-            SniffProtocol::Tls => sniff_tls(&prefix),
-            SniffProtocol::Http => sniff_http(&prefix),
-        };
+        host = tunnel.sniff(protocol, &prefix);
         if host.is_some() {
             break;
         }
@@ -630,24 +622,13 @@ where
 
 pub(super) struct HarmonyTcpSniffer {
     config: SnifferConfig,
-    runtime: SnifferRuntime,
-    force_domains: DomainTrie<()>,
+    tunnel: Arc<dyn EngineTunnel>,
 }
 
 impl HarmonyTcpSniffer {
-    pub(super) fn from_config(config: SnifferConfig) -> Option<Self> {
-        if !config.enable {
-            return None;
-        }
-        let mut force_domains = DomainTrie::new();
-        for domain in &config.force_domain {
-            force_domains.insert(domain, ());
-        }
-        Some(Self {
-            runtime: SnifferRuntime::new(config.clone()),
-            config,
-            force_domains,
-        })
+    pub(super) fn from_tunnel(tunnel: Arc<dyn EngineTunnel>) -> Option<Self> {
+        let config = tunnel.sniffer_config();
+        config.enable.then_some(Self { config, tunnel })
     }
 
     pub(super) fn protocol_for(&self, port: u16) -> Option<SniffProtocol> {
@@ -663,11 +644,7 @@ impl HarmonyTcpSniffer {
     }
 
     pub(super) fn should_sniff(&self, metadata: &Metadata) -> bool {
-        if !self.config.parse_pure_ip || metadata.host.is_empty() {
-            return true;
-        }
-        metadata.host.parse::<IpAddr>().is_ok()
-            || self.force_domains.search(&metadata.host).is_some()
+        self.tunnel.should_sniff(metadata)
     }
 
     pub(super) async fn sniff<S>(&self, stream: &mut S, metadata: &mut Metadata) -> Vec<u8>
@@ -688,12 +665,9 @@ impl HarmonyTcpSniffer {
             return Vec::new();
         };
         prefix.truncate(size);
-        let host = match protocol {
-            SniffProtocol::Tls => sniff_tls(&prefix),
-            SniffProtocol::Http => sniff_http(&prefix),
-        };
+        let host = self.tunnel.sniff(protocol, &prefix);
         if let Some(host) = host {
-            self.runtime.maybe_apply_sniff(&host, metadata);
+            self.tunnel.apply_sniff(&host, metadata);
         }
         prefix
     }
@@ -749,8 +723,6 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for ReplayConn<S> {
         Pin::new(&mut self.stream).poll_shutdown(cx)
     }
 }
-
-impl<S> ProxyConn for ReplayConn<S> where S: AsyncRead + AsyncWrite + Unpin + Send + Sync {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct UdpSessionKey {
@@ -822,7 +794,7 @@ pub(super) struct UdpReply {
 }
 
 pub(super) async fn handle_udp_datagram(
-    tunnel: Tunnel,
+    tunnel: Arc<dyn EngineTunnel>,
     dns_table: DnsTable,
     sessions: UdpSessionMap,
     reply_tx: mpsc::UnboundedSender<UdpReply>,
@@ -841,24 +813,17 @@ pub(super) async fn handle_udp_datagram(
     }
 
     let mut metadata = udp_metadata_for_datagram(local, remote, &dns_table);
-    let inner = tunnel.inner().clone();
-    inner.pre_resolve(&mut metadata).await;
-
+    let Ok(conn) = tunnel.open_udp(&mut metadata).await else {
+        return;
+    };
     let Some(dst_ip) = metadata.dst_ip else {
         return;
     };
     let dst_addr = SocketAddr::new(dst_ip, metadata.dst_port);
-    let Some(target) = inner.resolve_proxy(&metadata).await else {
-        return;
-    };
-    let Ok(conn) = target.adapter.dial_udp(&metadata).await else {
-        return;
-    };
     if conn.write_packet(&data, &dst_addr).await.is_err() {
         return;
     }
 
-    let conn: Arc<dyn ProxyPacketConn> = Arc::from(conn);
     let session = UdpTunSession::new(conn.clone());
     sessions.insert(key, session);
 
@@ -880,7 +845,7 @@ pub(super) fn udp_metadata_for_datagram(
         src_port: local.port(),
         dst_ip: Some(remote.ip()),
         dst_port: remote.port(),
-        host: dns_table.lookup(remote.ip()).unwrap_or_default().into(),
+        host: dns_table.lookup(remote.ip()).unwrap_or_default(),
         in_name: "paws-vpn".into(),
         in_port: 0,
         ..Metadata::default()

@@ -328,102 +328,94 @@ fn write_history(root: &Path, h: &History) -> Result<(), PawsError> {
     )
 }
 
-pub fn compatibility_issues(raw: &str, engine: VpnEngine) -> Result<Vec<String>, PawsError> {
-    if engine == VpnEngine::Mihomo {
-        return Ok(Vec::new());
+struct CompatibilityInput<'a> {
+    yaml: &'a str,
+    mode: RuntimeMode,
+    selections: &'a BTreeMap<String, String>,
+    options: &'a VpnOptions,
+    services: &'a paws_engine::EngineNetworkServices,
+}
+impl CompatibilityInput<'_> {
+    fn issues(&self, engine: VpnEngine) -> Result<Vec<String>, PawsError> {
+        let result = match engine {
+            VpnEngine::SingBox => render_sing_box_runtime_json(
+                self.yaml,
+                self.mode,
+                self.selections,
+                self.options,
+                self.services,
+            )
+            .map(|_| ())
+            .map_err(engine_error),
+            VpnEngine::Meow => self.meow_shape(),
+            _ => return Ok(Vec::new()),
+        };
+        Ok(result
+            .err()
+            .map(|error| config_error_message(self.yaml, &error.to_string()))
+            .into_iter()
+            .collect())
     }
-    let value: serde_yaml::Value =
-        serde_yaml::from_str(raw).map_err(|e| PawsError::Core(e.to_string()))?;
-    let mut issues = Vec::new();
-    if value
-        .get("proxy-providers")
-        .and_then(serde_yaml::Value::as_mapping)
-        .is_some_and(|p| !p.is_empty())
-    {
-        issues.push("proxy-providers：远程节点能力尚未逐项验收".into())
-    }
-    if let Some(proxies) = value
-        .get("proxies")
-        .and_then(serde_yaml::Value::as_sequence)
-    {
-        for (index, proxy) in proxies.iter().enumerate() {
-            let kind = proxy
-                .get("type")
-                .and_then(serde_yaml::Value::as_str)
-                .unwrap_or("unknown");
-            if engine == VpnEngine::SingBox
-                && !matches!(
-                    kind,
-                    "ss" | "shadowsocks"
-                        | "http"
-                        | "socks"
-                        | "socks5"
-                        | "trojan"
-                        | "vmess"
-                        | "vless"
-                        | "hysteria2"
-                        | "hy2"
-                        | "tuic"
-                )
-            {
-                issues.push(format!(
-                    "proxies[{index}].type：sing-box 尚无 {kind} 配置转换"
-                ))
-            }
-            if let Some(plugin) = proxy.get("plugin").and_then(serde_yaml::Value::as_str) {
-                if !matches!(plugin, "obfs" | "simple-obfs" | "obfs-local") {
-                    issues.push(format!(
-                        "proxies[{index}].plugin：{plugin} 尚无当前平台的兼容转换"
-                    ));
-                }
-            }
-            if engine == VpnEngine::SingBox && crate::sing_box_proxy::outbound(proxy).is_none() {
-                issues.push(format!("proxies[{index}]：配置字段或传输方式无法完整转换"));
-            }
+    fn meow_shape(&self) -> Result<(), PawsError> {
+        paws_profile::validate_profile_source_shape(self.yaml)?;
+        controller::validate_transport_contract(self.yaml)?;
+        let raw = meow_config::parse_raw_yaml(self.yaml).map_err(|error| {
+            PawsError::Core(config_error_message(self.yaml, &error.to_string()))
+        })?;
+        let dialer: Arc<dyn meow_proxy::dialer::TcpDialer> =
+            Arc::new(meow_proxy::dialer::DirectDialer);
+        for proxy in raw.proxies.as_deref().unwrap_or_default() {
+            // The parser is the actual compiled protocol implementation. Its
+            // provider entry rejects external executable plugins before any
+            // constructor can spawn one. No tunnel/health worker is created.
+            meow_config::proxy_parser::parse_proxy_provider_node(
+                proxy,
+                self.options.ipv6,
+                false,
+                &dialer,
+            )
+            .map_err(|error| PawsError::Core(config_error_message(self.yaml, &error)))?;
         }
+        Ok(())
     }
-    if engine == VpnEngine::SingBox {
-        if let Some(rules) = value.get("rules").and_then(serde_yaml::Value::as_sequence) {
-            for (index, rule) in rules.iter().enumerate() {
-                let Some(rule) = rule.as_str() else { continue };
-                let parts = rule.split(',').collect::<Vec<_>>();
-                let kind = parts.first().copied().unwrap_or("");
-                if !matches!(
-                    kind,
-                    "DOMAIN"
-                        | "DOMAIN-SUFFIX"
-                        | "DOMAIN-KEYWORD"
-                        | "IP-CIDR"
-                        | "IP-CIDR6"
-                        | "DST-PORT"
-                        | "MATCH"
-                ) && !(kind == "GEOIP"
-                    && parts.get(1).is_some_and(|v| {
-                        v.eq_ignore_ascii_case("LAN") || v.eq_ignore_ascii_case("PRIVATE")
-                    }))
-                {
-                    issues.push(format!(
-                        "rules[{index}]：{kind} 尚无等价的 sing-box 规则转换"
-                    ));
-                    if issues.len() >= 12 {
-                        break;
-                    }
-                }
-            }
-        }
+}
+
+#[cfg(test)]
+fn compatibility_issues(raw: &str, engine: VpnEngine) -> Result<Vec<String>, PawsError> {
+    CompatibilityInput {
+        yaml: raw,
+        mode: RuntimeMode::Rule,
+        selections: &BTreeMap::new(),
+        options: &VpnOptions::default(),
+        services: &paws_engine::EngineNetworkServices::default(),
     }
-    Ok(issues)
+    .issues(engine)
 }
 
 impl CoreHandle {
     pub fn engine_decision(&self, options_json: &str) -> Result<serde_json::Value, PawsError> {
         let options: VpnOptions = from_json(options_json)?;
-        let (raw, root, node_fp) = {
+        let (raw, prepared, root, node_fp, mode, selections, services) = {
             let state = self.lock_state()?;
             (
                 state.profiles.active_raw_yaml()?,
+                state.profiles.render_runtime_yaml(
+                    state.profiles.active_profile().ok_or_else(|| {
+                        PawsError::Core("activate a profile before selecting an engine".into())
+                    })?,
+                    state.mode,
+                    &options,
+                )?,
                 state.profiles.root().to_path_buf(),
                 fingerprint(&selected_node(&state)),
+                state.mode,
+                state
+                    .profiles
+                    .selected_proxies(state.profiles.active_profile().unwrap())?,
+                paws_engine::EngineNetworkServices {
+                    ports: state.network_ports,
+                    access: state.controller_access.clone(),
+                },
             )
         };
         let fp = fingerprint(&raw);
@@ -462,7 +454,14 @@ impl CoreHandle {
             if engine == VpnEngine::Mihomo {
                 break;
             }
-            let issues = compatibility_issues(&raw, engine)?;
+            let issues = CompatibilityInput {
+                yaml: &prepared,
+                mode,
+                selections: &selections,
+                options: &options,
+                services: &services,
+            }
+            .issues(engine)?;
             if raw_diagnostic && requested != VpnEngine::Auto {
                 resolved = engine;
                 reasons.push("诊断构建：绕过发布验收，结果不代表生产准入".into());
@@ -480,7 +479,7 @@ impl CoreHandle {
                 continue;
             }
             if !qualified(engine) {
-                if requested == VpnEngine::Auto || crate::profile_requires_mihomo(&raw)? {
+                if requested == VpnEngine::Auto {
                     reasons.push(format!(
                         "{}：缺少匹配内核版本和配置指纹的完整验收",
                         engine.as_str()
@@ -501,6 +500,59 @@ impl CoreHandle {
         Ok(
             serde_json::json!({"requested":requested.as_str(),"selected":resolved.as_str(),"version":engine_version(resolved),"profileFingerprint":fp,"buildFingerprint":build_fingerprint(),"nodeFingerprint":node_fp,"reasons":reasons,"productionDefault":"mihomo","diagnosticBypass":raw_diagnostic,"history":history.records.iter().rev().take(8).collect::<Vec<_>>() }),
         )
+    }
+
+    /// The UI's asynchronous preview may inspect local caches, but it never
+    /// downloads data or turns cached declarations into a runtime success.
+    pub async fn engine_decision_report(
+        &self,
+        options_json: &str,
+    ) -> Result<serde_json::Value, PawsError> {
+        let before = self.command_context()?;
+        let mut decision = self.engine_decision(options_json)?;
+        let options: VpnOptions = from_json(options_json)?;
+        if options.engine != VpnEngine::Meow && decision["selected"] != "meow" {
+            return Ok(decision);
+        }
+        let (id, revision, yaml, path) = {
+            let state = self.lock_state()?;
+            Self::ensure_config_revision_locked(&state, before.config_revision)?;
+            if state.profiles.active_profile() != before.active_profile.as_deref() {
+                return Err(PawsError::Core("engine preview profile changed".into()));
+            }
+            let id = state.profiles.active_profile().ok_or_else(|| {
+                PawsError::Core("activate a profile before selecting an engine".into())
+            })?;
+            (
+                id.to_owned(),
+                state.config_revision,
+                state
+                    .profiles
+                    .render_runtime_yaml(id, state.mode, &options)?,
+                state.profiles.runtime_yaml_path(id),
+            )
+        };
+        let report = validate_meow_capability(&yaml, &path).await;
+        let state = self.lock_state()?;
+        Self::ensure_config_revision_locked(&state, revision)?;
+        if state.profiles.active_profile() != Some(id.as_str()) {
+            return Err(PawsError::Core("engine preview profile changed".into()));
+        }
+        let reasons = decision["reasons"]
+            .as_array_mut()
+            .ok_or_else(|| PawsError::Core("engine decision reasons are missing".into()))?;
+        match report {
+            Ok(unverified) => reasons.push(serde_json::json!(if unverified.is_empty() {
+                "Meow 缓存配置已通过严格检查；尚未验证实际运行/路由"
+            } else {
+                "Meow Provider 数据尚未完整加载；尚未验证实际运行/路由"
+            })),
+            Err(error) => reasons.push(serde_json::json!(format!(
+                "Meow 缓存配置尚未通过严格检查：{}",
+                config_error_message(&yaml, &error.to_string())
+            ))),
+        }
+        Ok(decision)
     }
     pub fn record_engine_qualification(&self, text: &str) -> Result<(), PawsError> {
         if text.len() > 8192 {
@@ -623,7 +675,19 @@ impl CoreHandle {
                 .timeout(Duration::from_secs(2))
                 .build()
                 .map_err(|e| PawsError::Core(e.to_string()))?;
-            match client.get("http://127.0.0.1:9090/version").send().await {
+            let endpoint = {
+                let mut state = self.lock_state()?;
+                self.sync_platform_vpn_state_locked(&mut state);
+                state.platform_controller_endpoint.clone()
+            }
+            .ok_or_else(|| {
+                PawsError::Core("active native controller endpoint unavailable".into())
+            })?;
+            let mut request = client.get(format!("http://{}/version", endpoint.address));
+            if let Some(secret) = endpoint.secret {
+                request = request.bearer_auth(secret);
+            }
+            match request.send().await {
                 Ok(r) => r
                     .json::<serde_json::Value>()
                     .await
@@ -709,14 +773,21 @@ mod tests {
                 pinned["proxies"][0]["plugin-opts"],
                 original["proxies"][0]["plugin-opts"]
             );
-            let mihomo: serde_yaml::Value =
-                serde_yaml::from_str(&render_mihomo_runtime_yaml(&result.yaml).unwrap()).unwrap();
+            let mihomo: serde_yaml::Value = serde_yaml::from_str(
+                &render_mihomo_runtime_yaml(
+                    &result.yaml,
+                    &paws_engine::EngineNetworkServices::default(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
             assert_eq!(mihomo["proxies"], pinned["proxies"]);
             let sing = render_sing_box_runtime_json(
                 &result.yaml,
                 RuntimeMode::Global,
                 &pin_selections(),
                 &VpnOptions::default(),
+                &paws_engine::EngineNetworkServices::default(),
             )
             .unwrap();
             let sing: serde_json::Value = serde_json::from_str(&sing.config_json).unwrap();
@@ -899,14 +970,15 @@ mod tests {
     }
     #[test]
     fn unsupported_nodes_and_providers_are_explained() {
+        assert!(compatibility_issues(
+            "proxies: [{name: unsupported, type: snell, server: 127.0.0.1, port: 443}]",
+            VpnEngine::SingBox
+        )
+        .unwrap()
+        .iter()
+        .any(|r| r.contains("proxy protocol") && r.contains("unsupported")));
         assert!(
-            compatibility_issues("proxies: [{type: snell}]", VpnEngine::SingBox)
-                .unwrap()
-                .iter()
-                .any(|r| r.contains("snell"))
-        );
-        assert!(
-            compatibility_issues("proxy-providers: {remote: {type: http}}", VpnEngine::Meow)
+            compatibility_issues("proxy-providers: {remote: false}", VpnEngine::Meow)
                 .unwrap()
                 .iter()
                 .any(|r| r.contains("proxy-providers"))

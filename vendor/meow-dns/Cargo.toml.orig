@@ -1,0 +1,55 @@
+[package]
+name = "meow-dns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "DNS resolver, cache, snooping (IP to domain), and FakeIP for the meow-rs proxy kernel."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["encrypted", "dns-server"]
+# DoT / DoH upstreams. TLS goes through `meow_transport::tls::TlsLayer`, so
+# DNS shares the process-wide backend (BoringSSL when the app is built with
+# `boring-tls` — the default — rustls otherwise) instead of carrying its own
+# rustls client config.
+encrypted = ["dep:meow-transport"]
+# `dns-server` historically gated hickory-server; the in-tree server now uses
+# only `hickory-proto`, so the feature is a no-op kept for API stability.
+dns-server = []
+
+[dependencies]
+meow-common = { workspace = true }
+meow-trie = { workspace = true }
+tokio = { workspace = true }
+hickory-proto = { workspace = true }
+meow-transport = { workspace = true, features = ["tls"], optional = true }
+rand = { workspace = true }
+lru = { workspace = true }
+dashmap = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+parking_lot = { workspace = true }
+smallvec = { workspace = true }
+ipnet = { workspace = true }
+maxminddb = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smol_str = { workspace = true }
+# Used by `host_resolver_hook` on Android. The module is
+# `#[cfg(target_os = "android")]` so this dep is dead weight on
+# iOS/desktop, but moving it under `target.'cfg(target_os = "android")'`
+# would hide it from `cargo check` on a host build and re-create the
+# class of "compiles on macOS host, fails on the Android target" bug
+# we just fixed. Cost is negligible (one proc-macro crate, build-time only).
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+sysinfo = "0.32"
+hickory-proto = { workspace = true }
+
+[lints]
+workspace = true

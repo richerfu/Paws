@@ -1,84 +1,8 @@
-use super::*;
-use meow_common::auth::{AuthConfig, Credentials};
-
-/// Ephemeral, authenticated loopback endpoint owned by the current VPN
-/// process. It travels only over the session's private ashmem channel.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub(super) struct AppHttpProxyEndpoint {
-    port: u16,
-    token: String,
-}
-
-impl std::fmt::Debug for AppHttpProxyEndpoint {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AppHttpProxyEndpoint")
-            .field("port", &self.port)
-            .field("token", &"[redacted]")
-            .finish()
-    }
-}
-
-impl AppHttpProxyEndpoint {
-    pub(super) fn proxy_url(&self) -> String {
-        format!("http://paws-app:{}@127.0.0.1:{}", self.token, self.port)
-    }
-}
-
-pub(super) struct AppHttpProxyRuntime {
-    endpoint: AppHttpProxyEndpoint,
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl AppHttpProxyRuntime {
-    pub(super) async fn start(tunnel: Tunnel) -> Result<Self, PawsError> {
-        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .map_err(|error| PawsError::Core(format!("app HTTP proxy bind failed: {error}")))?;
-        let addr = listener
-            .local_addr()
-            .map_err(|error| PawsError::Core(format!("app HTTP proxy address failed: {error}")))?;
-        let port = addr.port();
-        let mut bytes = [0u8; 32];
-        getrandom::getrandom(&mut bytes).map_err(|error| {
-            PawsError::Core(format!("app HTTP proxy token generation failed: {error}"))
-        })?;
-        use std::fmt::Write;
-        let mut token = String::with_capacity(64);
-        for byte in bytes {
-            let _ = write!(token, "{byte:02x}");
-        }
-        let endpoint = AppHttpProxyEndpoint { port, token };
-        let credentials = Credentials::new(HashMap::from([(
-            "paws-app".to_owned(),
-            endpoint.token.clone(),
-        )]));
-        // Unlike normal user listeners, even loopback clients must authenticate.
-        let auth = Arc::new(AuthConfig::new(Arc::new(credentials), Vec::new()));
-        let mixed = MixedListener::new(tunnel, addr, "paws-app-http".to_owned())
-            .with_auth(auth)
-            .with_max_connections(16);
-        let task = tokio::spawn(async move {
-            if let Err(error) = mixed.run_on(listener).await {
-                tracing::error!(target: "paws_core::app_http", "app HTTP proxy stopped: {error}");
-            }
-        });
-        Ok(Self { endpoint, task })
-    }
-
-    pub(super) fn endpoint(&self) -> AppHttpProxyEndpoint {
-        self.endpoint.clone()
-    }
-}
-
-impl Drop for AppHttpProxyRuntime {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
+pub(super) use paws_engine::EngineHttpProxyEndpoint as AppHttpProxyEndpoint;
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
+    use paws_engine_meow::AppHttpProxyRuntime;
 
     #[tokio::test]
     async fn private_proxy_supports_app_requests_with_public_services_disabled_and_requires_auth() {
@@ -178,6 +102,10 @@ mod tests {
                 let mut state = core.lock_state().unwrap();
                 state.platform_vpn_running = true;
                 state.platform_vpn_engine = Some(engine);
+                state.platform_app_http_proxy = Some(AppHttpProxyEndpoint {
+                    port: engine_policy::benchmark_port(engine),
+                    token: "fixture-auth".into(),
+                });
                 assert!(!state.network_ports.mixed_enabled);
                 assert!(!state.network_ports.controller_enabled);
                 // The UI process must learn the actual selected engine over IPC.
@@ -188,10 +116,13 @@ mod tests {
             let (url, route) = core.external_http_route().unwrap();
             assert_eq!(
                 url,
-                Some(format!(
-                    "http://127.0.0.1:{}",
-                    engine_policy::benchmark_port(engine)
-                ))
+                Some(
+                    AppHttpProxyEndpoint {
+                        port: engine_policy::benchmark_port(engine),
+                        token: "fixture-auth".into()
+                    }
+                    .proxy_url()
+                )
             );
             assert_eq!(route, http_client::ExternalHttpRoute::CurrentProxy);
         }

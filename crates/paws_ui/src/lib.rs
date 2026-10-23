@@ -6,61 +6,14 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-mod activity_filter;
-mod bridge;
-mod i18n;
-mod locale;
-mod log_filter;
-mod manual_rule;
-mod mode_feedback;
-mod notification;
-mod profile_filter;
-mod profile_refresh_feedback;
-mod provider_refresh_feedback;
-mod proxy_filter;
-mod proxy_grid;
-mod reactive_signal;
-mod resource_filter;
-mod route_status;
-mod rule_feedback;
-mod settings_draft;
-mod settings_feedback;
-mod sing_box;
-mod subscription_converter;
-mod subscription_scan;
-mod system_preferences;
-mod time_format;
-mod traffic_history;
-mod ui;
-mod ui_preferences;
-mod virtual_identity;
-mod vpn_feedback;
+// This cdylib is the platform binding; NSH owns all view rendering.
+mod engine_bridge;
 mod vpn_handoff;
-mod vpn_operation;
-mod yaml_summary;
-
-use arkit::entry;
-use arkit::prelude::Element;
-
-/// Application entry: arkit's `#[entry]` generates the NAPI init/render/
-/// destroy lifecycle and bridge event ports, registers the `paws.*` bridge
-/// plugins declaratively, and passes the shared `OpenHarmonyApp` handle into
-/// the entry function so the platform call surface can resolve it.
-#[entry(plugins = [
-    openharmony_ability_plugin_files::FilesBridgePlugin,
-    openharmony_ability_plugin_url::UrlBridgePlugin,
-    bridge::PawsScanBridgePlugin,
-    bridge::PawsClipboardBridgePlugin,
-    bridge::PawsColorModeBridgePlugin,
-    bridge::PawsVpnBridgePlugin,
-    bridge::PawsExportBridgePlugin,
-    bridge::PawsSafeAreaBridgePlugin,
-])]
-fn app(handle: arkit::openharmony_ability::OpenHarmonyApp) -> Element {
-    let initial_safe_area = bridge::initial_safe_area(&handle);
-    bridge::set_app(handle);
-    ui::App(initial_safe_area)
-}
+pub use engine_bridge::{
+    clear_engine_process_resolver, engine_tun_mtu, poll_engine_observations, poll_engine_traffic,
+    prepare_engine, register_engine_process_resolver, reload_engine, start_engine, stop_engine,
+    trim_engine_memory,
+};
 
 #[napi]
 pub fn configure_app_home(home_dir: String) -> Result<()> {
@@ -359,7 +312,9 @@ pub fn configure_ui_locale(locale: String) -> Result<()> {
     if locale.trim().is_empty() {
         return Err(Error::from_reason("system locale must not be empty"));
     }
-    system_preferences::set_locale(locale);
+    if paws_app::PreferencesStore::set_system_locale(locale).map_err(app_error)? {
+        cancel_ui_revision_wait();
+    }
     Ok(())
 }
 
@@ -368,7 +323,9 @@ pub fn configure_system_color_mode(color_mode: i32) -> Result<()> {
     if !matches!(color_mode, -1..=1) {
         return Err(Error::from_reason("invalid system color mode"));
     }
-    system_preferences::set_color_mode(color_mode);
+    if paws_app::PreferencesStore::set_system_color_mode(color_mode).map_err(app_error)? {
+        cancel_ui_revision_wait();
+    }
     Ok(())
 }
 
@@ -454,30 +411,6 @@ pub fn rearm_platform_vpn_auto_recovery(error: String) {
 }
 
 #[napi]
-pub async fn prepare_vpn(attempt_id: String) -> Result<bool> {
-    paws_core::shared_core()
-        .prepare_platform_vpn(&attempt_id)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn start_vpn(fd: i32, options_json: String, attempt_id: String) -> Result<()> {
-    paws_core::shared_core()
-        .start_platform_vpn(fd, &options_json, &attempt_id)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn stop_vpn(attempt_id: String) -> Result<bool> {
-    paws_core::shared_core()
-        .stop_platform_vpn(&attempt_id)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
 pub fn complete_platform_vpn_cleanup(attempt_id: String) -> Result<bool> {
     paws_core::shared_core()
         .complete_platform_vpn_cleanup(&attempt_id)
@@ -495,93 +428,6 @@ pub fn extension_tick(attempt_id: String) -> Result<String> {
 pub fn resolve_vpn_engine(options_json: String) -> Result<String> {
     paws_core::shared_core()
         .resolve_vpn_engine(&options_json)
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn prepare_mihomo_vpn(options_json: String, attempt_id: String) -> Result<String> {
-    let plan = paws_core::shared_core()
-        .prepare_mihomo_vpn(&options_json, &attempt_id)
-        .map_err(to_napi_error)?;
-    serde_json::to_string(&plan)
-        .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))
-}
-
-#[napi]
-pub fn prepare_sing_box_vpn(options_json: String, attempt_id: String) -> Result<String> {
-    let plan = paws_core::shared_core()
-        .prepare_sing_box_vpn(&options_json, &attempt_id)
-        .map_err(to_napi_error)?;
-    serde_json::to_string(&plan)
-        .map_err(|error| Error::new(Status::GenericFailure, error.to_string()))
-}
-
-#[napi]
-pub fn start_sing_box(
-    tun_fd: i32,
-    underlying_net_id: i32,
-    config_json: String,
-    work_dir: String,
-) -> Result<()> {
-    sing_box::start(tun_fd, underlying_net_id, &config_json, &work_dir)
-        .map_err(|error| Error::new(Status::GenericFailure, error))
-}
-
-#[napi]
-pub fn stop_sing_box() -> Result<()> {
-    sing_box::stop().map_err(|error| Error::new(Status::GenericFailure, error))
-}
-
-#[napi]
-pub fn sing_box_version() -> Result<String> {
-    sing_box::version().map_err(|error| Error::new(Status::GenericFailure, error))
-}
-
-#[napi]
-pub fn sing_box_runtime_log() -> Result<String> {
-    sing_box::runtime_log().map_err(|error| Error::new(Status::GenericFailure, error))
-}
-
-#[napi]
-pub fn start_external_vpn(options_json: String, attempt_id: String) -> Result<()> {
-    paws_core::shared_core()
-        .start_external_platform_vpn(&options_json, &attempt_id)
-        .map_err(to_napi_error)
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ExternalTrafficFrame {
-    upload_speed: u64,
-    download_speed: u64,
-    upload_total: u64,
-    download_total: u64,
-}
-
-#[napi]
-pub fn update_sing_box_vpn_traffic() -> Result<()> {
-    let sample = sing_box::traffic().map_err(|error| Error::new(Status::GenericFailure, error))?;
-    paws_core::shared_core()
-        .update_external_vpn_traffic(
-            sample.upload_speed,
-            sample.download_speed,
-            sample.upload_total,
-            sample.download_total,
-        )
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn update_external_vpn_traffic(traffic_json: String) -> Result<()> {
-    let frame: ExternalTrafficFrame = serde_json::from_str(&traffic_json)
-        .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?;
-    paws_core::shared_core()
-        .update_external_vpn_traffic(
-            frame.upload_speed,
-            frame.download_speed,
-            frame.upload_total,
-            frame.download_total,
-        )
         .map_err(to_napi_error)
 }
 
@@ -722,21 +568,6 @@ pub async fn import_profile_from_content_and_activate(
 }
 
 #[napi]
-pub async fn validate_profile_content(raw_yaml: String) -> Result<()> {
-    paws_core::shared_core()
-        .validate_profile_content(&raw_yaml)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn profile_raw_yaml(profile_id: String) -> Result<String> {
-    paws_core::shared_core()
-        .profile_raw_yaml(&profile_id)
-        .map_err(to_napi_error)
-}
-
-#[napi]
 pub async fn set_mode(mode: String) -> Result<()> {
     let mode = RuntimeMode::try_from(mode.as_str()).map_err(to_napi_error)?;
     paws_core::shared_core()
@@ -748,14 +579,6 @@ pub async fn set_mode(mode: String) -> Result<()> {
 pub async fn select_proxy(group: String, proxy: String) -> Result<()> {
     paws_core::shared_core()
         .select_proxy_via_controller(&group, &proxy)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn unfix_proxy(group: String) -> Result<()> {
-    paws_core::shared_core()
-        .unfix_proxy_via_controller(&group)
         .await
         .map_err(to_napi_error)
 }
@@ -796,75 +619,10 @@ pub async fn test_proxy_echo(
 }
 
 #[napi]
-pub async fn refresh_provider(provider_name: String) -> Result<()> {
-    paws_core::shared_core()
-        .refresh_provider(&provider_name)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn refresh_provider_of_type(provider_type: String, provider_name: String) -> Result<()> {
-    paws_core::shared_core()
-        .refresh_provider_of_type(&provider_type, &provider_name)
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub async fn refresh_all_providers() -> Result<()> {
-    paws_core::shared_core()
-        .refresh_all_providers()
-        .await
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn close_connection(id: String) -> Result<()> {
-    paws_core::shared_core()
-        .close_connection(&id)
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn close_all_connections() -> Result<()> {
-    paws_core::shared_core()
-        .close_all_connections()
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn clear_request_history() -> Result<()> {
-    paws_core::shared_core()
-        .clear_request_history()
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn clear_logs() -> Result<()> {
-    paws_core::shared_core().clear_logs().map_err(to_napi_error)
-}
-
-#[napi]
 pub fn query_vpn_speed() -> Result<String> {
     paws_core::shared_core()
         .vpn_speed_json()
         .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn query_snapshot() -> Result<String> {
-    paws_core::shared_core()
-        .snapshot_json()
-        .map_err(to_napi_error)
-}
-
-#[napi]
-pub fn query_traffic_speed() -> Result<String> {
-    let speed = paws_core::shared_core()
-        .traffic_speed_snapshot()
-        .map_err(to_napi_error)?;
-    paws_model::to_json(&speed).map_err(to_napi_error)
 }
 
 /// Debug Want acceptance checks run in the real application's UID and HTTP
@@ -879,10 +637,11 @@ pub async fn verify_app_http_regression() -> Result<String> {
     }
     ohos_hilog_binding::info("PawsHttpQA: acceptance begins");
     let core = paws_core::shared_core();
-    core.set_log_recording_enabled(true)
+    core.set_engine_log_recording_enabled(true)
+        .await
         .map_err(to_napi_error)?;
     ohos_hilog_binding::info("PawsHttpQA: log recording ready");
-    let before = core.snapshot().map_err(to_napi_error)?;
+    let before = core.command_context().map_err(to_napi_error)?;
     let profile_id = before
         .active_profile
         .ok_or_else(|| Error::from_reason("acceptance requires an active profile"))?;
@@ -904,20 +663,22 @@ pub async fn verify_app_http_regression() -> Result<String> {
         core.refresh_exit_location_if_due()
             .await
             .map_err(to_napi_error)?;
-        let snapshot = core.snapshot().map_err(to_napi_error)?;
-        if !snapshot.exit_location.ip.is_empty() {
+        let status = acceptance_domain(&core, paws_core::RuntimeDomain::Status).await?;
+        if status["exitLocation"]["ip"]
+            .as_str()
+            .is_some_and(|ip| !ip.is_empty())
+        {
             ip_ok = true;
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
     if !ip_ok {
-        let error = core
-            .snapshot()
-            .map_err(to_napi_error)?
-            .exit_location
-            .error
-            .unwrap_or_else(|| "exit IP acceptance timed out".to_owned());
+        let status = acceptance_domain(&core, paws_core::RuntimeDomain::Status).await?;
+        let error = status["exitLocation"]["error"]
+            .as_str()
+            .unwrap_or("exit IP acceptance timed out")
+            .to_owned();
         return Err(Error::from_reason(error));
     }
     ohos_hilog_binding::info("PawsHttpQA: exit IP detected");
@@ -932,28 +693,162 @@ pub async fn verify_app_http_regression() -> Result<String> {
             "negative HTTP acceptance unexpectedly succeeded",
         ));
     }
-    let after = core.snapshot().map_err(to_napi_error)?;
-    let error_logged = after.logs.iter().any(|entry| {
-        entry.level == "error"
-            && entry.message.contains("profile download failed")
-            && !entry.message.contains("qa-private-diagnostic-token")
+    let logs = acceptance_domain(&core, paws_core::RuntimeDomain::Logs).await?;
+    let error_logged = logs["logs"].as_array().is_some_and(|entries| {
+        entries.iter().any(|entry| {
+            entry["level"].as_str() == Some("error")
+                && entry["message"].as_str().is_some_and(|message| {
+                    message.contains("profile download failed")
+                        && !message.contains("qa-private-diagnostic-token")
+                })
+        })
     });
     if !error_logged {
         return Err(Error::from_reason(
             "HTTP failure was not recorded with redaction",
         ));
     }
+    let config = acceptance_domain(&core, paws_core::RuntimeDomain::Config).await?;
+    let rules = acceptance_domain(&core, paws_core::RuntimeDomain::Rules).await?;
+    let about = acceptance_domain(&core, paws_core::RuntimeDomain::About).await?;
     let output = serde_json::json!({
         "subscriptionRefreshMs": refresh_ms,
         "ipDetected": ip_ok,
         "errorLogged": error_logged,
-        "publicMixedEnabled": after.network_ports.mixed_enabled,
-        "rules": after.rules.len(),
-        "meowVersion": after.about.meow_rs_version,
+        "publicMixedEnabled": config["networkPorts"]["mixedEnabled"],
+        "rules": rules["rules"].as_array().map(Vec::len),
+        "meowVersion": about["about"]["meowRsVersion"],
     });
     paws_model::to_json(&output).map_err(to_napi_error)
 }
 
+/// Acceptance reads the same explicitly requested domain as the UI. It never
+/// recreates the removed aggregate snapshot transport, including in its poll.
+async fn acceptance_domain(
+    core: &paws_core::CoreHandle,
+    domain: paws_core::RuntimeDomain,
+) -> Result<serde_json::Value> {
+    let projection = core
+        .refresh_and_query_runtime_domain(paws_core::RuntimeDomainKey {
+            domain,
+            group_key: None,
+        })
+        .await
+        .map_err(to_napi_error)?;
+    let mut value =
+        serde_json::to_value(projection).map_err(|error| Error::from_reason(error.to_string()))?;
+    Ok(value["data"].take())
+}
+
 fn to_napi_error(error: paws_model::PawsError) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
+}
+
+fn app_error(error: paws_app::AppError) -> Error {
+    Error::from_reason(error.to_string())
+}
+
+static UI_WAIT_CANCEL: std::sync::LazyLock<tokio::sync::watch::Sender<u64>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(0).0);
+
+/// A host gateway owns one application command session. Disposing the gateway
+/// cancels import preparation, while an acquired commit finishes its response
+/// and platform effect independently of component event delivery.
+#[napi]
+pub struct UiCommandSession {
+    application: std::sync::Arc<paws_app::Application>,
+}
+
+#[napi]
+impl UiCommandSession {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            application: std::sync::Arc::new(paws_app::Application::shared()),
+        }
+    }
+
+    #[napi]
+    pub async fn dispatch(&self, request_json: String) -> Result<String> {
+        self.application
+            .dispatch_json(&request_json)
+            .await
+            .map_err(app_error)
+    }
+
+    #[napi]
+    pub async fn query_state(&self, request_json: String) -> Result<String> {
+        let application = self.application.clone();
+        let runtime = tokio::runtime::Handle::current();
+        tokio::task::spawn_blocking(move || {
+            runtime.block_on(application.query_state_json(&request_json))
+        })
+        .await
+        .map_err(|error| Error::from_reason(error.to_string()))?
+        .map_err(app_error)
+    }
+
+    #[napi]
+    pub fn subscribe_state(&self, request_json: String) -> Result<String> {
+        self.application
+            .subscribe_state_json(&request_json)
+            .map_err(app_error)
+    }
+
+    #[napi]
+    pub fn observe_state(&self, critical_only: bool) -> Result<String> {
+        self.application
+            .observe_state_json(critical_only)
+            .map_err(app_error)
+    }
+
+    #[napi]
+    pub fn close(&self) {
+        self.application.close();
+    }
+}
+impl Default for UiCommandSession {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl Drop for UiCommandSession {
+    fn drop(&mut self) {
+        self.application.close();
+    }
+}
+
+#[napi]
+pub fn query_ui_preferences() -> Result<String> {
+    let preferences = paws_app::PreferencesStore::configured()
+        .map_err(app_error)?
+        .snapshot()
+        .map_err(app_error)?;
+    serde_json::to_string(&preferences).map_err(|error| Error::from_reason(error.to_string()))
+}
+
+#[napi]
+pub fn query_active_vpn_options() -> Result<String> {
+    paws_core::shared_core()
+        .active_vpn_options_json()
+        .map_err(to_napi_error)
+}
+
+#[napi]
+pub async fn wait_for_ui_revision(after_revision: String) -> Result<String> {
+    let after = after_revision
+        .parse::<u64>()
+        .map_err(|_| Error::from_reason("invalid UI revision"))?;
+    let mut cancel = UI_WAIT_CANCEL.subscribe();
+    let application = paws_app::Application::shared();
+    let revision = tokio::select! {
+        revision = application.wait_for_revision(after) => revision.map_err(app_error)?,
+        _ = cancel.changed() => paws_core::shared_core().subscribe_runtime_revisions().borrow().revision,
+    };
+    Ok(revision.to_string())
+}
+
+#[napi]
+pub fn cancel_ui_revision_wait() {
+    UI_WAIT_CANCEL.send_modify(|generation| *generation = generation.wrapping_add(1));
 }

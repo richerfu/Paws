@@ -1,0 +1,1037 @@
+--- a/adapter/adapter.go
++++ b/adapter/adapter.go
+@@ -7,6 +7,7 @@
+ 	"net"
+ 	"net/url"
+ 	"strings"
++	"sync"
+ 	"time"
+ 
+ 	"github.com/metacubex/mihomo/common/atomic"
+@@ -32,10 +33,28 @@
+ }
+ 
+ type Proxy struct {
++	runtimeObserverMu sync.RWMutex
++	runtimeObserver   func()
+ 	C.ProxyAdapter
+ 	alive   atomic.Bool
+ 	history *queue.Queue[C.DelayHistory]
+ 	extra   xsync.Map[string, *internalProxyState]
++}
++
++// SetRuntimeObserver binds this proxy, including provider members, to the
++// runtime that owns it. An in-flight probe captures its observer before await.
++func (p *Proxy) SetRuntimeObserver(observer func()) {
++	p.runtimeObserverMu.Lock()
++	p.runtimeObserver = observer
++	p.runtimeObserverMu.Unlock()
++	if group, ok := p.ProxyAdapter.(interface{ SetRuntimeObserver(func()) }); ok {
++		group.SetRuntimeObserver(observer)
++	}
++}
++func (p *Proxy) captureRuntimeObserver() func() {
++	p.runtimeObserverMu.RLock()
++	defer p.runtimeObserverMu.RUnlock()
++	return p.runtimeObserver
+ }
+ 
+ // Adapter implements C.Proxy
+@@ -165,8 +184,12 @@
+ // implements C.Proxy
+ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {
+ 	var satisfied bool
++	observer := p.captureRuntimeObserver()
+ 
+ 	defer func() {
++		if observer != nil {
++			defer observer()
++		}
+ 		if UrlTestHook != nil {
+ 			UrlTestHook(url, p.Name(), t)
+ 		}
+--- a/adapter/outboundgroup/fallback.go
++++ b/adapter/outboundgroup/fallback.go
+@@ -114,7 +114,7 @@
+ 				if proxy.AliveForTestUrl(f.testUrl) {
+ 					return proxy
+ 				} else {
+-					f.selected = ""
++					f.ForceSet("")
+ 				}
+ 			}
+ 		}
+@@ -123,7 +123,8 @@
+ 	return proxies[0]
+ }
+ 
+-func (f *Fallback) Set(name string) error {
++func (f *Fallback) Set(name string) error { return f.SetContext(context.Background(), name) }
++func (f *Fallback) SetContext(ctx context.Context, name string) error {
+ 	var p C.Proxy
+ 	for _, proxy := range f.GetProxies(false) {
+ 		if proxy.Name() == name {
+@@ -136,9 +137,9 @@
+ 		return errors.New("proxy not exist")
+ 	}
+ 
+-	f.selected = name
++	f.ForceSet(name)
+ 	if !p.AliveForTestUrl(f.testUrl) {
+-		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(5000))
++		ctx, cancel := context.WithTimeout(ctx, time.Millisecond*time.Duration(5000))
+ 		defer cancel()
+ 		expectedStatus, _ := utils.NewUnsignedRanges[uint16](f.expectedStatus)
+ 		_, _ = p.URLTest(ctx, f.testUrl, expectedStatus)
+@@ -148,7 +149,10 @@
+ }
+ 
+ func (f *Fallback) ForceSet(name string) {
+-	f.selected = name
++	if f.selected != name {
++		f.selected = name
++		f.notifyRuntimeChange()
++	}
+ }
+ 
+ func (f *Fallback) Providers() []P.ProxyProvider {
+@@ -179,3 +183,6 @@
+ 		expectedStatus: option.ExpectedStatus,
+ 	}, nil
+ }
++
++// Fixed reports an explicit pin; empty means automatic selection.
++func (f *Fallback) Fixed() string { return f.selected }
+--- a/adapter/outboundgroup/groupbase.go
++++ b/adapter/outboundgroup/groupbase.go
+@@ -20,6 +20,9 @@
+ )
+ 
+ type GroupBase struct {
++	runtimeObserverMu sync.RWMutex
++	runtimeObserver   func()
++
+ 	*outbound.Base
+ 	hidden            bool
+ 	icon              string
+@@ -39,6 +42,20 @@
+ 	getProxiesMutex  sync.Mutex
+ 	providerVersions []uint32
+ 	providerProxies  []C.Proxy
++}
++
++func (g *GroupBase) SetRuntimeObserver(observer func()) {
++	g.runtimeObserverMu.Lock()
++	g.runtimeObserver = observer
++	g.runtimeObserverMu.Unlock()
++}
++func (g *GroupBase) notifyRuntimeChange() {
++	g.runtimeObserverMu.RLock()
++	observer := g.runtimeObserver
++	g.runtimeObserverMu.RUnlock()
++	if observer != nil {
++		observer()
++	}
+ }
+ 
+ type GroupBaseOption struct {
+--- a/adapter/outboundgroup/selector.go
++++ b/adapter/outboundgroup/selector.go
+@@ -83,7 +83,7 @@
+ func (s *Selector) Set(name string) error {
+ 	for _, proxy := range s.GetProxies(false) {
+ 		if proxy.Name() == name {
+-			s.selected = name
++			s.ForceSet(name)
+ 			return nil
+ 		}
+ 	}
+@@ -92,7 +92,10 @@
+ }
+ 
+ func (s *Selector) ForceSet(name string) {
+-	s.selected = name
++	if s.selected != name {
++		s.selected = name
++		s.notifyRuntimeChange()
++	}
+ }
+ 
+ // Unwrap implements C.ProxyAdapter
+--- a/adapter/outboundgroup/urltest.go
++++ b/adapter/outboundgroup/urltest.go
+@@ -49,8 +49,12 @@
+ }
+ 
+ func (u *URLTest) ForceSet(name string) {
++	if u.selected == name {
++		return
++	}
+ 	u.selected = name
+ 	u.fastSingle.Reset()
++	u.notifyRuntimeChange()
+ }
+ 
+ // DialContext implements C.ProxyAdapter
+@@ -137,7 +141,11 @@
+ 		}
+ 		// tolerance
+ 		if u.fastNode == nil || fastNotExist || !u.fastNode.AliveForTestUrl(u.testUrl) || u.fastNode.LastDelayForTestUrl(u.testUrl) > fast.LastDelayForTestUrl(u.testUrl)+u.tolerance {
++			changed := u.fastNode == nil || u.fastNode.Name() != fast.Name()
+ 			u.fastNode = fast
++			if changed {
++				u.notifyRuntimeChange()
++			}
+ 		}
+ 		return u.fastNode, nil
+ 	})
+@@ -219,3 +227,6 @@
+ 
+ 	return urlTest, nil
+ }
++
++// Fixed reports an explicit pin; empty means automatic selection.
++func (u *URLTest) Fixed() string { return u.selected }
+--- a/adapter/provider/healthcheck.go
++++ b/adapter/provider/healthcheck.go
+@@ -27,6 +27,9 @@
+ }
+ 
+ type HealthCheck struct {
++	lifeMu         sync.Mutex
++	closed         bool
++	work           sync.WaitGroup
+ 	ctx            context.Context
+ 	ctxCancel      context.CancelFunc
+ 	url            string
+@@ -42,6 +45,10 @@
+ }
+ 
+ func (hc *HealthCheck) process() {
++	if !hc.beginWork() {
++		return
++	}
++	defer hc.work.Done()
+ 	ticker := time.NewTicker(hc.interval)
+ 	go hc.check()
+ 	for {
+@@ -62,6 +69,8 @@
+ }
+ 
+ func (hc *HealthCheck) setProxies(proxies []C.Proxy) {
++	hc.mu.Lock()
++	defer hc.mu.Unlock()
+ 	hc.proxies = proxies
+ }
+ 
+@@ -121,11 +130,32 @@
+ }
+ 
+ func (hc *HealthCheck) check() {
+-	if len(hc.proxies) == 0 {
++	if !hc.beginWork() {
++		return
++	}
++	defer hc.work.Done()
++	hc.mu.Lock()
++	empty := len(hc.proxies) == 0
++	hc.mu.Unlock()
++	if empty {
+ 		return
+ 	}
+ 
+ 	_, _, _ = hc.singleDo.Do(func() (struct{}, error) {
++		hc.mu.Lock()
++		proxies := append([]C.Proxy(nil), hc.proxies...)
++		extra := make(map[string]*extraOption, len(hc.extra))
++		for url, option := range hc.extra {
++			filters := make(map[string]struct{}, len(option.filters))
++			for filter := range option.filters {
++				filters[filter] = struct{}{}
++			}
++			extra[url] = &extraOption{expectedStatus: option.expectedStatus, filters: filters}
++		}
++		hc.mu.Unlock()
++		if len(proxies) == 0 {
++			return struct{}{}, nil
++		}
+ 		id := utils.NewUUIDV4().String()
+ 		log.Debugln("Start New Health Checking {%s}", id)
+ 		b := new(errgroup.Group)
+@@ -133,12 +163,12 @@
+ 
+ 		// execute default health check
+ 		option := &extraOption{filters: nil, expectedStatus: hc.expectedStatus}
+-		hc.execute(b, hc.url, id, option)
++		hc.execute(b, proxies, hc.url, id, option)
+ 
+ 		// execute extra health check
+-		if len(hc.extra) != 0 {
+-			for url, option := range hc.extra {
+-				hc.execute(b, url, id, option)
++		if len(extra) != 0 {
++			for url, option := range extra {
++				hc.execute(b, proxies, url, id, option)
+ 			}
+ 		}
+ 		_ = b.Wait()
+@@ -147,7 +177,7 @@
+ 	})
+ }
+ 
+-func (hc *HealthCheck) execute(b *errgroup.Group, url, uid string, option *extraOption) {
++func (hc *HealthCheck) execute(b *errgroup.Group, proxies []C.Proxy, url, uid string, option *extraOption) {
+ 	url = strings.TrimSpace(url)
+ 	if len(url) == 0 {
+ 		log.Debugln("Health Check has been skipped due to testUrl is empty, {%s}", uid)
+@@ -168,7 +198,7 @@
+ 		}
+ 	}
+ 
+-	for _, proxy := range hc.proxies {
++	for _, proxy := range proxies {
+ 		// skip proxies that do not require health check
+ 		if filterReg != nil {
+ 			if match, _ := filterReg.MatchString(proxy.Name()); !match {
+@@ -188,8 +218,23 @@
+ 	}
+ }
+ 
++// Registration and retirement share one lock: no late process/check may add
++// work after close begins waiting, including asynchronously scheduled checks.
++func (hc *HealthCheck) beginWork() bool {
++	hc.lifeMu.Lock()
++	defer hc.lifeMu.Unlock()
++	if hc.closed {
++		return false
++	}
++	hc.work.Add(1)
++	return true
++}
+ func (hc *HealthCheck) close() {
++	hc.lifeMu.Lock()
++	hc.closed = true
+ 	hc.ctxCancel()
++	hc.lifeMu.Unlock()
++	hc.work.Wait()
+ }
+ 
+ func NewHealthCheck(proxies []C.Proxy, url string, timeout uint, interval uint, lazy bool, expectedStatus utils.IntRanges[uint16]) *HealthCheck {
+--- /dev/null
++++ b/adapter/provider/paws_health_lifecycle_test.go
+@@ -0,0 +1,79 @@
++package provider
++
++import (
++	"context"
++	"github.com/metacubex/mihomo/common/utils"
++	C "github.com/metacubex/mihomo/constant"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++// The production provider/check/retirement methods execute unchanged. This
++// outbound holds its real cancellation tail so the test can prove joining,
++// rather than merely observe that a context bit was set.
++type pawsHeldHealthProxy struct {
++	C.Proxy
++	entered, cancelled, release chan struct{}
++	calls                       atomic.Uint32
++}
++
++func (p *pawsHeldHealthProxy) URLTest(ctx context.Context, _ string, _ utils.IntRanges[uint16]) (uint16, error) {
++	p.calls.Add(1)
++	close(p.entered)
++	<-ctx.Done()
++	close(p.cancelled)
++	<-p.release
++	return 0, ctx.Err()
++}
++func (p *pawsHeldHealthProxy) Name() string                      { return "held-native-probe" }
++func (p *pawsHeldHealthProxy) AliveForTestUrl(string) bool       { return false }
++func (p *pawsHeldHealthProxy) LastDelayForTestUrl(string) uint16 { return 0 }
++func TestPawsHealthRetirementJoinsInlineAndCompatibleProviderWork(t *testing.T) {
++	for _, kind := range []string{"inline", "compatible"} {
++		t.Run(kind, func(t *testing.T) {
++			held := &pawsHeldHealthProxy{entered: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{})}
++			health := NewHealthCheck([]C.Proxy{held}, "http://synthetic.invalid/", 1000, 0, false, nil)
++			var owner interface {
++				HealthCheck()
++				CancelPending()
++			}
++			if kind == "inline" {
++				owner = &InlineProvider{&inlineProvider{baseProvider: baseProvider{healthCheck: health, proxies: []C.Proxy{held}}}}
++			} else {
++				owner = &CompatibleProvider{&compatibleProvider{baseProvider: baseProvider{healthCheck: health, proxies: []C.Proxy{held}}}}
++			}
++			finished := make(chan struct{})
++			go func() { owner.HealthCheck(); close(finished) }()
++			select {
++			case <-held.entered:
++			case <-time.After(time.Second):
++				t.Fatal("actual provider check did not start")
++			}
++			retired := make(chan struct{})
++			go func() { owner.CancelPending(); close(retired) }()
++			select {
++			case <-held.cancelled:
++			case <-time.After(time.Second):
++				t.Fatal("retirement did not cancel actual probe")
++			}
++			select {
++			case <-retired:
++				t.Fatal("retirement returned before actual native probe tail")
++			case <-time.After(10 * time.Millisecond):
++			}
++			close(held.release)
++			select {
++			case <-retired:
++			case <-time.After(time.Second):
++				t.Fatal("retirement did not join completed probe")
++			}
++			<-finished
++			owner.HealthCheck()
++			health.process()
++			if held.calls.Load() != 1 {
++				t.Fatal("retired provider started a late probe")
++			}
++		})
++	}
++}
+--- a/adapter/provider/provider.go
++++ b/adapter/provider/provider.go
+@@ -44,11 +44,12 @@
+ }
+ 
+ type baseProvider struct {
+-	mutex       sync.RWMutex
+-	name        string
+-	proxies     []C.Proxy
+-	healthCheck *HealthCheck
+-	version     uint32
++	mutex           sync.RWMutex
++	name            string
++	proxies         []C.Proxy
++	healthCheck     *HealthCheck
++	version         uint32
++	runtimeObserver func([]C.Proxy)
+ }
+ 
+ func (bp *baseProvider) Name() string {
+@@ -98,6 +99,17 @@
+ 
+ func (bp *baseProvider) RegisterHealthCheckTask(url string, expectedStatus utils.IntRanges[uint16], filter string, interval uint) {
+ 	bp.healthCheck.registerHealthCheckTask(url, expectedStatus, filter, interval)
++}
++
++// SetRuntimeObserver is called before Initial starts provider timers. Its
++// closure captures the owner; completion never consults a newer global owner.
++func (bp *baseProvider) SetRuntimeObserver(observer func([]C.Proxy)) {
++	bp.mutex.Lock()
++	defer bp.mutex.Unlock()
++	bp.runtimeObserver = observer
++	if observer != nil {
++		observer(bp.proxies)
++	}
+ }
+ 
+ func (bp *baseProvider) setProxies(proxies []C.Proxy) {
+@@ -105,11 +117,16 @@
+ 	defer bp.mutex.Unlock()
+ 	bp.proxies = proxies
+ 	bp.version += 1
++	if bp.runtimeObserver != nil {
++		bp.runtimeObserver(proxies)
++	}
+ 	bp.healthCheck.setProxies(proxies)
+ 	if bp.healthCheck.auto() {
+ 		go bp.healthCheck.check()
+ 	}
+ }
++
++func (bp *baseProvider) CancelPending() { bp.healthCheck.close() }
+ 
+ func (bp *baseProvider) Close() error {
+ 	bp.healthCheck.close()
+@@ -466,3 +483,9 @@
+ 		return proxies, nil
+ 	}, nil
+ }
++
++// CancelPending cancels network work without releasing the provider object.
++func (pp *proxySetProvider) CancelPending() {
++	pp.Fetcher.CancelPending()
++	pp.baseProvider.CancelPending()
++}
+--- a/component/resource/fetcher.go
++++ b/component/resource/fetcher.go
+@@ -21,20 +21,21 @@
+ type BundleFile func() (fs.File, error)
+ 
+ type Fetcher[V any] struct {
+-	ctx          context.Context
+-	ctxCancel    context.CancelFunc
+-	resourceType string
+-	name         string
+-	vehicle      P.Vehicle
+-	bundleFile   BundleFile
+-	updatedAt    time.Time
+-	hash         utils.HashType
+-	parser       Parser[V]
+-	interval     time.Duration
+-	onUpdate     func(V)
+-	watcher      *fswatch.Watcher
+-	loadBufMutex sync.Mutex
+-	backoff      slowdown.Backoff
++	ctx             context.Context
++	ctxCancel       context.CancelFunc
++	resourceType    string
++	name            string
++	vehicle         P.Vehicle
++	bundleFile      BundleFile
++	updatedAt       time.Time
++	hash            utils.HashType
++	parser          Parser[V]
++	interval        time.Duration
++	onUpdate        func(V)
++	runtimeObserver func()
++	watcher         *fswatch.Watcher
++	loadBufMutex    sync.Mutex
++	backoff         slowdown.Backoff
+ }
+ 
+ func (f *Fetcher[V]) Name() string {
+@@ -114,6 +115,9 @@
+ }
+ 
+ func (f *Fetcher[V]) Update() (V, bool, error) {
++	if err := f.ctx.Err(); err != nil {
++		return lo.Empty[V](), false, err
++	}
+ 	buf, hash, err := f.vehicle.Read(f.ctx, f.hash)
+ 	if err != nil {
+ 		f.backoff.AddAttempt() // add a failed attempt to backoff
+@@ -129,6 +133,9 @@
+ func (f *Fetcher[V]) loadBuf(buf []byte, hash utils.HashType, updateFile bool) (V, bool, error) {
+ 	f.loadBufMutex.Lock()
+ 	defer f.loadBufMutex.Unlock()
++	if err := f.ctx.Err(); err != nil {
++		return lo.Empty[V](), false, err
++	}
+ 
+ 	now := time.Now()
+ 	if f.hash.Equal(hash) {
+@@ -151,6 +158,9 @@
+ 	}
+ 	f.backoff.Reset() // no error, reset backoff
+ 
++	if err := f.ctx.Err(); err != nil {
++		return lo.Empty[V](), false, err
++	}
+ 	if updateFile {
+ 		if err = f.vehicle.Write(buf); err != nil {
+ 			return lo.Empty[V](), false, err
+@@ -161,6 +171,9 @@
+ 
+ 	if f.onUpdate != nil {
+ 		f.onUpdate(contents)
++	}
++	if f.runtimeObserver != nil {
++		f.runtimeObserver()
+ 	}
+ 
+ 	return contents, false, nil
+@@ -272,3 +285,17 @@
+ 		},
+ 	}
+ }
++
++// CancelPending interrupts reads before the owning runtime drains its HTTP handlers.
++func (f *Fetcher[V]) CancelPending() {
++	f.ctxCancel()
++	// Join an already publishing update. A read that ignored cancellation will
++	// hit the ctx check under this same mutex before it can publish later.
++	f.loadBufMutex.Lock()
++	f.loadBufMutex.Unlock()
++}
++func (f *Fetcher[V]) SetUpdateObserver(observer func()) {
++	f.loadBufMutex.Lock()
++	defer f.loadBufMutex.Unlock()
++	f.runtimeObserver = observer
++}
+--- /dev/null
++++ b/component/resource/fetcher_paws_test.go
+@@ -0,0 +1,84 @@
++package resource
++
++import (
++	"context"
++	"errors"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/common/utils"
++	P "github.com/metacubex/mihomo/constant/provider"
++)
++
++type latePawsVehicle struct {
++	entered, release chan struct{}
++	reads, writes    atomic.Int32
++}
++
++func (v *latePawsVehicle) Read(context.Context, utils.HashType) ([]byte, utils.HashType, error) {
++	v.reads.Add(1)
++	close(v.entered)
++	<-v.release
++	body := []byte("new provider body")
++	return body, utils.MakeHash(body), nil
++}
++func (v *latePawsVehicle) Write([]byte) error { v.writes.Add(1); return nil }
++func (*latePawsVehicle) Path() string         { return "unused" }
++func (*latePawsVehicle) Url() string          { return "https://example.invalid/provider" }
++func (*latePawsVehicle) Proxy() string        { return "" }
++func (*latePawsVehicle) Type() P.VehicleType  { return P.HTTP }
++
++func TestPawsRetiredProviderReadCannotPublishIntoReplacement(t *testing.T) {
++	v := &latePawsVehicle{entered: make(chan struct{}), release: make(chan struct{})}
++	var oldPublished, newPublished, oldNotified, newNotified atomic.Int32
++	old := NewFetcher("same-name", time.Minute, v, nil, func(body []byte) (string, error) { return string(body), nil }, func(string) { oldPublished.Add(1) })
++	old.SetUpdateObserver(func() { oldNotified.Add(1) })
++	done := make(chan error, 1)
++	go func() { _, _, err := old.Update(); done <- err }()
++	<-v.entered
++	old.CancelPending() // Reader deliberately ignores ctx; no publication has started.
++	replacement := NewFetcher("same-name", time.Minute, v, nil, func(body []byte) (string, error) { return string(body), nil }, func(string) { newPublished.Add(1) })
++	replacement.SetUpdateObserver(func() { newNotified.Add(1) })
++	close(v.release)
++	if err := <-done; !errors.Is(err, context.Canceled) {
++		t.Fatalf("late result: %v", err)
++	}
++	if oldPublished.Load() != 0 || oldNotified.Load() != 0 || v.writes.Load() != 0 {
++		t.Fatal("retired update modified provider/cache")
++	}
++	if _, _, err := replacement.SideUpdate([]byte("replacement")); err != nil {
++		t.Fatal(err)
++	}
++	if newPublished.Load() != 1 || newNotified.Load() != 1 {
++		t.Fatal("replacement publication not observed")
++	}
++	if _, _, err := old.Update(); !errors.Is(err, context.Canceled) {
++		t.Fatal("retired timer restarted acquisition", err)
++	}
++	if v.reads.Load() != 1 {
++		t.Fatal("old source re-read after retirement")
++	}
++}
++func TestPawsCancelJoinsAlreadyPublishingProvider(t *testing.T) {
++	v := &latePawsVehicle{entered: make(chan struct{}), release: make(chan struct{})}
++	published, finish := make(chan struct{}), make(chan struct{})
++	f := NewFetcher("p", time.Minute, v, nil, func(body []byte) (string, error) { return string(body), nil }, func(string) { close(published); <-finish })
++	update := make(chan struct{})
++	go func() { _, _, _ = f.SideUpdate([]byte("body")); close(update) }()
++	<-published
++	retired := make(chan struct{})
++	go func() { f.CancelPending(); close(retired) }()
++	select {
++	case <-retired:
++		t.Fatal("retirement crossed an in-flight publication")
++	case <-time.After(20 * time.Millisecond):
++	}
++	close(finish)
++	<-update
++	select {
++	case <-retired:
++	case <-time.After(time.Second):
++		t.Fatal("retirement did not join")
++	}
++}
+--- a/dns/patch.go
++++ b/dns/patch.go
+@@ -27,6 +27,16 @@
+ 
+ var DefaultQueryNotify QueryNotify
+ 
++// A resolver exchange captures its observer before asynchronous work starts.
++var DefaultQueryObserver func() QueryNotify
++
++func queryObserver() QueryNotify {
++	if DefaultQueryObserver != nil {
++		return DefaultQueryObserver()
++	}
++	return DefaultQueryNotify
++}
++
+ // Queries from apps reach the resolver through withResolver, which passes the
+ // DNSContext that Service.ServeMsg created as the context itself.
+ func queryInitiator(ctx context.Context) string {
+@@ -48,7 +58,7 @@
+ }
+ 
+ func (r *Resolver) traceCacheHit(ctx context.Context, q D.Question, msg *D.Msg) {
+-	notify := DefaultQueryNotify
++	notify := queryObserver()
+ 	if notify == nil {
+ 		return
+ 	}
+@@ -77,7 +87,7 @@
+ type exchangeTraceKey struct{}
+ 
+ func (r *Resolver) traceExchange(ctx context.Context, q D.Question, initiator string) (context.Context, *exchangeTrace) {
+-	notify := DefaultQueryNotify
++	notify := queryObserver()
+ 	if notify == nil {
+ 		return ctx, nil
+ 	}
+--- a/hub/route/common.go
++++ b/hub/route/common.go
+@@ -2,6 +2,7 @@
+ 
+ import (
+ 	"bufio"
++	"context"
+ 	"encoding/binary"
+ 	"errors"
+ 	"io"
+@@ -124,6 +125,9 @@
+ 	header.Write(rw.Writer)
+ 	rw.Writer.WriteString("\r\n")
+ 	err = rw.Writer.Flush()
++	if err == nil {
++		context.AfterFunc(r.Context(), func() { _ = conn.Close() })
++	}
+ 
+ 	return conn, rw, err
+ }
+--- a/hub/route/connections.go
++++ b/hub/route/connections.go
+@@ -63,7 +63,12 @@
+ 
+ 	tick := time.NewTicker(time.Millisecond * time.Duration(interval))
+ 	defer tick.Stop()
+-	for range tick.C {
++	for {
++		select {
++		case <-r.Context().Done():
++			return
++		case <-tick.C:
++		}
+ 		if err := sendSnapshot(); err != nil {
+ 			break
+ 		}
+--- a/hub/route/external.go
++++ b/hub/route/external.go
+@@ -1,6 +1,9 @@
+ package route
+ 
+-import "github.com/metacubex/chi"
++import (
++	"github.com/metacubex/chi"
++	"github.com/metacubex/http"
++)
+ 
+ type externalRouter func(r chi.Router)
+ 
+@@ -10,7 +13,19 @@
+ 	externalRouters = append(externalRouters, route...)
+ }
+ 
+-func addExternalRouters(r chi.Router) {
++type scopedExternalRouter func(r chi.Router, secret string)
++
++var scopedExternalRouters []scopedExternalRouter
++
++// RegisterWithSecret binds an extension to the credentials of this router.
++func RegisterWithSecret(route scopedExternalRouter) {
++	scopedExternalRouters = append(scopedExternalRouters, route)
++}
++
++func addExternalRouters(r chi.Router, secret string) {
++	for _, caller := range scopedExternalRouters {
++		caller(r, secret)
++	}
+ 	if len(externalRouters) == 0 {
+ 		return
+ 	}
+@@ -19,3 +34,14 @@
+ 		caller(r)
+ 	}
+ }
++
++type sessionScope func(secret string) func(http.Handler) http.Handler
++
++var sessionScopes []sessionScope
++
++func RegisterSessionScope(scope sessionScope) { sessionScopes = append(sessionScopes, scope) }
++func applySessionScope(r chi.Router, secret string) {
++	for _, scope := range sessionScopes {
++		r.Use(scope(secret))
++	}
++}
+--- a/hub/route/proxies.go
++++ b/hub/route/proxies.go
+@@ -89,7 +89,15 @@
+ 		return
+ 	}
+ 
+-	if err := selector.Set(req.Name); err != nil {
++	var selectionError error
++	if scoped, ok := selector.(interface {
++		SetContext(context.Context, string) error
++	}); ok {
++		selectionError = scoped.SetContext(r.Context(), req.Name)
++	} else {
++		selectionError = selector.Set(req.Name)
++	}
++	if err := selectionError; err != nil {
+ 		render.Status(r, http.StatusBadRequest)
+ 		render.JSON(w, r, newError(fmt.Sprintf("Selector update error: %s", err.Error())))
+ 		return
+@@ -122,7 +130,7 @@
+ 
+ 	proxy := r.Context().Value(CtxKeyProxy).(C.Proxy)
+ 
+-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(timeout))
++	ctx, cancel := context.WithTimeout(r.Context(), time.Millisecond*time.Duration(timeout))
+ 	defer cancel()
+ 
+ 	delay, err := proxy.URLTest(ctx, url, expectedStatus)
+--- a/hub/route/server.go
++++ b/hub/route/server.go
+@@ -120,6 +120,7 @@
+ 		if secret != "" {
+ 			r.Use(authentication(secret))
+ 		}
++		applySessionScope(r, secret)
+ 		r.Get("/", hello)
+ 		r.Get("/logs", getLogs)
+ 		r.Get("/traffic", traffic)
+@@ -139,7 +140,7 @@
+ 			r.Mount("/restart", restartRouter())
+ 		}
+ 		r.Mount("/upgrade", upgradeRouter())
+-		addExternalRouters(r)
++		addExternalRouters(r, secret)
+ 
+ 	})
+ 
+@@ -386,7 +387,12 @@
+ 	t := statistic.DefaultManager
+ 	buf := &bytes.Buffer{}
+ 	var err error
+-	for range tick.C {
++	for {
++		select {
++		case <-r.Context().Done():
++			return
++		case <-tick.C:
++		}
+ 		buf.Reset()
+ 		up, down := t.Now()
+ 		upTotal, downTotal := t.Total()
+@@ -433,7 +439,12 @@
+ 	buf := &bytes.Buffer{}
+ 	var err error
+ 	first := true
+-	for range tick.C {
++	for {
++		select {
++		case <-r.Context().Done():
++			return
++		case <-tick.C:
++		}
+ 		buf.Reset()
+ 
+ 		inuse := t.Memory()
+@@ -525,7 +536,17 @@
+ 		close(ch)
+ 	}()
+ 
+-	for logM := range ch {
++	for {
++		var logM log.Event
++		select {
++		case <-r.Context().Done():
++			return
++		case value, ok := <-ch:
++			if !ok {
++				return
++			}
++			logM = value
++		}
+ 		if logM.LogLevel < level {
+ 			continue
+ 		}
+--- a/listener/listener.go
++++ b/listener/listener.go
+@@ -1,6 +1,7 @@
+ package listener
+ 
+ import (
++	"errors"
+ 	"fmt"
+ 	"net"
+ 	"strconv"
+@@ -42,6 +43,7 @@
+ 	tunnelTCPListeners  = map[string]*LT.Listener{}
+ 	tunnelUDPListeners  = map[string]*LT.PacketConn{}
+ 	inboundListeners    = map[string]C.InboundListener{}
++	inboundFailures     = map[string]bool{}
+ 	tunLister           *sing_tun.Listener
+ 	shadowSocksListener C.MultiAddrListener
+ 	vmessListener       *sing_vmess.Listener
+@@ -622,33 +624,52 @@
+ 	}
+ }
+ 
+-func PatchInboundListeners(newListenerMap map[string]C.InboundListener, tunnel C.Tunnel, dropOld bool) {
++// Failed listeners retain ownership only when cleanup itself failed. Such an
++// entry is never acknowledged as applied and must be drained before replacement.
++func PatchInboundListeners(newListenerMap map[string]C.InboundListener, tunnel C.Tunnel, dropOld bool) error {
+ 	inboundMux.Lock()
+ 	defer inboundMux.Unlock()
+-
+-	for name, newListener := range newListenerMap {
+-		if oldListener, ok := inboundListeners[name]; ok {
+-			if !oldListener.Config().Equal(newListener.Config()) {
+-				_ = oldListener.Close()
+-			} else {
++	var failures []error
++	for name, next := range newListenerMap {
++		if old, ok := inboundListeners[name]; ok {
++			if !inboundFailures[name] && old.Config().Equal(next.Config()) {
+ 				continue
+ 			}
+-		}
+-		if err := newListener.Listen(tunnel); err != nil {
+-			log.Errorln("Listener %s listen err: %s", name, err.Error())
++			if err := old.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
++				failures = append(failures, fmt.Errorf("listener cleanup failed: %w", err))
++				inboundFailures[name] = true
++				continue
++			}
++			delete(inboundListeners, name)
++			delete(inboundFailures, name)
++		}
++		if err := next.Listen(tunnel); err != nil {
++			log.Errorln("Listener %s listen failed", name)
++			failures = append(failures, fmt.Errorf("native listener bind failed: %w", err))
++			if cleanup := next.Close(); cleanup != nil && !errors.Is(cleanup, net.ErrClosed) {
++				inboundListeners[name] = next
++				inboundFailures[name] = true
++				failures = append(failures, fmt.Errorf("failed listener cleanup: %w", cleanup))
++			}
+ 			continue
+ 		}
+-		inboundListeners[name] = newListener
+-	}
+-
++		inboundListeners[name] = next
++		delete(inboundFailures, name)
++	}
+ 	if dropOld {
+-		for name, oldListener := range inboundListeners {
+-			if _, ok := newListenerMap[name]; !ok {
+-				_ = oldListener.Close()
++		for name, old := range inboundListeners {
++			if _, keep := newListenerMap[name]; !keep {
++				if err := old.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
++					failures = append(failures, fmt.Errorf("removed listener cleanup: %w", err))
++					inboundFailures[name] = true
++					continue
++				}
+ 				delete(inboundListeners, name)
++				delete(inboundFailures, name)
+ 			}
+ 		}
+ 	}
++	return errors.Join(failures...)
+ }
+ 
+ // GetPorts return the ports of proxy servers
+@@ -725,3 +746,29 @@
+ func Cleanup() {
+ 	closeTunListener()
+ }
++
++// PawsAppliedInboundAddress confirms the native registry contains an applied
++// listener with the exact expected configuration, including its authentication.
++func PawsAppliedInboundAddress(expected C.InboundListener) (string, bool) {
++	inboundMux.Lock()
++	defer inboundMux.Unlock()
++	if expected == nil {
++		return "", false
++	}
++	actual := inboundListeners[expected.Name()]
++	if actual == nil || inboundFailures[expected.Name()] || !actual.Config().Equal(expected.Config()) {
++		return "", false
++	}
++	return actual.Address(), true
++}
++func PawsMixedApplied(port int, host string, allowLAN bool) bool {
++	mixedMux.Lock()
++	defer mixedMux.Unlock()
++	if port == 0 {
++		return mixedListener == nil && mixedUDPLister == nil
++	}
++	want := genAddr(host, port, allowLAN)
++	return mixedListener != nil && mixedUDPLister != nil && mixedListener.RawAddress() == want && mixedUDPLister.RawAddress() == want
++}
++
++func PawsStopInboundListeners() error { return PatchInboundListeners(nil, nil, true) }
+--- a/rules/provider/provider.go
++++ b/rules/provider/provider.go
+@@ -338,3 +338,5 @@
+ 	//runtime.SetFinalizer(wrapper, (*InlineProvider).Close)
+ 	return wrapper
+ }
++
++func (rp *ruleSetProvider) CancelPending() { rp.Fetcher.CancelPending() }
+--- a/tunnel/statistic/manager.go
++++ b/tunnel/statistic/manager.go
+@@ -27,6 +27,7 @@
+ 
+ type Manager struct {
+ 	connections        xsync.Map[string, Tracker]
++	closeObservers     xsync.Map[string, func(Tracker)]
+ 	uploadTemp         atomic.Int64
+ 	downloadTemp       atomic.Int64
+ 	uploadBlip         atomic.Int64
+@@ -44,6 +45,11 @@
+ }
+ 
+ func (m *Manager) Join(c Tracker) {
++	if DefaultConnectionObserver != nil {
++		if closed := DefaultConnectionObserver(c); closed != nil {
++			m.closeObservers.Store(c.ID(), closed)
++		}
++	}
+ 	if DefaultRequestNotify != nil {
+ 		DefaultRequestNotify(c)
+ 	}
+@@ -51,7 +57,11 @@
+ }
+ 
+ func (m *Manager) Leave(c Tracker) {
+-	m.connections.Delete(c.ID())
++	if _, loaded := m.connections.LoadAndDelete(c.ID()); loaded {
++		if closed, ok := m.closeObservers.LoadAndDelete(c.ID()); ok {
++			closed(c)
++		}
++	}
+ }
+ 
+ func (m *Manager) Get(id string) (c Tracker) {
+--- a/tunnel/statistic/patch.go
++++ b/tunnel/statistic/patch.go
+@@ -3,6 +3,9 @@
+ type RequestNotify func(c Tracker)
+ 
+ var DefaultRequestNotify RequestNotify
++
++// The returned close callback captures the connection's original session.
++var DefaultConnectionObserver func(c Tracker) func(c Tracker)
+ 
+ func (m *Manager) TotalTraffic(onlyProxy bool) (up, down int64) {
+ 	if onlyProxy {

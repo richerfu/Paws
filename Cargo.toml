@@ -1,6 +1,6 @@
 [workspace]
 members = ["crates/*", "vendor/meow-tunnel", "vendor/meow-common"]
-exclude = ["vendor/meow-proxy", "vendor/meow-anytls", "vendor/meow-listener", "vendor/meow-transport"]
+exclude = ["vendor/meow-proxy", "vendor/meow-anytls", "vendor/meow-listener", "vendor/meow-transport", "vendor/meow-config", "vendor/meow-rules", "vendor/meow-dns"]
 resolver = "2"
 
 [workspace.package]
@@ -22,17 +22,16 @@ paws_model = { path = "crates/paws_model" }
 paws_profile = { path = "crates/paws_profile" }
 paws_core = { path = "crates/paws_core" }
 paws_vpn = { path = "crates/paws_vpn" }
+paws_app = { path = "crates/paws_app" }
+paws_engine = { path = "crates/paws_engine" }
+paws_engine_meow = { path = "crates/paws_engine_meow" }
+paws_engine_go = { path = "crates/paws_engine_go" }
 
-# Use published releases for the native UI and its matching Ability bridge.
-arkit = { version = "=0.0.1-beta.0", features = ["router", "shadcn", "barcode"] }
+# NSH UI and its matching Ability runtime are built from the local checkout by
+# scripts/build-nsh-ohos.sh. This workspace contains the Rust application bridge.
 ohos-ashmem-binding = "0.1.0"
 ohos-hilog-binding = "0.2.3"
-ohos-fileuri-binding = "0.2.4"
-ohos-fileshare-binding = "0.2.4"
 ohos-resource-manager-binding = "0.3.4"
-
-openharmony-ability-plugin-files = "=1.0.0-beta.3"
-openharmony-ability-plugin-url = "=1.0.0-beta.3"
 
 meow-api = "=0.22.0"
 meow-common = "=0.22.0"
@@ -41,6 +40,7 @@ meow-dns = "=0.22.0"
 meow-listener = "=0.22.0"
 meow-proxy = { version = "=0.22.0", features = ["anytls"] }
 meow-trie = "=0.22.0"
+meow-rules = "=0.22.0"
 meow-transport = { version = "=0.22.0", default-features = false, features = ["simple-obfs"] }
 meow-tunnel = "=0.22.0"
 
@@ -49,11 +49,12 @@ async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
 dashmap = "6"
-dioxus = { version = "0.7.10", default-features = false, features = ["signals", "hooks", "macro"] }
 futures = "0.3"
 getrandom = "0.2"
 ipnet = "2"
 libc = "0.2"
+maxminddb = "0.27"
+regex = "1"
 lwip = { package = "meow-lwip", version = "=0.22.0" }
 netstack-smoltcp = "0.2"
 napi-build-ohos = "1.2.0"
@@ -68,6 +69,7 @@ serde_json = "1"
 sha2 = "0.10"
 serde_yaml = "0.9"
 shadowsocks = { version = "1.24", default-features = false, features = ["aead-cipher"] }
+subtle = "2"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "net", "fs", "io-util"] }
@@ -87,6 +89,9 @@ unimplemented = "warn"
 unused_must_use = "warn"
 
 [patch.crates-io]
+meow-dns = { path = "vendor/meow-dns" }
+meow-rules = { path = "vendor/meow-rules" }
+meow-config = { path = "vendor/meow-config" }
 meow-listener = { path = "vendor/meow-listener" }
 meow-common = { path = "vendor/meow-common" }
 meow-anytls = { path = "vendor/meow-anytls" }

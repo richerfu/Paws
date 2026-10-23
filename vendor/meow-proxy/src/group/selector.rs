@@ -79,6 +79,7 @@ impl SelectorGroup {
     pub fn select(&self, name: &str) -> bool {
         if self.contains_name(name) {
             *self.selected.write() = Some(SmolStr::from(name));
+            self.health.notify_runtime_change();
             if let Some(store) = &self.store {
                 store.set(&self.name, name);
             }
@@ -264,6 +265,7 @@ impl ProxySelection for SelectorGroup {
         // Fallback) handle None by reverting to auto mode.
         if let Some(name) = name {
             *self.selected.write() = Some(SmolStr::from(name));
+            self.health.notify_runtime_change();
             if let Some(store) = &self.store {
                 store.set(&self.name, name);
             }

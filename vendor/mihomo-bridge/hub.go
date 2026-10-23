@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net"
@@ -63,6 +64,12 @@ func handleStartListener() bool {
 	defer configMu.Unlock()
 	isRunning.Store(true)
 	updateListeners(currentConfig)
+	if err := validatePawsRequiredListeners(currentConfig); err != nil {
+		isRunning.Store(false)
+		listener.StopListener()
+		logError("required native listener startup failed")
+		return false
+	}
 	resolver.ResetConnection()
 	refreshRoute()
 	return true
@@ -72,7 +79,22 @@ func handleStopListener() bool {
 	configMu.Lock()
 	defer configMu.Unlock()
 	isRunning.Store(false)
+	if err := listener.PawsStopInboundListeners(); err != nil {
+		logError("native inbound cleanup failed")
+		return false
+	}
 	listener.StopListener()
+	var flowCleanup error
+	statistic.DefaultManager.Range(func(connection statistic.Tracker) bool {
+		if err := connection.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			flowCleanup = errors.Join(flowCleanup, err)
+		}
+		return true
+	})
+	if flowCleanup != nil {
+		logError("native flow cleanup failed")
+		return false
+	}
 	resolver.ResetConnection()
 	return true
 }
@@ -688,6 +710,7 @@ func handleStartLog() {
 	logSubscriber = subscriber
 	logCancel = cancel
 	logMu.Unlock()
+	owner := pawsMihomoCurrent.Load()
 
 	go func() {
 		defer func() {
@@ -709,6 +732,12 @@ func handleStartLog() {
 				}
 				if logData.LogLevel < log.Level() {
 					continue
+				}
+				if owner != nil {
+					if err := owner.observations.log(logData.LogLevel.String(), logData.Payload, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+						owner.observations.active.Store(false)
+						fmt.Fprintf(os.Stderr, "runtime log journal failed: %v\n", err)
+					}
 				}
 				sendMessage(Message{
 					Type: LogMessage,

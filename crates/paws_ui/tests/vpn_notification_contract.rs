@@ -15,7 +15,6 @@ fn vpn_start_requests_notification_access_without_blocking_vpn() {
 
 #[test]
 fn vpn_notification_uses_live_download_and_upload_speeds() {
-    assert!(VPN_ABILITY.contains("pawsUi.persistVpnTelemetry()"));
     assert!(CONTINUOUS_TASK.contains("traffic.downloadSpeed"));
     assert!(CONTINUOUS_TASK.contains("traffic.uploadSpeed"));
     assert!(CONTINUOUS_TASK.contains("↓ ${formatSpeed"));

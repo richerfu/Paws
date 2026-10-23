@@ -1,0 +1,43 @@
+[package]
+name = "meow-rules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Rule matching engine and parser (domain, IP-CIDR, GeoIP, process, logic) for the meow-rs proxy kernel."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+meow-common = { workspace = true }
+meow-trie = { workspace = true }
+maxminddb = { workspace = true }
+ipnet = { workspace = true }
+regex = { workspace = true }
+smol_str = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+zstd = { workspace = true }
+
+[[bench]]
+name = "rules_bench"
+harness = false
+
+[[bench]]
+name = "iprange_parser_bench"
+harness = false
+
+[[bench]]
+name = "regex_rules_bench"
+harness = false
+
+[[bench]]
+name = "ipcidr_ruleset_bench"
+harness = false
+
+[dev-dependencies]
+tempfile = { workspace = true }
+criterion = { workspace = true }
+
+[lints]
+workspace = true

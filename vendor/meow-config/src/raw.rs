@@ -1,0 +1,957 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// A `header:` map value: mihomo's `map[string][]string` list form, or the
+/// single-string form meow-rs historically accepted. A list sends one field
+/// line per value (RFC 9110 §5.2); both forms are kept so existing
+/// string-form configs keep loading while mihomo configs parse as-is.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum StringOrList {
+    Single(String),
+    List(Vec<String>),
+}
+
+/// Flatten a raw `header:` map into `(name, value)` pairs. Multi-value
+/// entries become one pair per value; pairs are sorted by name to match Go
+/// `net/http`'s on-wire header ordering (mihomo parity).
+pub(crate) fn flatten_header_map(map: &HashMap<String, StringOrList>) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = Vec::with_capacity(map.len());
+    for (name, value) in map {
+        match value {
+            StringOrList::Single(s) => pairs.push((name.clone(), s.clone())),
+            StringOrList::List(vs) => {
+                pairs.extend(vs.iter().map(|s| (name.clone(), s.clone())));
+            }
+        }
+    }
+    // Stable sort: same-name entries keep their declared value order (Go's
+    // net/http preserves per-name value order; an unstable sort doesn't
+    // contractually).
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs
+}
+
+fn deserialize_string_or_seq<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct StringOrSeq;
+
+    impl<'de> Visitor<'de> for StringOrSeq {
+        type Value = Option<Vec<String>>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a string or list of strings")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(vec![v.to_owned()]))
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut v = Vec::new();
+            while let Some(s) = seq.next_element::<String>()? {
+                v.push(s);
+            }
+            Ok(Some(v))
+        }
+    }
+
+    deserializer.deserialize_any(StringOrSeq)
+}
+
+/// `expected-status` accepts either a bare integer (`204`) or a string
+/// (`"204"`, `"200-299"`, `"200,204"`). The docs and upstream mihomo both
+/// allow the unquoted integer form; normalize it to the string form the
+/// health-check range parser consumes (issue #390).
+fn deserialize_status_or_int<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+    use std::fmt;
+
+    struct StatusOrInt;
+
+    impl Visitor<'_> for StatusOrInt {
+        type Value = Option<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("an HTTP status code (integer) or status-range string")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(v.to_owned()))
+        }
+    }
+
+    deserializer.deserialize_any(StatusOrInt)
+}
+
+/// `geodata:` YAML subsection — path overrides, download URLs, auto-update.
+///
+/// Fields `geodata-mode`, `geodata-loader`, and `geoip-matcher` exist in
+/// upstream Go mihomo but are not meaningful here. They are accepted and
+/// produce a `warn!` (Class B per ADR-0002, forward-compat).
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawGeoDataConfig {
+    /// Explicit path to GeoIP Country MMDB. Skips discovery chain when set.
+    pub mmdb_path: Option<String>,
+    /// Explicit path to GeoLite2-ASN MMDB. Skips discovery chain when set.
+    pub asn_path: Option<String>,
+    /// Explicit path to geosite `.mrs` file. Skips discovery chain when set.
+    pub geosite_path: Option<String>,
+    /// If true, spawn a background task that periodically re-downloads DBs.
+    #[serde(default)]
+    pub auto_update: bool,
+    /// Hours between update checks. Minimum 1 (sub-hour polling hammers CDN
+    /// rate limits). Hard parse error on 0.
+    pub auto_update_interval: Option<u32>,
+    /// Download URL overrides. Defaults baked in when absent.
+    pub url: Option<RawGeoDataUrls>,
+    // Upstream-only fields accepted for forward-compat; we warn-once and ignore.
+    pub geodata_mode: Option<serde_yaml::Value>,
+    pub geodata_loader: Option<serde_yaml::Value>,
+    pub geoip_matcher: Option<serde_yaml::Value>,
+}
+
+/// `geodata.url.*` — download URL overrides.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawGeoDataUrls {
+    pub mmdb: Option<String>,
+    pub asn: Option<String>,
+    pub geosite: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawConfig {
+    pub port: Option<u16>,
+    pub socks_port: Option<u16>,
+    pub mixed_port: Option<u16>,
+    pub allow_lan: Option<bool>,
+    pub bind_address: Option<String>,
+    pub mode: Option<String>,
+    pub log_level: Option<String>,
+    pub ipv6: Option<bool>,
+    pub external_controller: Option<String>,
+    /// Path to a directory of static files for a third-party web dashboard
+    /// (e.g. metacubexd, yacd). When set, it is served at `/ui` instead of the
+    /// built-in panel (issue #223, mihomo-compatible).
+    pub external_ui: Option<String>,
+    /// Optional sub-directory under `external-ui` that actually holds the UI
+    /// files. Mirrors mihomo's `external-ui-name`; the served directory is
+    /// `external-ui/external-ui-name` when set.
+    pub external_ui_name: Option<String>,
+    /// URL the UI archive can be downloaded from. Recorded for compatibility;
+    /// auto-download is not performed (see issue #223 notes).
+    pub external_ui_url: Option<String>,
+    pub secret: Option<String>,
+    pub dns: Option<RawDns>,
+    pub proxies: Option<Vec<HashMap<String, serde_yaml::Value>>>,
+    pub proxy_groups: Option<Vec<RawProxyGroup>>,
+    pub proxy_providers: Option<HashMap<String, RawProxyProvider>>,
+    pub rules: Option<Vec<String>>,
+    pub rule_providers: Option<HashMap<String, RawRuleProvider>>,
+    /// Named sub-rule blocks. Each key is a block name; each value is a
+    /// list of rule strings parsed identically to the top-level `rules:`
+    /// section. Referenced from `rules:` via `SUB-RULE,<name>`.
+    pub sub_rules: Option<HashMap<String, Vec<String>>>,
+    pub subscriptions: Option<Vec<RawSubscription>>,
+    /// Opt-in strict parsing (issue #533): when `true`, an entry that fails
+    /// to parse — a `proxies:`/`proxy-groups:`/`rules:` item, a
+    /// `proxy-providers:`/`rule-providers:` definition, or a proxy node
+    /// inside a provider payload — is a hard config error instead of a
+    /// warn-and-skip. Group members/`use:` names that don't resolve,
+    /// entries shadowing built-in adapter names, and malformed
+    /// `dialer-proxy` values are also promoted. Transient fetch failures
+    /// (provider downloads, unreadable files) stay lenient. Off by default
+    /// because it rejects real-world mihomo subscriptions that mix in node
+    /// types meow-rs does not support.
+    pub strict: Option<bool>,
+    pub tproxy_port: Option<u16>,
+    pub tproxy_sni: Option<bool>,
+    pub routing_mark: Option<u32>,
+    /// Wall-clock bound, in seconds, on the built-in DIRECT adapter's
+    /// `TcpStream::connect`. Unset = unbounded (legacy behaviour, subject
+    /// only to the OS connect timeout). Motivated by iOS/macOS
+    /// scoped-routing and reachability-cache transients that can leave a
+    /// direct connect hanging indefinitely — see meow-ios
+    /// docs/INVESTIGATION-2026-05-18-tcp-direct-rule-disconnect.md.
+    /// Explicit `type: direct` proxy blocks are NOT covered by this
+    /// global; they accept their own per-proxy `connect-timeout` field.
+    pub tcp_connect_timeout: Option<u64>,
+    /// Static host mappings, preferred over upstream DNS lookups. Values may
+    /// be a single IP, a list of IPs, or one domain-name alias.
+    pub hosts: Option<HashMap<String, HostsValue>>,
+    pub sniffer: Option<RawSniffer>,
+    /// Named listener array. Each entry defines an explicitly-named proxy
+    /// listener instance. Merged with the shorthand port fields at parse time.
+    pub listeners: Option<Vec<RawListener>>,
+    pub authentication: Option<Vec<String>>,
+    pub skip_auth_prefixes: Option<Vec<String>>,
+    pub geodata: Option<RawGeoDataConfig>,
+    /// TUN inbound (issue #326) — mihomo-compatible `tun:` section.
+    /// Requires a build with the `listener-tun` feature.
+    pub tun: Option<RawTun>,
+    /// Global default cap on concurrent in-flight inbound connections per
+    /// listener. The default is 256; explicit `0` disables the cap. Individual `listeners:`
+    /// entries can override this with their own `max-connections` field.
+    pub max_connections: Option<usize>,
+    /// No top-level `firewall` key exists — captured only to warn on the
+    /// plausible mistake (`firewall:` belongs on a `listeners:` tproxy
+    /// entry, issue #563).
+    pub firewall: Option<serde_yaml::Value>,
+    /// No top-level `udp`/`udp-timeout` keys exist — captured only to
+    /// warn on the plausible mistake (`udp:` belongs on a `listeners:`
+    /// tproxy entry; `udp-timeout` on `listeners:`/`tun:`, issue #564).
+    pub udp: Option<serde_yaml::Value>,
+    pub udp_timeout: Option<serde_yaml::Value>,
+}
+
+/// A `hosts:` map value: one IP/domain alias or a list of IP addresses.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum HostsValue {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl HostsValue {
+    pub fn as_slice(&self) -> Vec<&str> {
+        match self {
+            HostsValue::One(s) => vec![s.as_str()],
+            HostsValue::Many(v) => v.iter().map(String::as_str).collect(),
+        }
+    }
+}
+
+/// `tun:` YAML section (issue #326) — mihomo-compatible TUN inbound.
+///
+/// Only the fields meow-rs implements are typed; upstream-only fields
+/// (`stack`, `strict-route`, `auto-detect-interface`, …) are accepted and
+/// produce a `warn!` (Class B per ADR-0002, forward-compat), never a parse
+/// error — the same policy as [`RawGeoDataConfig`] and #328.
+///
+/// `PartialEq` backs the config-commit TUN reconcile: the primary diff
+/// compares the parsed [`crate::TunConfig`]s, and this raw equality is the
+/// fallback when either side fails to parse — a `tun:` parameter change
+/// under an unchanged `enable` must restart the running listener, not be
+/// silently ignored (issue #543).
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawTun {
+    /// Master switch; the listener is spawned only when true.
+    #[serde(default)]
+    pub enable: bool,
+    /// Device name. Default: platform-chosen (`meow` on Windows/Linux,
+    /// `utunN` auto-assigned on macOS).
+    pub device: Option<String>,
+    /// Device MTU. Default 1500; hard parse error below 1280 (the
+    /// userspace stack's minimum, RFC 8200 §5).
+    pub mtu: Option<u16>,
+    /// CIDR assigned to the device, e.g. `172.19.0.1/30` (default).
+    pub inet4_address: Option<String>,
+    /// Route installation on startup. Accepts the mihomo boolean
+    /// (`true` = fake-IP scope, `false` = off) plus the #375 mode strings
+    /// `fake-ip` and `global`. Default true (fake-IP scope).
+    pub auto_route: Option<RawAutoRoute>,
+    /// Physical interface outbound sockets bind to in `auto-route: global`
+    /// mode (loop avoidance, #375). Auto-detected from the default route
+    /// when omitted. Ignored outside global mode.
+    pub outbound_interface: Option<String>,
+    /// DNS hijack targets. meow-rs v1 hijacks all UDP :53 flows entering
+    /// the device whenever this list is non-empty; entries with a port
+    /// other than 53 warn and are ignored.
+    pub dns_hijack: Option<Vec<String>>,
+    /// UDP NAT idle timeout in seconds. Default 60.
+    pub udp_timeout: Option<u64>,
+    /// IPv6 CIDR assigned to the device, e.g. `fdfe:dcba:9876::1/126` —
+    /// a string, or mihomo's list form (the first entry is used). Opts
+    /// `auto-route: global` into IPv6 capture (#375); ignored with a
+    /// warning in every other mode. Default: none (IPv4 only).
+    pub inet6_address: Option<serde_yaml::Value>,
+    // Upstream-only fields accepted for forward-compat; warn and ignore.
+    pub stack: Option<serde_yaml::Value>,
+    pub strict_route: Option<serde_yaml::Value>,
+    pub auto_detect_interface: Option<serde_yaml::Value>,
+    pub auto_redirect: Option<serde_yaml::Value>,
+    pub endpoint_independent_nat: Option<serde_yaml::Value>,
+    pub mtu_v6: Option<serde_yaml::Value>,
+    pub route_address: Option<serde_yaml::Value>,
+    pub route_exclude_address: Option<serde_yaml::Value>,
+    pub include_uid: Option<serde_yaml::Value>,
+    pub exclude_uid: Option<serde_yaml::Value>,
+}
+
+/// `tun.auto-route` value: mihomo's boolean or a #375 mode string.
+/// Untagged so `auto-route: true` and `auto-route: global` both parse.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum RawAutoRoute {
+    Enabled(bool),
+    Mode(String),
+}
+
+/// One entry in the `listeners:` array.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawListener {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub listener_type: String,
+    /// Optional when `listen` is a `host:port` socket address. `0` (or omitted
+    /// with no port in `listen`) means the OS assigns an ephemeral port at bind.
+    #[serde(default)]
+    pub port: Option<u16>,
+    pub listen: Option<String>,
+    pub tproxy_sni: Option<bool>,
+    /// `tproxy` listeners only: whether meow installs and owns the platform
+    /// firewall rules (default `true`). `false` leaves rule management to
+    /// an external system — no nft/pfctl invocation, no bypass-IP
+    /// collection, no cleanup on exit (issue #563).
+    pub firewall: Option<bool>,
+    /// `tproxy` listeners only: UDP flow idle timeout in seconds
+    /// (default 60, issue #564). `0` is a config error. The companion `udp`
+    /// key itself lives in the shadowsocks field block below — one raw key,
+    /// two consumers: for tproxy `udp` defaults to `false` and requires
+    /// `firewall: false` (meow does not manage UDP gateway rules).
+    pub udp_timeout: Option<u64>,
+    /// Per-listener override of the global `max-connections` cap. `0`
+    /// disables the cap for this listener.
+    pub max_connections: Option<usize>,
+
+    // ── shadowsocks-listener fields (only meaningful when `type: shadowsocks`) ──
+    pub cipher: Option<String>,
+    pub password: Option<String>,
+    #[serde(default)]
+    pub udp: Option<bool>,
+    pub simple_obfs: Option<RawSimpleObfs>,
+
+    // ── upstream sub-options not yet supported by meow-rs ──
+    // Captured as opaque `Value`s so their mere presence can be warned about
+    // (ADR-0002: never silently ignore a mihomo flag) without modelling the
+    // full schema. `None` when absent.
+    pub shadow_tls: Option<serde_yaml::Value>,
+    pub res_tls: Option<serde_yaml::Value>,
+    pub jls_config: Option<serde_yaml::Value>,
+    pub kcp_tun: Option<serde_yaml::Value>,
+    pub mux_option: Option<serde_yaml::Value>,
+}
+
+/// Raw `simple-obfs:` block for a shadowsocks listener.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawSimpleObfs {
+    #[serde(default)]
+    pub enable: bool,
+    pub mode: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawDns {
+    pub enable: Option<bool>,
+    pub listen: Option<String>,
+    pub enhanced_mode: Option<String>,
+    pub fake_ip_range: Option<String>,
+    /// Fake-IP filter mode: `blacklist` (default) or `whitelist`. Controls
+    /// how `fake_ip_filter` patterns are interpreted.
+    pub fake_ip_filter_mode: Option<String>,
+    /// If true, the fake-IP host↔ip map is persisted to disk and survives
+    /// restarts. The on-disk file is `fakeip-v4.json` / `fakeip-v6.json`
+    /// under the provider cache dir (file-backed config) or the resolved
+    /// home dir (`--config-string`).
+    pub store_fake_ip: Option<bool>,
+    pub default_nameserver: Option<Vec<String>>,
+    pub nameserver: Option<Vec<String>>,
+    pub fallback: Option<Vec<String>>,
+    /// Nameservers used exclusively to resolve proxy server hostnames
+    /// (mihomo `proxy-server-nameserver`). When set, proxy adapters resolve
+    /// their `server:` through these instead of the main `nameserver` list.
+    pub proxy_server_nameserver: Option<Vec<String>>,
+    pub fake_ip_filter: Option<Vec<String>>,
+    /// If false, the hosts trie lookup is skipped entirely at query time.
+    pub use_hosts: Option<bool>,
+    /// If true, `/etc/hosts` is read at startup and merged (lower priority than
+    /// top-level `hosts` config entries). No-op + warn on Windows.
+    pub use_system_hosts: Option<bool>,
+    /// Per-domain nameserver routing: each key is an exact domain or a `+.`
+    /// wildcard prefix; value is a single server URL or a list of URLs.
+    pub nameserver_policy: Option<HashMap<String, RawNspValue>>,
+    /// Controls when the `fallback:` nameservers replace the primary result.
+    pub fallback_filter: Option<RawFallbackFilter>,
+}
+
+/// A nameserver-policy value: either a single URL string or a list of URLs.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(untagged)]
+pub enum RawNspValue {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl RawNspValue {
+    pub fn as_urls(&self) -> Vec<&str> {
+        match self {
+            RawNspValue::One(s) => vec![s.as_str()],
+            RawNspValue::Many(v) => v.iter().map(String::as_str).collect(),
+        }
+    }
+}
+
+/// `fallback-filter` YAML block.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawFallbackFilter {
+    pub geoip: Option<bool>,
+    pub geoip_code: Option<String>,
+    pub ipcidr: Option<Vec<String>>,
+    pub domain: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawProxyGroup {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub group_type: String,
+    pub proxies: Option<Vec<String>>,
+    pub url: Option<String>,
+    pub interval: Option<u64>,
+    pub tolerance: Option<u16>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_status_or_int",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expected_status: Option<String>,
+    pub strategy: Option<String>,
+    pub lazy: Option<bool>,
+    #[serde(rename = "use")]
+    pub use_providers: Option<Vec<String>>,
+    pub filter: Option<String>,
+    pub exclude_filter: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub exclude_type: Option<Vec<String>>,
+    pub include_all: Option<bool>,
+    pub include_all_proxies: Option<bool>,
+    /// Upstream's providers-only alias — identical to `include-all` here
+    /// (our `include-all` never pulls statics; `include-all-proxies` does).
+    pub include_all_providers: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawProxyProvider {
+    #[serde(rename = "type")]
+    pub provider_type: String,
+    pub url: Option<String>,
+    pub path: Option<String>,
+    pub interval: Option<u64>,
+    pub filter: Option<String>,
+    pub exclude_filter: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_string_or_seq",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub exclude_type: Option<Vec<String>>,
+    pub health_check: Option<RawHealthCheck>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<HashMap<String, StringOrList>>,
+    /// Opt-in: allow `plugin:` fields on this provider's nodes to name
+    /// external SIP003 executables. Off by default — provider content is
+    /// remote-controlled and the plugin name reaches `Command::new`
+    /// (issue #513). mihomo has no external-plugin mechanism, so no
+    /// mihomo subscription relies on it.
+    pub allow_external_plugin: Option<bool>,
+    /// mihomo `proxy:` — route this provider's fetches through a named
+    /// proxy/group, resolved against the live route map at fetch time
+    /// (issue #625). `DIRECT` or absent fetches directly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
+    /// mihomo `dialer-proxy` — chain every node in this provider through the
+    /// named front hop. Upstream writes it into each node's mapping
+    /// unconditionally, so it overrides node-level `dialer-proxy` fields
+    /// (and is itself overridden by `override.dialer-proxy`) (issue #489).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dialer_proxy: Option<String>,
+    /// mihomo `override:` block — provider-level defaults applied to every
+    /// node unconditionally (`OverrideSchema.Apply` writes last, so it
+    /// outranks node-level fields). Only `dialer-proxy` is honoured
+    /// (issue #489); other keys warn at load time.
+    #[serde(rename = "override", skip_serializing_if = "Option::is_none")]
+    pub override_: Option<HashMap<String, serde_yaml::Value>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawHealthCheck {
+    pub enable: Option<bool>,
+    pub url: Option<String>,
+    pub interval: Option<u64>,
+    pub timeout: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_status_or_int",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expected_status: Option<String>,
+    pub lazy: Option<bool>,
+}
+
+/// A single entry in the top-level `rule-providers:` map.
+///
+/// `interval` is the refresh period in seconds for HTTP providers (0 =
+/// loaded once at startup); ignored (warn) for `file` providers and
+/// rejected — provider fails to load, fatal under `strict: true` — for
+/// `inline` providers.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawRuleProvider {
+    #[serde(rename = "type")]
+    pub provider_type: String, // "http" | "file" | "inline"
+    pub behavior: String,       // "domain" | "ipcidr" | "classical"
+    pub format: Option<String>, // "yaml" (default) | "text" | "mrs"
+    pub url: Option<String>,
+    pub path: Option<String>,
+    pub interval: Option<u64>,
+    /// mihomo-compatible download policy for http providers (issue #377):
+    /// the name of a proxy or group to route this provider's fetches
+    /// through, or `DIRECT` to force a direct fetch. Absent = the global
+    /// default (the first proxy in `proxies:`, direct when none).
+    pub proxy: Option<String>,
+    /// Custom HTTP request headers for http providers (mihomo
+    /// `map[string][]string`; the single-string form is also accepted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<HashMap<String, StringOrList>>,
+    /// Inline payload: list of rule strings (only for type=inline).
+    pub payload: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawSniffer {
+    pub enable: Option<bool>,
+    /// Peek timeout in milliseconds (1–60000, default 100).
+    pub timeout: Option<u64>,
+    pub parse_pure_ip: Option<bool>,
+    pub override_destination: Option<bool>,
+    /// Accepted; respected when fake-ip mode is enabled. When true and the
+    /// destination IP is a fake-IP allocation, the sniffer skips peek and
+    /// trusts the fake-IP reverse mapping. Currently unused (the tunnel's
+    /// `pre_handle_metadata` always consults the reverse map regardless), so
+    /// this flag is parsed and ignored for upstream-config compatibility.
+    pub force_dns_mapping: Option<bool>,
+    /// Protocol → port list map. Recognised keys: `TLS`, `HTTP`.
+    #[serde(default, deserialize_with = "deserialize_sniff_map")]
+    pub sniff: Option<HashMap<String, RawSniffProtocol>>,
+    pub force_domain: Option<Vec<String>>,
+    pub skip_domain: Option<Vec<String>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawSniffProtocol {
+    #[serde(default, deserialize_with = "deserialize_port_list")]
+    pub ports: Option<Vec<u16>>,
+}
+
+/// Cumulative cap on expanded sniff port entries: the u16 space holds at
+/// most 65,536 values and the consumer dedups into a `HashMap`, so a larger
+/// `Vec` is pure waste. `sniff:` is a map with caller-chosen keys — without
+/// this bound, N ranged entries expand to N × 128 KiB of `u16`s at YAML
+/// deserialize time, before any validation runs (issue #648 review).
+const MAX_SNIFF_PORT_ENTRIES: usize = u16::MAX as usize + 1;
+
+/// `sniff:` keys are caller-chosen strings; each entry can carry a full
+/// 65,536-port `Vec` (128 KiB), so the key count must also be bounded at
+/// deserialize time — recognised protocols number in single digits, 32 is
+/// generous headroom for forward-compat keys (issue #648 review).
+const MAX_SNIFF_MAP_ENTRIES: usize = 32;
+
+fn deserialize_sniff_map<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, RawSniffProtocol>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{MapAccess, Visitor};
+    use std::fmt;
+
+    struct SniffMapVisitor;
+    impl<'de> Visitor<'de> for SniffMapVisitor {
+        type Value = Option<HashMap<String, RawSniffProtocol>>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a protocol → port-list map")
+        }
+
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut out = HashMap::new();
+            // Count iterations, not distinct keys: a repeated key still
+            // materializes its value's port Vec, so the loop bound must
+            // cap parses, not insertions.
+            for _ in 0..MAX_SNIFF_MAP_ENTRIES {
+                let Some(key) = map.next_key::<String>()? else {
+                    return Ok(Some(out));
+                };
+                out.insert(key, map.next_value::<RawSniffProtocol>()?);
+            }
+            // Bound the key count *before* deserializing the (N+1)th value —
+            // a post-materialization `map.len()` check would still let N
+            // caller-chosen keys each expand a 128 KiB port Vec first.
+            if map.next_key::<serde::de::IgnoredAny>()?.is_some() {
+                return Err(serde::de::Error::custom(format!(
+                    "sniff map exceeds {MAX_SNIFF_MAP_ENTRIES} entries"
+                )));
+            }
+            Ok(Some(out))
+        }
+    }
+
+    deserializer.deserialize_any(SniffMapVisitor)
+}
+
+fn deserialize_port_list<'de, D>(deserializer: D) -> Result<Option<Vec<u16>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct PortListVisitor;
+
+    impl<'de> Visitor<'de> for PortListVisitor {
+        type Value = Option<Vec<u16>>;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a list of ports or port ranges (e.g. [80, \"8080-8880\"])")
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut ports = Vec::new();
+            while let Some(item) = seq.next_element::<serde_yaml::Value>()? {
+                match item {
+                    serde_yaml::Value::Number(n) => {
+                        let p = n
+                            .as_u64()
+                            .and_then(|v| u16::try_from(v).ok())
+                            .ok_or_else(|| de::Error::custom(format!("invalid port: {n}")))?;
+                        if ports.len() >= MAX_SNIFF_PORT_ENTRIES {
+                            return Err(de::Error::custom(format!(
+                                "port list expands beyond {MAX_SNIFF_PORT_ENTRIES} entries"
+                            )));
+                        }
+                        ports.push(p);
+                    }
+                    serde_yaml::Value::String(s) => {
+                        if let Some((start_s, end_s)) = s.split_once('-') {
+                            let start: u16 = start_s.trim().parse().map_err(|_| {
+                                de::Error::custom(format!("invalid port range start: {start_s}"))
+                            })?;
+                            let end: u16 = end_s.trim().parse().map_err(|_| {
+                                de::Error::custom(format!("invalid port range end: {end_s}"))
+                            })?;
+                            if start > end {
+                                return Err(de::Error::custom(format!(
+                                    "invalid port range: {start}-{end}"
+                                )));
+                            }
+                            let span = end as usize - start as usize + 1;
+                            if ports.len() + span > MAX_SNIFF_PORT_ENTRIES {
+                                return Err(de::Error::custom(format!(
+                                    "port list expands beyond {MAX_SNIFF_PORT_ENTRIES} entries"
+                                )));
+                            }
+                            ports.extend(start..=end);
+                        } else {
+                            let p: u16 = s
+                                .trim()
+                                .parse()
+                                .map_err(|_| de::Error::custom(format!("invalid port: {s}")))?;
+                            if ports.len() >= MAX_SNIFF_PORT_ENTRIES {
+                                return Err(de::Error::custom(format!(
+                                    "port list expands beyond {MAX_SNIFF_PORT_ENTRIES} entries"
+                                )));
+                            }
+                            ports.push(p);
+                        }
+                    }
+                    other => {
+                        return Err(de::Error::custom(format!(
+                            "expected port number or range string, got: {other:?}"
+                        )));
+                    }
+                }
+            }
+            Ok(Some(ports))
+        }
+    }
+
+    deserializer.deserialize_any(PortListVisitor)
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct RawSubscription {
+    pub name: String,
+    pub url: String,
+    pub interval: Option<u64>,
+    pub last_updated: Option<i64>,
+    /// Route this subscription's fetches through the named proxy/group,
+    /// resolved against the live route map at fetch time — the same
+    /// semantics as proxy-provider `proxy:` (issue #625). `DIRECT` or
+    /// absent fetches directly.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_subscription_proxy"
+    )]
+    pub proxy: Option<String>,
+    /// Names/rules this subscription's last fetch contributed to
+    /// `proxies:`/`proxy-groups:`/`rules:` — subscription apply is a
+    /// contribution merge (issue #640): only these tracked entries are
+    /// replaced on refresh or removed on `DELETE`, so local content and
+    /// sibling subscriptions survive. Empty for configs written before
+    /// the tracking existed; those entries are kept rather than wiped.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applied_proxies: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applied_groups: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applied_rules: Vec<String>,
+}
+
+/// `subscriptions[].proxy`: absent/`""` → unset (fetches direct); a
+/// whitespace-only value is a typo, not a clear — reject it (issue #625
+/// review). This is stricter than provider whitespace handling, which can
+/// warn-and-skip under lenient mode: serde cannot see `strict` (same
+/// document), so the rejection is unconditional. Values are stored
+/// trimmed so `" name "` normalizes to `name`.
+fn deserialize_subscription_proxy<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<String>::deserialize(d)? {
+        None => Ok(None),
+        Some(s) if s.trim().is_empty() => {
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                Err(serde::de::Error::custom(
+                    "subscription 'proxy' must be a proxy/group name — whitespace-only is not valid",
+                ))
+            }
+        }
+        Some(s) => Ok(Some(s.trim().to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RawConfig, RawHealthCheck, RawProxyGroup, RawSubscription};
+
+    #[test]
+    fn subscription_proxy_normalization_matrix() {
+        let parse = |yaml: &str| serde_yaml::from_str::<RawSubscription>(yaml).unwrap().proxy;
+
+        assert_eq!(parse("name: s\nurl: http://x\n"), None);
+        assert_eq!(parse("name: s\nurl: http://x\nproxy: null\n"), None);
+        assert_eq!(parse("name: s\nurl: http://x\nproxy: ''\n"), None);
+        assert_eq!(
+            parse("name: s\nurl: http://x\nproxy: front\n").as_deref(),
+            Some("front")
+        );
+        assert_eq!(
+            parse("name: s\nurl: http://x\nproxy: ' front '\n").as_deref(),
+            Some("front"),
+            "values are stored trimmed"
+        );
+        assert_eq!(
+            parse("name: s\nurl: http://x\nproxy: DIRECT\n").as_deref(),
+            Some("DIRECT"),
+            "DIRECT stays a value — it is resolved, not erased, at fetch time"
+        );
+        let err = serde_yaml::from_str::<RawSubscription>("name: s\nurl: http://x\nproxy: '   '\n")
+            .expect_err("whitespace-only proxy must fail the parse");
+        assert!(
+            err.to_string().contains("whitespace-only"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn expected_status_accepts_integer_scalar() {
+        // issue #390: docs promise `expected-status: 204` (integer); it used
+        // to fail with "invalid type: integer `204`, expected a string".
+        let group: RawProxyGroup =
+            serde_yaml::from_str("name: auto\ntype: url-test\nexpected-status: 204\n").unwrap();
+        assert_eq!(group.expected_status.as_deref(), Some("204"));
+
+        let hc: RawHealthCheck =
+            serde_yaml::from_str("enable: true\nexpected-status: 204\n").unwrap();
+        assert_eq!(hc.expected_status.as_deref(), Some("204"));
+    }
+
+    #[test]
+    fn expected_status_accepts_string_forms() {
+        let group: RawProxyGroup =
+            serde_yaml::from_str("name: auto\ntype: url-test\nexpected-status: \"200-299\"\n")
+                .unwrap();
+        assert_eq!(group.expected_status.as_deref(), Some("200-299"));
+
+        let hc: RawHealthCheck =
+            serde_yaml::from_str("enable: true\nexpected-status: \"204\"\n").unwrap();
+        assert_eq!(hc.expected_status.as_deref(), Some("204"));
+    }
+
+    #[test]
+    fn expected_status_absent_is_none() {
+        let group: RawProxyGroup = serde_yaml::from_str("name: auto\ntype: url-test\n").unwrap();
+        assert_eq!(group.expected_status, None);
+
+        let hc: RawHealthCheck = serde_yaml::from_str("enable: true\n").unwrap();
+        assert_eq!(hc.expected_status, None);
+    }
+
+    #[test]
+    fn tcp_connect_timeout_parses_from_kebab_yaml() {
+        let raw: RawConfig = serde_yaml::from_str("tcp-connect-timeout: 10\n").unwrap();
+        assert_eq!(raw.tcp_connect_timeout, Some(10));
+    }
+
+    #[test]
+    fn tcp_connect_timeout_defaults_to_none() {
+        let raw: RawConfig = serde_yaml::from_str("mixed-port: 7890\n").unwrap();
+        assert_eq!(raw.tcp_connect_timeout, None);
+    }
+
+    #[test]
+    fn sniff_port_range_at_bound_is_accepted() {
+        let raw: RawConfig =
+            serde_yaml::from_str("sniffer:\n  sniff:\n    TLS:\n      ports: [\"0-65535\"]\n")
+                .unwrap();
+        assert_eq!(
+            raw.sniffer
+                .and_then(|s| s.sniff)
+                .and_then(|m| m.get("TLS").cloned())
+                .and_then(|p| p.ports)
+                .map(|v| v.len()),
+            Some(65536)
+        );
+    }
+
+    #[test]
+    fn sniff_port_list_rejects_cumulative_expansion() {
+        // Two full ranges = 131,072 entries — same primitive hy2's
+        // `MAX_HOP_PORT_ENTRIES` already bounds (issue #648 review).
+        let err = serde_yaml::from_str::<RawConfig>(
+            "sniffer:\n  sniff:\n    TLS:\n      ports: [\"0-65535\", \"0-1\"]\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("expands beyond"), "msg: {err}");
+
+        // Scalar pushes are bound too — 65,537 valid u16 entries.
+        let many = std::iter::once(80)
+            .chain(0..=65535u32)
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let err = serde_yaml::from_str::<RawConfig>(&format!(
+            "sniffer:\n  sniff:\n    TLS:\n      ports: [{many}]\n"
+        ))
+        .unwrap_err();
+        assert!(err.to_string().contains("expands beyond"), "msg: {err}");
+    }
+
+    #[test]
+    fn sniff_map_rejects_arbitrary_key_fanout() {
+        // 33 caller-chosen keys × a full range each would demand ~4 MiB of
+        // u16s during deserialization — before any validation runs.
+        let mut yaml = String::from("sniffer:\n  sniff:\n");
+        for i in 0..33 {
+            use std::fmt::Write as _;
+            let _ = write!(yaml, "    K{i}:\n      ports: [80]\n");
+        }
+        let err = serde_yaml::from_str::<RawConfig>(&yaml).unwrap_err();
+        assert!(err.to_string().contains("exceeds 32"), "msg: {err}");
+    }
+
+    #[test]
+    fn sniff_map_at_bound_is_accepted() {
+        let mut yaml = String::from("sniffer:\n  sniff:\n");
+        for i in 0..32 {
+            use std::fmt::Write as _;
+            let _ = write!(yaml, "    K{i}:\n      ports: [80]\n");
+        }
+        let raw: RawConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(raw.sniffer.and_then(|s| s.sniff).map(|m| m.len()), Some(32));
+    }
+
+    #[test]
+    fn sniff_map_count_fires_before_33rd_value() {
+        // The 33rd key carries a value that is itself invalid; the count
+        // check must fire first — proving the value is never materialized
+        // (where it could have carried a 128 KiB port expansion instead).
+        let mut yaml = String::from("sniffer:\n  sniff:\n");
+        for i in 0..32 {
+            use std::fmt::Write as _;
+            let _ = write!(yaml, "    K{i}:\n      ports: [80]\n");
+        }
+        yaml.push_str("    K32:\n      ports: [notaport]\n");
+        let err = serde_yaml::from_str::<RawConfig>(&yaml).unwrap_err();
+        assert!(err.to_string().contains("exceeds 32"), "msg: {err}");
+    }
+}

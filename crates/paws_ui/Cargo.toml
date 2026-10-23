@@ -11,27 +11,17 @@ doctest = false
 test = false
 
 [dependencies]
-arkit.workspace = true
-base64.workspace = true
-dioxus.workspace = true
+paws_app.workspace = true
 libc.workspace = true
 paws_core.workspace = true
 paws_model.workspace = true
 napi-derive-ohos.workspace = true
 napi-ohos.workspace = true
-ohos-fileuri-binding.workspace = true
-ohos-fileshare-binding.workspace = true
 ohos-resource-manager-binding.workspace = true
-openharmony-ability-plugin-files.workspace = true
-openharmony-ability-plugin-url.workspace = true
-reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ohos-hilog-binding.workspace = true
-serde_yaml.workspace = true
-time.workspace = true
 tokio.workspace = true
-url.workspace = true
 
 [build-dependencies]
 napi-build-ohos.workspace = true

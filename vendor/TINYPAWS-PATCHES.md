@@ -5,6 +5,8 @@ by the root `[patch.crates-io]` table. Keep these patches active when upgrading:
 
 | Package | Local behavior |
 | --- | --- |
+| `meow-rules` | Exact 0.22.0 borrowed geosite-category visitor for native engine matcher compilation. |
+| `meow-config` | Exact 0.22.0 provider ownership observation and explicit per-load provider network policy. |
 | `meow-common` | OpenHarmony socket protection before TCP connect / UDP bind; fail closed without a protector; physical-network bootstrap DNS during resolver re-entry. |
 | `meow-anytls` | OpenHarmony protector registration and protected UDP sockets. |
 | `meow-proxy` | AnyTLS bridge, marked-socket protection, eager HTTP-obfs destination handshake, bounded first-flight recovery and socket evidence. Raw socket evidence now wraps `DirectDialer` sockets before the 0.22 stream abstraction erases the socket type. |

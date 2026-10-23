@@ -1,7 +1,10 @@
 use super::*;
-use meow_common::{DnsMode, MeowError, TunnelMode};
+use meow_common::{DnsMode, TunnelMode};
 use meow_dns::Resolver;
 use meow_trie::DomainTrie;
+use meow_tunnel::Tunnel;
+use paws_engine::EngineError;
+use paws_engine_meow::MeowTunnel;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use tokio::io::AsyncWriteExt;
 
@@ -40,13 +43,13 @@ fn tls_client_hello(hostname: &str) -> Vec<u8> {
 
 #[tokio::test]
 async fn harmony_sniffer_extracts_tls_sni_and_replays_client_hello() {
-    let sniffer = HarmonyTcpSniffer::from_config(SnifferConfig {
+    let sniffer = HarmonyTcpSniffer::from_tunnel(configured_tunnel(SnifferConfig {
         enable: true,
         override_destination: true,
         tls_ports: vec![443],
         http_ports: Vec::new(),
         ..SnifferConfig::default()
-    })
+    }))
     .expect("enabled sniffer");
     let payload = tls_client_hello("tls.example.test");
     let (mut client, mut server) = tokio::io::duplex(SNIFF_BUFFER_SIZE * 2);
@@ -71,13 +74,13 @@ async fn harmony_sniffer_extracts_tls_sni_and_replays_client_hello() {
 
 #[tokio::test]
 async fn harmony_sniffer_extracts_http_host_without_overriding_destination() {
-    let sniffer = HarmonyTcpSniffer::from_config(SnifferConfig {
+    let sniffer = HarmonyTcpSniffer::from_tunnel(configured_tunnel(SnifferConfig {
         enable: true,
         override_destination: false,
         tls_ports: Vec::new(),
         http_ports: vec![80],
         ..SnifferConfig::default()
-    })
+    }))
     .expect("enabled sniffer");
     let payload = b"GET / HTTP/1.1\r\nHost: http.example.test\r\n\r\n".to_vec();
     let (mut client, mut server) = tokio::io::duplex(SNIFF_BUFFER_SIZE * 2);
@@ -104,19 +107,21 @@ struct NoopPacketConn;
 
 #[async_trait::async_trait]
 impl ProxyPacketConn for NoopPacketConn {
-    async fn read_packet(&self, _buf: &mut [u8]) -> meow_common::Result<(usize, SocketAddr)> {
-        Err(MeowError::Other("noop packet conn closed".to_owned()))
+    async fn read_packet(&self, _buf: &mut [u8]) -> Result<(usize, SocketAddr), EngineError> {
+        Err(EngineError::InvalidConfig(
+            "noop packet conn closed".to_owned(),
+        ))
     }
 
-    async fn write_packet(&self, buf: &[u8], _addr: &SocketAddr) -> meow_common::Result<usize> {
+    async fn write_packet(&self, buf: &[u8], _addr: &SocketAddr) -> Result<usize, EngineError> {
         Ok(buf.len())
     }
 
-    fn local_addr(&self) -> meow_common::Result<SocketAddr> {
+    fn local_addr(&self) -> Result<SocketAddr, EngineError> {
         Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
     }
 
-    fn close(&self) -> meow_common::Result<()> {
+    fn close(&self) -> Result<(), EngineError> {
         Ok(())
     }
 }
@@ -140,7 +145,7 @@ impl ScriptedPacketConn {
 
 #[async_trait::async_trait]
 impl ProxyPacketConn for ScriptedPacketConn {
-    async fn read_packet(&self, buf: &mut [u8]) -> meow_common::Result<(usize, SocketAddr)> {
+    async fn read_packet(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), EngineError> {
         let read = self
             .reads
             .lock()
@@ -153,24 +158,30 @@ impl ProxyPacketConn for ScriptedPacketConn {
                 buf[..size].copy_from_slice(&data[..size]);
                 Ok((size, addr))
             }
-            ScriptedPacketRead::Error(message) => Err(MeowError::Other(message.to_owned())),
+            ScriptedPacketRead::Error(message) => {
+                Err(EngineError::InvalidConfig(message.to_owned()))
+            }
         }
     }
 
-    async fn write_packet(&self, buf: &[u8], _addr: &SocketAddr) -> meow_common::Result<usize> {
+    async fn write_packet(&self, buf: &[u8], _addr: &SocketAddr) -> Result<usize, EngineError> {
         Ok(buf.len())
     }
 
-    fn local_addr(&self) -> meow_common::Result<SocketAddr> {
+    fn local_addr(&self) -> Result<SocketAddr, EngineError> {
         Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
     }
 
-    fn close(&self) -> meow_common::Result<()> {
+    fn close(&self) -> Result<(), EngineError> {
         Ok(())
     }
 }
 
-fn direct_mode_tunnel() -> Tunnel {
+fn direct_mode_tunnel() -> Arc<dyn EngineTunnel> {
+    configured_tunnel(SnifferConfig::default())
+}
+
+fn configured_tunnel(config: SnifferConfig) -> Arc<dyn EngineTunnel> {
     let resolver = Arc::new(Resolver::new(
         Vec::new(),
         Vec::new(),
@@ -181,7 +192,19 @@ fn direct_mode_tunnel() -> Tunnel {
     ));
     let tunnel = Tunnel::new(resolver);
     tunnel.set_mode(TunnelMode::Direct);
-    tunnel
+    Arc::new(MeowTunnel::new(
+        tunnel,
+        meow_common::sniffer::SnifferConfig {
+            enable: config.enable,
+            timeout: config.timeout,
+            parse_pure_ip: config.parse_pure_ip,
+            override_destination: config.override_destination,
+            tls_ports: config.tls_ports,
+            http_ports: config.http_ports,
+            force_domain: config.force_domain.into_iter().map(Into::into).collect(),
+            skip_domain: config.skip_domain.into_iter().map(Into::into).collect(),
+        },
+    ))
 }
 
 #[test]
@@ -222,12 +245,7 @@ async fn stop_waits_for_idle_worker_teardown() {
     assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
 
     session
-        .start(
-            fds[0],
-            VpnOptions::default(),
-            direct_mode_tunnel(),
-            SnifferConfig::default(),
-        )
+        .start(fds[0], VpnOptions::default(), direct_mode_tunnel())
         .await
         .unwrap();
     assert!(session.is_running());
@@ -250,12 +268,7 @@ async fn rapid_stop_cannot_lose_the_worker_shutdown_wakeup() {
         let mut fds = [0_i32; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
         session
-            .start(
-                fds[0],
-                VpnOptions::default(),
-                direct_mode_tunnel(),
-                SnifferConfig::default(),
-            )
+            .start(fds[0], VpnOptions::default(), direct_mode_tunnel())
             .await
             .unwrap();
         tokio::time::timeout(Duration::from_secs(1), session.stop())
@@ -276,12 +289,7 @@ async fn tun_eof_publishes_an_observable_terminal_failure() {
     assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
 
     let generation = session
-        .start(
-            fds[0],
-            VpnOptions::default(),
-            direct_mode_tunnel(),
-            SnifferConfig::default(),
-        )
+        .start(fds[0], VpnOptions::default(), direct_mode_tunnel())
         .await
         .unwrap();
     unsafe {
@@ -667,7 +675,9 @@ async fn dns_mapped_http_flow_uses_actual_host_and_replays_bytes() {
         ..Metadata::default()
     };
 
-    let prefix = sniff_dns_mapped_destination(&mut server, &mut metadata).await;
+    let prefix =
+        sniff_dns_mapped_destination(direct_mode_tunnel().as_ref(), &mut server, &mut metadata)
+            .await;
     let mut replay = ReplayConn::new(server, prefix);
     let mut received = Vec::new();
     replay.read_to_end(&mut received).await.unwrap();
@@ -1089,7 +1099,9 @@ async fn unmapped_flow_recovers_hostname_and_preserves_every_consumed_byte() {
         dst_port: 80,
         ..Metadata::default()
     };
-    let prefix = recover_unmapped_destination(&mut server, &mut metadata).await;
+    let prefix =
+        recover_unmapped_destination(direct_mode_tunnel().as_ref(), &mut server, &mut metadata)
+            .await;
     let mut replay = ReplayConn::new(server, prefix);
     let mut received = Vec::new();
     replay.read_to_end(&mut received).await.unwrap();
@@ -1115,7 +1127,9 @@ async fn unmapped_fragmented_tls_recovers_x_hostname_without_losing_bytes() {
         dst_port: 443,
         ..Metadata::default()
     };
-    let prefix = recover_unmapped_destination(&mut server, &mut metadata).await;
+    let prefix =
+        recover_unmapped_destination(direct_mode_tunnel().as_ref(), &mut server, &mut metadata)
+            .await;
     let mut replay = ReplayConn::new(server, prefix);
     let mut received = Vec::new();
     replay.read_to_end(&mut received).await.unwrap();
@@ -1137,7 +1151,9 @@ async fn unmapped_unrecognized_protocol_preserves_ip_and_payload() {
         dst_port: 443,
         ..Metadata::default()
     };
-    let prefix = recover_unmapped_destination(&mut server, &mut metadata).await;
+    let prefix =
+        recover_unmapped_destination(direct_mode_tunnel().as_ref(), &mut server, &mut metadata)
+            .await;
     let mut replay = ReplayConn::new(server, prefix);
     let mut received = Vec::new();
     replay.read_to_end(&mut received).await.unwrap();
@@ -1170,9 +1186,19 @@ async fn hostname_recovery_is_generic_and_mapped_tls_handles_fragmentation() {
                 ..Metadata::default()
             };
             let prefix = if mapped {
-                sniff_dns_mapped_destination(&mut server, &mut metadata).await
+                sniff_dns_mapped_destination(
+                    direct_mode_tunnel().as_ref(),
+                    &mut server,
+                    &mut metadata,
+                )
+                .await
             } else {
-                recover_unmapped_destination(&mut server, &mut metadata).await
+                recover_unmapped_destination(
+                    direct_mode_tunnel().as_ref(),
+                    &mut server,
+                    &mut metadata,
+                )
+                .await
             };
             let mut replay = ReplayConn::new(server, prefix);
             let mut received = Vec::new();

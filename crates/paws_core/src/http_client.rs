@@ -420,7 +420,8 @@ mod tests {
                 }
                 let (mut stream, _) = next.unwrap().unwrap();
                 let mut buf = [0u8; 2048];
-                stream.read(&mut buf).await.unwrap();
+                let received = stream.read(&mut buf).await.unwrap();
+                assert!(received > 0, "retry connection must carry an HTTP request");
                 stream
                     .write_all(
                         b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nready",

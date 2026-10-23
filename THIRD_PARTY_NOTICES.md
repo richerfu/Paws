@@ -4,7 +4,7 @@ Paws packages Mihomo, sing-box, and meow-rs as independent proxy engines for
 HarmonyOS. The About page lists their packaged versions, source revisions, and
 license links; these are not claims about the latest upstream releases.
 
-- FlClash OpenHarmony core bridge (`vendor/mihomo-bridge` and `vendor/mihomo-bridge/ohos-napi`): GPL-3.0.
+- FlClash OpenHarmony core bridge (`vendor/mihomo-bridge`): GPL-3.0.
 - Mihomo 1.10.0 (the version declared by `constant/version.go` in the pinned
   [FlClash source fork](https://github.com/chen08209/Clash.Meta/tree/8597778c7df410ebe88c57e59eaab32d203156df),
   commit `8597778c7df410ebe88c57e59eaab32d203156df` with

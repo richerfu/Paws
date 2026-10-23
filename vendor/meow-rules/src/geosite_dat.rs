@@ -1,0 +1,678 @@
+//! V2Ray `geosite.dat` (protobuf) parser.
+//!
+//! Parses the legacy V2Ray `geosite.dat` format used by upstream
+//! mihomo / MetaCubeX before the `.mrs` rollout. Schema (subset):
+//!
+//! ```proto
+//! message Domain {
+//!   enum Type { Plain = 0; Regex = 1; Domain = 2; Full = 3; }
+//!   Type type = 1;
+//!   string value = 2;
+//!   repeated Attribute attribute = 3;
+//! }
+//! message GeoSite { string country_code = 1; repeated Domain domain = 2; }
+//! message GeoSiteList { repeated GeoSite entry = 1; }
+//! ```
+//!
+//! Domain.Type mapping:
+//! - `Domain` (suffix) → inserted as `+.value` into `DomainTrie`
+//! - `Full` (exact) → inserted as `value` into `DomainTrie`
+//! - `Plain` (substring/keyword) → stored in per-category keyword list
+//! - `Regex` → compiled into per-category `Vec<Regex>`
+
+use std::collections::{HashMap, HashSet};
+
+use meow_trie::DomainTrie;
+use tracing::warn;
+
+use crate::geosite::GeositeDB;
+
+/// Protobuf wire-type tags we care about.
+const WIRE_VARINT: u32 = 0;
+const WIRE_LEN_DELIM: u32 = 2;
+const WIRE_I64: u32 = 1;
+const WIRE_I32: u32 = 5;
+
+/// Field numbers in the V2Ray geosite schema (above).
+const FIELD_GEOSITELIST_ENTRY: u32 = 1;
+const FIELD_GEOSITE_COUNTRY_CODE: u32 = 1;
+const FIELD_GEOSITE_DOMAIN: u32 = 2;
+const FIELD_DOMAIN_TYPE: u32 = 1;
+const FIELD_DOMAIN_VALUE: u32 = 2;
+const FIELD_DOMAIN_ATTRIBUTE: u32 = 3;
+const FIELD_ATTRIBUTE_KEY: u32 = 1;
+
+/// `Domain.Type` enum values.
+const DOMAIN_TYPE_PLAIN: u64 = 0;
+const DOMAIN_TYPE_REGEX: u64 = 1;
+const DOMAIN_TYPE_DOMAIN: u64 = 2;
+const DOMAIN_TYPE_FULL: u64 = 3;
+
+#[derive(Debug, thiserror::Error)]
+pub enum DatError {
+    #[error("geosite.dat: visitor stopped before completing the requested category")]
+    VisitorStopped,
+    #[error("geosite.dat: requested category is missing or invalid")]
+    MissingCategory,
+    #[error("geosite.dat: unknown domain pattern type {0}")]
+    UnknownDomainType(u64),
+    #[error("geosite.dat: truncated at offset {0}")]
+    Truncated(usize),
+    #[error("geosite.dat: varint overflow at offset {0}")]
+    VarintOverflow(usize),
+    #[error("geosite.dat: invalid utf-8 in field at offset {0}")]
+    InvalidUtf8(usize),
+    #[error("geosite.dat: unknown wire type {1} at offset {0}")]
+    UnknownWireType(usize, u32),
+}
+
+/// Minimal protobuf reader — only the wire-format primitives needed for the
+/// geosite schema. Holds a byte slice + cursor; all reads advance the cursor.
+struct PbReader<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> PbReader<'a> {
+    fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    fn remaining(&self) -> usize {
+        self.buf.len().saturating_sub(self.pos)
+    }
+
+    fn is_at_end(&self) -> bool {
+        self.pos >= self.buf.len()
+    }
+
+    fn read_varint(&mut self) -> Result<u64, DatError> {
+        let start = self.pos;
+        let mut result: u64 = 0;
+        let mut shift: u32 = 0;
+        loop {
+            if self.pos >= self.buf.len() {
+                return Err(DatError::Truncated(start));
+            }
+            let b = self.buf[self.pos];
+            self.pos += 1;
+            if shift >= 64 {
+                return Err(DatError::VarintOverflow(start));
+            }
+            result |= u64::from(b & 0x7F) << shift;
+            if b & 0x80 == 0 {
+                return Ok(result);
+            }
+            shift += 7;
+        }
+    }
+
+    /// Read a wire tag — returns `(field_number, wire_type)`.
+    fn read_tag(&mut self) -> Result<(u32, u32), DatError> {
+        let tag = self.read_varint()?;
+        let field = (tag >> 3) as u32;
+        let wire = (tag & 0x7) as u32;
+        Ok((field, wire))
+    }
+
+    fn read_length_delimited(&mut self) -> Result<&'a [u8], DatError> {
+        let start = self.pos;
+        let len = self.read_varint()? as usize;
+        if self.remaining() < len {
+            return Err(DatError::Truncated(start));
+        }
+        let bytes = &self.buf[self.pos..self.pos + len];
+        self.pos += len;
+        Ok(bytes)
+    }
+
+    /// Skip a field whose tag was just consumed. Required when an unknown
+    /// field is encountered (e.g. `Domain.attribute`, field 3 wire-type 2).
+    fn skip_field(&mut self, wire: u32) -> Result<(), DatError> {
+        let start = self.pos;
+        match wire {
+            WIRE_VARINT => {
+                let _ = self.read_varint()?;
+            }
+            WIRE_LEN_DELIM => {
+                let _ = self.read_length_delimited()?;
+            }
+            WIRE_I64 => {
+                if self.remaining() < 8 {
+                    return Err(DatError::Truncated(start));
+                }
+                self.pos += 8;
+            }
+            WIRE_I32 => {
+                if self.remaining() < 4 {
+                    return Err(DatError::Truncated(start));
+                }
+                self.pos += 4;
+            }
+            other => return Err(DatError::UnknownWireType(start, other)),
+        }
+        Ok(())
+    }
+}
+
+/// Tally of skipped Domain entries — emitted as a single warn after parsing.
+#[derive(Default)]
+struct SkipStats {
+    empty: usize,
+    bad_regex: usize,
+}
+
+/// Parse a V2Ray `geosite.dat` byte buffer into a fully-built [`GeositeDB`].
+///
+/// All four domain types are supported:
+/// - `Domain` (suffix) → inserted as `+.value` into the trie
+/// - `Full` (exact) → inserted as `value` into the trie
+/// - `Plain` (substring/keyword) → stored in per-category keyword list
+/// - `Regex` → compiled into per-category `Vec<Regex>`
+pub fn from_dat_bytes(
+    data: &[u8],
+    allowed: Option<&HashSet<String>>,
+) -> Result<GeositeDB, DatError> {
+    let mut r = PbReader::new(data);
+    let mut categories: HashMap<String, DomainTrie<()>> = HashMap::new();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut regex_patterns: HashMap<String, Vec<String>> = HashMap::new();
+    let mut keyword_patterns: HashMap<String, Vec<String>> = HashMap::new();
+    let mut skipped = SkipStats::default();
+
+    while !r.is_at_end() {
+        let (field, wire) = r.read_tag()?;
+        if field != FIELD_GEOSITELIST_ENTRY || wire != WIRE_LEN_DELIM {
+            r.skip_field(wire)?;
+            continue;
+        }
+        let entry_bytes = r.read_length_delimited()?;
+        parse_geosite_entry(
+            entry_bytes,
+            &mut categories,
+            &mut counts,
+            &mut regex_patterns,
+            &mut keyword_patterns,
+            &mut skipped,
+            allowed,
+        )?;
+    }
+
+    if skipped.empty > 0 {
+        warn!("geosite.dat: skipped {} empty-value entries", skipped.empty);
+    }
+    if skipped.bad_regex > 0 {
+        warn!(
+            "geosite.dat: skipped {} invalid regex patterns",
+            skipped.bad_regex
+        );
+    }
+
+    Ok(GeositeDB::from_parts(
+        categories,
+        counts,
+        regex_patterns,
+        keyword_patterns,
+    ))
+}
+
+/// The four original V2Ray domain kinds, without projection into a runtime trie.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeoSitePatternKind { Keyword, Regex, Suffix, Full }
+
+/// A pattern borrowed for the duration of the visitor call. No runtime or IO
+/// is created. `category` denotes a base category or one `base@attribute` bucket;
+/// callers combine multiple attribute buckets with logical AND, as GeositeDB does.
+pub fn visit_dat_category(
+    data: &[u8], category: &str,
+    mut visit: impl FnMut(GeoSitePatternKind, &str) -> std::ops::ControlFlow<()>,
+) -> Result<usize, DatError> {
+    let category = category.to_ascii_lowercase();
+    let (base, attribute) = category.split_once('@').map_or((category.as_str(), None), |(base, attribute)| (base, Some(attribute)));
+    if base.is_empty() || attribute.is_some_and(|attribute| attribute.is_empty() || attribute.contains('@')) { return Err(DatError::MissingCategory); }
+    let mut reader = PbReader::new(data);
+    let mut found = false;
+    let mut visited = 0;
+    let mut skipped = SkipStats::default();
+    while !reader.is_at_end() {
+        let (field, wire) = reader.read_tag()?;
+        if field != FIELD_GEOSITELIST_ENTRY || wire != WIRE_LEN_DELIM { reader.skip_field(wire)?; continue; }
+        let mut entry = PbReader::new(reader.read_length_delimited()?);
+        let mut country = None;
+        let mut domains = Vec::new();
+        while !entry.is_at_end() {
+            let (field, wire) = entry.read_tag()?;
+            match (field, wire) {
+                (FIELD_GEOSITE_COUNTRY_CODE, WIRE_LEN_DELIM) => {
+                    country = Some(std::str::from_utf8(entry.read_length_delimited()?).map_err(|_| DatError::InvalidUtf8(entry.pos))?);
+                }
+                (FIELD_GEOSITE_DOMAIN, WIRE_LEN_DELIM) => domains.push(entry.read_length_delimited()?),
+                (_, wire) => entry.skip_field(wire)?,
+            }
+        }
+        if !country.is_some_and(|country| country.eq_ignore_ascii_case(base)) { continue; }
+        if attribute.is_none() { found = true; }
+        for domain in domains {
+            let Some(domain) = parse_domain_entry(domain, &mut skipped)? else { continue; };
+            if attribute.is_some_and(|attribute| !domain.attrs.iter().any(|value| value.eq_ignore_ascii_case(attribute))) { continue; }
+            found = true;
+            let kind = match domain.dom_type {
+                DOMAIN_TYPE_PLAIN => GeoSitePatternKind::Keyword,
+                DOMAIN_TYPE_REGEX => GeoSitePatternKind::Regex,
+                DOMAIN_TYPE_DOMAIN => GeoSitePatternKind::Suffix,
+                DOMAIN_TYPE_FULL => GeoSitePatternKind::Full,
+                other => return Err(DatError::UnknownDomainType(other)),
+            };
+            if visit(kind, &domain.value).is_break() { return Err(DatError::VisitorStopped); }
+            visited += 1;
+        }
+    }
+    if !found { return Err(DatError::MissingCategory); }
+    Ok(visited)
+}
+
+fn parse_geosite_entry<'a>(
+    data: &'a [u8],
+    categories: &mut HashMap<String, DomainTrie<()>>,
+    counts: &mut HashMap<String, usize>,
+    regex_patterns: &mut HashMap<String, Vec<String>>,
+    keyword_patterns: &mut HashMap<String, Vec<String>>,
+    skipped: &mut SkipStats,
+    allowed: Option<&HashSet<String>>,
+) -> Result<(), DatError> {
+    let mut r = PbReader::new(data);
+    let mut country: Option<String> = None;
+    let mut deferred_domains: Vec<&'a [u8]> = Vec::new();
+    // Track whether we should collect domain bytes. Set to false once
+    // we know the category is filtered out.
+    let mut dominated = true;
+
+    while !r.is_at_end() {
+        let (field, wire) = r.read_tag()?;
+        match (field, wire) {
+            (FIELD_GEOSITE_COUNTRY_CODE, WIRE_LEN_DELIM) => {
+                let bytes = r.read_length_delimited()?;
+                let s = std::str::from_utf8(bytes)
+                    .map_err(|_| DatError::InvalidUtf8(r.pos))?
+                    .to_ascii_lowercase();
+                // Check if this category is in the allow-set
+                if let Some(set) = allowed {
+                    if !set.contains(&s) {
+                        dominated = false;
+                    }
+                }
+                country = Some(s);
+            }
+            (FIELD_GEOSITE_DOMAIN, WIRE_LEN_DELIM) => {
+                // country_code may appear after some domain entries in
+                // pathological encoders; buffer the bytes (borrow from
+                // input) and apply after the message is fully scanned.
+                let domain_bytes = r.read_length_delimited()?;
+                if dominated {
+                    deferred_domains.push(domain_bytes);
+                }
+            }
+            (_, w) => r.skip_field(w)?,
+        }
+    }
+
+    let Some(country) = country else {
+        return Ok(()); // unnamed category — drop silently
+    };
+
+    // If the category is not in the allow-set, skip it entirely.
+    if let Some(set) = allowed {
+        if !set.contains(&country) {
+            return Ok(());
+        }
+    }
+
+    for domain_bytes in deferred_domains {
+        let Some(entry) = parse_domain_entry(domain_bytes, skipped)? else {
+            continue;
+        };
+        if insert_domain_entry(
+            &entry,
+            categories.entry(country.clone()).or_default(),
+            regex_patterns.entry(country.clone()).or_default(),
+            keyword_patterns.entry(country.clone()).or_default(),
+            skipped,
+        ) {
+            *counts.entry(country.clone()).or_insert(0) += 1;
+        }
+        for attr in &entry.attrs {
+            let attr_country = format!("{country}@{attr}");
+            if insert_domain_entry(
+                &entry,
+                categories.entry(attr_country.clone()).or_default(),
+                regex_patterns.entry(attr_country.clone()).or_default(),
+                keyword_patterns.entry(attr_country.clone()).or_default(),
+                skipped,
+            ) {
+                *counts.entry(attr_country).or_insert(0) += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+struct ParsedDomainEntry {
+    dom_type: u64,
+    value: String,
+    attrs: Vec<String>,
+}
+
+fn parse_domain_entry(
+    data: &[u8],
+    skipped: &mut SkipStats,
+) -> Result<Option<ParsedDomainEntry>, DatError> {
+    let mut r = PbReader::new(data);
+    let mut dom_type: u64 = DOMAIN_TYPE_DOMAIN;
+    let mut value: Option<String> = None;
+    let mut attrs = Vec::new();
+    let mut saw_type = false;
+
+    while !r.is_at_end() {
+        let (field, wire) = r.read_tag()?;
+        match (field, wire) {
+            (FIELD_DOMAIN_TYPE, WIRE_VARINT) => {
+                dom_type = r.read_varint()?;
+                saw_type = true;
+            }
+            (FIELD_DOMAIN_VALUE, WIRE_LEN_DELIM) => {
+                let bytes = r.read_length_delimited()?;
+                let s = std::str::from_utf8(bytes)
+                    .map_err(|_| DatError::InvalidUtf8(r.pos))?
+                    .to_ascii_lowercase();
+                value = Some(s);
+            }
+            (FIELD_DOMAIN_ATTRIBUTE, WIRE_LEN_DELIM) => {
+                let bytes = r.read_length_delimited()?;
+                if let Some(key) = parse_attribute_key(bytes)? {
+                    attrs.push(key);
+                }
+            }
+            (_, w) => r.skip_field(w)?,
+        }
+    }
+
+    if !saw_type {
+        dom_type = DOMAIN_TYPE_PLAIN;
+    }
+
+    let Some(value) = value else {
+        skipped.empty += 1;
+        return Ok(None);
+    };
+    if value.is_empty() {
+        skipped.empty += 1;
+        return Ok(None);
+    }
+
+    Ok(Some(ParsedDomainEntry {
+        dom_type,
+        value,
+        attrs,
+    }))
+}
+
+fn parse_attribute_key(data: &[u8]) -> Result<Option<String>, DatError> {
+    let mut r = PbReader::new(data);
+    let mut key = None;
+    while !r.is_at_end() {
+        let (field, wire) = r.read_tag()?;
+        match (field, wire) {
+            (FIELD_ATTRIBUTE_KEY, WIRE_LEN_DELIM) => {
+                let bytes = r.read_length_delimited()?;
+                let s = std::str::from_utf8(bytes)
+                    .map_err(|_| DatError::InvalidUtf8(r.pos))?
+                    .trim()
+                    .to_ascii_lowercase();
+                if !s.is_empty() {
+                    key = Some(s);
+                }
+            }
+            (_, w) => r.skip_field(w)?,
+        }
+    }
+    Ok(key)
+}
+
+fn insert_domain_entry(
+    entry: &ParsedDomainEntry,
+    trie: &mut DomainTrie<()>,
+    regexes: &mut Vec<String>,
+    keywords: &mut Vec<String>,
+    skipped: &mut SkipStats,
+) -> bool {
+    let value = entry.value.clone();
+    match entry.dom_type {
+        DOMAIN_TYPE_PLAIN => {
+            keywords.push(value);
+            true
+        }
+        DOMAIN_TYPE_REGEX => {
+            if regex::Regex::new(&value).is_ok() {
+                regexes.push(value);
+                true
+            } else {
+                skipped.bad_regex += 1;
+                false
+            }
+        }
+        DOMAIN_TYPE_DOMAIN => {
+            let pat = format!("+.{value}");
+            let _ = trie.insert(&value, ());
+            trie.insert(&pat, ())
+        }
+        DOMAIN_TYPE_FULL => trie.insert(&value, ()),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Append a protobuf wire tag `(field << 3) | wire_type` as a varint.
+    fn write_tag(out: &mut Vec<u8>, field: u32, wire: u32) {
+        write_varint(out, ((field as u64) << 3) | (wire as u64));
+    }
+
+    fn write_varint(out: &mut Vec<u8>, mut n: u64) {
+        loop {
+            let b = (n & 0x7F) as u8;
+            n >>= 7;
+            if n == 0 {
+                out.push(b);
+                return;
+            }
+            out.push(b | 0x80);
+        }
+    }
+
+    fn write_len_delim(out: &mut Vec<u8>, bytes: &[u8]) {
+        write_varint(out, bytes.len() as u64);
+        out.extend_from_slice(bytes);
+    }
+
+    /// Build a minimal Domain submessage.
+    fn build_domain(ty: u64, value: &str) -> Vec<u8> {
+        build_domain_with_attrs(ty, value, &[])
+    }
+
+    fn build_attribute(key: &str) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_tag(&mut out, FIELD_ATTRIBUTE_KEY, WIRE_LEN_DELIM);
+        write_len_delim(&mut out, key.as_bytes());
+        out
+    }
+
+    fn build_domain_with_attrs(ty: u64, value: &str, attrs: &[&str]) -> Vec<u8> {
+        let mut out = Vec::new();
+        if ty != DOMAIN_TYPE_PLAIN {
+            write_tag(&mut out, FIELD_DOMAIN_TYPE, WIRE_VARINT);
+            write_varint(&mut out, ty);
+        }
+        write_tag(&mut out, FIELD_DOMAIN_VALUE, WIRE_LEN_DELIM);
+        write_len_delim(&mut out, value.as_bytes());
+        for attr in attrs {
+            let attr = build_attribute(attr);
+            write_tag(&mut out, FIELD_DOMAIN_ATTRIBUTE, WIRE_LEN_DELIM);
+            write_len_delim(&mut out, &attr);
+        }
+        out
+    }
+
+    fn build_geosite(country: &str, domains: &[(u64, &str)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        write_tag(&mut out, FIELD_GEOSITE_COUNTRY_CODE, WIRE_LEN_DELIM);
+        write_len_delim(&mut out, country.as_bytes());
+        for &(ty, v) in domains {
+            let dom = build_domain(ty, v);
+            write_tag(&mut out, FIELD_GEOSITE_DOMAIN, WIRE_LEN_DELIM);
+            write_len_delim(&mut out, &dom);
+        }
+        out
+    }
+
+    fn build_geosite_list(entries: &[(&str, &[(u64, &str)])]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for &(country, domains) in entries {
+            let entry = build_geosite(country, domains);
+            write_tag(&mut out, FIELD_GEOSITELIST_ENTRY, WIRE_LEN_DELIM);
+            write_len_delim(&mut out, &entry);
+        }
+        out
+    }
+
+    #[test]
+    fn paws_visitor_preserves_native_pattern_kinds_attributes_and_missing_category_errors() {
+        let mut entry = Vec::new();
+        write_tag(&mut entry, 1, WIRE_LEN_DELIM); write_len_delim(&mut entry, b"CN");
+        for (kind, value) in [(DOMAIN_TYPE_PLAIN,"keyword"),(DOMAIN_TYPE_REGEX,"^regex\\.example$"),(DOMAIN_TYPE_DOMAIN,"suffix.example"),(DOMAIN_TYPE_FULL,"full.example")] {
+            write_tag(&mut entry, 2, WIRE_LEN_DELIM); write_len_delim(&mut entry,&build_domain_with_attrs(kind,value,&["ads"]));
+        }
+        let mut data = Vec::new();write_tag(&mut data, 1, WIRE_LEN_DELIM);write_len_delim(&mut data,&entry);
+        let mut seen = Vec::new();
+        assert_eq!(visit_dat_category(&data,"cn@ads",|kind,value|{seen.push((kind,value.to_owned()));std::ops::ControlFlow::Continue(())}).unwrap(),4);
+        assert_eq!(seen[0],(GeoSitePatternKind::Keyword,"keyword".into()));
+        assert_eq!(seen[1],(GeoSitePatternKind::Regex,"^regex\\.example$".into()));
+        assert_eq!(seen[2].0,GeoSitePatternKind::Suffix);assert_eq!(seen[3].0,GeoSitePatternKind::Full);
+        assert!(matches!(visit_dat_category(&data,"missing",|_,_|{std::ops::ControlFlow::Continue(())}),Err(DatError::MissingCategory)));
+        assert!(visit_dat_category(&data[..data.len()-1],"cn",|_,_|{std::ops::ControlFlow::Continue(())}).is_err());
+        let db=from_dat_bytes(&data,None).unwrap();for domain in ["has-keyword.example","regex.example","a.suffix.example","full.example"] {assert!(db.lookup("cn@ads",domain));}
+    }
+
+    #[test]
+    fn parse_single_domain_entry() {
+        let bytes = build_geosite_list(&[("cn", &[(DOMAIN_TYPE_DOMAIN, "baidu.com")])]);
+        let db = from_dat_bytes(&bytes, None).expect("ok");
+        assert!(db.lookup("cn", "baidu.com"));
+        assert!(db.lookup("cn", "www.baidu.com")); // suffix
+        assert!(!db.lookup("cn", "google.com"));
+    }
+
+    #[test]
+    fn parse_full_entry_is_exact_match() {
+        let bytes = build_geosite_list(&[("test", &[(DOMAIN_TYPE_FULL, "example.com")])]);
+        let db = from_dat_bytes(&bytes, None).expect("ok");
+        assert!(db.lookup("test", "example.com"));
+        assert!(!db.lookup("test", "sub.example.com")); // no suffix match for Full
+    }
+
+    #[test]
+    fn parse_plain_and_regex_are_matched() {
+        let bytes = build_geosite_list(&[(
+            "mixed",
+            &[
+                (DOMAIN_TYPE_DOMAIN, "keep.com"),
+                (DOMAIN_TYPE_PLAIN, "keyword"),
+                (DOMAIN_TYPE_REGEX, r"^drop.*regex$"),
+                (DOMAIN_TYPE_FULL, "exact.com"),
+            ],
+        )]);
+        let db = from_dat_bytes(&bytes, None).expect("ok");
+        assert_eq!(db.domain_count("mixed"), Some(4));
+        assert!(db.lookup("mixed", "keep.com"));
+        assert!(db.lookup("mixed", "exact.com"));
+        assert!(db.lookup("mixed", "has-keyword-in-it.com"));
+        assert!(db.lookup("mixed", "drop-something-regex"));
+        assert!(!db.lookup("mixed", "nomatch.org"));
+    }
+
+    #[test]
+    fn parse_attribute_filtered_entries() {
+        let tagged = build_domain_with_attrs(DOMAIN_TYPE_DOMAIN, "cn.example", &["cn", "ms"]);
+        let untagged = build_domain(DOMAIN_TYPE_DOMAIN, "global.example");
+        let mut site = Vec::new();
+        write_tag(&mut site, FIELD_GEOSITE_COUNTRY_CODE, WIRE_LEN_DELIM);
+        write_len_delim(&mut site, b"microsoft");
+        for dom in [tagged, untagged] {
+            write_tag(&mut site, FIELD_GEOSITE_DOMAIN, WIRE_LEN_DELIM);
+            write_len_delim(&mut site, &dom);
+        }
+
+        let mut bytes = Vec::new();
+        write_tag(&mut bytes, FIELD_GEOSITELIST_ENTRY, WIRE_LEN_DELIM);
+        write_len_delim(&mut bytes, &site);
+
+        let db = from_dat_bytes(&bytes, None).expect("ok");
+        assert!(db.lookup("microsoft", "cn.example"));
+        assert!(db.lookup("microsoft", "global.example"));
+        assert!(db.lookup("microsoft@cn", "cn.example"));
+        assert!(db.lookup("microsoft@cn@ms", "cn.example"));
+        assert!(!db.lookup("microsoft@cn", "global.example"));
+        assert!(!db.lookup("microsoft@jp", "cn.example"));
+    }
+
+    #[test]
+    fn multiple_categories() {
+        let bytes = build_geosite_list(&[
+            ("cn", &[(DOMAIN_TYPE_DOMAIN, "baidu.com")]),
+            ("youtube", &[(DOMAIN_TYPE_DOMAIN, "youtube.com")]),
+        ]);
+        let db = from_dat_bytes(&bytes, None).expect("ok");
+        assert_eq!(db.category_count(), 2);
+        assert!(db.lookup("cn", "www.baidu.com"));
+        assert!(db.lookup("youtube", "m.youtube.com"));
+        assert!(!db.lookup("cn", "youtube.com"));
+    }
+
+    #[test]
+    fn category_names_are_lowercased() {
+        let bytes = build_geosite_list(&[("CN", &[(DOMAIN_TYPE_DOMAIN, "Baidu.COM")])]);
+        let db = from_dat_bytes(&bytes, None).expect("ok");
+        assert!(db.lookup("cn", "baidu.com"));
+        assert!(db.lookup("CN", "BAIDU.COM"));
+    }
+
+    #[test]
+    fn unknown_top_level_fields_are_skipped() {
+        // Build a list with a stray field 99 (varint) before the real entry.
+        let mut bytes = Vec::new();
+        write_tag(&mut bytes, 99, WIRE_VARINT);
+        write_varint(&mut bytes, 12345);
+        let entry = build_geosite("cn", &[(DOMAIN_TYPE_DOMAIN, "baidu.com")]);
+        write_tag(&mut bytes, FIELD_GEOSITELIST_ENTRY, WIRE_LEN_DELIM);
+        write_len_delim(&mut bytes, &entry);
+        let db = from_dat_bytes(&bytes, None).expect("ok");
+        assert!(db.lookup("cn", "baidu.com"));
+    }
+
+    #[test]
+    fn truncated_input_errors() {
+        let mut bytes = build_geosite_list(&[("cn", &[(DOMAIN_TYPE_DOMAIN, "baidu.com")])]);
+        bytes.truncate(bytes.len() - 3);
+        assert!(matches!(
+            from_dat_bytes(&bytes, None),
+            Err(DatError::Truncated(_))
+        ));
+    }
+
+    #[test]
+    fn empty_input_is_empty_db() {
+        let db = from_dat_bytes(&[], None).expect("ok");
+        assert_eq!(db.category_count(), 0);
+    }
+}
