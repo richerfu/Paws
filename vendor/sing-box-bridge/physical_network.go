@@ -1,3 +1,5 @@
+//go:build !paws_host_test
+
 package main
 
 /*

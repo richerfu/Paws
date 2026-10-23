@@ -55,6 +55,7 @@ pub enum VpnEngine {
     Auto,
     Meow,
     Mihomo,
+    #[serde(alias = "sing-box")]
     SingBox,
 }
 
@@ -155,6 +156,12 @@ pub struct VpnOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DnsSnapshot {
+    #[serde(default)]
+    pub statistics_available: bool,
+    #[serde(default)]
+    pub statistics_error: Option<String>,
+    #[serde(default)]
+    pub configuration_error: Option<String>,
     pub model: String,
     pub hijacking: bool,
     pub listen: String,
@@ -185,6 +192,9 @@ impl Default for DnsSnapshot {
     fn default() -> Self {
         let options = VpnOptions::default();
         Self {
+            statistics_available: false,
+            statistics_error: None,
+            configuration_error: None,
             model: "tun-hijack".to_owned(),
             hijacking: options.dns_hijacking,
             listen: "127.0.0.1:1053".to_owned(),
@@ -525,7 +535,9 @@ pub struct ProviderSummary {
 pub struct ProviderProxySummary {
     pub name: String,
     pub proxy_type: String,
-    pub alive: bool,
+    /// None until an actual health measurement is available for this member.
+    #[serde(default)]
+    pub alive: Option<bool>,
     #[serde(default)]
     pub delay_ms: Option<u32>,
 }
@@ -533,6 +545,14 @@ pub struct ProviderProxySummary {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControllerDiagnostics {
+    #[serde(default)]
+    pub memory_available: bool,
+    #[serde(default)]
+    pub memory_limit_available: bool,
+    #[serde(default)]
+    pub memory_scope: Option<String>,
+    #[serde(default)]
+    pub memory_error: Option<String>,
     #[serde(default)]
     pub memory_in_use_bytes: u64,
     #[serde(default)]
@@ -607,6 +627,12 @@ pub struct RequestSummary {
     pub destination_port: u16,
     pub network: String,
     pub rule: String,
+    #[serde(default)]
+    pub rule_payload: String,
+    #[serde(default)]
+    pub chains: Vec<String>,
+    #[serde(default)]
+    pub started_at: String,
     pub proxy: String,
     pub upload_bytes: u64,
     pub download_bytes: u64,
@@ -631,7 +657,8 @@ pub struct AboutSnapshot {
     pub mihomo_version: String,
     #[serde(default)]
     pub sing_box_version: String,
-    pub arkit_version: String,
+    pub ui_runtime: String,
+    pub ui_runtime_version: String,
     pub rust_version: String,
     pub privacy_summary: Vec<String>,
     #[serde(default)]
@@ -646,7 +673,8 @@ impl Default for AboutSnapshot {
             meow_rs_version: "unknown".to_owned(),
             mihomo_version: "unknown".to_owned(),
             sing_box_version: "unknown".to_owned(),
-            arkit_version: "unknown".to_owned(),
+            ui_runtime: "nsh-ohos".to_owned(),
+            ui_runtime_version: "local".to_owned(),
             rust_version: "unknown".to_owned(),
             privacy_summary: Vec::new(),
             exit_ip_services: Vec::new(),
@@ -688,121 +716,19 @@ pub struct ExitLocationSnapshot {
     pub provider: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeSnapshot {
-    /// Monotonically increasing identity for the complete runtime projection.
-    /// Consumers must ignore snapshots older than the last one they applied.
-    #[serde(default)]
-    pub revision: u64,
-    /// Monotonically increasing identity for persisted profile/configuration data.
-    #[serde(default)]
-    pub config_revision: u64,
-    /// Wall-clock observation time for diagnostics. Ordering must use `revision`.
-    #[serde(default)]
-    pub observed_at_unix_nanos: u128,
-    /// Identity of the currently connected platform VPN session. Consumers
-    /// must revalidate it before restarting resources after async settings work.
-    #[serde(default)]
-    pub vpn_session_id: Option<String>,
-    #[serde(default)]
-    pub vpn_lifecycle: VpnLifecycle,
-    #[serde(default)]
-    pub engine_loaded: bool,
-    pub running: bool,
-    pub vpn_running: bool,
-    #[serde(default)]
-    pub network_protected: bool,
-    #[serde(default)]
-    pub network_protect_error: Option<String>,
-    #[serde(default)]
-    pub controller_running: bool,
-    #[serde(default)]
-    pub controller_addr: Option<String>,
-    #[serde(default)]
-    pub controller_diagnostics: ControllerDiagnostics,
-    #[serde(default)]
-    pub controller_access: ControllerAccessConfig,
-    #[serde(default)]
-    pub network_ports: NetworkPortConfig,
-    pub active_profile: Option<String>,
-    pub mode: RuntimeMode,
-    pub traffic: TrafficSnapshot,
-    #[serde(default)]
-    pub traffic_history: Vec<TrafficHistoryPoint>,
-    #[serde(default)]
-    pub dns: DnsSnapshot,
-    #[serde(default)]
-    pub vpn_options: VpnOptions,
-    #[serde(default)]
-    pub exit_location: ExitLocationSnapshot,
-    pub proxy_groups: Vec<ProxyGroup>,
-    pub profiles: Vec<ProfileSummary>,
-    pub rules: Vec<RuleSummary>,
-    pub providers: Vec<ProviderSummary>,
-    #[serde(default)]
-    pub geodata: Vec<GeodataFileSummary>,
-    pub logs: Vec<LogEntry>,
-    pub connections: Vec<ConnectionSummary>,
-    #[serde(default)]
-    pub request_history: Vec<RequestSummary>,
-    #[serde(default)]
-    pub about: AboutSnapshot,
-}
-
-impl Default for RuntimeSnapshot {
-    fn default() -> Self {
-        Self {
-            revision: 0,
-            config_revision: 0,
-            observed_at_unix_nanos: 0,
-            vpn_session_id: None,
-            vpn_lifecycle: VpnLifecycle::Stopped,
-            engine_loaded: false,
-            running: false,
-            vpn_running: false,
-            network_protected: false,
-            network_protect_error: None,
-            controller_running: false,
-            controller_addr: None,
-            controller_diagnostics: ControllerDiagnostics::default(),
-            controller_access: ControllerAccessConfig::default(),
-            network_ports: NetworkPortConfig::default(),
-            active_profile: None,
-            mode: RuntimeMode::Rule,
-            traffic: TrafficSnapshot {
-                upload_bytes: 0,
-                download_bytes: 0,
-                upload_speed: 0,
-                download_speed: 0,
-                tun_upload_bytes: 0,
-                tun_download_bytes: 0,
-                tun_upload_speed: 0,
-                tun_download_speed: 0,
-                meow_upload_bytes: 0,
-                meow_download_bytes: 0,
-                meow_upload_speed: 0,
-                meow_download_speed: 0,
-            },
-            traffic_history: Vec::new(),
-            dns: DnsSnapshot::default(),
-            vpn_options: VpnOptions::default(),
-            exit_location: ExitLocationSnapshot::default(),
-            proxy_groups: Vec::new(),
-            profiles: Vec::new(),
-            rules: Vec::new(),
-            providers: Vec::new(),
-            geodata: Vec::new(),
-            logs: Vec::new(),
-            connections: Vec::new(),
-            request_history: Vec::new(),
-            about: AboutSnapshot::default(),
-        }
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum PawsError {
+    #[error("{engine:?} {domain} observation unavailable: {reason}")]
+    EngineObservationUnavailable {
+        engine: VpnEngine,
+        domain: String,
+        reason: String,
+    },
+    #[error("{engine:?} does not support {capability}")]
+    UnsupportedEngineCapability {
+        engine: VpnEngine,
+        capability: String,
+    },
     #[error("invalid mode: {0}")]
     InvalidMode(String),
     #[error("invalid JSON: {0}")]

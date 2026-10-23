@@ -63,69 +63,81 @@ impl CoreHandle {
     }
 
     pub fn diagnostic_report(&self) -> Result<String, PawsError> {
-        let snapshot = self.snapshot()?;
-        let preflight = self.configuration_preflight()?;
-        let recent: Vec<_> = snapshot.request_history.iter().rev().take(80).map(|r| json!({
-            "id":r.id, "domain":r.domain, "domainSource":r.domain_source, "dnsResolver":"not-recorded-for-this-flow", "destinationIp":r.destination_ip,
-            "port":r.destination_port, "network":r.network, "rule":r.rule,
-            "proxy":r.proxy, "uploadBytes":r.upload_bytes, "downloadBytes":r.download_bytes,
-            "active":r.active,
-            "endReason":snapshot.logs.iter().rev().find(|l| l.message.contains(&r.id) && (l.message.contains("BrokenPipe") || l.message.contains("UnexpectedEof"))).map(|l| {
-                if l.message.contains("BrokenPipe") && l.message.contains("proxy-to-client") && l.message.contains("write") { "client-side-write-broken-pipe" }
-                else if l.message.contains("UnexpectedEof") { "unexpected-eof-see-local-log" }
-                else { "broken-pipe-direction-unconfirmed" }
-            }).unwrap_or(if r.active { "active" } else { "ended-cause-not-recorded" }),
-            "observation": if r.download_bytes > 0 { "return-traffic-observed" } else { "no-return-observed-not-proof-of-failure" }
-        })).collect();
-        let log_counts = json!({
-            "unexpectedEof":snapshot.logs.iter().filter(|l| l.message.contains("UnexpectedEof") || l.message.contains("unexpected end of file")).count(),
-            "brokenPipe":snapshot.logs.iter().filter(|l| l.message.contains("BrokenPipe") || l.message.contains("broken pipe")).count(),
-            "domainRecovered":snapshot.logs.iter().filter(|l| l.message.contains("unmapped flow recovered") && !l.message.contains("<not available>")).count(),
-            "scope":"bounded current log window; not lifetime totals"
-        });
-        let lifecycle = {
+        // Read only the report's allowlist, not the UI's unrelated runtime domains.
+        let (mut report, options, root) = {
             let state = self.lock_state()?;
-            let path = state.profiles.root().join("lifecycle.json");
-            fs::metadata(&path)
-                .ok()
-                .filter(|m| m.len() <= 32768)
-                .and_then(|_| fs::read_to_string(path).ok())
-                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        };
-        let (system_exits, vpn_system_exits, process_summary, process_samples) = {
-            let root = { self.lock_state()?.profiles.root().to_path_buf() };
-            let samples: Vec<crate::process_evidence::ProcessSample> =
-                crate::process_evidence::read_bounded(
-                    &root.join("vpn-process-evidence.json"),
-                    65536,
-                )
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default();
+            let logs = projected_logs(&state);
+            // Preserve the existing report order and limit. The former snapshot
+            // reversed history, and this report reversed it again before taking 80.
+            let recent: Vec<_> = state.request_history.iter().take(80).map(|r| json!({
+                "id":r.id, "domain":r.domain, "domainSource":r.domain_source, "dnsResolver":"not-recorded-for-this-flow", "destinationIp":r.destination_ip,
+                "port":r.destination_port, "network":r.network, "rule":r.rule,
+                "proxy":r.proxy, "uploadBytes":r.upload_bytes, "downloadBytes":r.download_bytes,
+                "active":r.active,
+                "endReason":logs.iter().rev().find(|l| l.message.contains(&r.id) && (l.message.contains("BrokenPipe") || l.message.contains("UnexpectedEof"))).map(|l| {
+                    if l.message.contains("BrokenPipe") && l.message.contains("proxy-to-client") && l.message.contains("write") { "client-side-write-broken-pipe" }
+                    else if l.message.contains("UnexpectedEof") { "unexpected-eof-see-local-log" }
+                    else { "broken-pipe-direction-unconfirmed" }
+                }).unwrap_or(if r.active { "active" } else { "ended-cause-not-recorded" }),
+                "observation": if r.download_bytes > 0 { "return-traffic-observed" } else { "no-return-observed-not-proof-of-failure" }
+            })).collect();
+            let log_counts = json!({
+                "unexpectedEof":logs.iter().filter(|l| l.message.contains("UnexpectedEof") || l.message.contains("unexpected end of file")).count(),
+                "brokenPipe":logs.iter().filter(|l| l.message.contains("BrokenPipe") || l.message.contains("broken pipe")).count(),
+                "domainRecovered":logs.iter().filter(|l| l.message.contains("unmapped flow recovered") && !l.message.contains("<not available>")).count(),
+                "scope":"bounded current log window; not lifetime totals"
+            });
+            let native_vpn_running = self.vpn.is_running();
+            let report = json!({
+                "product":"Paws", "version":APP_VERSION, "observedAtUnixNanos":state.observed_at_unix_nanos.to_string(),
+                "session":platform_vpn_session_id(&state),
+                "vpnLifecycle":vpn_lifecycle(
+                    state.engine_loaded,
+                    state.platform_vpn_starting,
+                    state.platform_vpn_running,
+                    native_vpn_running,
+                    state.platform_network_protected,
+                    state.platform_network_protect_error.as_deref(),
+                ),
+                "vpnEstablished":native_vpn_running || state.platform_vpn_running,
+                "networkProtected":state.platform_network_protected,
+                "mode":state.mode,
+                "dns":{"handledPackets":state.dns.handled_packets,"cacheHits":state.dns.cache_hits,"cacheMisses":state.dns.cache_misses,
+                    "note":"Counters show activity, not independent DNS health verification"},
+                "recentConnections":recent, "logCounts":log_counts,
+                "limits":["Probe success does not prove every app works", "TCP hostname recovery does not cover all ECH/QUIC traffic", "An unclean exit alone does not identify SIGKILL sender"],
+                "privacy":"Subscription URLs, credentials, raw config and raw logs excluded. Destination domains/IPs remain for troubleshooting."
+            });
             (
-                safe_exit_records(&root.join("system-exits.json")),
-                safe_exit_records(&root.join("system-exits-vpn.json")),
-                crate::process_evidence::summarize(&samples),
-                samples.into_iter().rev().take(120).collect::<Vec<_>>(),
+                report,
+                state.vpn_options.clone(),
+                state.profiles.root().to_path_buf(),
             )
         };
-        serde_json::to_string_pretty(&json!({
-            "product":"Paws", "version":APP_VERSION, "observedAtUnixNanos":snapshot.observed_at_unix_nanos.to_string(),
-            "session":snapshot.vpn_session_id, "vpnLifecycle":snapshot.vpn_lifecycle,
-            "vpnEstablished":snapshot.vpn_running, "networkProtected":snapshot.network_protected,
-            "mode":snapshot.mode,
-            "dns":{"handledPackets":snapshot.dns.handled_packets,"cacheHits":snapshot.dns.cache_hits,"cacheMisses":snapshot.dns.cache_misses,
-                "note":"Counters show activity, not independent DNS health verification"},
-            "physicalNetwork":crate::network_binding::physical_network_snapshot(),
-            "engineDecision":self.engine_decision(&to_json(&snapshot.vpn_options)?)?,
-            "engineEvidence":safe_engine_evidence(&self.lock_state()?.profiles.root().to_path_buf()),
-            "preflight":preflight, "recentConnections":recent, "logCounts":log_counts,
-            "lifecycle":lifecycle,
-            "systemExitEvidence":{"ui":system_exits,"vpn":vpn_system_exits},
-            "vpnProcessSummary":process_summary,
-            "vpnProcessEvidence":process_samples,
-            "limits":["Probe success does not prove every app works", "TCP hostname recovery does not cover all ECH/QUIC traffic", "An unclean exit alone does not identify SIGKILL sender"],
-            "privacy":"Subscription URLs, credentials, raw config and raw logs excluded. Destination domains/IPs remain for troubleshooting."
-        })).map_err(|e| PawsError::Core(e.to_string()))
+        let preflight = self.configuration_preflight()?;
+        let lifecycle_path = root.join("lifecycle.json");
+        let lifecycle = fs::metadata(&lifecycle_path)
+            .ok()
+            .filter(|m| m.len() <= 32768)
+            .and_then(|_| fs::read_to_string(lifecycle_path).ok())
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+        let samples: Vec<crate::process_evidence::ProcessSample> =
+            crate::process_evidence::read_bounded(&root.join("vpn-process-evidence.json"), 65536)
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+        report["physicalNetwork"] = crate::network_binding::physical_network_snapshot();
+        report["engineDecision"] = self.engine_decision(&to_json(&options)?)?;
+        report["engineEvidence"] = safe_engine_evidence(&root);
+        report["preflight"] = preflight;
+        report["lifecycle"] = json!(lifecycle);
+        report["systemExitEvidence"] = json!({
+            "ui":safe_exit_records(&root.join("system-exits.json")),
+            "vpn":safe_exit_records(&root.join("system-exits-vpn.json")),
+        });
+        report["vpnProcessSummary"] = json!(crate::process_evidence::summarize(&samples));
+        report["vpnProcessEvidence"] =
+            json!(samples.into_iter().rev().take(120).collect::<Vec<_>>());
+        serde_json::to_string_pretty(&report).map_err(|e| PawsError::Core(e.to_string()))
     }
 
     pub fn configuration_preflight(&self) -> Result<Value, PawsError> {

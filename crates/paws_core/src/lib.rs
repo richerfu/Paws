@@ -9,16 +9,17 @@ use meow_config::{
     proxy_provider::ProxyProvider, raw::RawConfig, rule_provider::RuleProvider, Config,
     NamedListener,
 };
-use meow_listener::MixedListener;
 use meow_tunnel::rule_ir::LazyMatchOutcome;
 use meow_tunnel::Tunnel;
 use once_cell::sync::Lazy;
+#[cfg(test)]
+use paws_model::ProxyItem;
 use paws_model::{
     from_json, to_json, AboutSnapshot, ConnectionSummary, ControllerAccessConfig,
     ControllerDiagnostics, DnsSnapshot, ExitLocationSnapshot, GeodataFileSummary, LogEntry,
     ManualRuleMutation, ManualRuleSpec, NetworkPortConfig, PawsError, ProfileSummary,
-    ProviderProxySummary, ProviderSummary, ProxyGroup, ProxyItem, RequestSummary, RuntimeMode,
-    RuntimeSnapshot, TrafficHistoryPoint, TrafficSnapshot, VpnEngine, VpnLifecycle, VpnOptions,
+    ProviderProxySummary, ProviderSummary, ProxyGroup, RequestSummary, RuntimeMode,
+    TrafficHistoryPoint, TrafficSnapshot, VpnEngine, VpnLifecycle, VpnOptions,
 };
 use paws_profile::{normalize_profile_content, ProfileCheckpoint, ProfileStore};
 use paws_vpn::{TunSession, TunStats, VpnLifecycle as NativeVpnLifecycle};
@@ -39,11 +40,15 @@ use tracing_subscriber::Layer;
 mod app_http;
 mod controller;
 mod diagnostics;
+mod engine;
+use engine::engine_error;
+pub use engine::register_engine_process_resolver;
+pub use paws_engine::ProcessResolver;
 mod engine_health;
 pub use engine_health::{StartupCheck, StartupHealth};
 mod engine_policy;
-mod sing_box_proxy;
 pub use engine_policy::EngineQualification;
+use paws_engine_go::config::{render_mihomo_runtime_yaml, render_sing_box_runtime_json};
 pub mod network_binding;
 mod process_evidence;
 mod service_watch;
@@ -60,9 +65,17 @@ mod log_recording;
 mod logging;
 mod platform_ipc;
 mod platform_owner;
+mod profile_preview;
 mod providers;
 mod routing;
-mod runtime_snapshot;
+mod runtime_domain;
+mod runtime_metadata;
+mod runtime_observation;
+#[cfg(test)]
+mod test_projection;
+pub use runtime_domain::{RuntimeDomain, RuntimeDomainKey, RuntimeDomainProjection};
+#[cfg(test)]
+use test_projection::RuntimeSnapshot;
 #[cfg(test)]
 #[path = "../../../vendor/meow-proxy/src/socket_trace.rs"]
 mod socket_trace_regression_tests;
@@ -70,7 +83,7 @@ mod subscription;
 mod telemetry;
 mod webdav;
 
-use app_http::{AppHttpProxyEndpoint, AppHttpProxyRuntime};
+use app_http::AppHttpProxyEndpoint;
 pub use controller::shared_core;
 use controller::*;
 use exit_location::*;
@@ -84,7 +97,7 @@ use platform_owner::{
 };
 use providers::*;
 use routing::*;
-use runtime_snapshot::*;
+use runtime_metadata::*;
 use subscription::*;
 use telemetry::*;
 
@@ -106,8 +119,6 @@ const PLATFORM_OS_STOP_RECOVERY_DEADLINE: Duration = Duration::from_secs(30);
 const PLATFORM_OS_STOP_RECOVERY_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const EXIT_LOCATION_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const EXIT_LOCATION_RETRY_INTERVAL: Duration = Duration::from_secs(60);
-const MIXED_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(2);
-const MIXED_LISTENER_READY_RETRY: Duration = Duration::from_millis(25);
 const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = "1.3.0";
@@ -115,13 +126,17 @@ const MEOW_RS_VERSION: &str = "0.22.0";
 // Versions of the source revisions pinned by scripts/build-*-ohos.sh.
 const MIHOMO_VERSION: &str = "1.10.0";
 const SING_BOX_VERSION: &str = "1.13.21";
-const ARKIT_VERSION: &str = env!("PAWS_ARKIT_VERSION");
+const UI_RUNTIME_VERSION: &str = match option_env!("PAWS_NSH_REVISION") {
+    Some(revision) => revision,
+    None => "local",
+};
 const RUST_VERSION: &str = env!("CARGO_PKG_RUST_VERSION");
 const MIHOMO_OHOS_SDK_VERSION: u32 = 24;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MihomoVpnPlan {
+    pub controller_endpoint: paws_engine::EngineControllerEndpoint,
     pub init_params: String,
     pub setup_params: String,
 }
@@ -129,8 +144,9 @@ pub struct MihomoVpnPlan {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SingBoxVpnPlan {
+    pub controller_endpoint: paws_engine::EngineControllerEndpoint,
     pub config_json: String,
-    pub work_dir: String,
+    pub work_dir: PathBuf,
     pub proxy_count: usize,
     pub group_count: usize,
     pub rule_count: usize,
@@ -164,6 +180,7 @@ pub enum PlatformAttachOutcome {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct PlatformVpnState {
+    public_controller_addr: Option<SocketAddr>,
     start_attempt_id: String,
     start_outcome: PlatformStartOutcome,
     delivery_observed: bool,
@@ -178,6 +195,7 @@ struct PlatformVpnState {
     network_protect_error: Option<String>,
     engine: Option<VpnEngine>,
     app_http_proxy: Option<AppHttpProxyEndpoint>,
+    controller_endpoint: Option<paws_engine::EngineControllerEndpoint>,
     updated_at: u128,
 }
 
@@ -197,14 +215,14 @@ struct PlatformVpnControl {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct PlatformVpnTelemetry {
+    session_id: String,
+    revisions: Option<paws_engine::EngineRuntimeRevisions>,
+    management_epoch: Option<String>,
+    recording_error: Option<runtime_observation::ArchiveRecordingStatus>,
     updated_at: u128,
     active_profile: Option<String>,
     traffic: TrafficSnapshot,
     traffic_history: Vec<TrafficHistoryPoint>,
-    dns: DnsSnapshot,
-    connections: Vec<ConnectionSummary>,
-    request_history: Vec<RequestSummary>,
-    logs: Vec<LogEntry>,
     profile_upload_bytes: u64,
     profile_download_bytes: u64,
 }
@@ -240,20 +258,8 @@ struct ControllerStartConfig {
     provider_dialer_registry: meow_proxy::dialer::ProxyRegistry,
     rule_providers: HashMap<String, Arc<RuleProvider>>,
     listeners: Vec<NamedListener>,
-}
-
-struct MixedListenerRuntime {
-    task: Option<tokio::task::JoinHandle<()>>,
-    benchmark_task: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for MixedListenerRuntime {
-    fn drop(&mut self) {
-        if let Some(task) = &self.task {
-            task.abort();
-        }
-        self.benchmark_task.abort();
-    }
+    host_resolver: Option<Arc<dyn meow_common::HostResolver>>,
+    auth: Arc<meow_common::AuthConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,6 +285,11 @@ impl ApiControllerRuntime {
 }
 
 struct CoreState {
+    engine_observation: runtime_observation::EngineObservationState,
+    archive_status: Option<runtime_observation::ArchiveRecordingStatus>,
+    platform_archive_status: Option<runtime_observation::ArchiveRecordingStatus>,
+    platform_telemetry_cursor: Option<(String, u128)>,
+    platform_telemetry_publish_time: u128,
     revision: u64,
     config_revision: u64,
     telemetry_revision: u64,
@@ -307,6 +318,8 @@ struct CoreState {
     platform_network_protected: bool,
     platform_network_protect_error: Option<String>,
     platform_app_http_proxy: Option<AppHttpProxyEndpoint>,
+    platform_controller_endpoint: Option<paws_engine::EngineControllerEndpoint>,
+    platform_public_controller_addr: Option<SocketAddr>,
     platform_vpn_state_updated_at: u128,
     platform_remote_state_updated_at: u128,
     platform_remote_state_seen_at: Option<Instant>,
@@ -325,9 +338,11 @@ struct CoreState {
     mode: RuntimeMode,
     profiles: ProfileStore,
     tunnel: Option<Tunnel>,
+    meow_runtime_ready: bool,
     sniffer_config: SnifferConfig,
     proxy_groups: Vec<ProxyGroup>,
     providers: Vec<ProviderSummary>,
+    engine_resources_authoritative: bool,
     runtime_rules: Vec<paws_model::RuleSummary>,
     provider_refresh: HashMap<String, ProviderRefreshState>,
     resource_operation_sequences: HashMap<String, u64>,
@@ -398,13 +413,31 @@ fn log_recording_error(state: &CoreState) -> Option<String> {
         Ok(logs) => logs.last_error().map(ToOwned::to_owned),
         Err(_) => Some("runtime log recording lock poisoned".to_owned()),
     };
-    match (local_error, runtime_error) {
-        (Some(local), Some(runtime)) if local != runtime => Some(format!(
-            "application log writer: {local}; runtime log writer: {runtime}"
-        )),
-        (Some(error), _) | (_, Some(error)) => Some(error),
-        (None, None) => None,
+    let archive_error = state
+        .archive_status
+        .as_ref()
+        .filter(|status| status.matches(state))
+        .and_then(|status| status.error.as_deref());
+    let remote_error = state
+        .platform_archive_status
+        .as_ref()
+        .filter(|status| status.matches(state))
+        .and_then(|status| status.error.as_deref());
+    let mut errors = Vec::new();
+    for error in [
+        local_error.as_deref(),
+        runtime_error.as_deref(),
+        archive_error,
+        remote_error,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if !errors.contains(&error) {
+            errors.push(error);
+        }
     }
+    (!errors.is_empty()).then(|| errors.join("; "))
 }
 
 fn validate_supported_vpn_options(options: &VpnOptions) -> Result<(), PawsError> {
@@ -429,14 +462,21 @@ fn platform_vpn_telemetry_projection(state: &CoreState) -> PlatformVpnTelemetry 
         .map(|profile| (profile.upload_bytes, profile.download_bytes))
         .unwrap_or_default();
     PlatformVpnTelemetry {
+        session_id: state.platform_start_attempt_id.clone(),
+        revisions: state.engine_observation.revisions.clone(),
+        management_epoch: state
+            .platform_controller_endpoint
+            .as_ref()
+            .map(engine::management_epoch),
+        recording_error: state
+            .archive_status
+            .as_ref()
+            .filter(|status| status.matches(state))
+            .cloned(),
         updated_at: now_unix_nanos(),
         active_profile,
         traffic: state.traffic.clone(),
         traffic_history: state.traffic_history.iter().cloned().collect(),
-        dns: state.dns.clone(),
-        connections: state.connections.clone(),
-        request_history: state.request_history.iter().cloned().rev().collect(),
-        logs: projected_logs(state),
         profile_upload_bytes,
         profile_download_bytes,
     }
@@ -449,6 +489,10 @@ fn sample_controller_diagnostics(state: &CoreState) -> ControllerDiagnostics {
         .map(|controller| ControllerDiagnostics {
             memory_in_use_bytes: controller.memory_in_use_bytes.load(Ordering::Relaxed),
             memory_limit_bytes: controller.memory_limit_bytes.load(Ordering::Relaxed),
+            memory_available: controller.memory_in_use_bytes.load(Ordering::Relaxed) > 0,
+            memory_limit_available: controller.memory_limit_bytes.load(Ordering::Relaxed) > 0,
+            memory_scope: Some("engineHeap".into()),
+            memory_error: None,
             config_sync_count: state.controller_config_sync_count,
             last_config_sync_at: state.last_controller_config_sync_at.clone(),
             last_config_sync_error: state.last_controller_config_sync_error.clone(),
@@ -528,6 +572,11 @@ impl Default for CoreState {
             });
         let dns = dns_snapshot(&vpn_options, None);
         Self {
+            engine_observation: Default::default(),
+            archive_status: None,
+            platform_archive_status: None,
+            platform_telemetry_cursor: None,
+            platform_telemetry_publish_time: 0,
             revision: 1,
             config_revision: 1,
             telemetry_revision: 0,
@@ -556,6 +605,8 @@ impl Default for CoreState {
             platform_network_protected: false,
             platform_network_protect_error: None,
             platform_app_http_proxy: None,
+            platform_controller_endpoint: None,
+            platform_public_controller_addr: None,
             platform_vpn_state_updated_at: 0,
             platform_remote_state_updated_at: 0,
             platform_remote_state_seen_at: None,
@@ -570,9 +621,11 @@ impl Default for CoreState {
             mode: RuntimeMode::Rule,
             profiles,
             tunnel: None,
+            meow_runtime_ready: false,
             sniffer_config: SnifferConfig::default(),
             proxy_groups,
             providers: Vec::new(),
+            engine_resources_authoritative: false,
             runtime_rules: Vec::new(),
             provider_refresh: HashMap::new(),
             resource_operation_sequences: HashMap::new(),
@@ -627,17 +680,47 @@ pub struct CoreHandle {
     config_reload_lock: tokio::sync::Mutex<()>,
     vpn_operation_lock: tokio::sync::Mutex<()>,
     exit_location_refresh_lock: tokio::sync::Mutex<()>,
-    mixed_listener: Mutex<Option<MixedListenerRuntime>>,
-    app_http_proxy: Mutex<Option<AppHttpProxyRuntime>>,
     vpn: TunSession,
+    active_engine: Mutex<Option<engine::ActiveEngineSession>>,
+    engine_observation_lane: runtime_observation::ObservationLane,
     api_controller_enabled: bool,
     api_controller_addr_override: Option<SocketAddr>,
+    #[cfg(test)]
+    telemetry_publications: Mutex<Vec<PlatformVpnTelemetry>>,
     #[cfg(test)]
     fail_next_config_reload: AtomicBool,
     #[cfg(test)]
     fail_next_profile_rollback: AtomicBool,
     #[cfg(test)]
     fail_next_platform_vpn_publish: AtomicBool,
+}
+
+/// Small command/effect baseline. It deliberately has no roster, DNS record,
+/// connection, request-history or log collection.
+#[derive(Debug, Clone)]
+pub struct CommandContext {
+    pub active_profile: Option<String>,
+    pub config_revision: u64,
+    pub vpn_session_id: Option<String>,
+    pub vpn_running: bool,
+    pub active_engine: Option<VpnEngine>,
+    pub mode: RuntimeMode,
+    pub vpn_options: VpnOptions,
+    pub controller_access: ControllerAccessConfig,
+}
+impl Default for CommandContext {
+    fn default() -> Self {
+        Self {
+            active_profile: None,
+            config_revision: 0,
+            vpn_session_id: None,
+            vpn_running: false,
+            active_engine: None,
+            mode: RuntimeMode::Rule,
+            vpn_options: VpnOptions::default(),
+            controller_access: ControllerAccessConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -688,7 +771,8 @@ pub fn configure_app_home(home_dir: &Path) -> Result<(), PawsError> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeRevisions {
     pub revision: u64,
     pub config_revision: u64,
@@ -722,47 +806,6 @@ pub struct ConfigProjection {
     pub profiles: Vec<ProfileSummary>,
     pub rules: Vec<paws_model::RuleSummary>,
     pub providers: Vec<ProviderSummary>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TelemetryProjection {
-    pub revisions: RuntimeRevisions,
-    pub traffic: TrafficSnapshot,
-    pub traffic_history: Vec<TrafficHistoryPoint>,
-    pub active_profile_usage: Option<ActiveProfileUsage>,
-    pub controller_diagnostics: ControllerDiagnostics,
-    pub dns: DnsSnapshot,
-    pub startup_health: Option<StartupHealth>,
-    pub logs: Vec<LogEntry>,
-    pub log_recording_error: Option<String>,
-    pub connections: Vec<ConnectionSummary>,
-    pub request_history: Vec<RequestSummary>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveProfileUsage {
-    pub profile_id: String,
-    pub upload_bytes: u64,
-    pub download_bytes: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeStatusProjection {
-    pub revisions: RuntimeRevisions,
-    pub vpn_lifecycle: VpnLifecycle,
-    pub engine_loaded: bool,
-    pub active_engine: Option<VpnEngine>,
-    pub vpn_running: bool,
-    pub vpn_session_id: Option<String>,
-    pub network_protected: bool,
-    pub network_protect_error: Option<String>,
-    pub controller_running: bool,
-    pub controller_addr: Option<String>,
-    pub controller_diagnostics: ControllerDiagnostics,
-    pub exit_location: ExitLocationSnapshot,
-    pub proxy_groups: Vec<ProxyGroup>,
-    pub geodata: Vec<GeodataFileSummary>,
-    pub about: AboutSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -869,11 +912,13 @@ impl CoreHandle {
             config_reload_lock: tokio::sync::Mutex::new(()),
             vpn_operation_lock: tokio::sync::Mutex::new(()),
             exit_location_refresh_lock: tokio::sync::Mutex::new(()),
-            mixed_listener: Mutex::new(None),
-            app_http_proxy: Mutex::new(None),
             vpn: TunSession::default(),
+            active_engine: Mutex::new(None),
+            engine_observation_lane: runtime_observation::ObservationLane::default(),
             api_controller_enabled: true,
             api_controller_addr_override: None,
+            #[cfg(test)]
+            telemetry_publications: Mutex::new(Vec::new()),
             #[cfg(test)]
             fail_next_config_reload: AtomicBool::new(false),
             #[cfg(test)]
@@ -921,6 +966,11 @@ impl CoreHandle {
         let dns = dns_snapshot(&vpn_options, None);
         Self {
             state: Mutex::new(CoreState {
+                engine_observation: Default::default(),
+                archive_status: None,
+                platform_archive_status: None,
+                platform_telemetry_cursor: None,
+                platform_telemetry_publish_time: 0,
                 revision: 1,
                 config_revision: 1,
                 telemetry_revision: 0,
@@ -949,6 +999,8 @@ impl CoreHandle {
                 platform_network_protected: false,
                 platform_network_protect_error: None,
                 platform_app_http_proxy: None,
+                platform_controller_endpoint: None,
+                platform_public_controller_addr: None,
                 platform_vpn_state_updated_at: 0,
                 platform_remote_state_updated_at: 0,
                 platform_remote_state_seen_at: None,
@@ -963,9 +1015,11 @@ impl CoreHandle {
                 mode: RuntimeMode::Rule,
                 profiles,
                 tunnel: None,
+                meow_runtime_ready: false,
                 sniffer_config: SnifferConfig::default(),
                 proxy_groups,
                 providers: Vec::new(),
+                engine_resources_authoritative: false,
                 runtime_rules: Vec::new(),
                 provider_refresh: HashMap::new(),
                 resource_operation_sequences: HashMap::new(),
@@ -1015,11 +1069,12 @@ impl CoreHandle {
             config_reload_lock: tokio::sync::Mutex::new(()),
             vpn_operation_lock: tokio::sync::Mutex::new(()),
             exit_location_refresh_lock: tokio::sync::Mutex::new(()),
-            mixed_listener: Mutex::new(None),
-            app_http_proxy: Mutex::new(None),
             vpn: TunSession::default(),
+            active_engine: Mutex::new(None),
+            engine_observation_lane: runtime_observation::ObservationLane::default(),
             api_controller_enabled: false,
             api_controller_addr_override: None,
+            telemetry_publications: Mutex::new(Vec::new()),
             fail_next_config_reload: AtomicBool::new(false),
             fail_next_profile_rollback: AtomicBool::new(false),
             fail_next_platform_vpn_publish: AtomicBool::new(false),
@@ -1047,6 +1102,30 @@ impl CoreHandle {
         self.runtime_revision_tx.subscribe()
     }
 
+    pub fn command_context(&self) -> Result<CommandContext, PawsError> {
+        let mut state = self.lock_state()?;
+        self.sync_platform_vpn_state_locked(&mut state);
+        Ok(CommandContext {
+            active_profile: state.profiles.active_profile().map(ToOwned::to_owned),
+            config_revision: state.config_revision,
+            vpn_session_id: platform_vpn_session_id(&state),
+            vpn_running: state.platform_vpn_running || self.vpn.is_running(),
+            active_engine: state.platform_vpn_engine,
+            mode: state.mode,
+            vpn_options: state.vpn_options.clone(),
+            controller_access: state.controller_access.clone(),
+        })
+    }
+
+    pub fn validate_proxy_group(&self, name: &str, revision: u64) -> Result<(), PawsError> {
+        let state = self.lock_state()?;
+        Self::ensure_config_revision_locked(&state, revision)?;
+        if !state.proxy_groups.iter().any(|group| group.name == name) {
+            return Err(PawsError::Core("select a valid proxy group".into()));
+        }
+        Ok(())
+    }
+
     pub fn config_projection(&self) -> Result<ConfigProjection, PawsError> {
         let state = self.lock_state()?;
         Ok(Self::config_projection_locked(&state))
@@ -1054,7 +1133,7 @@ impl CoreHandle {
 
     fn config_projection_locked(state: &CoreState) -> ConfigProjection {
         ConfigProjection {
-            revisions: runtime_revisions(&state),
+            revisions: runtime_revisions(state),
             active_profile: state.profiles.active_profile().map(ToOwned::to_owned),
             mode: state.mode,
             vpn_options: state.vpn_options.clone(),
@@ -1064,93 +1143,6 @@ impl CoreHandle {
             rules: state.profiles.active_rules(),
             providers: state.providers.clone(),
         }
-    }
-
-    pub fn telemetry_projection(&self) -> Result<TelemetryProjection, PawsError> {
-        let state = self.lock_state()?;
-        let active_profile_usage = state.profiles.active_profile().and_then(|profile_id| {
-            state
-                .platform_profile_traffic
-                .as_ref()
-                .filter(|(remote_id, _, _)| remote_id == profile_id)
-                .map(|(_, upload_bytes, download_bytes)| ActiveProfileUsage {
-                    profile_id: profile_id.to_owned(),
-                    upload_bytes: *upload_bytes,
-                    download_bytes: *download_bytes,
-                })
-                .or_else(|| {
-                    state
-                        .profiles
-                        .profile(profile_id)
-                        .ok()
-                        .map(|profile| ActiveProfileUsage {
-                            profile_id: profile_id.to_owned(),
-                            upload_bytes: profile.upload_bytes,
-                            download_bytes: profile.download_bytes,
-                        })
-                })
-        });
-        let root = state.profiles.root().to_path_buf();
-        let session = platform_vpn_session_id(&state);
-        let engine = state.platform_vpn_engine;
-        let running = state.platform_vpn_running || self.vpn.is_running();
-        let mut projection = TelemetryProjection {
-            revisions: runtime_revisions(&state),
-            traffic: state.traffic.clone(),
-            traffic_history: state.traffic_history.iter().cloned().collect(),
-            active_profile_usage,
-            controller_diagnostics: state.controller_diagnostics.clone(),
-            dns: state.dns.clone(),
-            startup_health: None,
-            logs: projected_logs(&state),
-            log_recording_error: log_recording_error(&state),
-            connections: state.connections.clone(),
-            request_history: state.request_history.iter().cloned().rev().collect(),
-        };
-        drop(state);
-        if running {
-            projection.startup_health =
-                StartupHealth::read_current(&root, session.as_deref(), engine);
-        }
-        Ok(projection)
-    }
-
-    pub fn runtime_status_projection(&self) -> Result<RuntimeStatusProjection, PawsError> {
-        let state = self.lock_state()?;
-        let native_vpn_running = self.vpn.is_running();
-        Ok(RuntimeStatusProjection {
-            revisions: runtime_revisions(&state),
-            vpn_lifecycle: vpn_lifecycle(
-                state.engine_loaded,
-                state.platform_vpn_starting,
-                state.platform_vpn_running,
-                native_vpn_running,
-                state.platform_network_protected,
-                state.platform_network_protect_error.as_deref(),
-            ),
-            engine_loaded: state.engine_loaded,
-            active_engine: if native_vpn_running {
-                Some(VpnEngine::Meow)
-            } else if state.platform_vpn_running {
-                state.platform_vpn_engine
-            } else {
-                None
-            },
-            vpn_running: native_vpn_running || state.platform_vpn_running,
-            vpn_session_id: platform_vpn_session_id(&state),
-            network_protected: state.platform_network_protected,
-            network_protect_error: state.platform_network_protect_error.clone(),
-            controller_running: state.api_controller.is_some(),
-            controller_addr: state
-                .api_controller
-                .as_ref()
-                .map(|controller| controller.bind_addr.to_string()),
-            controller_diagnostics: state.controller_diagnostics.clone(),
-            exit_location: state.exit_location.clone(),
-            proxy_groups: state.proxy_groups.clone(),
-            geodata: state.geodata.clone(),
-            about: about_snapshot(),
-        })
     }
 
     pub fn resource_projection(&self) -> Result<ResourceProjection, PawsError> {
@@ -1191,6 +1183,11 @@ impl CoreHandle {
                         let Some(core) = weak.upgrade() else {
                             break;
                         };
+                        // Actual sampling belongs to the Extension's timer.
+                        // The UI consumes only cheap IPC counters/metadata.
+                        if matches!(core.platform_ipc(), Ok(Some(platform)) if !platform.is_ui()) {
+                            continue;
+                        }
                         if let Err(error) = core.refresh_telemetry() {
                             tracing::warn!(
                                 target: "paws_core::telemetry",
@@ -1491,14 +1488,14 @@ impl CoreHandle {
             JournalRead::Missing => {
                 return Err(PawsError::Core(format!(
                     "platform VPN owner journal is missing for delivered attempt {attempt_id}"
-                )))
+                )));
             }
             JournalRead::Present(journal) if journal.attempt_id == attempt_id => journal,
             JournalRead::Present(journal) => {
                 return Err(PawsError::Core(format!(
                     "stale platform VPN start attempt {attempt_id}; owner journal belongs to {}",
                     journal.attempt_id
-                )))
+                )));
             }
         };
         match journal.phase {
@@ -1519,7 +1516,7 @@ impl CoreHandle {
                     PlatformVpnOwnerLeaseObservation::HeldOther => {
                         return Err(PawsError::Core(format!(
                             "cannot verify the exact platform VPN start issuer lease for delivered attempt {attempt_id}"
-                        )))
+                        )));
                     }
                 }
             }
@@ -1527,7 +1524,7 @@ impl CoreHandle {
             PlatformVpnOwnerPhase::Stopping => {
                 return Err(PawsError::Core(format!(
                     "platform VPN start attempt {attempt_id} was fenced by a stop intent"
-                )))
+                )));
             }
         }
         Ok(())
@@ -1703,21 +1700,18 @@ impl CoreHandle {
     ) -> Result<(Option<String>, http_client::ExternalHttpRoute), PawsError> {
         let state = self.lock_state()?;
         if self.vpn.is_running() || state.platform_vpn_running {
-            if let Some(engine @ (VpnEngine::Mihomo | VpnEngine::SingBox)) =
-                state.platform_vpn_engine
-            {
-                return Ok((
-                    Some(format!(
-                        "http://127.0.0.1:{}",
-                        engine_policy::benchmark_port(engine)
-                    )),
-                    http_client::ExternalHttpRoute::CurrentProxy,
-                ));
-            }
             if let Some(endpoint) = &state.platform_app_http_proxy {
                 return Ok((
                     Some(endpoint.proxy_url()),
                     http_client::ExternalHttpRoute::CurrentProxy,
+                ));
+            }
+            if matches!(
+                state.platform_vpn_engine,
+                Some(VpnEngine::Mihomo | VpnEngine::SingBox)
+            ) {
+                return Err(PawsError::Core(
+                    "authenticated engine app HTTP ingress is not ready".into(),
                 ));
             }
             if !state.network_ports.mixed_enabled {
@@ -1820,7 +1814,7 @@ impl CoreHandle {
             .or(header_name)
             .unwrap_or_else(|| profile_name_from_url(url));
         let raw_yaml = normalize_profile_content(&source_yaml)?;
-        self.validate_meow_config(&raw_yaml).await?;
+        self.validate_profile_schema(&raw_yaml)?;
         Ok(PreparedProfileImport {
             name,
             source: url.to_owned(),
@@ -1841,7 +1835,7 @@ impl CoreHandle {
         let subscription_user_info = paws_profile::parse_subscription_userinfo_comment(raw_yaml);
         let subscription_metadata = paws_profile::parse_subscription_metadata_comment(raw_yaml);
         let raw_yaml = normalize_profile_content(raw_yaml)?;
-        self.validate_meow_config(&raw_yaml).await?;
+        self.validate_profile_schema(&raw_yaml)?;
         Ok(PreparedProfileImport {
             name: name.to_owned(),
             source: source.to_owned(),
@@ -1867,7 +1861,7 @@ impl CoreHandle {
             paws_profile::parse_subscription_metadata_comment(&source_yaml),
         );
         let raw_yaml = normalize_profile_content(&source_yaml)?;
-        self.validate_meow_config(&raw_yaml).await?;
+        self.validate_profile_schema(&raw_yaml)?;
         Ok(PreparedProfileRefresh {
             raw_yaml,
             subscription_user_info,
@@ -2465,6 +2459,26 @@ impl CoreHandle {
         profile_id: &str,
         spec: &ManualRuleSpec,
     ) -> Result<ManualRuleApplyResult, PawsError> {
+        self.apply_manual_rule_at_revision(profile_id, None, spec)
+            .await
+    }
+
+    pub async fn apply_manual_rule_checked(
+        &self,
+        profile_id: &str,
+        expected_config_revision: u64,
+        spec: &ManualRuleSpec,
+    ) -> Result<ManualRuleApplyResult, PawsError> {
+        self.apply_manual_rule_at_revision(profile_id, Some(expected_config_revision), spec)
+            .await
+    }
+
+    async fn apply_manual_rule_at_revision(
+        &self,
+        profile_id: &str,
+        expected_revision: Option<u64>,
+        spec: &ManualRuleSpec,
+    ) -> Result<ManualRuleApplyResult, PawsError> {
         let _reload_guard = self.config_reload_lock.lock().await;
         let (
             candidate_profiles,
@@ -2475,6 +2489,9 @@ impl CoreHandle {
             expected_config_revision,
         ) = {
             let state = self.lock_state()?;
+            if let Some(expected) = expected_revision {
+                Self::ensure_config_revision_locked(&state, expected)?;
+            }
             if state.profiles.active_profile() != Some(profile_id) {
                 return Err(PawsError::Core(
                     "manual activity rules can only be added to the active profile".to_owned(),
@@ -2506,13 +2523,22 @@ impl CoreHandle {
             )
         };
 
-        let config = load_meow_config(&runtime_yaml).await?;
+        let metadata = candidate_profiles.source_metadata(
+            &runtime_yaml,
+            &candidate_profiles.selected_proxies(profile_id)?,
+        )?;
+        let meow_ready = { self.lock_state()?.meow_runtime_ready };
+        let config = if meow_ready {
+            Some(load_meow_config_for(&runtime_yaml, MeowLoadPurpose::Capability).await?)
+        } else {
+            None
+        };
         let target = mutation.line.split(',').nth(2).unwrap_or_default().trim();
         if !target.eq_ignore_ascii_case("DIRECT") {
-            let is_group = config
-                .proxies
-                .get(target)
-                .is_some_and(|proxy| proxy.members().is_some());
+            let is_group = metadata
+                .proxy_groups
+                .iter()
+                .any(|group| group.name == target);
             if !is_group {
                 return Err(PawsError::Core(format!(
                     "manual rule target is not an available proxy group: {target}"
@@ -2520,8 +2546,8 @@ impl CoreHandle {
             }
         }
 
-        let raw_config = config.raw.clone();
-        let loaded_rule_lines = raw_config.rules.clone().unwrap_or_default();
+        let raw_config = config.as_ref().map(|config| config.raw.clone());
+        let loaded_rule_lines = metadata.rule_lines;
         let editable_rules = candidate_profiles.rules_for_profile(profile_id);
         let runtime_rules = runtime_rule_summaries(profile_id, &loaded_rule_lines, &editable_rules);
 
@@ -2547,13 +2573,13 @@ impl CoreHandle {
             };
         }
 
-        let live_updated = if let Some(tunnel) = &state.tunnel {
+        let live_updated = if let (Some(tunnel), Some(config)) = (&state.tunnel, config) {
             tunnel.update_rules(config.rules);
             true
         } else {
             false
         };
-        if let Some(controller) = state.api_controller.as_mut() {
+        if let (Some(controller), Some(raw_config)) = (state.api_controller.as_mut(), raw_config) {
             *controller.raw_config.write() = raw_config.clone();
             controller.baseline_raw_config = raw_config;
             controller.synced_revision = controller.config_revision.load(Ordering::Acquire);
@@ -2647,7 +2673,8 @@ impl CoreHandle {
     }
 
     pub fn log_recording_status(&self) -> Result<LogRecordingStatus, PawsError> {
-        let state = self.lock_state()?;
+        let mut state = self.lock_state()?;
+        state.logs.sync_session();
         let mut status = log_recording::recording_status(state.profiles.root())?;
         status.last_error = log_recording_error(&state);
         Ok(status)
@@ -2668,6 +2695,16 @@ impl CoreHandle {
             }
         };
         if was_enabled == enabled {
+            // An explicit Off also cancels an earlier Enable awaiting its
+            // native watermark, even when no marker was published yet.
+            if !enabled {
+                if let Err(error) = log_recording::set_recording_enabled(&root, false) {
+                    state.logs.record_control_error(&error);
+                    self.publish_runtime_change_locked(&mut state, false, true);
+                    return Err(error);
+                }
+            }
+            state.logs.sync_session();
             let mut status = match log_recording::recording_status(&root) {
                 Ok(status) => status,
                 Err(error) => {
@@ -2732,7 +2769,7 @@ impl CoreHandle {
     }
 
     pub async fn start_vpn(&self, fd: i32, options_json: &str) -> Result<(), PawsError> {
-        self.start_vpn_inner(fd, options_json, None)
+        self.start_vpn_inner(fd, options_json, None, None)
             .await
             .map(|_| ())
     }
@@ -2759,7 +2796,7 @@ impl CoreHandle {
             .platform_ipc()?
             .and_then(|platform| platform.read_remote().ok().flatten())
             .and_then(|envelope| envelope.control);
-        let (root, profile_id, mode, selections, runtime_yaml) = {
+        let (root, profile_id, mode, selections, runtime_yaml, services) = {
             let mut state = self.lock_state()?;
             self.sync_platform_vpn_state_locked(&mut state);
             ensure_platform_attempt_active(&state, attempt_id)?;
@@ -2785,6 +2822,10 @@ impl CoreHandle {
                 mode,
                 selections,
                 runtime_yaml,
+                paws_engine::EngineNetworkServices {
+                    ports: state.network_ports,
+                    access: state.controller_access.clone(),
+                },
             )
         };
 
@@ -2792,7 +2833,14 @@ impl CoreHandle {
         let mihomo_home = root.join("mihomo");
         fs::create_dir_all(&mihomo_home).map_err(mihomo_io_error)?;
         install_mihomo_geodata(&root, &mihomo_home)?;
-        let runtime_yaml = render_mihomo_runtime_yaml(&runtime_yaml)?;
+        let runtime_yaml =
+            render_mihomo_runtime_yaml(&runtime_yaml, &services).map_err(engine_error)?;
+        let runtime_yaml = paws_engine_go::config::secure_controller_config(
+            VpnEngine::Mihomo,
+            &runtime_yaml,
+            &self.native_controller_secret(attempt_id)?,
+        )
+        .map_err(engine_error)?;
         write_atomic_file(&mihomo_home.join("config.yaml"), runtime_yaml.as_bytes())?;
 
         let init_params = serde_json::json!({
@@ -2811,6 +2859,11 @@ impl CoreHandle {
             )));
         }
         Ok(MihomoVpnPlan {
+            controller_endpoint: paws_engine_go::config::controller_endpoint(
+                VpnEngine::Mihomo,
+                &runtime_yaml,
+            )
+            .map_err(engine_error)?,
             init_params: init_params.to_string(),
             setup_params: setup_params.to_string(),
         })
@@ -2831,7 +2884,7 @@ impl CoreHandle {
             .platform_ipc()?
             .and_then(|platform| platform.read_remote().ok().flatten())
             .and_then(|envelope| envelope.control);
-        let (root, profile_id, mode, selections, runtime_yaml) = {
+        let (root, profile_id, mode, selections, runtime_yaml, services) = {
             let mut state = self.lock_state()?;
             self.sync_platform_vpn_state_locked(&mut state);
             ensure_platform_attempt_active(&state, attempt_id)?;
@@ -2857,10 +2910,22 @@ impl CoreHandle {
                 mode,
                 selections,
                 runtime_yaml,
+                paws_engine::EngineNetworkServices {
+                    ports: state.network_ports,
+                    access: state.controller_access.clone(),
+                },
             )
         };
         let runtime_yaml = engine_policy::pin_benchmark_runtime_yaml(&runtime_yaml, &selections)?;
-        let rendered = render_sing_box_runtime_json(&runtime_yaml, mode, &selections, &options)?;
+        let mut rendered =
+            render_sing_box_runtime_json(&runtime_yaml, mode, &selections, &options, &services)
+                .map_err(engine_error)?;
+        rendered.config_json = paws_engine_go::config::secure_controller_config(
+            VpnEngine::SingBox,
+            &rendered.config_json,
+            &self.native_controller_secret(attempt_id)?,
+        )
+        .map_err(engine_error)?;
         let work_dir = root.join("sing-box");
         fs::create_dir_all(&work_dir).map_err(mihomo_io_error)?;
         write_atomic_file(
@@ -2879,8 +2944,13 @@ impl CoreHandle {
             )));
         }
         Ok(SingBoxVpnPlan {
+            controller_endpoint: paws_engine_go::config::controller_endpoint(
+                VpnEngine::SingBox,
+                &rendered.config_json,
+            )
+            .map_err(engine_error)?,
             config_json: rendered.config_json,
-            work_dir: work_dir.to_string_lossy().into_owned(),
+            work_dir,
             proxy_count: rendered.proxy_count,
             group_count: rendered.group_count,
             rule_count: rendered.rule_count,
@@ -2899,8 +2969,22 @@ impl CoreHandle {
                 "external VPN start requires mihomo or sing-box".to_owned(),
             ));
         }
+        if !self
+            .active_engine
+            .lock()
+            .map_err(|_| PawsError::Core("active engine lock poisoned".into()))?
+            .as_ref()
+            .is_some_and(|active| {
+                active.session.engine() == resolved_engine && active.session.is_running()
+            })
+        {
+            return Err(PawsError::Core(
+                "external engine has not completed native startup".into(),
+            ));
+        }
         let options: VpnOptions = from_json(options_json)?;
         validate_supported_vpn_options(&options)?;
+        let services = self.active_engine_services()?;
         let mut state = self.lock_state()?;
         self.sync_platform_vpn_state_locked(&mut state);
         ensure_platform_attempt_active(&state, attempt_id)?;
@@ -2908,6 +2992,9 @@ impl CoreHandle {
         state.platform_vpn_starting = false;
         state.platform_vpn_running = true;
         state.platform_vpn_engine = Some(resolved_engine);
+        state.platform_controller_endpoint = services.controller_endpoint;
+        state.platform_app_http_proxy = services.app_http_proxy;
+        state.platform_public_controller_addr = services.public_controller_addr;
         state.platform_start_outcome = PlatformStartOutcome::Connected;
         state.traffic = TrafficSnapshot::default();
         state.last_traffic_sample = None;
@@ -2953,8 +3040,19 @@ impl CoreHandle {
         options_json: &str,
         attempt_id: &str,
     ) -> Result<(), PawsError> {
+        self.start_platform_vpn_checked(fd, options_json, attempt_id, None)
+            .await
+    }
+
+    async fn start_platform_vpn_checked(
+        self: &Arc<Self>,
+        fd: i32,
+        options_json: &str,
+        attempt_id: &str,
+        expected_config_revision: Option<u64>,
+    ) -> Result<(), PawsError> {
         let generation = self
-            .start_vpn_inner(fd, options_json, Some(attempt_id))
+            .start_vpn_inner(fd, options_json, Some(attempt_id), expected_config_revision)
             .await?;
         let weak = Arc::downgrade(self);
         let vpn = self.vpn.clone();
@@ -2976,6 +3074,7 @@ impl CoreHandle {
         fd: i32,
         options_json: &str,
         attempt_id: Option<&str>,
+        expected_config_revision: Option<u64>,
     ) -> Result<u64, PawsError> {
         let _operation_guard = self.vpn_operation_lock.lock().await;
         if let Some(attempt_id) = attempt_id {
@@ -2985,8 +3084,13 @@ impl CoreHandle {
         }
         let options: VpnOptions = from_json(options_json)?;
         validate_supported_vpn_options(&options)?;
-        self.prepare_active_vpn().await?;
-        let (tunnel, sniffer_config, mixed_port, mixed_enabled) = {
+        self.prepare_active_vpn_inner(false, true).await?;
+        let _config_guard = self.config_reload_lock.lock().await;
+        if let Some(expected_revision) = expected_config_revision {
+            let state = self.lock_state()?;
+            Self::ensure_config_revision_locked(&state, expected_revision)?;
+        }
+        let (tunnel, sniffer_config, mixed_port) = {
             let mut state = self.lock_state()?;
             if let Some(attempt_id) = attempt_id {
                 self.sync_platform_vpn_state_locked(&mut state);
@@ -2996,23 +3100,15 @@ impl CoreHandle {
                 state.tunnel.clone(),
                 state.sniffer_config.clone(),
                 state.network_ports.mixed_port,
-                state.network_ports.mixed_enabled,
             )
         };
         let tunnel = tunnel
             .ok_or_else(|| PawsError::Core("activate a profile before starting VPN".to_owned()))?;
         let generation = self
-            .vpn
-            .start(fd, options.clone(), tunnel.clone(), sniffer_config)
+            .start_meow_session(fd, options.clone(), tunnel.clone(), sniffer_config)
             .await?;
-        let app_http_proxy = match self.restart_app_http_proxy(tunnel.clone()).await {
-            Ok(endpoint) => endpoint,
-            Err(error) => {
-                self.vpn.stop().await?;
-                self.stop_mixed_listener()?;
-                return Err(error);
-            }
-        };
+        let services = self.active_engine_services()?;
+        let app_http_proxy = services.app_http_proxy;
         if let Some(attempt_id) = attempt_id {
             let attempt_result = {
                 let mut state = self.lock_state()?;
@@ -3020,13 +3116,10 @@ impl CoreHandle {
                 ensure_platform_attempt_active(&state, attempt_id)
             };
             if let Err(error) = attempt_result {
-                self.vpn.stop().await?;
+                self.stop_active_engine().await?;
                 return Err(error);
             }
         }
-        let mixed_listener = self
-            .restart_mixed_listener(tunnel, mixed_enabled.then_some(mixed_port))
-            .await;
         if let Some(attempt_id) = attempt_id {
             let attempt_result = {
                 let mut state = self.lock_state()?;
@@ -3034,7 +3127,7 @@ impl CoreHandle {
                 ensure_platform_attempt_active(&state, attempt_id)
             };
             if let Err(error) = attempt_result {
-                self.vpn.stop().await?;
+                self.stop_active_engine().await?;
                 self.stop_mixed_listener()?;
                 return Err(error);
             }
@@ -3067,6 +3160,8 @@ impl CoreHandle {
                 Ok(()) => {
                     state.vpn_options = options;
                     state.platform_app_http_proxy = app_http_proxy;
+                    state.platform_controller_endpoint = services.controller_endpoint;
+                    state.platform_public_controller_addr = services.public_controller_addr;
                     state.engine_loaded = true;
                     state.platform_vpn_starting = false;
                     state.platform_vpn_running = true;
@@ -3078,152 +3173,32 @@ impl CoreHandle {
                     state
                         .logs
                         .push(info_log(format!("vpn started with tun fd {fd}")));
-                    match mixed_listener {
-                        Ok(true) => state.logs.push(info_log(format!(
+                    if services.mixed_ready {
+                        state.logs.push(info_log(format!(
                             "meow mixed listener ready on 127.0.0.1:{mixed_port}"
-                        ))),
-                        Ok(false) => {}
-                        Err(error) => state.logs.push(warning_log(format!(
-                            "meow mixed listener failed to start: {error}"
-                        ))),
+                        )));
+                    }
+                    for warning in services.warnings {
+                        state.logs.push(warning_log(warning));
                     }
                     self.persist_platform_vpn_state_locked(&mut state)
                 }
             }
         };
         if let Err(error) = commit_result {
-            self.vpn.stop().await?;
+            self.stop_active_engine().await?;
             self.stop_mixed_listener()?;
             return Err(error);
         }
+        self.engine_observation_lane.resume();
         Ok(generation)
     }
 
-    async fn restart_mixed_listener(
-        &self,
-        tunnel: Tunnel,
-        mixed_port: Option<u16>,
-    ) -> Result<bool, PawsError> {
-        self.stop_public_mixed_listener()?;
-        let Some(platform) = self.platform_ipc()? else {
-            return Ok(false);
-        };
-        if platform.is_ui() {
-            return Ok(false);
-        }
-        let network_protected = self.lock_state()?.platform_network_protected;
-        if !network_protected {
-            return Err(PawsError::Core(
-                "VPN extension process network is not protected".to_owned(),
-            ));
-        }
-
-        let benchmark_addr = SocketAddr::from((
-            [127, 0, 0, 1],
-            engine_policy::benchmark_port(VpnEngine::Meow),
-        ));
-        let task = mixed_port.map(|port| {
-            let listener = MixedListener::new(tunnel.clone(), SocketAddr::from(([127,0,0,1],port)), "paws-mixed".to_owned()).with_max_connections(64);
-            tokio::spawn(async move {
-                if let Err(error)=listener.run().await { tracing::warn!(target:"paws_core::listener", "meow mixed listener stopped: {error}"); }
-            })
-        });
-        let benchmark = MixedListener::new(
-            tunnel,
-            SocketAddr::from((
-                [127, 0, 0, 1],
-                engine_policy::benchmark_port(VpnEngine::Meow),
-            )),
-            "paws-meow-benchmark".to_owned(),
-        )
-        .with_max_connections(64);
-        let benchmark_task = tokio::spawn(async move {
-            if let Err(error) = benchmark.run().await {
-                tracing::warn!("Meow benchmark listener failed: {error}");
-            }
-        });
-        *self
-            .mixed_listener
-            .lock()
-            .map_err(|_| PawsError::Core("mixed listener lock poisoned".to_owned()))? =
-            Some(MixedListenerRuntime {
-                task,
-                benchmark_task,
-            });
-
-        let deadline = tokio::time::Instant::now() + MIXED_LISTENER_READY_TIMEOUT;
-        loop {
-            let benchmark_ready = tokio::net::TcpStream::connect(benchmark_addr).await.is_ok();
-            let public_ready = match mixed_port {
-                Some(port) => {
-                    tokio::net::TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], port)))
-                        .await
-                        .is_ok()
-                }
-                None => true,
-            };
-            if benchmark_ready && public_ready {
-                return Ok(mixed_port.is_some());
-            }
-            let stopped = self
-                .mixed_listener
-                .lock()
-                .map_err(|_| PawsError::Core("mixed listener lock poisoned".to_owned()))?
-                .as_ref()
-                .is_none_or(|runtime| {
-                    runtime.benchmark_task.is_finished()
-                        || runtime.task.as_ref().is_some_and(|task| task.is_finished())
-                });
-            if stopped || tokio::time::Instant::now() >= deadline {
-                self.stop_mixed_listener()?;
-                return Err(PawsError::Core(format!(
-                    "Meow listeners did not become ready (public={mixed_port:?})"
-                )));
-            }
-            tokio::time::sleep(MIXED_LISTENER_READY_RETRY).await;
-        }
-    }
-
     fn stop_mixed_listener(&self) -> Result<(), PawsError> {
-        self.stop_public_mixed_listener()?;
-        self.app_http_proxy
-            .lock()
-            .map_err(|_| PawsError::Core("app HTTP proxy lock poisoned".to_owned()))?
-            .take();
-        Ok(())
+        self.stop_engine_services()
     }
-
-    async fn restart_app_http_proxy(
-        &self,
-        tunnel: Tunnel,
-    ) -> Result<Option<AppHttpProxyEndpoint>, PawsError> {
-        let Some(platform) = self.platform_ipc()? else {
-            return Ok(None);
-        };
-        if platform.is_ui() {
-            return Ok(None);
-        }
-        if !self.lock_state()?.platform_network_protected {
-            return Err(PawsError::Core(
-                "app HTTP proxy requires protected VPN process egress".to_owned(),
-            ));
-        }
-        let runtime = AppHttpProxyRuntime::start(tunnel).await?;
-        let endpoint = runtime.endpoint();
-        *self
-            .app_http_proxy
-            .lock()
-            .map_err(|_| PawsError::Core("app HTTP proxy lock poisoned".to_owned()))? =
-            Some(runtime);
-        Ok(Some(endpoint))
-    }
-
     fn stop_public_mixed_listener(&self) -> Result<(), PawsError> {
-        self.mixed_listener
-            .lock()
-            .map_err(|_| PawsError::Core("mixed listener lock poisoned".to_owned()))?
-            .take();
-        Ok(())
+        self.stop_engine_public_listener()
     }
 
     /// Ensure the active meow tunnel is ready before the platform supplies a
@@ -3231,13 +3206,27 @@ impl CoreHandle {
     /// calling this: configuration loading may fetch providers and GeoData.
     /// Returns `true` when a cold config load was required.
     pub async fn prepare_active_vpn(&self) -> Result<bool, PawsError> {
-        let tunnel = {
+        self.prepare_active_vpn_inner(false, false).await
+    }
+
+    async fn prepare_active_vpn_inner(
+        &self,
+        restore_managed_configuration: bool,
+        require_runtime: bool,
+    ) -> Result<bool, PawsError> {
+        let (definitions_ready, restore, runtime_ready) = {
             let state = self.lock_state()?;
-            state.tunnel.clone()
+            (
+                state.engine_loaded && !state.proxy_groups.is_empty(),
+                restore_managed_configuration
+                    && state.engine_resources_authoritative
+                    && !self.vpn.is_running(),
+                state.meow_runtime_ready && state.tunnel.is_some(),
+            )
         };
-        if tunnel
-            .as_ref()
-            .is_some_and(|tunnel| !tunnel.route_snapshot().proxies.is_empty())
+        if !restore
+            && (!require_runtime || (runtime_ready && !self.vpn.is_running()))
+            && definitions_ready
         {
             return Ok(false);
         }
@@ -3250,10 +3239,12 @@ impl CoreHandle {
             let state = self.lock_state()?;
             (
                 state.profiles.active_profile().map(ToOwned::to_owned),
-                state
-                    .tunnel
-                    .as_ref()
-                    .is_some_and(|tunnel| !tunnel.route_snapshot().proxies.is_empty()),
+                state.engine_loaded
+                    && !state.proxy_groups.is_empty()
+                    && !(restore_managed_configuration
+                        && state.engine_resources_authoritative
+                        && !self.vpn.is_running())
+                    && (!require_runtime || (state.meow_runtime_ready && !self.vpn.is_running())),
             )
         };
         if ready {
@@ -3261,19 +3252,23 @@ impl CoreHandle {
         }
         let active_profile = active_profile
             .ok_or_else(|| PawsError::Core("activate a profile before starting VPN".to_owned()))?;
-        self.reload_config_inner(&active_profile).await?;
+        if require_runtime {
+            self.reload_config_for_purpose(&active_profile, MeowLoadPurpose::Runtime)
+                .await?;
+        } else {
+            self.reload_config_inner(&active_profile).await?;
+        }
         let ready = {
             let mut state = self.lock_state()?;
-            let ready = state
-                .tunnel
-                .as_ref()
-                .is_some_and(|tunnel| !tunnel.route_snapshot().proxies.is_empty());
+            let ready = state.engine_loaded
+                && !state.proxy_groups.is_empty()
+                && (!require_runtime || (state.meow_runtime_ready && state.tunnel.is_some()));
             self.publish_status_and_resource_change_locked(&mut state);
             ready
         };
         if !ready {
             return Err(PawsError::Core(
-                "active meow tunnel has no proxies; reload the profile first".to_owned(),
+                "active profile definitions are not loaded; reload the profile first".to_owned(),
             ));
         }
         Ok(true)
@@ -3289,7 +3284,11 @@ impl CoreHandle {
             self.sync_platform_vpn_state_locked(&mut state);
             ensure_platform_attempt_active(&state, attempt_id)?;
         }
-        let loaded = self.prepare_active_vpn().await?;
+        // A previous native/remote engine may have committed selection or
+        // provider changes without mutating this process's Meow model. Only
+        // an owned start restores that model from persisted configuration;
+        // background bootstrap/lookup must keep the native projection intact.
+        let loaded = self.prepare_active_vpn_inner(true, false).await?;
         let mut state = self.lock_state()?;
         self.sync_platform_vpn_state_locked(&mut state);
         ensure_platform_attempt_active(&state, attempt_id)?;
@@ -3563,7 +3562,7 @@ impl CoreHandle {
                 return Err(PawsError::Core(format!(
                     "previous platform VPN owner journal for attempt {} is still pending cleanup",
                     owner.attempt_id
-                )))
+                )));
             }
         }
         let issuer_lease = platform_owner::acquire_owner_lease_exact(
@@ -3587,6 +3586,8 @@ impl CoreHandle {
         state.platform_vpn_extension_lease = None;
         state.platform_start_sequence = next_sequence;
         state.platform_start_attempt_id = attempt_id.clone();
+        state.platform_controller_endpoint = None;
+        state.api_controller.take();
         state.platform_start_outcome = PlatformStartOutcome::Pending;
         state.platform_start_delivery_observed = false;
         state.platform_extension_attached = false;
@@ -3664,14 +3665,14 @@ impl CoreHandle {
             JournalRead::Missing => {
                 return Err(PawsError::Core(format!(
                     "platform VPN owner journal is missing for attempt {attempt_id}"
-                )))
+                )));
             }
             JournalRead::Present(journal) if journal.attempt_id == attempt_id => journal,
             JournalRead::Present(journal) => {
                 return Err(PawsError::Core(format!(
                     "stale platform VPN start attempt {attempt_id}; owner journal belongs to {}",
                     journal.attempt_id
-                )))
+                )));
             }
         };
         let issuer_lease_path =
@@ -3698,12 +3699,12 @@ impl CoreHandle {
                     PlatformVpnOwnerLeaseObservation::Released => {
                         return Err(PawsError::Core(format!(
                             "platform VPN start issuer lease for attempt {attempt_id} was released"
-                        )))
+                        )));
                     }
                     PlatformVpnOwnerLeaseObservation::HeldOther => {
                         return Err(PawsError::Core(format!(
                             "cannot verify the exact platform VPN start issuer lease for attempt {attempt_id}"
-                        )))
+                        )));
                     }
                 }
                 let lease = platform_owner::acquire_owner_lease_exact(
@@ -3744,12 +3745,12 @@ impl CoreHandle {
                     PlatformVpnOwnerLeaseObservation::HeldExact => {
                         return Err(PawsError::Core(format!(
                             "platform VPN attempt {attempt_id} is still owned by another Extension process"
-                        )))
+                        )));
                     }
                     PlatformVpnOwnerLeaseObservation::HeldOther => {
                         return Err(PawsError::Core(format!(
                             "cannot verify the exact previous Extension lease for attempt {attempt_id}"
-                        )))
+                        )));
                     }
                 }
                 let lease = platform_owner::acquire_owner_lease_exact(
@@ -3768,7 +3769,7 @@ impl CoreHandle {
             _ => {
                 return Err(PawsError::Core(format!(
                     "platform VPN owner journal has an invalid phase for attempt {attempt_id}"
-                )))
+                )));
             }
         };
         if let Some(lease) = acquired_extension_lease {
@@ -3952,7 +3953,7 @@ impl CoreHandle {
             JournalRead::Missing => {
                 return Err(PawsError::Core(format!(
                     "platform VPN owner journal is missing before cleanup acknowledgement for {attempt_id}"
-                )))
+                )));
             }
             JournalRead::Present(journal) if journal.attempt_id == attempt_id => journal,
             JournalRead::Present(_) => return Ok(false),
@@ -3968,7 +3969,7 @@ impl CoreHandle {
             _ => {
                 return Err(PawsError::Core(format!(
                     "platform VPN owner journal does not match the Extension acknowledging cleanup for {attempt_id}"
-                )))
+                )));
             }
         };
         if !platform_owner::delete_exact(&journal_path, attempt_id, Some(expected_extension))? {
@@ -4134,7 +4135,7 @@ impl CoreHandle {
                     _ => {
                         return Err(PawsError::Core(format!(
                             "platform VPN owner journal has an invalid phase for {attempt_id}"
-                        )))
+                        )));
                     }
                 };
             match proof {
@@ -4547,24 +4548,23 @@ impl CoreHandle {
                     )));
                 } else {
                     match platform_owner::read(&journal_path)? {
-                    JournalRead::Present(current)
-                        if current.attempt_id == attempt_id
-                            && matches!(
-                                (current.phase, current.extension.as_ref()),
-                                (PlatformVpnOwnerPhase::Stopping, None)
-                                    | (PlatformVpnOwnerPhase::Attached, Some(_))
-                            ) =>
-                        {}
+                        JournalRead::Present(current)
+                            if current.attempt_id == attempt_id
+                                && matches!(
+                                    (current.phase, current.extension.as_ref()),
+                                    (PlatformVpnOwnerPhase::Stopping, None)
+                                        | (PlatformVpnOwnerPhase::Attached, Some(_))
+                                ) => {}
                         JournalRead::Present(current) => {
                             return Err(PawsError::Core(format!(
                                 "platform VPN owner changed from {attempt_id} to {} while claiming stop",
                                 current.attempt_id
-                            )))
+                            )));
                         }
                         JournalRead::Missing => {
                             return Err(PawsError::Core(format!(
                                 "platform VPN owner journal disappeared while claiming stop for {attempt_id}"
-                            )))
+                            )));
                         }
                     }
                 }
@@ -4572,7 +4572,7 @@ impl CoreHandle {
             _ => {
                 return Err(PawsError::Core(format!(
                     "platform VPN owner journal has an invalid phase while claiming stop for {attempt_id}"
-                )))
+                )));
             }
         }
         state.platform_os_stop_epoch = intent_epoch;
@@ -4615,7 +4615,7 @@ impl CoreHandle {
             self.persist_platform_vpn_state_locked(&mut state)?;
         }
         let stats = self.vpn.stats();
-        self.vpn.stop().await?;
+        self.stop_active_engine().await?;
         self.stop_mixed_listener()?;
         let mut state = self.lock_state()?;
         if attempt_id.is_some_and(|attempt_id| state.platform_start_attempt_id != attempt_id) {
@@ -4979,6 +4979,11 @@ impl CoreHandle {
         let (stopped_controller, start_config) = {
             let mut state = self.lock_state()?;
             self.sync_platform_vpn_state_locked(&mut state);
+            if state.platform_vpn_running
+                && (state.platform_vpn_engine != Some(VpnEngine::Meow) || !self.vpn.is_running())
+            {
+                return Ok(false);
+            }
             let connected = self.vpn.is_running() || state.platform_vpn_running;
             let enabled =
                 self.api_controller_enabled && state.network_ports.controller_enabled && connected;
@@ -5034,7 +5039,11 @@ impl CoreHandle {
         }
         let pending = {
             let mut state = self.lock_state()?;
-            sync_live_controller_route(&mut state)?;
+            if state.api_controller.is_some()
+                && (self.vpn.is_running() || !state.engine_resources_authoritative)
+            {
+                sync_live_controller_route(&mut state)?;
+            }
             let Some(controller) = state.api_controller.as_ref() else {
                 return Ok(false);
             };
@@ -5108,8 +5117,7 @@ impl CoreHandle {
                 )
             };
             if let Err(error) = self
-                .vpn
-                .start(fd, vpn_options, tunnel, sniffer_config)
+                .start_meow_session(fd, vpn_options, tunnel, sniffer_config)
                 .await
             {
                 let (mut error, rollback_succeeded) = self
@@ -5128,8 +5136,7 @@ impl CoreHandle {
                     };
                     match previous_runtime {
                         Some((tunnel, sniffer_config, vpn_options)) => self
-                            .vpn
-                            .start(fd, vpn_options, tunnel, sniffer_config)
+                            .start_meow_session(fd, vpn_options, tunnel, sniffer_config)
                             .await
                             .map(|_| true)
                             .map_err(|rollback| {
@@ -5188,8 +5195,26 @@ impl CoreHandle {
     }
 
     async fn reload_config_inner(&self, profile_id: &str) -> Result<(), PawsError> {
+        let native_other = self
+            .lock_state()?
+            .platform_vpn_engine
+            .is_some_and(|engine| engine != VpnEngine::Meow);
+        let purpose = if !native_other && (self.platform_ipc()?.is_none() || self.vpn.is_running())
+        {
+            MeowLoadPurpose::Runtime
+        } else {
+            MeowLoadPurpose::Preview
+        };
+        self.reload_config_for_purpose(profile_id, purpose).await
+    }
+
+    async fn reload_config_for_purpose(
+        &self,
+        profile_id: &str,
+        purpose: MeowLoadPurpose,
+    ) -> Result<(), PawsError> {
         let started = Instant::now();
-        let result = self.reload_config_unreported(profile_id).await;
+        let result = self.reload_config_unreported(profile_id, purpose).await;
         if let Err(error) = &result {
             // Config construction can fail before the controller /logs
             // channel exists. Record directly, independent of tracing setup.
@@ -5206,7 +5231,11 @@ impl CoreHandle {
         result
     }
 
-    async fn reload_config_unreported(&self, profile_id: &str) -> Result<(), PawsError> {
+    async fn reload_config_unreported(
+        &self,
+        profile_id: &str,
+        purpose: MeowLoadPurpose,
+    ) -> Result<(), PawsError> {
         #[cfg(test)]
         if self.fail_next_config_reload.swap(false, Ordering::AcqRel) {
             return Err(PawsError::Core(
@@ -5225,6 +5254,7 @@ impl CoreHandle {
             selected_proxies,
             preserve_existing_order,
             expected_config_revision,
+            preview_owner,
         ) = {
             let state = self.lock_state()?;
             let same_profile = state.profiles.active_profile() == Some(profile_id);
@@ -5248,13 +5278,39 @@ impl CoreHandle {
                 selected_proxies,
                 preserve_existing_order,
                 state.config_revision,
+                profile_preview::PreviewOwner::capture(&state),
             )
         };
         let runtime_yaml =
             engine_policy::pin_benchmark_runtime_yaml(&runtime_yaml, &selected_proxies)?;
         let yaml_ready = Instant::now();
 
-        let config = load_meow_config_candidate(&runtime_yaml, &runtime_path).await?;
+        if purpose == MeowLoadPurpose::Preview {
+            let profiles = self.lock_state()?.profiles.clone();
+            let source = runtime_yaml.clone();
+            let metadata = tokio::task::spawn_blocking(move || {
+                profiles.source_metadata(&source, &selected_proxies)
+            })
+            .await
+            .map_err(|error| {
+                PawsError::Core(format!("profile metadata worker failed: {error}"))
+            })??;
+            return self
+                .commit_profile_preview(profile_preview::ProfilePreview {
+                    profile_id: profile_id.to_owned(),
+                    runtime_yaml,
+                    metadata,
+                    vpn_options,
+                    controller_access,
+                    network_ports,
+                    revision: expected_config_revision,
+                    owner: preview_owner,
+                    traffic: tun_stats,
+                })
+                .await;
+        }
+
+        let config = load_meow_config_candidate(&runtime_yaml, &runtime_path, purpose).await?;
         let meow_ready = Instant::now();
         // Match Meow's mobile integration: proxy upstream hostnames use the
         // configured meow DNS (including proxy-server-nameserver) instead of
@@ -5264,16 +5320,14 @@ impl CoreHandle {
             target_os = "ios",
             target_env = "ohos"
         ));
-        if config.dns.enabled || VPN_PLATFORM {
-            meow_common::set_host_resolver(Arc::new(
-                meow_dns::ResolverHostHook::new_with_proxy_resolver(
+        let host_resolver: Option<Arc<dyn meow_common::HostResolver>> =
+            (config.dns.enabled || VPN_PLATFORM).then(|| {
+                Arc::new(meow_dns::ResolverHostHook::new_with_proxy_resolver(
                     Arc::clone(&config.dns.resolver),
                     config.dns.proxy_resolver.clone(),
-                ),
-            ));
-        } else {
-            meow_common::clear_host_resolver();
-        }
+                )) as Arc<dyn meow_common::HostResolver>
+            });
+        let auth = config.auth.clone();
         let raw_config = config.raw.clone();
         let loaded_rule_lines = raw_config.rules.clone().unwrap_or_default();
         let proxy_provider_registry = config.proxy_providers.clone();
@@ -5289,10 +5343,13 @@ impl CoreHandle {
             )
         };
         let runtime_rules = runtime_rule_summaries(profile_id, &loaded_rule_lines, &editable_rules);
-        let tunnel = tunnel_from_config(config, mode);
+        let tunnel = tunnel_from_config_for(config, mode, purpose);
         // 0.22 defers provider proxy fetches until the shared dialer registry
         // is published. Match the mobile embedders' one-shot initial retry.
-        for provider in proxy_provider_registry.values() {
+        for provider in proxy_provider_registry
+            .values()
+            .filter(|_| purpose == MeowLoadPurpose::Runtime)
+        {
             if provider.take_deferred_initial() {
                 let provider = Arc::clone(provider);
                 tokio::spawn(async move {
@@ -5322,10 +5379,16 @@ impl CoreHandle {
         let controller_start = ControllerStartConfig {
             runtime_path,
             raw_config,
+            auth,
             proxy_providers: proxy_provider_registry,
             provider_dialer_registry,
             rule_providers: rule_provider_registry,
             listeners,
+            host_resolver: if purpose == MeowLoadPurpose::Runtime {
+                host_resolver
+            } else {
+                None
+            },
         };
         let next_controller = self.start_api_controller(
             network_ports.controller_enabled,
@@ -5364,6 +5427,7 @@ impl CoreHandle {
         state.controller_start = Some(controller_start);
         state.controller_diagnostics = sample_controller_diagnostics(&state);
         state.tunnel = Some(tunnel);
+        state.meow_runtime_ready = purpose == MeowLoadPurpose::Runtime;
         state.sniffer_config = sniffer_config;
         state.proxy_groups = proxy_groups;
         state.providers = providers;
@@ -5373,6 +5437,7 @@ impl CoreHandle {
         state.controller_access = controller_access;
         state.network_ports = network_ports;
         state.engine_loaded = true;
+        state.engine_resources_authoritative = false;
         state.geodata = state.profiles.geodata_files();
         state.last_meow_traffic_sample = None;
         invalidate_exit_location(&mut state);
@@ -5399,7 +5464,7 @@ impl CoreHandle {
     pub fn set_mode(&self, mode: RuntimeMode) -> Result<(), PawsError> {
         let _reload_guard = self.try_config_transaction()?;
         let mut state = self.lock_state()?;
-        if mode == RuntimeMode::Global && state.tunnel.is_none() {
+        if mode == RuntimeMode::Global && !state.engine_loaded {
             return Err(PawsError::Core(
                 "Global mode requires an active profile with at least one proxy node".to_owned(),
             ));
@@ -5429,7 +5494,7 @@ impl CoreHandle {
     }
 
     pub async fn select_proxy(&self, group_name: &str, proxy_name: &str) -> Result<(), PawsError> {
-        self.select_proxy_at_revision(group_name, proxy_name, None)
+        self.select_proxy_via_controller(group_name, proxy_name)
             .await
     }
 
@@ -5476,6 +5541,7 @@ impl CoreHandle {
     }
 
     pub fn unfix_proxy(&self, group_name: &str) -> Result<(), PawsError> {
+        self.reject_external_direct_operation(paws_engine::EngineCapability::ProxySelection)?;
         self.unfix_proxy_at_revision(group_name, None)
     }
 
@@ -5555,13 +5621,23 @@ impl CoreHandle {
         group_name: &str,
         proxy_name: &str,
     ) -> Result<(), PawsError> {
+        if let Some(target) = self.runtime_management()? {
+            return self
+                .select_managed_proxy(group_name, proxy_name, target)
+                .await;
+        }
+        if self.select_offline_definition(group_name, Some(proxy_name))? {
+            return Ok(());
+        }
         {
             let state = self.lock_state()?;
-            if state.proxy_groups.iter().any(|g| {
-                g.name == group_name
-                    && g.selected.as_deref() == Some(proxy_name)
-                    && (g.fixed.is_none() || g.fixed.as_deref() == Some(proxy_name))
-            }) {
+            if state.engine_loaded
+                && state.proxy_groups.iter().any(|g| {
+                    g.name == group_name
+                        && g.selected.as_deref() == Some(proxy_name)
+                        && (g.fixed.is_none() || g.fixed.as_deref() == Some(proxy_name))
+                })
+            {
                 return Ok(());
             }
         }
@@ -5631,6 +5707,36 @@ impl CoreHandle {
     }
 
     pub async fn unfix_proxy_via_controller(&self, group_name: &str) -> Result<(), PawsError> {
+        if let Some(engine::ManagementTarget {
+            attempt,
+            revision,
+            endpoint,
+            management,
+        }) = self.runtime_management()?
+        {
+            management
+                .select_proxy(group_name, None)
+                .await
+                .map_err(engine_error)?;
+            self.ensure_management_owner(&attempt, revision, &endpoint)?;
+            let observed = management
+                .proxy_selection(group_name)
+                .await
+                .map_err(engine_error)?;
+            let committed = self.record_managed_selection(
+                &attempt, revision, &endpoint, group_name, None, observed,
+            )?;
+            self.ensure_management_owner(&attempt, committed, &endpoint)?;
+            management
+                .close_connections(None)
+                .await
+                .map_err(engine_error)?;
+            self.ensure_management_owner(&attempt, committed, &endpoint)?;
+            return Ok(());
+        }
+        if self.select_offline_definition(group_name, None)? {
+            return Ok(());
+        }
         let (controller, operation_config_revision) = {
             let state = self.lock_state()?;
             (controller_credentials(&state), state.config_revision)
@@ -5683,6 +5789,29 @@ impl CoreHandle {
         url: Option<&str>,
         timeout_ms: Option<u64>,
     ) -> Result<u16, PawsError> {
+        if let Some(engine::ManagementTarget {
+            attempt,
+            revision,
+            endpoint,
+            management,
+        }) = self.runtime_management()?
+        {
+            let result = management
+                .proxy_delay(
+                    proxy_name,
+                    url.unwrap_or("https://www.gstatic.com/generate_204"),
+                    Duration::from_millis(timeout_ms.unwrap_or(5000)),
+                )
+                .await;
+            self.record_managed_delays(
+                &attempt,
+                revision,
+                &endpoint,
+                None,
+                &[(proxy_name.to_owned(), result.as_ref().copied().unwrap_or(0))],
+            )?;
+            return result.map_err(engine_error);
+        }
         let (proxy, operation_key, operation_sequence, operation_config_revision) = {
             let mut state = self.lock_state()?;
             let Some(tunnel) = &state.tunnel else {
@@ -5759,6 +5888,26 @@ impl CoreHandle {
         payload: &str,
         timeout_ms: Option<u64>,
     ) -> Result<String, PawsError> {
+        if let Some(engine::ManagementTarget {
+            attempt,
+            revision,
+            endpoint,
+            management,
+        }) = self.runtime_management()?
+        {
+            let result = management
+                .proxy_echo(
+                    proxy_name,
+                    url,
+                    payload,
+                    Duration::from_millis(timeout_ms.unwrap_or(5000)),
+                )
+                .await
+                .map_err(engine_error)?;
+            self.ensure_management_owner(&attempt, revision, &endpoint)?;
+            return Ok(result);
+        }
+        self.reject_external_direct_operation(paws_engine::EngineCapability::ProxyEcho)?;
         let proxy = {
             let state = self.lock_state()?;
             let Some(tunnel) = &state.tunnel else {
@@ -5808,6 +5957,9 @@ impl CoreHandle {
         url: Option<&str>,
         timeout_ms: Option<u64>,
     ) -> Result<u16, PawsError> {
+        if self.runtime_management()?.is_some() {
+            return self.test_proxy_delay(proxy_name, url, timeout_ms).await;
+        }
         let (
             controller,
             external_system_tunnel,
@@ -5946,6 +6098,46 @@ impl CoreHandle {
         url: Option<&str>,
         timeout_ms: Option<u64>,
     ) -> Result<BTreeMap<String, u16>, PawsError> {
+        if let Some(engine::ManagementTarget {
+            attempt,
+            revision,
+            endpoint,
+            management,
+        }) = self.runtime_management()?
+        {
+            let members = management
+                .proxy_group(group_name)
+                .await
+                .map_err(engine_error)?
+                .proxies;
+            self.ensure_management_owner(&attempt, revision, &endpoint)?;
+            let mut delays = BTreeMap::new();
+            for member in members {
+                self.ensure_management_owner(&attempt, revision, &endpoint)?;
+                let member = member.name;
+                let delay = match management
+                    .proxy_delay(
+                        &member,
+                        url.unwrap_or("https://www.gstatic.com/generate_204"),
+                        Duration::from_millis(timeout_ms.unwrap_or(5000)),
+                    )
+                    .await
+                {
+                    Ok(delay) => delay,
+                    Err(error) => {
+                        tracing::warn!(proxy = %member, %error, "active engine group probe failed");
+                        0
+                    }
+                };
+                delays.insert(member, delay);
+            }
+            let measured = delays
+                .iter()
+                .map(|(name, delay)| (name.clone(), *delay))
+                .collect::<Vec<_>>();
+            self.record_managed_delays(&attempt, revision, &endpoint, None, &measured)?;
+            return Ok(delays);
+        }
         let (controller, operation_key, operation_sequence, operation_config_revision) = {
             let mut state = self.lock_state()?;
             let operation_key = format!("proxy-group-delay:{group_name}");
@@ -6077,6 +6269,26 @@ impl CoreHandle {
     }
 
     pub async fn flush_dns_cache_via_controller(&self) -> Result<(), PawsError> {
+        if let Some(engine::ManagementTarget {
+            attempt,
+            revision,
+            endpoint,
+            management,
+        }) = self.runtime_management()?
+        {
+            management.flush_dns(false).await.map_err(engine_error)?;
+            return self.record_managed_action(
+                &attempt,
+                revision,
+                &endpoint,
+                format!(
+                    "DNS caches flushed via active {} engine",
+                    management.capabilities().engine.as_str()
+                ),
+                None,
+            );
+        }
+
         self.vpn.flush_dns_cache()?;
         let (controller, tunnel) = {
             let state = self.lock_state()?;
@@ -6107,6 +6319,26 @@ impl CoreHandle {
     }
 
     pub async fn flush_fake_ip_cache_via_controller(&self) -> Result<(), PawsError> {
+        if let Some(engine::ManagementTarget {
+            attempt,
+            revision,
+            endpoint,
+            management,
+        }) = self.runtime_management()?
+        {
+            management.flush_dns(true).await.map_err(engine_error)?;
+            return self.record_managed_action(
+                &attempt,
+                revision,
+                &endpoint,
+                format!(
+                    "fake-IP cache flushed via active {} engine",
+                    management.capabilities().engine.as_str()
+                ),
+                None,
+            );
+        }
+
         let (controller, tunnel) = {
             let state = self.lock_state()?;
             (controller_credentials(&state), state.tunnel.clone())
@@ -6144,6 +6376,41 @@ impl CoreHandle {
         &self,
         provider_name: &str,
     ) -> Result<(), PawsError> {
+        if let Some(engine::ManagementTarget {
+            attempt,
+            revision,
+            endpoint,
+            management,
+        }) = self.runtime_management()?
+        {
+            management
+                .provider_health(provider_name, None, None, Duration::from_secs(30), None)
+                .await
+                .map_err(engine_error)?;
+            let members = management
+                .provider_members(provider_name)
+                .await
+                .map_err(engine_error)?;
+            self.record_managed_delays(
+                &attempt,
+                revision,
+                &endpoint,
+                Some(provider_name),
+                &members
+                    .into_iter()
+                    .map(|member| {
+                        (
+                            member.name,
+                            member
+                                .delay_ms
+                                .and_then(|delay| u16::try_from(delay).ok())
+                                .unwrap_or(0),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )?;
+            return Ok(());
+        }
         let (controller, operation_key, operation_sequence, operation_config_revision) = {
             let mut state = self.lock_state()?;
             let operation_key = format!("provider-health:proxy:{provider_name}");
@@ -6206,6 +6473,37 @@ impl CoreHandle {
         timeout_ms: Option<u64>,
         expected_status: Option<&str>,
     ) -> Result<u16, PawsError> {
+        if let Some(engine::ManagementTarget {
+            attempt,
+            revision,
+            endpoint,
+            management,
+        }) = self.runtime_management()?
+        {
+            let result = management
+                .provider_health(
+                    provider_name,
+                    Some(proxy_name),
+                    Some(url),
+                    Duration::from_millis(timeout_ms.unwrap_or(5000)),
+                    expected_status,
+                )
+                .await
+                .map_err(engine_error)
+                .and_then(|delay| {
+                    delay.ok_or_else(|| {
+                        PawsError::Core("native provider response missing delay".into())
+                    })
+                });
+            self.record_managed_delays(
+                &attempt,
+                revision,
+                &endpoint,
+                Some(provider_name),
+                &[(proxy_name.to_owned(), result.as_ref().copied().unwrap_or(0))],
+            )?;
+            return result;
+        }
         let (controller, operation_key, operation_sequence, operation_config_revision) = {
             let mut state = self.lock_state()?;
             let operation_key = format!("provider-member-health:{provider_name}:{proxy_name}");
@@ -6387,6 +6685,76 @@ impl CoreHandle {
         let (operation_key, operation_sequence, operation_config_revision) =
             operation.expect("provider operation exists for a resolved provider");
         let provider_type = provider.provider_type.clone();
+        if let Some(engine::ManagementTarget {
+            attempt,
+            revision,
+            endpoint,
+            management,
+        }) = self.runtime_management()?
+        {
+            let result = async {
+                if provider_is_inline(&provider) {
+                    return Err(PawsError::Core(format!(
+                        "{provider_type} provider refresh skipped: {provider_name} is inline"
+                    )));
+                }
+                management
+                    .refresh_provider(&provider_type, provider_name)
+                    .await
+                    .map_err(engine_error)?;
+                if provider_type == "proxy" {
+                    let members = management
+                        .provider_members(provider_name)
+                        .await
+                        .map_err(engine_error)?;
+                    let groups = management.proxy_groups().await.map_err(engine_error)?;
+                    Ok(Some((members, groups)))
+                } else {
+                    Ok(None)
+                }
+            }
+            .await;
+            self.ensure_management_owner(&attempt, revision, &endpoint)?;
+            {
+                let mut state = self.lock_state()?;
+                self.sync_platform_vpn_state_locked(&mut state);
+                self.ensure_captured_management_locked(&state, &attempt, revision, &endpoint)?;
+                Self::ensure_resource_operation_current_locked(
+                    &state,
+                    &operation_key,
+                    operation_sequence,
+                    operation_config_revision,
+                )?;
+                mark_provider_refresh(
+                    &mut state,
+                    &provider_type,
+                    provider_name,
+                    unix_timestamp_string(),
+                    result.as_ref().err().map(ToString::to_string),
+                );
+                if let Ok(Some((members, groups))) = &result {
+                    if let Some(provider) = state.providers.iter_mut().find(|provider| {
+                        provider.name == provider_name && provider.provider_type == provider_type
+                    }) {
+                        provider.members = members.clone();
+                    }
+                    let mut groups = groups.clone();
+                    preserve_proxy_group_member_order(&state.proxy_groups, &mut groups);
+                    state.proxy_groups = groups;
+                    state.engine_resources_authoritative = true;
+                    persist_runtime_ui_cache_best_effort(&mut state);
+                }
+                if result.is_ok() {
+                    state.logs.push(info_log(format!(
+                        "{provider_type} provider refreshed via active engine: {provider_name}"
+                    )));
+                }
+                self.publish_resource_change_locked(&mut state);
+            }
+            result?;
+            return self.resource_projection();
+        }
+
         if provider_is_inline(&provider) {
             let message =
                 format!("{provider_type} provider refresh skipped: {provider_name} is inline");
@@ -6616,7 +6984,7 @@ impl CoreHandle {
             state.profiles.profile(profile_id)?;
             state.config_revision
         };
-        self.validate_meow_config(raw_yaml).await?;
+        self.validate_profile_schema(raw_yaml)?;
         let raw_yaml = raw_yaml.to_owned();
         self.mutate_profile_config(
             profile_id,
@@ -6634,7 +7002,7 @@ impl CoreHandle {
         expected_config_revision: u64,
         raw_yaml: &str,
     ) -> Result<(), PawsError> {
-        self.validate_meow_config(raw_yaml).await?;
+        self.validate_profile_schema(raw_yaml)?;
         let raw_yaml = raw_yaml.to_owned();
         self.mutate_profile_config(
             profile_id,
@@ -6685,16 +7053,19 @@ impl CoreHandle {
     }
 
     pub async fn validate_profile_content(&self, raw_yaml: &str) -> Result<(), PawsError> {
-        paws_profile::validate_profile_app_config(raw_yaml)?;
-        self.validate_meow_config(raw_yaml).await
+        self.validate_profile_schema(raw_yaml)
     }
 
-    async fn validate_meow_config(&self, raw_yaml: &str) -> Result<(), PawsError> {
-        let store_root = {
-            let state = self.lock_state()?;
-            state.profiles.root().to_path_buf()
-        };
-        validate_meow_config(raw_yaml, &store_root).await
+    fn validate_profile_schema(&self, raw_yaml: &str) -> Result<(), PawsError> {
+        paws_profile::validate_profile_app_config(raw_yaml)?;
+        paws_profile::validate_profile_source_shape(raw_yaml)?;
+        paws_engine::EngineNetworkServices {
+            ports: paws_profile::network_ports_from_yaml(raw_yaml)?,
+            access: paws_profile::controller_access_from_yaml(raw_yaml)?,
+        }
+        .validate()
+        .map_err(engine_error)?;
+        Ok(())
     }
 
     pub fn profile_raw_yaml(&self, profile_id: &str) -> Result<String, PawsError> {
@@ -6805,34 +7176,37 @@ impl CoreHandle {
         &self,
         profile_id: &str,
         expected_config_revision: u64,
-        engine: String,
-        system_proxy: bool,
-        dns_hijacking: bool,
-        allow_bypass: bool,
-        stack: String,
-        trusted: Vec<String>,
-        blocked: Vec<String>,
+        options: VpnOptions,
     ) -> Result<ConfigProjection, PawsError> {
-        validate_supported_vpn_options(&VpnOptions {
-            system_proxy,
-            allow_bypass,
-            ..VpnOptions::default()
-        })?;
+        validate_supported_vpn_options(&options)?;
+        if options.mtu < 1280 {
+            return Err(PawsError::Core(
+                "VPN MTU must be between 1280 and 65535".into(),
+            ));
+        }
         self.mutate_profile_config(
             profile_id,
             Some(expected_config_revision),
             format!("VPN config updated for {profile_id}"),
             move |profiles| {
-                profiles.set_profile_vpn_config_with_apps_and_engine(
-                    profile_id,
-                    engine,
-                    false,
-                    dns_hijacking,
-                    false,
-                    stack,
-                    trusted,
-                    blocked,
-                )
+                // Recheck the profile and read-only fields inside the same
+                // transaction as the revision fence and the single store commit.
+                if profiles.active_profile() != Some(profile_id) {
+                    return Err(PawsError::Core(
+                        "VPN settings require the active profile".into(),
+                    ));
+                }
+                let current = profiles.vpn_options_for_profile(profile_id)?;
+                if options.ipv6 != current.ipv6
+                    || options.addresses != current.addresses
+                    || options.routes != current.routes
+                    || options.dns_addresses != current.dns_addresses
+                {
+                    return Err(PawsError::Core(
+                        "edit IPv6, addresses and routes in the profile YAML".into(),
+                    ));
+                }
+                profiles.set_profile_vpn_config_with_apps_and_engine(profile_id, &options)
             },
         )
         .await
@@ -6844,6 +7218,18 @@ impl CoreHandle {
         network_ports: NetworkPortConfig,
         allow_lan: bool,
     ) -> Result<(), PawsError> {
+        let access = {
+            let state = self.lock_state()?;
+            let mut access = state.profiles.controller_access_for_profile(profile_id)?;
+            access.allow_lan = allow_lan;
+            access
+        };
+        paws_engine::EngineNetworkServices {
+            ports: network_ports,
+            access,
+        }
+        .validate()
+        .map_err(engine_error)?;
         self.mutate_profile_config(
             profile_id,
             None,
@@ -6870,6 +7256,18 @@ impl CoreHandle {
         network_ports: NetworkPortConfig,
         allow_lan: bool,
     ) -> Result<ConfigProjection, PawsError> {
+        let access = {
+            let state = self.lock_state()?;
+            let mut access = state.profiles.controller_access_for_profile(profile_id)?;
+            access.allow_lan = allow_lan;
+            access
+        };
+        paws_engine::EngineNetworkServices {
+            ports: network_ports,
+            access,
+        }
+        .validate()
+        .map_err(engine_error)?;
         self.mutate_profile_config(
             profile_id,
             Some(expected_config_revision),
@@ -7141,6 +7539,7 @@ impl CoreHandle {
     }
 
     pub fn close_connection(&self, id: &str) -> Result<(), PawsError> {
+        self.reject_external_direct_operation(paws_engine::EngineCapability::Connections)?;
         let mut state = self.lock_state()?;
         let Some(tunnel) = &state.tunnel else {
             return Err(PawsError::Core("meow tunnel is not loaded".to_owned()));
@@ -7157,7 +7556,66 @@ impl CoreHandle {
         Ok(())
     }
 
+    /// Close a connection only through the management lease belonging to the
+    /// session that presented it to the caller. Per-session endpoint secrets
+    /// and the Meow lease also fence a replacement between capture and IO.
+    pub async fn close_connection_for_session(
+        &self,
+        id: &str,
+        expected_session: &str,
+    ) -> Result<(), PawsError> {
+        let engine::ManagementTarget {
+            attempt,
+            revision,
+            endpoint,
+            management,
+        } = self.runtime_management()?.ok_or(PawsError::VpnNotRunning)?;
+        if attempt != expected_session || expected_session.is_empty() {
+            return Err(PawsError::Core(
+                "connection belongs to an obsolete VPN session".into(),
+            ));
+        }
+        self.ensure_management_owner(&attempt, revision, &endpoint)?;
+        management
+            .close_connections(Some(id))
+            .await
+            .map_err(engine_error)?;
+        self.record_managed_action(
+            &attempt,
+            revision,
+            &endpoint,
+            format!(
+                "connection closed via active {} engine: {id}",
+                management.capabilities().engine.as_str()
+            ),
+            Some(Some(id)),
+        )
+    }
+
     pub async fn close_connection_via_controller(&self, id: &str) -> Result<(), PawsError> {
+        if let Some(engine::ManagementTarget {
+            attempt,
+            revision,
+            endpoint,
+            management,
+        }) = self.runtime_management()?
+        {
+            management
+                .close_connections(Some(id))
+                .await
+                .map_err(engine_error)?;
+            return self.record_managed_action(
+                &attempt,
+                revision,
+                &endpoint,
+                format!(
+                    "connection closed via active {} engine: {id}",
+                    management.capabilities().engine.as_str()
+                ),
+                Some(Some(id)),
+            );
+        }
+
         let controller = {
             let state = self.lock_state()?;
             controller_credentials(&state)
@@ -7202,6 +7660,7 @@ impl CoreHandle {
     }
 
     pub fn close_all_connections(&self) -> Result<(), PawsError> {
+        self.reject_external_direct_operation(paws_engine::EngineCapability::Connections)?;
         let mut state = self.lock_state()?;
         let Some(tunnel) = &state.tunnel else {
             return Err(PawsError::Core("meow tunnel is not loaded".to_owned()));
@@ -7217,6 +7676,35 @@ impl CoreHandle {
     }
 
     pub async fn close_all_connections_via_controller(&self) -> Result<(), PawsError> {
+        if let Some(engine::ManagementTarget {
+            attempt,
+            revision,
+            endpoint,
+            management,
+        }) = self.runtime_management()?
+        {
+            let count = management
+                .connection_summary()
+                .await
+                .map_err(engine_error)?
+                .count;
+            self.ensure_management_owner(&attempt, revision, &endpoint)?;
+            management
+                .close_connections(None)
+                .await
+                .map_err(engine_error)?;
+            return self.record_managed_action(
+                &attempt,
+                revision,
+                &endpoint,
+                format!(
+                    "all connections closed via active {} engine: {count}",
+                    management.capabilities().engine.as_str()
+                ),
+                Some(None),
+            );
+        }
+
         let (controller, count) = {
             let state = self.lock_state()?;
             (
@@ -7347,79 +7835,9 @@ impl CoreHandle {
         Ok(true)
     }
 
-    pub fn snapshot(&self) -> Result<RuntimeSnapshot, PawsError> {
-        let state = self.lock_state()?;
-        let native_vpn_running = self.vpn.is_running();
-        let active_profile = state.profiles.active_profile().map(ToOwned::to_owned);
-        let mut profiles = state.profiles.summaries();
-        if let Some(profile) = profiles.iter_mut().find(|profile| profile.active) {
-            profile.rule_count = state
-                .runtime_rules
-                .iter()
-                .filter(|rule| rule.enabled)
-                .count();
-        }
-        if let Some((profile_id, upload_bytes, download_bytes)) =
-            state.platform_profile_traffic.as_ref()
-        {
-            if let Some(profile) = profiles
-                .iter_mut()
-                .find(|profile| profile.id == *profile_id)
-            {
-                profile.upload_bytes = *upload_bytes;
-                profile.download_bytes = *download_bytes;
-            }
-        }
-        let controller_diagnostics = state.controller_diagnostics.clone();
-        let vpn_running = native_vpn_running || state.platform_vpn_running;
-        Ok(RuntimeSnapshot {
-            revision: state.revision,
-            config_revision: state.config_revision,
-            observed_at_unix_nanos: state.observed_at_unix_nanos,
-            vpn_session_id: platform_vpn_session_id(&state),
-            vpn_lifecycle: vpn_lifecycle(
-                state.engine_loaded,
-                state.platform_vpn_starting,
-                state.platform_vpn_running,
-                native_vpn_running,
-                state.platform_network_protected,
-                state.platform_network_protect_error.as_deref(),
-            ),
-            engine_loaded: state.engine_loaded,
-            running: state.engine_loaded,
-            vpn_running,
-            network_protected: state.platform_network_protected,
-            network_protect_error: state.platform_network_protect_error.clone(),
-            controller_running: state.api_controller.is_some(),
-            controller_addr: state
-                .api_controller
-                .as_ref()
-                .map(|controller| controller.bind_addr.to_string()),
-            controller_diagnostics,
-            controller_access: state.controller_access.clone(),
-            network_ports: state.network_ports,
-            active_profile,
-            mode: state.mode,
-            traffic: state.traffic.clone(),
-            traffic_history: state.traffic_history.iter().cloned().collect(),
-            dns: state.dns.clone(),
-            vpn_options: state.vpn_options.clone(),
-            exit_location: state.exit_location.clone(),
-            proxy_groups: state.proxy_groups.clone(),
-            profiles,
-            rules: state.runtime_rules.clone(),
-            providers: state.providers.clone(),
-            geodata: state.geodata.clone(),
-            logs: projected_logs(&state),
-            connections: state.connections.clone(),
-            request_history: state.request_history.iter().cloned().rev().collect(),
-            about: about_snapshot(),
-        })
-    }
-
     /// Samples mutable runtime sources into the in-memory telemetry projection.
-    /// `snapshot()` intentionally does not call this function, so reads never
-    /// update counters, history, files, or provider metadata.
+    /// Explicit domain queries remain read-only unless their owning refresh
+    /// operation samples counters, history or provider metadata.
     pub fn refresh_telemetry(&self) -> Result<RuntimeRevisions, PawsError> {
         self.refresh_telemetry_internal(true)
     }
@@ -7464,18 +7882,32 @@ impl CoreHandle {
         {
             self.read_platform_vpn_telemetry().filter(|telemetry| {
                 telemetry.active_profile.as_deref() == active_profile.as_deref()
+                    && platform_telemetry_is_current(&state, telemetry)
             })
         } else {
             None
         };
 
         if let Some(telemetry) = platform_telemetry.as_ref() {
+            apply_platform_archive_status(&mut state, telemetry);
             state.traffic = telemetry.traffic.clone();
             state.traffic_history = telemetry.traffic_history.iter().cloned().collect();
-            state.dns = telemetry.dns.clone();
-            state.connections = telemetry.connections.clone();
-            state.request_history = telemetry.request_history.iter().cloned().rev().collect();
-            state.platform_logs = Some(telemetry.logs.clone());
+            if let Some(revisions) = &telemetry.revisions {
+                let resources_changed =
+                    state
+                        .engine_observation
+                        .revisions
+                        .as_ref()
+                        .is_none_or(|previous| {
+                            previous.groups != revisions.groups
+                                || previous.providers != revisions.providers
+                                || previous.rules != revisions.rules
+                        });
+                state.engine_observation.revisions = Some(revisions.clone());
+                if resources_changed {
+                    self.publish_resource_change_locked(&mut state);
+                }
+            }
             state.platform_profile_traffic = telemetry.active_profile.as_ref().map(|profile_id| {
                 (
                     profile_id.clone(),
@@ -7486,7 +7918,6 @@ impl CoreHandle {
             state.last_traffic_sample = None;
             state.last_meow_traffic_sample = None;
         } else {
-            state.platform_logs = None;
             state.platform_profile_traffic = None;
             // External engines own their counters and history cadence. They
             // have no Rust TUN, and a loaded Meow tunnel is not their data plane.
@@ -7505,29 +7936,35 @@ impl CoreHandle {
                 state.traffic.tun_download_speed = 0;
                 state.last_traffic_sample = None;
             }
-            let connections = if let Some(tunnel) = state.tunnel.clone() {
+            if let Some(tunnel) = state.tunnel.clone().filter(|_| !external_traffic) {
                 apply_meow_traffic_sample(
                     &mut state,
                     &tunnel,
                     tun_stats.is_none() && !external_traffic,
                 )?;
-                active_connections_from_tunnel(&tunnel)
-            } else {
+            } else if !external_traffic {
                 state.traffic.meow_upload_speed = 0;
                 state.traffic.meow_download_speed = 0;
                 state.last_meow_traffic_sample = None;
-                Vec::new()
-            };
-            record_request_history(&mut state, &connections);
+            }
             if !external_traffic {
                 record_traffic_history(&mut state);
             }
-            state.connections = connections;
-            state.dns = dns_snapshot(&state.vpn_options, tun_stats.as_ref());
+            if !external_traffic {
+                state.dns = dns_snapshot(&state.vpn_options, tun_stats.as_ref());
+            }
         }
 
-        state.controller_diagnostics = sample_controller_diagnostics(&state);
-        let resources_changed = sample_runtime_resources(&mut state);
+        if !state.platform_vpn_running {
+            state.controller_diagnostics = sample_controller_diagnostics(&state);
+        }
+        // Only the process owning the actual Meow packet stack can sample
+        // these objects. Go engines and the UI process retain measurements
+        // committed by their authenticated management port instead.
+        let sample_local_resources = !state.platform_vpn_running;
+        let resources_changed = sample_local_resources
+            && (!state.engine_resources_authoritative || self.vpn.is_running())
+            && sample_runtime_resources(&mut state);
 
         Ok(if resources_changed {
             self.publish_telemetry_and_resource_change_locked(&mut state)
@@ -7542,19 +7979,30 @@ impl CoreHandle {
     /// cannot observe the native TUN session through this process' memory.
     pub fn persist_vpn_telemetry(&self) -> Result<(), PawsError> {
         let telemetry = {
-            let state = self.lock_state()?;
-            platform_vpn_telemetry_projection(&state)
+            let mut state = self.lock_state()?;
+            let mut telemetry = platform_vpn_telemetry_projection(&state);
+            telemetry.updated_at = telemetry
+                .updated_at
+                .max(state.platform_telemetry_publish_time.saturating_add(1));
+            state.platform_telemetry_publish_time = telemetry.updated_at;
+            telemetry
         };
+        #[cfg(test)]
+        {
+            // Host tests have no Ashmem device. Capture the actual production
+            // projection at its publication boundary, never a test-built DTO.
+            let mut samples = self.telemetry_publications.lock().unwrap();
+            if samples.len() == 8 {
+                samples.remove(0);
+            }
+            samples.push(telemetry.clone());
+        }
         let Some(platform) = self.platform_ipc()? else {
             return Ok(());
         };
         platform
             .publish_telemetry(telemetry)
             .map_err(platform_ipc_error)
-    }
-
-    pub fn snapshot_json(&self) -> Result<String, PawsError> {
-        to_json(&self.snapshot()?)
     }
 
     /// Notification polling must not clone rules, proxy groups or log history.
@@ -7585,10 +8033,19 @@ impl CoreHandle {
         if !enabled || !self.api_controller_enabled {
             return Ok(None);
         }
-        if self
-            .platform_ipc()?
-            .is_some_and(|platform| !platform.is_ui())
         {
+            let state = self.lock_state()?;
+            if state.platform_vpn_starting
+                || matches!(
+                    state.platform_vpn_engine,
+                    Some(VpnEngine::Mihomo | VpnEngine::SingBox)
+                )
+            {
+                return Ok(None);
+            }
+        }
+
+        if self.platform_ipc()?.is_some() {
             return Ok(None);
         }
         if !self.vpn.is_running() && !self.lock_state()?.platform_vpn_running {
@@ -7601,6 +8058,7 @@ impl CoreHandle {
             provider_dialer_registry,
             rule_providers,
             listeners,
+            ..
         } = config.clone();
         let bind_addr = self
             .api_controller_addr_override
@@ -8009,11 +8467,15 @@ impl CoreHandle {
             state.platform_network_protected = remote.network_protected;
             state.platform_network_protect_error = remote.network_protect_error;
             state.platform_vpn_engine = remote.engine.filter(|_| remote.running);
+            state.platform_controller_endpoint =
+                remote.controller_endpoint.filter(|_| remote.running);
             state.platform_app_http_proxy = if remote.running {
                 remote.app_http_proxy
             } else {
                 None
             };
+            state.platform_public_controller_addr =
+                remote.public_controller_addr.filter(|_| remote.running);
         }
         if state.platform_vpn_cleanup_complete {
             state.platform_vpn_issuer_lease = None;
@@ -8620,6 +9082,7 @@ fn platform_session_projection(
 async fn load_meow_config_candidate(
     runtime_yaml: &str,
     runtime_path: &Path,
+    purpose: MeowLoadPurpose,
 ) -> Result<Config, PawsError> {
     let file_name = runtime_path
         .file_name()
@@ -8633,7 +9096,7 @@ async fn load_meow_config_candidate(
             candidate_path.display()
         ))
     })?;
-    let result = load_meow_config_from_path(runtime_yaml, &candidate_path).await;
+    let result = load_meow_config_from_path(runtime_yaml, &candidate_path, purpose).await;
     let cleanup = fs::remove_file(&candidate_path);
     match (result, cleanup) {
         (Ok(config), _) => Ok(config),
@@ -8642,194 +9105,6 @@ async fn load_meow_config_candidate(
             "runtime configuration validation failed: {primary}; candidate cleanup also failed: {cleanup}"
         ))),
     }
-}
-
-pub(crate) fn profile_requires_mihomo(raw_yaml: &str) -> Result<bool, PawsError> {
-    let value: serde_yaml::Value =
-        serde_yaml::from_str(raw_yaml).map_err(|error| PawsError::Core(error.to_string()))?;
-    // Provider nodes are not described by the inline proxies list. Until the
-    // loaded provider's complete capabilities are audited, a missing inline
-    // plugin must not allow a manual candidate to bypass the release gate.
-    if value
-        .get("proxy-providers")
-        .and_then(serde_yaml::Value::as_mapping)
-        .is_some_and(|providers| !providers.is_empty())
-    {
-        return Ok(true);
-    }
-    let Some(proxies) = value
-        .as_mapping()
-        .and_then(|root| root.get(serde_yaml::Value::String("proxies".to_owned())))
-        .and_then(serde_yaml::Value::as_sequence)
-    else {
-        return Ok(false);
-    };
-    Ok(proxies.iter().any(|proxy| {
-        proxy.as_mapping().is_some_and(|proxy| {
-            proxy
-                .get(serde_yaml::Value::String("plugin".to_owned()))
-                .is_some_and(|value| !value.is_null())
-        })
-    }))
-}
-
-fn render_mihomo_runtime_yaml(runtime_yaml: &str) -> Result<String, PawsError> {
-    let mut value: serde_yaml::Value =
-        serde_yaml::from_str(runtime_yaml).map_err(|error| PawsError::Core(error.to_string()))?;
-    let root = value
-        .as_mapping_mut()
-        .ok_or_else(|| PawsError::Core("profile root must be a YAML map".to_owned()))?;
-    let key = |name: &str| serde_yaml::Value::String(name.to_owned());
-    for name in [
-        "paws",
-        "geodata",
-        "external-controller-tls",
-        "external-controller-unix",
-        "external-controller-pipe",
-        "secret",
-    ] {
-        root.remove(key(name));
-    }
-    root.insert(
-        key("external-controller"),
-        serde_yaml::Value::String("127.0.0.1:9090".to_owned()),
-    );
-    let listeners = root
-        .entry(key("listeners"))
-        .or_insert_with(|| serde_yaml::Value::Sequence(Vec::new()));
-    if let Some(list) = listeners.as_sequence_mut() {
-        list.push(
-            serde_yaml::from_str(
-                "name: tinypaws-mihomo-benchmark\ntype: mixed\nport: 18490\nlisten: 127.0.0.1\n",
-            )
-            .map_err(|e| PawsError::Core(e.to_string()))?,
-        );
-    }
-    // TinyPaws owns the packaged geodata lifecycle. Letting mihomo replace a
-    // live memory-mapped MMDB in the background can invalidate readers in the
-    // VPN process; refreshes are installed atomically before a later reload.
-    root.insert(key("geo-auto-update"), serde_yaml::Value::Bool(false));
-    root.remove(key("geo-update-interval"));
-    repair_mihomo_dns_detours(root);
-    let tun = root
-        .entry(key("tun"))
-        .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
-    let tun = tun
-        .as_mapping_mut()
-        .ok_or_else(|| PawsError::Core("profile field 'tun' must be a mapping".to_owned()))?;
-    tun.insert(key("enable"), serde_yaml::Value::Bool(false));
-    tun.insert(key("stack"), serde_yaml::Value::String("gvisor".to_owned()));
-    tun.insert(key("auto-route"), serde_yaml::Value::Bool(false));
-    serde_yaml::to_string(&value).map_err(|error| PawsError::Core(error.to_string()))
-}
-
-fn repair_mihomo_dns_detours(root: &mut serde_yaml::Mapping) {
-    let key = |name: &str| serde_yaml::Value::String(name.to_owned());
-    let route_names = ["proxy-groups", "proxies"]
-        .into_iter()
-        .filter_map(|field| {
-            root.get(key(field))
-                .and_then(serde_yaml::Value::as_sequence)
-        })
-        .flatten()
-        .filter_map(serde_yaml::Value::as_mapping)
-        .filter_map(|item| item.get(key("name")).and_then(serde_yaml::Value::as_str))
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    let Some(dns) = root
-        .get_mut(key("dns"))
-        .and_then(serde_yaml::Value::as_mapping_mut)
-    else {
-        return;
-    };
-    dns.insert(key("respect-rules"), serde_yaml::Value::Bool(true));
-    dns.insert(
-        key("proxy-server-nameserver"),
-        serde_yaml::Value::Sequence(vec![
-            serde_yaml::Value::String("223.5.5.5".to_owned()),
-            serde_yaml::Value::String("119.29.29.29".to_owned()),
-        ]),
-    );
-    let Some(policy) = dns
-        .get_mut(key("nameserver-policy"))
-        .and_then(serde_yaml::Value::as_mapping_mut)
-    else {
-        return;
-    };
-    for servers in policy
-        .values_mut()
-        .filter_map(serde_yaml::Value::as_sequence_mut)
-    {
-        let detour = servers
-            .iter()
-            .filter_map(serde_yaml::Value::as_str)
-            .find_map(|candidate| {
-                let candidate = candidate.trim();
-                if candidate.contains("://")
-                    || candidate.contains('#')
-                    || candidate.contains('.')
-                    || candidate.parse::<IpAddr>().is_ok()
-                {
-                    return None;
-                }
-                route_names
-                    .iter()
-                    .find(|name| {
-                        name.as_str() == candidate
-                            || name
-                                .trim_start_matches(|character: char| !character.is_alphanumeric())
-                                .trim()
-                                == candidate
-                    })
-                    .cloned()
-            });
-        let Some(detour) = detour else {
-            continue;
-        };
-        if !servers
-            .iter()
-            .filter_map(serde_yaml::Value::as_str)
-            .any(|server| {
-                server.contains("://") || server.parse::<IpAddr>().is_ok() || server.contains('.')
-            })
-        {
-            continue;
-        }
-        servers.retain(|server| {
-            server.as_str().is_none_or(|server| {
-                let server = server.trim();
-                server != detour
-                    && route_names.iter().all(|name| {
-                        name.as_str() != server
-                            && name
-                                .trim_start_matches(|character: char| !character.is_alphanumeric())
-                                .trim()
-                                != server
-                    })
-            })
-        });
-        for server in servers.iter_mut() {
-            let Some(raw) = server.as_str() else {
-                continue;
-            };
-            let raw = raw.trim();
-            if !(raw.contains("://") || raw.parse::<IpAddr>().is_ok() || raw.contains('.')) {
-                continue;
-            }
-            let base = raw.split_once('#').map_or(raw, |(base, _)| base).trim();
-            if !base.is_empty() {
-                *server = serde_yaml::Value::String(format!("{base}#RULES"));
-            }
-        }
-    }
-}
-
-struct RenderedSingBoxConfig {
-    config_json: String,
-    proxy_count: usize,
-    group_count: usize,
-    rule_count: usize,
-    skipped_rule_count: usize,
 }
 
 fn yaml_field<'a>(mapping: &'a serde_yaml::Mapping, name: &str) -> Option<&'a serde_yaml::Value> {
@@ -8844,275 +9119,6 @@ fn yaml_string(mapping: &serde_yaml::Mapping, name: &str) -> Option<String> {
 
 fn yaml_u64(mapping: &serde_yaml::Mapping, name: &str) -> Option<u64> {
     yaml_field(mapping, name).and_then(serde_yaml::Value::as_u64)
-}
-
-fn sing_box_tag(name: &str) -> String {
-    match name.trim().to_ascii_uppercase().as_str() {
-        "DIRECT" => "direct".to_owned(),
-        "REJECT" | "REJECT-DROP" => "block".to_owned(),
-        _ => name.to_owned(),
-    }
-}
-
-fn sing_box_plugin_options(value: Option<&serde_yaml::Value>) -> Option<String> {
-    match value {
-        Some(serde_yaml::Value::String(value)) if !value.is_empty() => Some(value.to_owned()),
-        Some(serde_yaml::Value::Mapping(options)) => {
-            let mode = yaml_string(options, "mode")
-                .or_else(|| yaml_string(options, "obfs"))
-                .unwrap_or_else(|| "http".to_owned());
-            let mut rendered = format!("obfs={mode}");
-            if let Some(host) = yaml_string(options, "host")
-                .or_else(|| yaml_string(options, "obfs-host"))
-                .filter(|host| !host.is_empty())
-            {
-                rendered.push_str(";obfs-host=");
-                rendered.push_str(&host);
-            }
-            Some(rendered)
-        }
-        _ => None,
-    }
-}
-
-fn sing_box_proxy_outbound(proxy: &serde_yaml::Value) -> Option<serde_json::Value> {
-    sing_box_proxy::outbound(proxy)
-}
-
-fn render_sing_box_runtime_json(
-    runtime_yaml: &str,
-    mode: RuntimeMode,
-    selections: &BTreeMap<String, String>,
-    options: &VpnOptions,
-) -> Result<RenderedSingBoxConfig, PawsError> {
-    let value: serde_yaml::Value =
-        serde_yaml::from_str(runtime_yaml).map_err(|error| PawsError::Core(error.to_string()))?;
-    let root = value
-        .as_mapping()
-        .ok_or_else(|| PawsError::Core("profile root must be a YAML map".to_owned()))?;
-    let proxies = yaml_field(root, "proxies")
-        .and_then(serde_yaml::Value::as_sequence)
-        .cloned()
-        .unwrap_or_default();
-    let groups = yaml_field(root, "proxy-groups")
-        .and_then(serde_yaml::Value::as_sequence)
-        .cloned()
-        .unwrap_or_default();
-
-    let mut outbounds = Vec::new();
-    let mut available_tags = BTreeSet::new();
-    for proxy in &proxies {
-        if let Some(outbound) = sing_box_proxy_outbound(proxy) {
-            if let Some(tag) = outbound.get("tag").and_then(serde_json::Value::as_str) {
-                available_tags.insert(tag.to_owned());
-            }
-            outbounds.push(outbound);
-        }
-    }
-    let proxy_count = outbounds.len();
-    let group_names = groups
-        .iter()
-        .filter_map(serde_yaml::Value::as_mapping)
-        .filter_map(|group| yaml_string(group, "name"))
-        .collect::<BTreeSet<_>>();
-    available_tags.extend(group_names.iter().cloned());
-    available_tags.insert("direct".to_owned());
-    available_tags.insert("block".to_owned());
-
-    let mut group_count = 0usize;
-    for group in &groups {
-        let Some(group) = group.as_mapping() else {
-            continue;
-        };
-        let Some(name) = yaml_string(group, "name") else {
-            continue;
-        };
-        let members = yaml_field(group, "proxies")
-            .and_then(serde_yaml::Value::as_sequence)
-            .into_iter()
-            .flatten()
-            .filter_map(serde_yaml::Value::as_str)
-            .map(sing_box_tag)
-            .filter(|member| member != &name && available_tags.contains(member))
-            .collect::<Vec<_>>();
-        if members.is_empty() {
-            continue;
-        }
-        let selected = selections
-            .get(&name)
-            .map(|selected| sing_box_tag(selected))
-            .filter(|selected| members.contains(selected))
-            .unwrap_or_else(|| members[0].clone());
-        outbounds.push(serde_json::json!({
-            "type": "selector",
-            "tag": name,
-            "outbounds": members,
-            "default": selected,
-            "interrupt_exist_connections": true,
-        }));
-        group_count += 1;
-    }
-    outbounds.push(serde_json::json!({"type": "direct", "tag": "direct"}));
-    outbounds.push(serde_json::json!({"type": "block", "tag": "block"}));
-
-    let first_group = group_names.iter().next().cloned();
-    let first_proxy = outbounds.iter().find_map(|outbound| {
-        (outbound.get("type").and_then(serde_json::Value::as_str) == Some("shadowsocks"))
-            .then(|| outbound.get("tag")?.as_str().map(ToOwned::to_owned))
-            .flatten()
-    });
-    let mut final_outbound = match mode {
-        RuntimeMode::Direct => "direct".to_owned(),
-        RuntimeMode::Global => selections
-            .get("GLOBAL")
-            .map(|selected| sing_box_tag(selected))
-            .filter(|selected| available_tags.contains(selected))
-            .or(first_group.clone())
-            .or(first_proxy.clone())
-            .unwrap_or_else(|| "direct".to_owned()),
-        RuntimeMode::Rule => first_group
-            .clone()
-            .or(first_proxy.clone())
-            .unwrap_or_else(|| "direct".to_owned()),
-    };
-
-    let global_target = selections
-        .get("GLOBAL")
-        .map(|s| sing_box_tag(s))
-        .filter(|s| available_tags.contains(s))
-        .unwrap_or_else(|| final_outbound.clone());
-    let mut route_rules = vec![
-        serde_json::json!({"action": "sniff"}),
-        // HarmonyOS points selected applications at the VPN interface address
-        // (for example 172.19.0.1) as their DNS server. Match port 53 directly
-        // because those raw TUN packets do not always have a sniffed protocol
-        // before route evaluation.
-        serde_json::json!({"port": 53, "action": "hijack-dns"}),
-        serde_json::json!({"protocol": "dns", "action": "hijack-dns"}),
-        serde_json::json!({"clash_mode":"direct","outbound":"direct"}),
-        serde_json::json!({"clash_mode":"global","outbound":global_target}),
-    ];
-    let mut translated_rule_count = 0usize;
-    let mut skipped_rule_count = 0usize;
-    if mode == RuntimeMode::Rule {
-        let rules = yaml_field(root, "rules")
-            .and_then(serde_yaml::Value::as_sequence)
-            .cloned()
-            .unwrap_or_default();
-        for source in rules.iter().filter_map(serde_yaml::Value::as_str) {
-            let fields = source.split(',').map(str::trim).collect::<Vec<_>>();
-            if fields.len() < 2 {
-                skipped_rule_count += 1;
-                continue;
-            }
-            if fields[0].eq_ignore_ascii_case("MATCH") {
-                let target = sing_box_tag(fields[1]);
-                if available_tags.contains(&target) {
-                    final_outbound = target;
-                }
-                continue;
-            }
-            if fields.len() < 3 {
-                skipped_rule_count += 1;
-                continue;
-            }
-            let target = sing_box_tag(fields[2]);
-            if !available_tags.contains(&target) {
-                skipped_rule_count += 1;
-                continue;
-            }
-            let rule = match fields[0].to_ascii_uppercase().as_str() {
-                "DOMAIN" => Some(serde_json::json!({"domain": [fields[1]], "outbound": target})),
-                "DOMAIN-SUFFIX" => {
-                    Some(serde_json::json!({"domain_suffix": [fields[1]], "outbound": target}))
-                }
-                "DOMAIN-KEYWORD" => {
-                    Some(serde_json::json!({"domain_keyword": [fields[1]], "outbound": target}))
-                }
-                "IP-CIDR" | "IP-CIDR6" => {
-                    Some(serde_json::json!({"ip_cidr": [fields[1]], "outbound": target}))
-                }
-                "DST-PORT" => fields[1]
-                    .parse::<u16>()
-                    .ok()
-                    .map(|port| serde_json::json!({"port": [port], "outbound": target})),
-                "GEOIP"
-                    if fields[1].eq_ignore_ascii_case("LAN")
-                        || fields[1].eq_ignore_ascii_case("PRIVATE") =>
-                {
-                    Some(serde_json::json!({"ip_is_private": true, "outbound": target}))
-                }
-                _ => None,
-            };
-            if let Some(rule) = rule {
-                route_rules.push(rule);
-                translated_rule_count += 1;
-            } else {
-                skipped_rule_count += 1;
-            }
-        }
-    }
-    if !available_tags.contains(&final_outbound) {
-        final_outbound = first_proxy.unwrap_or_else(|| "direct".to_owned());
-    }
-    let addresses = if options.addresses.is_empty() {
-        vec!["172.19.0.1/30".to_owned()]
-    } else {
-        options.addresses.clone()
-    };
-    let config = serde_json::json!({
-        "log": {"level": "info", "timestamp": true},
-        "dns": {
-            "servers": [
-                {"type": "local", "tag": "dns-local"}
-            ],
-            // The whole VPN process is bound to the underlying network by
-            // protectProcessNet before sing-box starts. Bootstrap DNS directly
-            // there, so resolving a proxy server never depends on that same
-            // proxy already being connected.
-            "final": "dns-local",
-            "strategy": "prefer_ipv4",
-            "reverse_mapping": true,
-        },
-        "inbounds": [
-            {
-                "type": "tun",
-                "tag": "tun-in",
-                "address": addresses,
-                "mtu": 9000,
-                "stack": "mixed",
-                "auto_route": false,
-                "strict_route": false,
-            },
-            // Keep the candidate benchmark on sing-box's own data plane. The
-            // previous benchmark forwarded port 7890 even though sing-box had
-            // no mixed inbound, so a reset only proved that the test hit the
-            // wrong/nonexistent listener.
-            {
-                "type": "mixed",
-                "tag": "mixed-in",
-                "listen": "127.0.0.1",
-                "listen_port": 7890,
-            },
-            {"type":"mixed","tag":"sing-box-benchmark","listen":"127.0.0.1","listen_port":18492}
-        ],
-        "outbounds": outbounds,
-        "experimental":{"clash_api":{"external_controller":"127.0.0.1:9090","default_mode":mode.as_str()}},
-        "route": {
-            "rules": route_rules,
-            "final": final_outbound,
-            "auto_detect_interface": true,
-            "default_domain_resolver": "dns-local",
-        },
-    });
-    Ok(RenderedSingBoxConfig {
-        config_json: serde_json::to_string(&config)
-            .map_err(|error| PawsError::Core(error.to_string()))?,
-        proxy_count,
-        group_count,
-        rule_count: translated_rule_count,
-        skipped_rule_count,
-    })
 }
 
 fn install_mihomo_geodata(root: &Path, mihomo_home: &Path) -> Result<(), PawsError> {

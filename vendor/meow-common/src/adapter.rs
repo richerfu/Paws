@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,10 +52,19 @@ pub struct ProxyState {
 /// Per-adapter liveness + rolling delay history. Owned by every concrete
 /// adapter and accessed via [`ProxyAdapter::health`]. Writers use interior
 /// mutability so the trait method can return `&ProxyHealth`.
+/// The observer owns a short synchronous session lease. It may reject a late
+/// probe, and must not reenter ProxyHealth while executing the mutation.
+pub trait ProxyHealthObserver: Send + Sync {
+    fn update(&self, mutation: &mut dyn FnMut()) -> bool;
+}
+#[derive(Clone)]
+pub struct ProxyHealthObservation(Option<Weak<dyn ProxyHealthObserver>>);
+
 pub struct ProxyHealth {
     alive: AtomicBool,
     history: RwLock<VecDeque<DelayHistory>>,
     max_history: usize,
+    observer: RwLock<Option<Weak<dyn ProxyHealthObserver>>>,
 }
 
 impl ProxyHealth {
@@ -64,6 +73,7 @@ impl ProxyHealth {
             alive: AtomicBool::new(true),
             history: RwLock::new(VecDeque::new()),
             max_history: 10,
+            observer: RwLock::new(None),
         }
     }
 
@@ -71,8 +81,45 @@ impl ProxyHealth {
         self.alive.load(Ordering::Relaxed)
     }
 
+    pub fn observe(&self, observer: Weak<dyn ProxyHealthObserver>) {
+        *self
+            .observer
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(observer);
+    }
+    pub fn observation(&self) -> ProxyHealthObservation {
+        ProxyHealthObservation(
+            self.observer
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+        )
+    }
+    fn observed_update(&self, ticket: &ProxyHealthObservation, mutation: &mut dyn FnMut()) -> bool {
+        let current = self
+            .observer
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match (&*current, &ticket.0) {
+            (None, None) => {
+                mutation();
+                true
+            }
+            (Some(current), Some(captured)) if Weak::ptr_eq(current, captured) => captured
+                .upgrade()
+                .is_some_and(|observer| observer.update(mutation)),
+            _ => false,
+        }
+    }
+    pub fn notify_runtime_change(&self) {
+        let _ = self.observed_update(&self.observation(), &mut || {});
+    }
     pub fn set_alive(&self, alive: bool) {
-        self.alive.store(alive, Ordering::Relaxed);
+        if self.alive() != alive {
+            let _ = self.observed_update(&self.observation(), &mut || {
+                self.alive.store(alive, Ordering::Relaxed);
+            });
+        }
     }
 
     pub fn last_delay(&self) -> u16 {
@@ -93,6 +140,12 @@ impl ProxyHealth {
     }
 
     pub fn record_delay(&self, delay: u16) {
+        self.record_observed_delay(delay, &self.observation());
+    }
+    pub fn record_observed_delay(&self, delay: u16, observation: &ProxyHealthObservation) {
+        let _ = self.observed_update(observation, &mut || self.record_delay_unobserved(delay));
+    }
+    fn record_delay_unobserved(&self, delay: u16) {
         let mut history = self
             .history
             .write()

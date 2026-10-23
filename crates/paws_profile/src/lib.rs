@@ -23,11 +23,13 @@ use url::{Host, Url};
 
 mod rules;
 mod runtime_config;
+mod source_metadata;
 mod subscription;
 
 pub use rules::parse_imported_rule_lines;
 use rules::*;
 pub use runtime_config::*;
+pub use source_metadata::{validate_profile_source_shape, ProfileSourceMetadata};
 pub use subscription::*;
 
 const STORE_VERSION: u32 = 1;
@@ -412,6 +414,8 @@ impl ProfileStore {
         staged: Self,
         writes: Vec<(PathBuf, Vec<u8>)>,
     ) -> Result<(), PawsError> {
+        #[cfg(test)]
+        tests::record_store_commit();
         let originals = writes
             .iter()
             .map(|(path, _)| match fs::read(path) {
@@ -906,40 +910,31 @@ impl ProfileStore {
         trusted: Vec<String>,
         blocked: Vec<String>,
     ) -> Result<(), PawsError> {
-        let engine = self
-            .vpn_options_for_profile(profile_id)?
-            .engine
-            .as_str()
-            .to_owned();
-        self.set_profile_vpn_config_with_apps_and_engine(
-            profile_id,
-            engine,
-            system_proxy,
-            dns_hijacking,
-            allow_bypass,
-            stack,
-            trusted,
-            blocked,
-        )
+        let mut options = self.vpn_options_for_profile(profile_id)?;
+        options.system_proxy = system_proxy;
+        options.dns_hijacking = dns_hijacking;
+        options.allow_bypass = allow_bypass;
+        options.stack = stack;
+        options.trusted_applications = trusted;
+        options.blocked_applications = blocked;
+        self.set_profile_vpn_config_with_apps_and_engine(profile_id, &options)
     }
 
     pub fn set_profile_vpn_config_with_apps_and_engine(
         &mut self,
         profile_id: &str,
-        engine: String,
-        system_proxy: bool,
-        dns_hijacking: bool,
-        allow_bypass: bool,
-        stack: String,
-        trusted: Vec<String>,
-        blocked: Vec<String>,
+        options: &VpnOptions,
     ) -> Result<(), PawsError> {
-        if !trusted.is_empty() && !blocked.is_empty() {
+        if !options.trusted_applications.is_empty() && !options.blocked_applications.is_empty() {
             return Err(PawsError::Core(
                 "Choose either VPN trustlist or blocklist".into(),
             ));
         }
-        for app in trusted.iter().chain(blocked.iter()) {
+        for app in options
+            .trusted_applications
+            .iter()
+            .chain(&options.blocked_applications)
+        {
             if app.len() > 255
                 || !app.contains('.')
                 || !app
@@ -949,14 +944,6 @@ impl ProfileStore {
                 return Err(PawsError::Core("Invalid application bundle name".into()));
             }
         }
-        self.set_profile_vpn_config_with_engine(
-            profile_id,
-            engine,
-            system_proxy,
-            dns_hijacking,
-            allow_bypass,
-            stack,
-        )?;
         let raw = self.raw_yaml(profile_id)?;
         let mut value: Value =
             serde_yaml::from_str(&raw).map_err(|e| PawsError::Core(e.to_string()))?;
@@ -964,14 +951,44 @@ impl ProfileStore {
             .as_mapping_mut()
             .ok_or_else(|| PawsError::Core("Invalid profile".into()))?;
         let mut paws = root
-            .get(value_key("paws"))
-            .and_then(Value::as_mapping)
-            .cloned()
+            .remove(value_key("paws"))
+            .and_then(|value| value.as_mapping().cloned())
             .unwrap_or_default();
-        put_string_sequence(&mut paws, "trusted-applications", trusted);
-        put_string_sequence(&mut paws, "blocked-applications", blocked);
+        put_string(&mut paws, "engine", options.engine.as_str());
+        put_bool(&mut paws, "system-proxy", options.system_proxy);
+        put_bool(&mut paws, "allow-bypass", options.allow_bypass);
+        put_string_sequence(
+            &mut paws,
+            "trusted-applications",
+            options.trusted_applications.clone(),
+        );
+        put_string_sequence(
+            &mut paws,
+            "blocked-applications",
+            options.blocked_applications.clone(),
+        );
         root.insert(value_key("paws"), Value::Mapping(paws));
-        self.save_settings_overlay(profile_id, &value, &["paws"])
+
+        let mut tun = root
+            .remove(value_key("tun"))
+            .and_then(|value| value.as_mapping().cloned())
+            .unwrap_or_default();
+        let stack = VpnStack::try_from(options.stack.as_str())?;
+        put_string(&mut tun, "stack", stack.as_str());
+        put_i64(&mut tun, "mtu", i64::from(options.mtu));
+        if options.dns_hijacking {
+            tun.insert(
+                value_key("dns-hijack"),
+                Value::Sequence(vec![Value::String("any:53".to_owned())]),
+            );
+        } else {
+            put_bool(&mut tun, "dns-hijack", false);
+        }
+        root.insert(value_key("tun"), Value::Mapping(tun));
+
+        // Engine, applications and MTU are one overlay/index transaction;
+        // validation or persistence failure must not commit a partial settings form.
+        self.save_settings_overlay(profile_id, &value, &["paws", "tun"])
     }
 
     fn save_settings_overlay(
@@ -990,7 +1007,7 @@ impl ProfileStore {
             if let Some(v) = value.get(*key) {
                 let fields: &[&str] = match *key {
                     "dns" => &["nameserver", "fallback", "nameserver-policy"],
-                    "tun" => &["stack", "dns-hijack"],
+                    "tun" => &["stack", "dns-hijack", "mtu"],
                     "paws" => &[
                         "engine",
                         "system-proxy",
@@ -1053,46 +1070,15 @@ impl ProfileStore {
         allow_bypass: bool,
         stack: String,
     ) -> Result<(), PawsError> {
-        let raw_yaml = self.raw_yaml(profile_id)?;
-        let mut value: Value =
-            serde_yaml::from_str(&raw_yaml).map_err(|err| PawsError::Core(err.to_string()))?;
-        let Some(root) = value.as_mapping_mut() else {
-            return Err(PawsError::Core(
-                "profile root must be a YAML map".to_owned(),
-            ));
-        };
-
-        let paws_key = value_key("paws");
-        let mut paws = root
-            .remove(&paws_key)
-            .and_then(|value| value.as_mapping().cloned())
-            .unwrap_or_default();
-        let engine = paws_model::VpnEngine::try_from(engine.as_str())?
-            .as_str()
-            .to_owned();
-        put_string(&mut paws, "engine", &engine);
-        put_bool(&mut paws, "system-proxy", system_proxy);
-        put_bool(&mut paws, "allow-bypass", allow_bypass);
-        root.insert(paws_key, Value::Mapping(paws));
-
-        let tun_key = value_key("tun");
-        let mut tun = root
-            .remove(&tun_key)
-            .and_then(|value| value.as_mapping().cloned())
-            .unwrap_or_default();
-        let stack = VpnStack::try_from(stack.as_str())?.as_str().to_owned();
-        put_string(&mut tun, "stack", &stack);
-        if dns_hijacking {
-            tun.insert(
-                value_key("dns-hijack"),
-                Value::Sequence(vec![Value::String("any:53".to_owned())]),
-            );
-        } else {
-            put_bool(&mut tun, "dns-hijack", false);
-        }
-        root.insert(tun_key, Value::Mapping(tun));
-
-        self.save_settings_overlay(profile_id, &value, &["paws", "tun"])
+        // Existing callers do not supply MTU or application lists: preserve
+        // their current profile values rather than filling them from defaults.
+        let mut options = self.vpn_options_for_profile(profile_id)?;
+        options.engine = paws_model::VpnEngine::try_from(engine.as_str())?;
+        options.system_proxy = system_proxy;
+        options.dns_hijacking = dns_hijacking;
+        options.allow_bypass = allow_bypass;
+        options.stack = stack;
+        self.set_profile_vpn_config_with_apps_and_engine(profile_id, &options)
     }
 
     pub fn set_profile_network_config(
@@ -1159,6 +1145,10 @@ impl ProfileStore {
 
     pub fn active_profile(&self) -> Option<&str> {
         self.active_profile.as_deref()
+    }
+
+    pub fn profile_count(&self) -> usize {
+        self.profiles.len()
     }
 
     pub fn profile(&self, profile_id: &str) -> Result<&ProfileDocument, PawsError> {

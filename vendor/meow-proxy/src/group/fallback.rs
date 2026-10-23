@@ -284,6 +284,7 @@ impl ProxySelection for FallbackGroup {
 
     fn force_set(&self, name: Option<&str>) {
         *self.fixed.write() = name.map(SmolStr::from);
+        self.health.notify_runtime_change();
         if let Some(store) = &self.store {
             store.set(&self.name, name.unwrap_or(""));
         }

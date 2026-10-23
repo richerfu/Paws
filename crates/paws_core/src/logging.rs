@@ -1,5 +1,16 @@
 use super::*;
 
+// Separate from CoreState: tracing is emitted while engine/configuration locks
+// are held, so a subscriber must never re-enter those locks to find its sink.
+static ENGINE_LOG_SINK: std::sync::RwLock<Option<std::sync::Weak<paws_engine::EngineLogBuffer>>> =
+    std::sync::RwLock::new(None);
+
+pub(super) fn set_engine_log_sink(sink: Option<Arc<paws_engine::EngineLogBuffer>>) {
+    if let Ok(mut current) = ENGINE_LOG_SINK.write() {
+        *current = sink.as_ref().map(Arc::downgrade);
+    }
+}
+
 pub(super) fn info_log(message: impl Into<String>) -> LogEntry {
     LogEntry {
         level: "info".to_owned(),
@@ -84,13 +95,6 @@ where
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
         let target = event.metadata().target();
-        // dioxus's internal diff/template traces carry the entire Template
-        // tree as a debug field; formatting it on the UI thread for every
-        // rendered node stalls the main loop (observed as a 6s+ ANR on
-        // device). These internals are worthless for the app log anyway.
-        if target.starts_with("dioxus") {
-            return;
-        }
         let level = match *event.metadata().level() {
             Level::TRACE | Level::DEBUG => "debug",
             Level::INFO => "info",
@@ -127,14 +131,30 @@ where
             append_socket_trace(&message, &flow);
         }
         if is_vpn_log_target(event.metadata().target()) {
-            push_runtime_log(
-                &self.logs,
-                LogEntry {
-                    level: level.to_owned(),
-                    message,
-                    timestamp: unix_timestamp_string(),
-                },
-            );
+            let entry = LogEntry {
+                level: level.to_owned(),
+                message,
+                timestamp: unix_timestamp_string(),
+            };
+            let native = if target.starts_with("meow_")
+                || target.starts_with("meow-")
+                || target.starts_with("paws_vpn")
+            {
+                ENGINE_LOG_SINK
+                    .read()
+                    .ok()
+                    .and_then(|sink| sink.as_ref().and_then(std::sync::Weak::upgrade))
+            } else {
+                None
+            };
+            if let Some(sink) = native {
+                // The engine journal has its own fenced archive consumer.
+                // Sending it to the application writer too would duplicate the
+                // same native entry and bypass the recording cut watermark.
+                let _ = sink.record(entry);
+            } else {
+                push_runtime_log(&self.logs, entry);
+            }
         }
         if let Ok(senders) = API_LOG_TXS.lock() {
             for tx in senders.iter() {

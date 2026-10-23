@@ -1,10 +1,9 @@
 use futures::{FutureExt, SinkExt, StreamExt};
-use meow_common::sniffer::{sniff_http, sniff_tls, SnifferConfig};
-use meow_common::{ConnType, Metadata, Network, ProxyConn, ProxyPacketConn};
-use meow_listener::SnifferRuntime;
-use meow_trie::DomainTrie;
-use meow_tunnel::Tunnel;
 use netstack_smoltcp::StackBuilder;
+use paws_engine::{
+    ConnType, EngineTunnel, FlowMetadata as Metadata, Network, PacketConnection as ProxyPacketConn,
+    ProxyStream as ProxyConn, SniffProtocol, SnifferConfig,
+};
 use paws_model::{DnsQuerySummary, PawsError, VpnOptions, VpnStack};
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -63,6 +62,13 @@ pub struct TunStats {
     pub dns_cache_misses: u64,
     pub dropped_packets: u64,
     pub recent_dns_queries: Vec<DnsQuerySummary>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TunTrafficCounters {
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub dns_packets: u64,
 }
 
 #[derive(Debug, Default)]
@@ -184,8 +190,7 @@ impl TunSession {
         &self,
         fd: i32,
         options: VpnOptions,
-        tunnel: Tunnel,
-        sniffer_config: SnifferConfig,
+        tunnel: Arc<dyn EngineTunnel>,
     ) -> Result<u64, PawsError> {
         if fd < 0 {
             return Err(PawsError::Core(format!("invalid tun fd: {fd}")));
@@ -236,7 +241,6 @@ impl TunSession {
                 task_running,
                 task_shutdown,
                 dns_hijacking,
-                sniffer_config,
                 task_dns_table,
                 task_dns_cache,
             ))
@@ -367,6 +371,18 @@ impl TunSession {
             .expect("vpn task lock")
             .as_ref()
             .map(|task| task.stats.snapshot())
+    }
+    /// Counters only: no DNS history lock, strings, or record allocation.
+    pub fn traffic_counters(&self) -> Option<TunTrafficCounters> {
+        self.task
+            .lock()
+            .expect("vpn task lock")
+            .as_ref()
+            .map(|task| TunTrafficCounters {
+                rx_bytes: task.stats.rx_bytes.load(Ordering::Relaxed),
+                tx_bytes: task.stats.tx_bytes.load(Ordering::Relaxed),
+                dns_packets: task.stats.dns_packets.load(Ordering::Relaxed),
+            })
     }
 
     pub fn flush_dns_cache(&self) -> Result<(), PawsError> {

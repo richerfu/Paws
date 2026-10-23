@@ -1,0 +1,5208 @@
+use async_trait::async_trait;
+use meow_common::{
+    AdapterType, DelayHistory, Metadata, Proxy, ProxyAdapter, ProxyConn, ProxyHealth,
+    ProxyPacketConn, Result,
+};
+#[cfg(feature = "ss")]
+use meow_proxy::ShadowsocksAdapter;
+#[cfg(feature = "trojan")]
+use meow_proxy::TrojanAdapter;
+use meow_proxy::{
+    DirectAdapter, FallbackGroup, HttpAdapter, LbStrategy, LoadBalanceGroup, RelayGroup,
+    SelectorGroup, Socks5Adapter, UrlTestGroup,
+};
+#[cfg(feature = "vless")]
+use meow_proxy::{TransportChain, VlessAdapter, VlessFlow};
+use smol_str::SmolStr;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+fn required_port(
+    config: &HashMap<String, serde_yaml::Value>,
+    context: &str,
+) -> std::result::Result<u16, String> {
+    let raw = config
+        .get("port")
+        .and_then(serde_yaml::Value::as_u64)
+        .ok_or_else(|| format!("{context}: missing port"))?;
+    let port = u16::try_from(raw).map_err(|_| format!("{context}: port {raw} exceeds 65535"))?;
+    if port == 0 {
+        return Err(format!("{context}: port must be non-zero"));
+    }
+    Ok(port)
+}
+
+/// Wraps a ProxyAdapter to implement the full Proxy trait
+pub struct WrappedProxy {
+    adapter: Box<dyn ProxyAdapter>,
+}
+
+impl WrappedProxy {
+    pub fn new(adapter: Box<dyn ProxyAdapter>) -> Self {
+        Self { adapter }
+    }
+}
+
+#[async_trait]
+impl ProxyAdapter for WrappedProxy {
+    fn name(&self) -> &str {
+        self.adapter.name()
+    }
+    fn adapter_type(&self) -> AdapterType {
+        self.adapter.adapter_type()
+    }
+    fn addr(&self) -> &str {
+        self.adapter.addr()
+    }
+    fn support_udp(&self) -> bool {
+        self.adapter.support_udp()
+    }
+    async fn dial_tcp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyConn>> {
+        self.adapter.dial_tcp(metadata).await
+    }
+    async fn dial_udp(&self, metadata: &Metadata) -> Result<Box<dyn ProxyPacketConn>> {
+        self.adapter.dial_udp(metadata).await
+    }
+    async fn connect_over(
+        &self,
+        stream: Box<dyn ProxyConn>,
+        metadata: &Metadata,
+    ) -> Result<Box<dyn ProxyConn>> {
+        self.adapter.connect_over(stream, metadata).await
+    }
+
+    /// Forward the peek/commit walk — a wrapped group-typed adapter would
+    /// otherwise hide PASS/PASS-RULE members from the match-time probe.
+    fn unwrap_proxy(&self, metadata: &Metadata, touch: bool) -> Option<Arc<dyn Proxy>> {
+        self.adapter.unwrap_proxy(metadata, touch)
+    }
+
+    /// Forward the session flush (issue #695) — every parsed leaf sits behind
+    /// this wrapper, so the default no-op here would hide all their pools.
+    fn reset_sessions(&self) {
+        self.adapter.reset_sessions();
+    }
+
+    fn health(&self) -> &ProxyHealth {
+        self.adapter.health()
+    }
+}
+
+impl Proxy for WrappedProxy {
+    fn alive(&self) -> bool {
+        self.adapter.health().alive()
+    }
+    fn alive_for_url(&self, _url: &str) -> bool {
+        self.adapter.health().alive()
+    }
+    fn last_delay(&self) -> u16 {
+        self.adapter.health().last_delay()
+    }
+    fn last_delay_for_url(&self, _url: &str) -> u16 {
+        self.adapter.health().last_delay()
+    }
+    fn delay_history(&self) -> Vec<DelayHistory> {
+        self.adapter.health().delay_history()
+    }
+}
+
+pub fn parse_proxy(
+    config: &HashMap<String, serde_yaml::Value>,
+    ipv6: bool,
+) -> std::result::Result<Arc<dyn Proxy>, String> {
+    let dialer: std::sync::Arc<dyn meow_proxy::dialer::TcpDialer> =
+        std::sync::Arc::new(meow_proxy::dialer::DirectDialer);
+    parse_proxy_with_dialer(config, &dialer, ipv6)
+}
+
+/// Whether `config` describes an `ss` node whose `plugin:` names an external
+/// SIP003 executable — i.e. one that would reach `Command::new` during
+/// adapter construction. Gates untrusted node sources (proxy-providers,
+/// subscriptions) before the trusted local path (issue #513).
+pub fn node_selects_external_plugin(config: &HashMap<String, serde_yaml::Value>) -> bool {
+    #[cfg(feature = "ss")]
+    {
+        config.get("type").and_then(|v| v.as_str()) == Some("ss")
+            && is_external_sip003_plugin(config.get("plugin").and_then(|v| v.as_str()))
+    }
+    #[cfg(not(feature = "ss"))]
+    {
+        let _ = config;
+        false
+    }
+}
+
+/// [`parse_proxy`] for remote-controlled input (proxy-provider payloads).
+///
+/// Without `allow_external_plugin`, an `ss` node whose `plugin:` names an
+/// external SIP003 executable is rejected: that name reaches `Command::new`
+/// during adapter construction, so provider content would select a local
+/// binary (issue #513). Built-in/in-process plugins (`obfs`,
+/// `simple-obfs`, `v2ray-plugin`, `gost-plugin`, `shadow-tls`, `restls`, `jls`,
+/// `kcptun`, `ech-tls-tunnel`) stay allowed — mihomo
+/// implements those in-process too, so gating them would diverge.
+///
+/// `dialer` is the pluggable TCP dialer the node's adapter dials its server
+/// through — [`meow_proxy::dialer::DirectDialer`] for an unchained node, or a
+/// [`meow_proxy::dialer::NamedProxyDialer`] when the node declares
+/// `dialer-proxy` (issue #489).
+pub fn parse_proxy_provider_node(
+    config: &HashMap<String, serde_yaml::Value>,
+    ipv6: bool,
+    allow_external_plugin: bool,
+    dialer: &std::sync::Arc<dyn meow_proxy::dialer::TcpDialer>,
+) -> std::result::Result<Arc<dyn Proxy>, String> {
+    if !allow_external_plugin && node_selects_external_plugin(config) {
+        let name = config.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let plugin = config.get("plugin").and_then(|v| v.as_str()).unwrap_or("");
+        return Err(format!(
+            "ss[{name}]: external SIP003 plugin '{plugin}' is not allowed on \
+             provider-sourced nodes — it spawns a local executable selected by \
+             remote content (issue #513); set the provider's \
+             `allow-external-plugin: true` to opt in"
+        ));
+    }
+    let _ = allow_external_plugin;
+    parse_proxy_with_dialer(config, dialer, ipv6)
+}
+
+/// Like [parse_proxy] but injects a custom [meow_proxy::dialer::TcpDialer]
+/// into every adapter. Used by apply_dialer_proxies — and by provider node
+/// parsing (issue #489) — to inject a [meow_proxy::dialer::NamedProxyDialer]
+/// so that dialer-proxy chaining works for all protocols without requiring
+/// connect_over.
+pub fn parse_proxy_with_dialer(
+    config: &HashMap<String, serde_yaml::Value>,
+    dialer: &std::sync::Arc<dyn meow_proxy::dialer::TcpDialer>,
+    ipv6: bool,
+) -> std::result::Result<Arc<dyn Proxy>, String> {
+    let name = config
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or("missing proxy name")?;
+    let proxy_type = config
+        .get("type")
+        .and_then(|v| v.as_str())
+        .ok_or("missing proxy type")?;
+
+    match proxy_type {
+        #[cfg(feature = "ss")]
+        "ss" => {
+            let server = config
+                .get("server")
+                .and_then(|v| v.as_str())
+                .ok_or("missing server")?;
+            let port = required_port(config, "ss")?;
+            let password = config
+                .get("password")
+                .and_then(|v| v.as_str())
+                .ok_or("missing password")?;
+            let cipher = config
+                .get("cipher")
+                .and_then(|v| v.as_str())
+                .ok_or("missing cipher")?;
+            let udp = config
+                .get("udp")
+                .and_then(serde_yaml::Value::as_bool)
+                .unwrap_or(false);
+            let plugin = config.get("plugin").and_then(|v| v.as_str());
+            let plugin_opts_str = config.get("plugin-opts").and_then(serialize_plugin_opts);
+            let client_fingerprint = config.get("client-fingerprint").and_then(|v| v.as_str());
+
+            // A SIP003 *external* plugin is a local subprocess spawned by
+            // `ShadowsocksAdapter::new`, and the adapter deliberately dials it
+            // over loopback without the pluggable dialer.  Bail out *before*
+            // constructing so the re-parse in `apply_dialer_proxies` does not
+            // spawn a second copy of the plugin process (the first one stays
+            // alive as long as any group still holds the original Arc), and so
+            // the user learns their `dialer-proxy` has no effect here.
+            if dialer.is_proxy() && is_external_sip003_plugin(plugin) {
+                return Err(format!(
+                    "ss[{name}]: `dialer-proxy` is not supported with the external \
+                     SIP003 plugin '{}' — the plugin runs as a local subprocess and \
+                     is always reached over loopback",
+                    plugin.unwrap_or_default()
+                ));
+            }
+
+            if is_external_sip003_plugin(plugin) && !crate::external_plugins_allowed() {
+                return Err(format!(
+                    "ss[{name}]: external plugins are disabled by process policy"
+                ));
+            }
+            // Validation constructs adapters, but must never execute a plugin.
+            let plugin = if crate::is_offline_validate() && is_external_sip003_plugin(plugin) {
+                None
+            } else {
+                plugin
+            };
+
+            #[cfg_attr(not(feature = "mux"), allow(unused_mut))]
+            let mut adapter = ShadowsocksAdapter::new(
+                name,
+                server,
+                port,
+                password,
+                cipher,
+                udp,
+                plugin,
+                plugin_opts_str.as_deref(),
+                client_fingerprint,
+                Arc::clone(dialer),
+            )
+            .map_err(|e| format!("ss: {e}"))?;
+            #[cfg(feature = "mux")]
+            if let Some(mux_options) = parse_mux_options(name, config)? {
+                // muxcool rides VLESS CommandMux; shadowsocks has no
+                // equivalent signaling — reject loudly instead of speaking
+                // garbage frames to the server.
+                if mux_options.protocol == meow_proxy::mux::Protocol::MuxCool {
+                    return Err(format!(
+                        "{name}: mux protocol 'muxcool' is VLESS/VMess-only; \
+                         use smux/yamux/h2mux for shadowsocks nodes"
+                    ));
+                }
+                adapter = adapter.with_mux(mux_options);
+            }
+            #[cfg(not(feature = "mux"))]
+            parse_mux_options(name, config)?;
+            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+        }
+        #[cfg(feature = "trojan")]
+        "trojan" => {
+            let server = config
+                .get("server")
+                .and_then(|v| v.as_str())
+                .ok_or("missing server")?;
+            let port = required_port(config, "trojan")?;
+            let password = config
+                .get("password")
+                .and_then(|v| v.as_str())
+                .ok_or("missing password")?;
+            let sni = config.get("sni").and_then(|v| v.as_str()).unwrap_or("");
+            let skip_verify = config
+                .get("skip-cert-verify")
+                .and_then(serde_yaml::Value::as_bool)
+                .unwrap_or(false);
+            let udp = config
+                .get("udp")
+                .and_then(serde_yaml::Value::as_bool)
+                .unwrap_or(false);
+
+            #[cfg_attr(not(feature = "mux"), allow(unused_mut))]
+            let mut adapter = TrojanAdapter::new(
+                name,
+                server,
+                port,
+                password,
+                sni,
+                skip_verify,
+                udp,
+                Arc::clone(dialer),
+            );
+            #[cfg(feature = "mux")]
+            if let Some(mux_options) = parse_mux_options(name, config)? {
+                // muxcool rides VLESS CommandMux; trojan has no equivalent
+                // signaling (its CommandMux=0x7f is smux) — reject loudly
+                // instead of speaking garbage frames to the server.
+                if mux_options.protocol == meow_proxy::mux::Protocol::MuxCool {
+                    return Err(format!(
+                        "{name}: mux protocol 'muxcool' is VLESS/VMess-only; \
+                         use smux/yamux/h2mux for trojan nodes"
+                    ));
+                }
+                adapter = adapter.with_mux(mux_options);
+            }
+            #[cfg(not(feature = "mux"))]
+            parse_mux_options(name, config)?;
+            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+        }
+        #[cfg(feature = "vless")]
+        "vless" => {
+            let adapter = parse_vless(name, config, dialer)?;
+            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+        }
+        "http" => {
+            let adapter = parse_http(name, config, dialer)?;
+            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+        }
+        "socks5" => {
+            let adapter = parse_socks5(name, config, dialer)?;
+            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+        }
+        "direct" => {
+            reject_unthreaded_dialer(name, "direct", dialer)?;
+            let adapter = parse_direct(name, config, ipv6)?;
+            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+        }
+        #[cfg(feature = "anytls")]
+        "anytls" => {
+            reject_unthreaded_dialer(name, "anytls", dialer)?;
+            let adapter = parse_anytls(name, config)?;
+            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+        }
+        #[cfg(feature = "hysteria2")]
+        "hysteria2" => {
+            reject_unthreaded_dialer(name, "hysteria2", dialer)?;
+            let adapter = parse_hysteria2(name, config)?;
+            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+        }
+        #[cfg(feature = "vmess")]
+        "vmess" => {
+            let adapter = parse_vmess(name, config, dialer)?;
+            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+        }
+        #[cfg(feature = "snell")]
+        "snell" => {
+            let adapter = parse_snell(name, config, dialer)?;
+            Ok(Arc::new(WrappedProxy::new(Box::new(adapter))))
+        }
+        #[cfg(not(feature = "ss"))]
+        "ss" => Err(feature_gated_proxy_type("ss")),
+        #[cfg(not(feature = "trojan"))]
+        "trojan" => Err(feature_gated_proxy_type("trojan")),
+        #[cfg(not(feature = "vless"))]
+        "vless" => Err(feature_gated_proxy_type("vless")),
+        #[cfg(not(feature = "anytls"))]
+        "anytls" => Err(feature_gated_proxy_type("anytls")),
+        #[cfg(not(feature = "hysteria2"))]
+        "hysteria2" => Err(feature_gated_proxy_type("hysteria2")),
+        #[cfg(not(feature = "vmess"))]
+        "vmess" => Err(feature_gated_proxy_type("vmess")),
+        #[cfg(not(feature = "snell"))]
+        "snell" => Err(feature_gated_proxy_type("snell")),
+        _ => Err(format!("unsupported proxy type: {proxy_type}")),
+    }
+}
+
+/// Whether `plugin` names a SIP003 plugin that runs as an external subprocess
+/// (as opposed to one of the built-in, in-process plugin implementations).
+///
+/// Mirrors the dispatch in `ShadowsocksAdapter::new`: anything not recognised
+/// as built-in is handed to `Plugin::start`, which spawns a child process.
+#[cfg(feature = "ss")]
+fn is_external_sip003_plugin(plugin: Option<&str>) -> bool {
+    plugin
+        .filter(|p| !p.is_empty())
+        .is_some_and(|p| !meow_proxy::shadowsocks_adapter::is_builtin_sip003_plugin(p))
+}
+
+/// Reject a `ProxyDialer` for adapter types that do not thread it through.
+///
+/// `anytls` dials via `meow_common::connect_tcp_host` internally and
+/// `hysteria2` owns its QUIC socket; `direct` is a raw egress by definition.
+/// None of them can honour an injected dialer, so accepting one here would
+/// silently drop the user's `dialer-proxy` and egress from the real source
+/// path — a Class A silent divergence (ADR-0002).  Returning `Err` instead
+/// lets `apply_dialer_proxies` fall back to the relay-based
+/// `DialerProxyAdapter` wrapper, which fails loudly at dial time rather
+/// than pretending the chain was applied or dialing direct.
+///
+/// A `DirectDialer` is always accepted: it is the no-op default, so nothing
+/// is lost by ignoring it.
+fn reject_unthreaded_dialer(
+    name: &str,
+    proxy_type: &str,
+    dialer: &std::sync::Arc<dyn meow_proxy::dialer::TcpDialer>,
+) -> std::result::Result<(), String> {
+    if dialer.is_proxy() {
+        return Err(format!(
+            "{proxy_type}[{name}]: `dialer-proxy` is not supported for this \
+             proxy type (its underlying connection is not established through \
+             the pluggable TCP dialer)"
+        ));
+    }
+    Ok(())
+}
+
+/// Error for a proxy type this codebase implements but which was compiled out
+/// of the running binary. The generic "unsupported proxy type" message made
+/// users think the protocol was missing entirely, when the actual fix is to
+/// use a full-featured build (issue #390).
+#[cfg(not(all(
+    feature = "ss",
+    feature = "trojan",
+    feature = "vless",
+    feature = "anytls",
+    feature = "hysteria2",
+    feature = "vmess",
+    feature = "snell"
+)))]
+fn feature_gated_proxy_type(proxy_type: &str) -> String {
+    format!(
+        "proxy type '{proxy_type}' is not compiled into this build; \
+         use an official release binary or rebuild with `--features full` \
+         (or `--features {proxy_type}`)"
+    )
+}
+
+/// Parse a `type: snell` proxy block.
+///
+/// Mihomo-compatible Snell outbound. v3 uses the legacy Snell AEAD stream;
+/// v4/v5 use the newer Snell v4 TCP wire (v5 is client-side compatible).
+///
+/// YAML schema (mihomo-compatible):
+///
+/// ```yaml
+/// - name: my-snell
+///   type: snell
+///   server: 1.2.3.4
+///   port: 443
+///   psk: shared-secret
+///   version: 4         # optional; default 4. Accepts 3–6, "v3" … "v6".
+///   udp: true          # optional; UDP-over-TCP relay.
+///   reuse: true        # optional; CommandConnectV2 + connection pool.
+///   mode: default      # v6 only; must match the server: default | unshaped | unsafe-raw
+///   obfs-opts:         # optional, v3–v5 only
+///     mode: http       # off (default) | http | tls
+///     host: bing.com   # falls back to server when missing
+/// ```
+///
+/// # Hard errors (Class A per ADR-0002)
+///
+/// - missing `server`, `port`, or `psk` — required by the protocol.
+/// - `port == 0` — never a valid endpoint.
+/// - empty `psk` — caught by [`meow_proxy::SnellAdapter::new`].
+/// - `version` ∈ {1, 2} — this adapter does not implement those wires.
+/// - `obfs-opts.mode` is not one of off / http / tls.
+/// - `mode` on a version other than 6, or not one of default / unshaped /
+///   unsafe-raw.
+/// - an obfs mode other than off with version 6 (v6 servers have none).
+#[cfg(feature = "snell")]
+fn parse_snell(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+    dialer: &Arc<dyn meow_proxy::dialer::TcpDialer>,
+) -> std::result::Result<meow_proxy::SnellAdapter, String> {
+    use meow_proxy::{SnellAdapter, SnellObfs, SnellV6Mode, SnellVersion};
+
+    let server = config
+        .get("server")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("snell[{name}]: missing server"))?;
+    let port = required_port(config, &format!("snell[{name}]"))?;
+    let psk = config
+        .get("psk")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("snell[{name}]: missing psk"))?;
+
+    let udp = config
+        .get("udp")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+    let reuse = config
+        .get("reuse")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+
+    // ── Version parsing ──────────────────────────────────────────────────
+    let version = match config.get("version") {
+        None => SnellVersion::V4,
+        Some(v) => {
+            // Accept ints (1..=6) or strings ("v4", "5", ...).
+            let label = if let Some(n) = v.as_u64() {
+                n.to_string()
+            } else if let Some(s) = v.as_str() {
+                s.to_string()
+            } else {
+                return Err(format!(
+                    "snell[{name}]: version must be an integer or string (3, 4, 5 or 6)"
+                ));
+            };
+            match label.trim().to_ascii_lowercase().as_str() {
+                "3" | "v3" => SnellVersion::V3,
+                "" | "4" | "v4" => SnellVersion::V4,
+                "5" | "v5" => SnellVersion::V5,
+                "6" | "v6" => SnellVersion::V6,
+                "1" | "2" | "v1" | "v2" => {
+                    return Err(format!(
+                        "snell[{name}]: version '{label}' is not supported; \
+                         this adapter implements Snell v3 / v4 / v5 / v6 only"
+                    ));
+                }
+                other => {
+                    return Err(format!(
+                        "snell[{name}]: unknown version '{other}'; valid: 3, 4, 5, 6"
+                    ));
+                }
+            }
+        }
+    };
+
+    // ── Obfs opts ────────────────────────────────────────────────────────
+    let obfs = if let Some(opts) = config.get("obfs-opts") {
+        let mode = opts
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("off")
+            .to_ascii_lowercase();
+        // Trim for parity with the SS `plugin-opts` path (which trims each
+        // `k=v` value) — `host: " bing.com "` should not hard-error.
+        let host = opts
+            .get("host")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map_or_else(|| server.to_string(), std::string::ToString::to_string);
+        match mode.as_str() {
+            "off" | "none" | "" => SnellObfs::None,
+            "http" | "tls" => {
+                // `host` lands verbatim in the emitted `Host:` header
+                // (http) or SNI (tls) — reject injectable bytes up front
+                // (issue #648). `HttpObfs::new` re-checks at wrap time.
+                if !meow_transport::simple_obfs::client::is_valid_obfs_host(&host) {
+                    return Err(format!(
+                        "snell[{name}]: obfs-opts.host is empty, over 253 bytes, or contains whitespace/control bytes"
+                    ));
+                }
+                match mode.as_str() {
+                    "http" => SnellObfs::Http { host },
+                    _ => SnellObfs::Tls { server: host },
+                }
+            }
+            other => {
+                return Err(format!(
+                    "snell[{name}]: obfs-opts.mode '{other}' invalid; expected one of off, http, tls"
+                ));
+            }
+        }
+    } else {
+        SnellObfs::None
+    };
+
+    // ── v6 options ───────────────────────────────────────────────────────
+    let v6 = version == SnellVersion::V6;
+    if v6 && !matches!(obfs, SnellObfs::None) {
+        return Err(format!(
+            "snell[{name}]: obfs-opts is not supported by snell v6"
+        ));
+    }
+    let mode = match config.get("mode") {
+        None => None,
+        Some(_) if !v6 => {
+            return Err(format!(
+                "snell[{name}]: mode is a snell v6 option; set version: 6"
+            ));
+        }
+        Some(v) => {
+            let label = v
+                .as_str()
+                .ok_or_else(|| format!("snell[{name}]: mode must be a string"))?;
+            Some(
+                SnellV6Mode::parse(&label.trim().to_ascii_lowercase()).ok_or_else(|| {
+                    format!(
+                        "snell[{name}]: mode '{label}' invalid; expected one of default, unshaped, unsafe-raw"
+                    )
+                })?,
+            )
+        }
+    };
+
+    let adapter = SnellAdapter::new(
+        name,
+        server,
+        port,
+        psk,
+        obfs,
+        version,
+        udp,
+        reuse,
+        Arc::clone(dialer),
+    )
+    .map_err(|e| format!("snell[{name}]: {e}"))?;
+    match mode {
+        Some(mode) => adapter
+            .with_v6_mode(mode)
+            .map_err(|e| format!("snell[{name}]: {e}")),
+        None => Ok(adapter),
+    }
+}
+
+/// Parse a `type: http` proxy config block into an `HttpAdapter`.
+///
+/// # Hard errors (Class A per ADR-0002)
+///
+/// - `username` set without `password` (or vice versa) — orphaned credential.
+///
+/// # Notes
+///
+/// `headers:` entries are injected into the CONNECT request only.
+///
+/// upstream: `adapter/outbound/http.go`
+fn parse_http(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+    dialer: &Arc<dyn meow_proxy::dialer::TcpDialer>,
+) -> std::result::Result<HttpAdapter, String> {
+    let server = config
+        .get("server")
+        .and_then(|v| v.as_str())
+        .ok_or("http: missing server")?;
+    let port = required_port(config, "http")?;
+    let tls = config
+        .get("tls")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+    let skip_cert_verify = config
+        .get("skip-cert-verify")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+
+    // Both username and password must be set, or neither (Class A).
+    let username = config.get("username").and_then(|v| v.as_str());
+    let password = config.get("password").and_then(|v| v.as_str());
+    let auth = match (username, password) {
+        (Some(u), Some(p)) => Some((u.to_string(), p.to_string())),
+        (None, None) => None,
+        _ => {
+            return Err("http: both 'username' and 'password' must be set, or neither".to_string())
+        }
+    };
+
+    // Parse optional headers map. The entries are re-serialized into every
+    // CONNECT request, so a giant provider-supplied map is attacker-chosen
+    // process memory — same bound as xhttp/http-upgrade (issue #648).
+    let extra_headers: Vec<(String, String)> =
+        match config.get("headers").and_then(|v| v.as_mapping()) {
+            Some(m) => {
+                if m.len() > meow_transport::MAX_EXTRA_HEADERS {
+                    return Err(format!(
+                        "http[{name}]: headers has {} entries (max {})",
+                        m.len(),
+                        meow_transport::MAX_EXTRA_HEADERS
+                    ));
+                }
+                m.iter()
+                    .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+
+    Ok(HttpAdapter::new(
+        name,
+        server,
+        port,
+        auth,
+        tls,
+        skip_cert_verify,
+        extra_headers,
+        Arc::clone(dialer),
+    ))
+}
+
+/// Parse a `type: socks5` proxy config block into a `Socks5Adapter`.
+///
+/// # Hard errors (Class A per ADR-0002)
+///
+/// - `username` set without `password` (or vice versa) — orphaned credential.
+///
+/// `udp: true` enables SOCKS5 UDP ASSOCIATE (HTTP/3 / QUIC relay).
+///
+/// upstream: `adapter/outbound/socks5.go`
+fn parse_socks5(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+    dialer: &Arc<dyn meow_proxy::dialer::TcpDialer>,
+) -> std::result::Result<Socks5Adapter, String> {
+    let server = config
+        .get("server")
+        .and_then(|v| v.as_str())
+        .ok_or("socks5: missing server")?;
+    let port = required_port(config, "socks5")?;
+    let tls = config
+        .get("tls")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+    let skip_cert_verify = config
+        .get("skip-cert-verify")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+
+    // Both username and password must be set, or neither (Class A).
+    let username = config.get("username").and_then(|v| v.as_str());
+    let password = config.get("password").and_then(|v| v.as_str());
+    let auth = match (username, password) {
+        (Some(u), Some(p)) => Some((u.to_string(), p.to_string())),
+        (None, None) => None,
+        _ => {
+            return Err(
+                "socks5: both 'username' and 'password' must be set, or neither".to_string(),
+            )
+        }
+    };
+
+    let udp = config
+        .get("udp")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+
+    Ok(Socks5Adapter::new(
+        name,
+        server,
+        port,
+        auth,
+        tls,
+        skip_cert_verify,
+        Arc::clone(dialer),
+    )
+    .with_udp(udp))
+}
+
+/// Parse a `type: direct` proxy block into a [`DirectAdapter`].
+///
+/// Accepts an optional `dns:` field — a single `host:port` string or a list
+/// of them — that scopes hostname resolution for this proxy to the given DNS
+/// servers (plain UDP). Closes #67: lets users route a subset of direct
+/// traffic through a different DNS than the global resolver (e.g. a LAN
+/// resolver for `*.local` while the global resolver handles WAN).
+///
+/// `dns:` entries must include an explicit port (`:53` is conventional).
+/// Hard error (Class A per ADR-0002) on an unparseable address — silently
+/// falling back to the global resolver would surprise the user by leaking
+/// queries.
+fn parse_direct(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+    ipv6: bool,
+) -> std::result::Result<DirectAdapter, String> {
+    use meow_common::DnsMode;
+    use meow_dns::Resolver;
+    use meow_trie::DomainTrie;
+    use std::net::{IpAddr, SocketAddr};
+
+    let mut adapter = DirectAdapter::new();
+
+    // Optional `connect-timeout:` (seconds) — per-proxy counterpart of the
+    // global `tcp-connect-timeout:` that covers the built-in DIRECT. Hard
+    // error on a non-integer (Class A per ADR-0002): silently ignoring it
+    // would leave the connect unbounded when the user asked for a bound.
+    if let Some(v) = config.get("connect-timeout") {
+        let secs = v.as_u64().ok_or_else(|| {
+            format!("direct[{name}]: connect-timeout must be a non-negative integer (seconds)")
+        })?;
+        // The value reaches `tokio::time::timeout` — an absurd u64 overflows
+        // `Instant + Duration` and, under `panic = "abort"`, crashes the
+        // process on every dial (issue #648).
+        if secs > meow_common::MAX_DURATION_SECS {
+            return Err(format!(
+                "direct[{name}]: connect-timeout {secs}s exceeds the {}s ceiling",
+                meow_common::MAX_DURATION_SECS
+            ));
+        }
+        adapter = adapter.with_connect_timeout(std::time::Duration::from_secs(secs));
+    }
+
+    if let Some(v) = config.get("dns") {
+        let entries: Vec<String> = match v {
+            serde_yaml::Value::String(s) => vec![s.clone()],
+            serde_yaml::Value::Sequence(seq) => seq
+                .iter()
+                .map(|e| {
+                    e.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("direct[{name}]: dns entries must be strings"))
+                })
+                .collect::<std::result::Result<_, _>>()?,
+            _ => {
+                return Err(format!(
+                    "direct[{name}]: dns must be a string or list of strings"
+                ));
+            }
+        };
+
+        let mut servers: Vec<SocketAddr> = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            // Accept `IP` (default port 53), `IP:53`, or bracketed IPv6.
+            let parsed = if let Ok(sa) = entry.parse::<SocketAddr>() {
+                sa
+            } else if let Ok(ip) = entry.parse::<IpAddr>() {
+                SocketAddr::new(ip, 53)
+            } else {
+                return Err(format!(
+                    "direct[{name}]: dns entry '{entry}' is not a valid IP or host:port"
+                ));
+            };
+            servers.push(parsed);
+        }
+
+        if servers.is_empty() {
+            return Err(format!("direct[{name}]: dns list is empty"));
+        }
+
+        let resolver = Arc::new(Resolver::new(
+            servers,
+            Vec::new(),
+            DnsMode::Normal,
+            DomainTrie::new(),
+            false,
+            ipv6,
+        ));
+        adapter = adapter.with_resolver(resolver);
+    }
+
+    Ok(adapter)
+}
+
+/// Parse a `type: anytls` proxy block into an [`AnytlsAdapter`].
+///
+/// Required fields: `server`, `port`, `password`. Optional: `sni`,
+/// `skip-cert-verify`, `udp`. Closes the parser side of issue #75; the wire
+/// protocol itself is provided by the `anytls-rs` crate.
+///
+/// `udp` defaults to `false`, matching mihomo's `AnyTLSOption.UDP` (the
+/// adapter then relays datagrams over udp-over-tcp v2).
+///
+/// # Hard errors (Class A per ADR-0002)
+///
+/// - missing `server`, `port`, or `password` — required by the protocol.
+/// - `port == 0` — never a valid endpoint.
+///
+/// upstream: `adapter/outbound/anytls.go`
+#[cfg(feature = "anytls")]
+fn parse_anytls(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+) -> std::result::Result<meow_proxy::AnytlsAdapter, String> {
+    let server = config
+        .get("server")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("anytls[{name}]: missing server"))?;
+    let port = required_port(config, &format!("anytls[{name}]"))?;
+    let password = config
+        .get("password")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("anytls[{name}]: missing password"))?;
+    let sni = config.get("sni").and_then(|v| v.as_str());
+    let skip_cert_verify = config
+        .get("skip-cert-verify")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+    let udp = config
+        .get("udp")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+
+    meow_proxy::AnytlsAdapter::new(name, server, port, password, sni, skip_cert_verify, udp)
+}
+
+/// Parse a `type: hysteria2` proxy block.
+///
+/// Required fields: `server`, `password`, and a port source — either `port`
+/// or a concrete `ports` hopping range (mihomo accepts either, and airport
+/// subscriptions commonly omit `port` when `ports` is set; issue #377).
+/// Optional fields follow the mihomo surface supported by the in-tree Rust
+/// backend: `up`, `down`, `obfs: salamander`, `obfs-password`, `ports`,
+/// `hop-interval`, `sni`, `skip-cert-verify`, `fingerprint`, `udp`, and
+/// `fast-open`.
+///
+/// # Hard errors (Class A per ADR-0002)
+///
+/// - missing `server` or `password`.
+/// - no usable port: `port` absent (or 0) and `ports` absent or wildcard.
+/// - `port == 0` with no `ports` (mihomo: "invalid port").
+/// - empty `password` — caught downstream by `Hy2Adapter::new`.
+/// - unsupported security/transport options (`gecko`, mTLS, ECH, realm).
+///
+/// upstream: `adapter/outbound/hysteria2.go`
+#[cfg(feature = "hysteria2")]
+fn parse_hysteria2(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+) -> std::result::Result<meow_proxy::Hy2Adapter, String> {
+    use meow_proxy::{Hy2HopInterval, Hy2Obfs, Hy2Options};
+
+    let server = config
+        .get("server")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("hysteria2[{name}]: missing server"))?;
+    let ports = optional_nonempty_str(config, "ports");
+    if let Some(ports) = &ports {
+        validate_hy2_ports(name, ports)?;
+    }
+    let port = hy2_dial_port(name, config, ports.as_deref())?;
+    let password = config
+        .get("password")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("hysteria2[{name}]: missing password"))?;
+    let sni = config.get("sni").and_then(|v| v.as_str());
+    let skip_cert_verify = config
+        .get("skip-cert-verify")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+    let udp = config
+        .get("udp")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(true);
+    let up_bps = parse_hy2_bandwidth_field(name, "up", config.get("up"))?;
+    let down_bps = parse_hy2_bandwidth_field(name, "down", config.get("down"))?;
+
+    let obfs_raw = optional_nonempty_str(config, "obfs");
+    let obfs = match obfs_raw.as_deref() {
+        None => None,
+        Some("salamander") => Some(Hy2Obfs::Salamander),
+        Some("gecko") => {
+            return Err(format!(
+                "hysteria2[{name}]: obfs 'gecko' is not supported by the Rust backend"
+            ));
+        }
+        Some(other) => return Err(format!("hysteria2[{name}]: unknown obfs type: {other}")),
+    };
+    let obfs_password = optional_nonempty_str(config, "obfs-password");
+    if obfs.is_some() && obfs_password.is_none() {
+        return Err(format!("hysteria2[{name}]: missing obfs-password"));
+    }
+
+    let hop_interval = parse_hy2_hop_interval(name, config.get("hop-interval"))?;
+    let fingerprint = parse_hy2_fingerprint(name, config.get("fingerprint"))?;
+    let fast_open = config
+        .get("fast-open")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(true);
+    validate_hy2_alpn(name, config.get("alpn"))?;
+    reject_unsupported_hy2_options(name, config)?;
+
+    meow_proxy::Hy2Adapter::new(Hy2Options {
+        name: name.to_string(),
+        server: server.to_string(),
+        port,
+        password: password.to_string(),
+        sni: sni.map(str::to_string),
+        skip_cert_verify,
+        udp,
+        up_bps,
+        down_bps,
+        obfs,
+        obfs_password,
+        ports,
+        hop_interval: hop_interval
+            .map(|(min_secs, max_secs)| Hy2HopInterval { min_secs, max_secs }),
+        fingerprint,
+        fast_open,
+    })
+}
+
+#[cfg(feature = "hysteria2")]
+const HY2_MIN_HOP_INTERVAL_SECS: u64 = 5;
+#[cfg(feature = "hysteria2")]
+const HY2_DEFAULT_HOP_INTERVAL_SECS: u64 = 30;
+
+#[cfg(feature = "hysteria2")]
+fn optional_nonempty_str(config: &HashMap<String, serde_yaml::Value>, key: &str) -> Option<String> {
+    config
+        .get(key)
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(feature = "hysteria2")]
+fn parse_hy2_bandwidth_field(
+    name: &str,
+    field: &str,
+    value: Option<&serde_yaml::Value>,
+) -> std::result::Result<u64, String> {
+    let Some(value) = value else {
+        return Ok(0);
+    };
+    if let Some(v) = value.as_u64() {
+        return Ok(mbps_to_bytes_per_second(v));
+    }
+    if let Some(s) = value.as_str() {
+        return parse_hy2_bandwidth(s).map_err(|e| format!("hysteria2[{name}]: {field}: {e}"));
+    }
+    Err(format!(
+        "hysteria2[{name}]: {field} must be a string like '30 Mbps' or an integer Mbps value"
+    ))
+}
+
+#[cfg(feature = "hysteria2")]
+fn parse_hy2_bandwidth(input: &str) -> std::result::Result<u64, String> {
+    static RATE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(\d+)\s*([KMGTkmgt]?)([Bb])ps$").expect("valid rate regex")
+    });
+
+    let s = input.trim();
+    if s.is_empty() || s == "0" {
+        return Ok(0);
+    }
+    if let Ok(mbps) = s.parse::<u64>() {
+        return Ok(mbps_to_bytes_per_second(mbps));
+    }
+
+    let Some(caps) = RATE_RE.captures(s) else {
+        return Err(format!(
+            "invalid bandwidth '{input}', expected integer Mbps or e.g. '30 Mbps'"
+        ));
+    };
+    let value = caps[1]
+        .parse::<u64>()
+        .map_err(|e| format!("invalid number: {e}"))?;
+    let multiplier = match caps[2].to_ascii_uppercase().as_str() {
+        "" => 1,
+        "K" => 1_000,
+        "M" => 1_000_000,
+        "G" => 1_000_000_000,
+        "T" => 1_000_000_000_000,
+        _ => unreachable!("regex restricts unit prefix"),
+    };
+    let bytes = value
+        .checked_mul(multiplier)
+        .ok_or_else(|| "bandwidth overflows u64".to_string())?;
+    if &caps[3] == "b" {
+        Ok(bytes / 8)
+    } else {
+        Ok(bytes)
+    }
+}
+
+#[cfg(feature = "hysteria2")]
+fn mbps_to_bytes_per_second(mbps: u64) -> u64 {
+    mbps.saturating_mul(1_000_000) / 8
+}
+
+/// Resolve the dial port for a hysteria2 outbound. `port` wins when present
+/// and non-zero; otherwise the first concrete port in the (already validated)
+/// `ports` hopping spec stands in — the hopping socket rewrites every send to
+/// the dial port with the current hop port, so the value is a placeholder
+/// whenever hopping is active. Mirrors mihomo, which errors only when both
+/// `port` and `ports` fail to yield a port (issue #377).
+#[cfg(feature = "hysteria2")]
+fn hy2_dial_port(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+    ports: Option<&str>,
+) -> std::result::Result<u16, String> {
+    let explicit = match config.get("port") {
+        None => None,
+        Some(value) => {
+            let raw = value
+                .as_u64()
+                .ok_or_else(|| format!("hysteria2[{name}]: missing port"))?;
+            let port = u16::try_from(raw)
+                .map_err(|_| format!("hysteria2[{name}]: port {raw} exceeds 65535"))?;
+            if port == 0 && ports.is_none() {
+                return Err(format!("hysteria2[{name}]: port must be non-zero"));
+            }
+            (port != 0).then_some(port)
+        }
+    };
+    if let Some(port) = explicit {
+        return Ok(port);
+    }
+    ports.and_then(first_hy2_port).ok_or_else(|| {
+        format!("hysteria2[{name}]: missing port — set 'port' or a concrete 'ports' range")
+    })
+}
+
+/// First concrete port in a validated `ports` spec; `None` for the `*`/`all`
+/// wildcard, which names no dialable port.
+#[cfg(feature = "hysteria2")]
+fn first_hy2_port(ports: &str) -> Option<u16> {
+    let ports = ports.trim();
+    if ports == "*" || ports.eq_ignore_ascii_case("all") {
+        return None;
+    }
+    let part = ports.split(',').next()?.trim();
+    let first = match part.split_once('-') {
+        Some((start, _)) => start.trim(),
+        None => part,
+    };
+    first.parse::<u16>().ok().filter(|p| *p != 0)
+}
+
+/// Mirror of `HopPorts::parse`'s expansion bound (`hysteria2/obfs.rs`) —
+/// the port space holds at most this many distinct values, so a spec that
+/// expands past it can never dial; reject at config load (issue #648).
+#[cfg(feature = "hysteria2")]
+const MAX_HOP_PORT_ENTRIES: usize = u16::MAX as usize;
+
+#[cfg(feature = "hysteria2")]
+fn validate_hy2_ports(name: &str, ports: &str) -> std::result::Result<(), String> {
+    let ports = ports.trim();
+    if ports == "*" || ports.eq_ignore_ascii_case("all") {
+        return Ok(());
+    }
+    let mut total = 0usize;
+    for part in ports.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return Err(format!("hysteria2[{name}]: invalid ports '{ports}'"));
+        }
+        // Same bound the dial-time `HopPorts::parse` enforces — mirroring it
+        // here lets `-t`/load catch specs that could never dial (issue #648).
+        let span = if let Some((start, end)) = part.split_once('-') {
+            let s = parse_hy2_port_part(name, start)?;
+            let e = parse_hy2_port_part(name, end)?;
+            if s == 0 || e == 0 {
+                return Err(format!("hysteria2[{name}]: port must be non-zero"));
+            }
+            if s > e {
+                return Err(format!("hysteria2[{name}]: invalid port range '{part}'"));
+            }
+            e as usize - s as usize + 1
+        } else {
+            if parse_hy2_port_part(name, part)? == 0 {
+                return Err(format!("hysteria2[{name}]: port must be non-zero"));
+            }
+            1
+        };
+        total += span;
+        if total > MAX_HOP_PORT_ENTRIES {
+            return Err(format!(
+                "hysteria2[{name}]: ports '{ports}' expand beyond {MAX_HOP_PORT_ENTRIES} entries"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "hysteria2")]
+fn parse_hy2_port_part(name: &str, value: &str) -> std::result::Result<u16, String> {
+    value
+        .trim()
+        .parse::<u16>()
+        .map_err(|e| format!("hysteria2[{name}]: invalid port '{value}': {e}"))
+}
+
+#[cfg(feature = "hysteria2")]
+fn parse_hy2_hop_interval(
+    name: &str,
+    value: Option<&serde_yaml::Value>,
+) -> std::result::Result<Option<(u64, u64)>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let raw = if let Some(n) = value.as_u64() {
+        n.to_string()
+    } else {
+        value
+            .as_str()
+            .ok_or_else(|| format!("hysteria2[{name}]: hop-interval must be a number or range"))?
+            .trim()
+            .to_string()
+    };
+    if raw.is_empty() {
+        return Err(format!("hysteria2[{name}]: hop-interval must not be empty"));
+    }
+    if raw.contains(',') {
+        return Err(format!(
+            "hysteria2[{name}]: hop-interval only supports one range"
+        ));
+    }
+    if let Some((start, end)) = raw.split_once('-') {
+        let start = parse_hy2_u64(name, "hop-interval", start)?;
+        let end = parse_hy2_u64(name, "hop-interval", end)?;
+        Ok(Some(normalize_hy2_hop_interval(start, end)))
+    } else {
+        let start = parse_hy2_u64(name, "hop-interval", &raw)?;
+        Ok(Some(normalize_hy2_hop_interval(start, 0)))
+    }
+}
+
+#[cfg(feature = "hysteria2")]
+fn parse_hy2_u64(name: &str, field: &str, value: &str) -> std::result::Result<u64, String> {
+    let n = value
+        .trim()
+        .parse::<u64>()
+        .map_err(|e| format!("hysteria2[{name}]: invalid {field} '{value}': {e}"))?;
+    // `hop-interval` feeds `Instant + Duration` at rotate time — an
+    // out-of-range u64 (provider-supplied) overflows and, with
+    // `panic = "abort"`, crashes the process (issue #648).
+    if n > meow_common::MAX_DURATION_SECS {
+        return Err(format!(
+            "hysteria2[{name}]: {field} {n}s exceeds the {}s ceiling",
+            meow_common::MAX_DURATION_SECS
+        ));
+    }
+    Ok(n)
+}
+
+#[cfg(feature = "hysteria2")]
+fn normalize_hy2_hop_interval(start: u64, end: u64) -> (u64, u64) {
+    let start = if start == 0 {
+        HY2_DEFAULT_HOP_INTERVAL_SECS
+    } else {
+        start.max(HY2_MIN_HOP_INTERVAL_SECS)
+    };
+    let end = if end == 0 { start } else { end.max(start) };
+    (start, end)
+}
+
+#[cfg(feature = "hysteria2")]
+fn parse_hy2_fingerprint(
+    name: &str,
+    value: Option<&serde_yaml::Value>,
+) -> std::result::Result<Option<String>, String> {
+    let Some(raw) = value.and_then(serde_yaml::Value::as_str) else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let raw = raw.rsplit_once('=').map_or(raw, |(_, fp)| fp.trim());
+    let hex: String = raw
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':')
+        .collect();
+    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "hysteria2[{name}]: fingerprint must be a SHA-256 hex digest"
+        ));
+    }
+    Ok(Some(raw.to_string()))
+}
+
+#[cfg(feature = "hysteria2")]
+fn validate_hy2_alpn(
+    name: &str,
+    value: Option<&serde_yaml::Value>,
+) -> std::result::Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let mut alpns = Vec::new();
+    if let Some(items) = value.as_sequence() {
+        for item in items {
+            let alpn = item
+                .as_str()
+                .ok_or_else(|| format!("hysteria2[{name}]: alpn entries must be strings"))?;
+            alpns.push(alpn);
+        }
+    } else if let Some(alpn) = value.as_str() {
+        alpns.push(alpn);
+    } else {
+        return Err(format!(
+            "hysteria2[{name}]: alpn must be a string or string list"
+        ));
+    }
+    if alpns.iter().any(|alpn| *alpn != "h3") {
+        return Err(format!(
+            "hysteria2[{name}]: custom alpn is unsupported; only 'h3' is allowed"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "hysteria2")]
+fn reject_unsupported_hy2_options(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+) -> std::result::Result<(), String> {
+    for key in [
+        "certificate",
+        "private-key",
+        "obfs-min-packet-size",
+        "obfs-max-packet-size",
+    ] {
+        if config.contains_key(key) {
+            return Err(format!(
+                "hysteria2[{name}]: '{key}' is not supported by the Rust backend"
+            ));
+        }
+    }
+    reject_enabled_hy2_map(name, config, "ech-opts")?;
+    reject_enabled_hy2_map(name, config, "realm-opts")?;
+    reject_nonzero_hy2_option(name, config, "cwnd")?;
+    reject_nonzero_hy2_option(name, config, "udp-mtu")?;
+    reject_nonzero_hy2_option(name, config, "initial-stream-receive-window")?;
+    reject_nonzero_hy2_option(name, config, "max-stream-receive-window")?;
+    reject_nonzero_hy2_option(name, config, "initial-connection-receive-window")?;
+    reject_nonzero_hy2_option(name, config, "max-connection-receive-window")?;
+    if optional_nonempty_str(config, "bbr-profile").is_some() {
+        return Err(format!(
+            "hysteria2[{name}]: 'bbr-profile' is not supported by the Rust backend"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "hysteria2")]
+fn reject_enabled_hy2_map(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+    key: &str,
+) -> std::result::Result<(), String> {
+    if let Some(value) = config.get(key) {
+        let enabled = value
+            .as_mapping()
+            .and_then(|map| map.get(serde_yaml::Value::String("enable".into())))
+            .and_then(serde_yaml::Value::as_bool)
+            .unwrap_or(true);
+        if enabled {
+            return Err(format!(
+                "hysteria2[{name}]: '{key}' is not supported by the Rust backend"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "hysteria2")]
+fn reject_nonzero_hy2_option(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+    key: &str,
+) -> std::result::Result<(), String> {
+    if let Some(value) = config.get(key) {
+        let nonzero =
+            value.as_u64().is_some_and(|v| v != 0) || value.as_i64().is_some_and(|v| v != 0);
+        if nonzero {
+            return Err(format!(
+                "hysteria2[{name}]: '{key}' is not supported by the Rust backend"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Parse the `strategy` field for a `load-balance` group.
+///
+/// Hard error on unknown values (Class A per ADR-0002): unknown strategy means
+/// the user may get different distribution behaviour than intended.
+/// Upstream also rejects (`errStrategy` in adapter/outboundgroup/loadbalance.go).
+fn parse_lb_strategy(strategy: Option<&str>) -> std::result::Result<LbStrategy, String> {
+    match strategy.unwrap_or("round-robin") {
+        "round-robin" => Ok(LbStrategy::RoundRobin),
+        // Upstream maps "" to consistent-hashing (`case "",
+        // "consistent-hashing"` in NewLoadBalance — the same arm an
+        // absent strategy falls into upstream). Our absent default stays
+        // round-robin via the unwrap_or — deliberate divergence, spec
+        // row 10.
+        "" | "consistent-hashing" => Ok(LbStrategy::ConsistentHashing),
+        other => Err(format!(
+            "load-balance: unknown strategy '{other}'; valid values: \
+             'round-robin' (default), 'consistent-hashing'. \
+             (upstream also rejects via errStrategy — Class A ADR-0002)"
+        )),
+    }
+}
+
+/// Parse `ws-opts.max-early-data`: absent → `0` (disabled); a value above
+/// the ceiling clamps with a warning (`meow-transport` re-clamps at
+/// connect for programmatic configs — issue #648).
+#[cfg(any(feature = "vless", feature = "vmess"))]
+fn ws_max_early_data(ws_opts: Option<&serde_yaml::Value>) -> usize {
+    ws_opts
+        .and_then(|o| o.get("max-early-data"))
+        .and_then(serde_yaml::Value::as_u64)
+        .map_or(0, |n| {
+            let v = usize::try_from(n).unwrap_or(usize::MAX);
+            if v > meow_transport::ws::MAX_WS_EARLY_DATA {
+                tracing::warn!(
+                    "ws-opts.max-early-data {v} exceeds the {}-byte ceiling; clamped",
+                    meow_transport::ws::MAX_WS_EARLY_DATA
+                );
+            }
+            v
+        })
+        .min(meow_transport::ws::MAX_WS_EARLY_DATA)
+}
+
+/// Parse a `type: vless` proxy config block into a `VlessAdapter`.
+///
+/// # Hard errors (Class A per ADR-0002)
+///
+/// - `flow: xtls-rprx-direct` / `xtls-rprx-splice` — deprecated and insecure
+/// - Unknown `flow` values — may skip expected security processing
+/// - `reality-opts` malformed, used without TLS, or missing `client-fingerprint`
+/// - `flow: xtls-rprx-vision` + any `network` other than raw `tcp`, or
+///   without `tls: true` (REALITY included) — Vision's DIRECT mode needs
+///   the TLS record layer right on the socket.  With VLESS `encryption`
+///   the older rule applies: `tls: true` or a grpc/h2 network
+/// - `encryption: <non-empty non-"none">` — unsupported cipher
+/// - `uuid` invalid
+/// - `server` domain > 255 bytes
+/// - `vless-vision` feature absent + `flow: xtls-rprx-vision`
+/// - `flow: xtls-rprx-vision` + a `smux`/`mux` block using sing-mux
+///   (`protocol: smux`/`yamux`/`h2mux`) — sing-box and Xray reject XTLS +
+///   sing-mux (`protocol: muxcool` is fine)
+/// - a `smux`/`mux` block with `padding: true` + `protocol: muxcool` —
+///   Mux.Cool has no padding layer, so the node would go out unpadded
+///
+/// # Warn-once (Class B per ADR-0002)
+///
+/// - `tls: false` with plain VLESS — plaintext, but correct destination
+/// - `mux: { enabled: true }` — sing-mux multiplexing (server must be sing-box/mihomo)
+/// - `flow: xtls-rprx-vision` + `udp: true` — Vision is TCP-only; UDP uses plain VLESS
+/// - `reality-opts.short-id` given as a bare YAML number (e.g. `0x1f`) —
+///   coerced to its decimal digits before hex-decoding (matching mihomo),
+///   which can silently reinterpret the value; quote it to preserve the
+///   literal digits
+#[cfg(feature = "vless")]
+fn parse_vless(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+    dialer: &Arc<dyn meow_proxy::dialer::TcpDialer>,
+) -> std::result::Result<VlessAdapter, String> {
+    let server = config
+        .get("server")
+        .and_then(|v| v.as_str())
+        .ok_or("vless: missing server")?;
+    let port = required_port(config, "vless")?;
+    let uuid_str = config
+        .get("uuid")
+        .and_then(|v| v.as_str())
+        .ok_or("vless: missing uuid")?;
+    let uuid_bytes = parse_uuid(uuid_str).map_err(|e| format!("vless: {e}"))?;
+
+    // Validate server domain length (Class A — wrong destination with no diagnostic).
+    if server.len() > 255 {
+        return Err(format!(
+            "vless: server '{}…' domain is {} bytes; max 255 \
+             (would be silently truncated — wrong destination, no diagnostic)",
+            &server[..server.len().min(20)],
+            server.len()
+        ));
+    }
+
+    let udp = config
+        .get("udp")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+    let tls = config
+        .get("tls")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+    let skip_cert_verify = config
+        .get("skip-cert-verify")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+    let servername = config
+        .get("servername")
+        .and_then(|v| v.as_str())
+        .unwrap_or(server)
+        .to_string();
+    let alpn: Vec<String> = config
+        .get("alpn")
+        .and_then(|v| v.as_sequence())
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+        .collect();
+    let network = config
+        .get("network")
+        .and_then(|v| v.as_str())
+        .unwrap_or("tcp");
+    let client_fingerprint = config.get("client-fingerprint").and_then(|v| v.as_str());
+
+    // ── Reality opts ──────────────────────────────────────────────────────
+    let reality = parse_vless_reality_opts(name, config)?;
+    if reality.is_some() {
+        if !tls {
+            return Err("vless: reality-opts requires `tls: true`".into());
+        }
+        if client_fingerprint.is_none() {
+            return Err("vless: REALITY is based on uTLS, please set a client-fingerprint".into());
+        }
+    }
+
+    // ── VLESS Encryption (`mlkem768x25519plus…`) ──────────────────────────
+    // "" / "none" → plain VLESS. The post-quantum Encryption layer is parsed
+    // when the `vless-encryption` feature is compiled in; anything else (a real
+    // cipher name, or the ML-KEM string on a build without the feature) is a
+    // hard error (Class A — silently ignoring it would send unprotected bytes).
+    let encryption = config
+        .get("encryption")
+        .and_then(|v| v.as_str())
+        .unwrap_or("none");
+    #[cfg(feature = "vless-encryption")]
+    let vless_encryption = parse_vless_encryption(encryption)?;
+    #[cfg(not(feature = "vless-encryption"))]
+    parse_vless_encryption(encryption)?;
+
+    // ── client-fingerprint ──────────────────────────────────────────────
+    // Passed through to TlsConfig.fingerprint; the TLS layer selects the
+    // BoringSSL backend when the `boring-tls` feature is compiled in,
+    // otherwise falls back to rustls with a stub warning.
+
+    // ── Flow parsing ──────────────────────────────────────────────────────
+    let flow_str = config.get("flow").and_then(|v| v.as_str()).unwrap_or("");
+
+    let flow: Option<VlessFlow> = match flow_str {
+        "" => None,
+
+        "xtls-rprx-vision" => {
+            // Hard error if vless-vision feature is not compiled in (Class A).
+            #[cfg(not(feature = "vless-vision"))]
+            {
+                return Err(
+                    "vless: flow xtls-rprx-vision requires the `vless-vision` Cargo feature; \
+                     rebuild with --features vless-vision"
+                        .into(),
+                );
+            }
+            #[cfg(feature = "vless-vision")]
+            Some(VlessFlow::XtlsRprxVision)
+        }
+
+        "xtls-rprx-direct" | "xtls-rprx-splice" => {
+            // Class A: upstream accepts these as deprecated aliases; we reject them.
+            // upstream: adapter/outbound/vless.go — accepts deprecated flows.
+            // NOT warn-ignore — security regression vs Vision if user assumes Vision protection.
+            return Err(format!(
+                "vless: flow '{flow_str}' is deprecated and insecure; \
+                 use `flow: xtls-rprx-vision` instead. \
+                 (upstream: adapter/outbound/vless.go accepts this; we reject — Class A ADR-0002)"
+            ));
+        }
+
+        other => {
+            // Class A: unknown flow may skip expected security processing.
+            // upstream: adapter/outbound/vless.go ignores unknown flows.
+            // NOT warn-ignore — unknown flow value may silently degrade security.
+            return Err(format!(
+                "vless: unknown flow '{other}'; valid values: '' or 'xtls-rprx-vision'. \
+                 (upstream: ignores unknown flows; we reject — Class A ADR-0002)"
+            ));
+        }
+    };
+
+    // ── Gating: Vision requires raw TCP under TLS / REALITY (Class A) ─────
+    // Vision ends by switching both directions to the socket under the
+    // outer TLS (DIRECT); Xray's inbound refuses anything but TLS / REALITY
+    // right on the connection, and mihomo's client refuses the same.  The
+    // VLESS Encryption layer keeps its earlier gate (issue #495 item 5).
+    if flow == Some(VlessFlow::XtlsRprxVision) {
+        #[cfg(feature = "vless-encryption")]
+        let encrypted = vless_encryption.is_some();
+        #[cfg(not(feature = "vless-encryption"))]
+        let encrypted = false;
+        if encrypted {
+            let tls_transport = network == "grpc" || network == "h2";
+            if !tls && !tls_transport {
+                return Err(
+                    "vless: flow xtls-rprx-vision requires an encrypting transport; \
+                     set `tls: true` or use a TLS-enforcing network (grpc, h2). \
+                     Without outer TLS, Vision splice is a no-op and the user has no protection."
+                        .into(),
+                );
+            }
+        } else if network != "tcp" {
+            return Err(format!(
+                "vless: flow xtls-rprx-vision only works over `network: tcp` (got \
+                 '{network}'); Vision hands the connection to the raw TLS socket, which \
+                 a {network} transport does not expose, and Xray servers reject it too. \
+                 Remove `flow` or `network`."
+            ));
+        } else if !tls {
+            return Err(
+                "vless: flow xtls-rprx-vision requires `tls: true` (or REALITY); \
+                 without outer TLS, Vision splice is a no-op and the user has no protection."
+                    .into(),
+            );
+        }
+    }
+
+    // ── Warn: tls: false with plain VLESS (Class B) ───────────────────────
+    if !tls && flow.is_none() && network != "grpc" && network != "h2" {
+        tracing::warn!(
+            proxy = %name,
+            "vless: tls is false and no TLS-enforcing transport is set; \
+             traffic will be plaintext (correct destination, absent crypto). \
+             Set `tls: true` to encrypt. (Class B divergence — upstream is silent)"
+        );
+    }
+
+    // ── mux: sing-mux compatible connection multiplexing ─────────────────
+    // Parsed after adapter construction below — see the `with_mux` call.
+
+    // ── Warn: Vision + UDP (Class B) ─────────────────────────────────────
+    if flow == Some(VlessFlow::XtlsRprxVision) && udp {
+        tracing::warn!(
+            proxy = %name,
+            "flow: xtls-rprx-vision applies to TCP only; UDP relays on \
+             this proxy will use plain VLESS (Vision's inner-TLS splice \
+             is not defined for UDP datagrams). (Class B divergence)"
+        );
+    }
+
+    // ── Build transport chain ──────────────────────────────────────────────
+    let mut chain = TransportChain::empty();
+
+    if tls {
+        use meow_transport::tls::{TlsConfig, TlsLayer};
+        let sni = if servername.is_empty() {
+            server
+        } else {
+            servername.as_str()
+        };
+        let mut tls_cfg = TlsConfig::new(sni);
+        tls_cfg.skip_cert_verify = skip_cert_verify;
+        tls_cfg.alpn = default_transport_alpn(network, alpn);
+        tls_cfg.fingerprint = client_fingerprint.map(std::string::ToString::to_string);
+        tls_cfg.reality = reality;
+
+        // ── ECH opts ────────────────────────────────────────────────────
+        // DNS-sourced ECH (`enable: true` without `config:`) is resolved by
+        // `ech_dns::preresolve_ech` *before* `parse_proxy` runs, which injects
+        // the fetched bytes back into `ech-opts.config` as base64. By the time
+        // we get here only the inline-config branch matters; a missing
+        // `config:` means pre-resolution failed (already warned) and we just
+        // continue without ECH.
+        if let Some(ech_opts) = config.get("ech-opts") {
+            let ech_enabled = ech_opts
+                .get("enable")
+                .and_then(serde_yaml::Value::as_bool)
+                .unwrap_or(false);
+            if ech_enabled {
+                use meow_transport::tls::EchOpts;
+                if let Some(inline_config) = ech_opts.get("config").and_then(|v| v.as_str()) {
+                    use base64::Engine;
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(inline_config)
+                        .map_err(|e| format!("vless: ech-opts.config base64 decode: {e}"))?;
+                    tls_cfg.ech = Some(EchOpts::Config(bytes));
+                }
+            }
+        }
+
+        let tls_layer =
+            TlsLayer::new(&tls_cfg).map_err(|e| format!("vless: TLS layer error: {e}"))?;
+        chain.push(Box::new(tls_layer));
+    }
+
+    match network {
+        "tcp" => {} // no extra layer
+        "ws" => {
+            use meow_transport::ws::{WsConfig, WsLayer};
+            let ws_opts = config.get("ws-opts");
+            let path = ws_opts
+                .and_then(|o| o.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("/")
+                .to_string();
+            // host_header: user-supplied Host, or fall back to server address.
+            // WsLayer::new requires Some; normalization is the config layer's job
+            // (ADR-0001 §1 — transport never infers values from context).
+            let host_header = ws_opts
+                .and_then(|o| o.get("headers"))
+                .and_then(|h| h.get("Host"))
+                .and_then(|v| v.as_str())
+                .map_or_else(|| server.to_string(), std::string::ToString::to_string);
+            // `max-early-data` buffers caller writes until the upgrade
+            // completes — clamped to the 2048-byte ceiling (the transport
+            // layer re-clamps programmatic configs at connect; #648).
+            let max_early_data = ws_max_early_data(ws_opts);
+            let early_data_header_name = ws_opts
+                .and_then(|o| o.get("early-data-header-name"))
+                .and_then(|v| v.as_str())
+                .map(std::string::ToString::to_string);
+            let ws_cfg = WsConfig {
+                path,
+                host_header: Some(host_header),
+                extra_headers: vec![],
+                max_early_data,
+                early_data_header_name,
+            };
+            let ws_layer =
+                WsLayer::new(ws_cfg).map_err(|e| format!("vless: ws layer error: {e}"))?;
+            chain.push(Box::new(ws_layer));
+        }
+        "grpc" => {
+            use meow_transport::grpc::{GrpcConfig, GrpcLayer};
+            let grpc_opts = config.get("grpc-opts");
+            let service_name = grpc_opts
+                .and_then(|o| o.get("grpc-service-name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("GunService")
+                .to_string();
+            // Authority: mihomo's gun transport sets `Host` to `servername`
+            // and only falls back to the dial host when `servername` is empty
+            // (adapter/outbound/vless.go). Front-ends that route gRPC by
+            // `:authority` are provisioned against that value, so match it
+            // rather than always sending the dial host (issue #377). Resolved
+            // here per ADR-0001 §1 — the transport never infers it.
+            let authority = config
+                .get("servername")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(server)
+                .to_string();
+            let grpc_cfg = GrpcConfig {
+                service_name,
+                authority,
+            };
+            chain.push(Box::new(GrpcLayer::new(grpc_cfg)));
+        }
+        "h2" => {
+            use meow_transport::h2::{H2Config, H2Layer};
+            let h2_opts = config.get("h2-opts");
+            let path = h2_opts
+                .and_then(|o| o.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("/")
+                .to_string();
+            // `h2-opts.host` is a list; default to server when absent.
+            // Class A: empty host list is rejected — H2Layer asserts non-empty
+            // (debug) and upstream requires at least one authority value.
+            let hosts: Vec<String> = h2_opts
+                .and_then(|o| o.get("host"))
+                .and_then(|v| v.as_sequence())
+                .map_or_else(
+                    || vec![server.to_string()],
+                    |seq| {
+                        seq.iter()
+                            .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+                            .collect()
+                    },
+                );
+            if hosts.is_empty() {
+                return Err(format!(
+                    "vless: h2-opts.host must not be empty for proxy '{name}' \
+                     (H2 requires at least one authority value)"
+                ));
+            }
+            let h2_cfg = H2Config { path, hosts };
+            chain.push(Box::new(H2Layer::new(h2_cfg)));
+        }
+        "httpupgrade" => {
+            use meow_transport::httpupgrade::{
+                HttpUpgradeConfig, HttpUpgradeLayer, MAX_EXTRA_HEADERS,
+            };
+            let hu_opts = config.get("http-upgrade-opts");
+            let path = hu_opts
+                .and_then(|o| o.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("/")
+                .to_string();
+            let host_header = hu_opts
+                .and_then(|o| o.get("host"))
+                .and_then(|v| v.as_str())
+                .map(std::string::ToString::to_string)
+                .or_else(|| Some(server.to_string()));
+            let extra_headers: Vec<(String, String)> = match hu_opts
+                .and_then(|o| o.get("headers"))
+                .and_then(|h| h.as_mapping())
+            {
+                Some(m) => {
+                    // Same remotely-supplied header-list bound as xhttp
+                    // (issue #648); `connect()` re-checks it.
+                    if m.len() > MAX_EXTRA_HEADERS {
+                        return Err(format!(
+                            "vless: http-upgrade-opts.headers has {} entries (max {MAX_EXTRA_HEADERS})",
+                            m.len()
+                        ));
+                    }
+                    m.iter()
+                        .filter_map(|(k, v)| {
+                            let key = k.as_str()?.to_string();
+                            let val = v.as_str()?.to_string();
+                            Some((key, val))
+                        })
+                        .collect()
+                }
+                None => Vec::new(),
+            };
+            let hu_cfg = HttpUpgradeConfig {
+                path,
+                host_header,
+                extra_headers,
+            };
+            chain.push(Box::new(HttpUpgradeLayer::new(hu_cfg)));
+        }
+        "xhttp" => {
+            let xhttp_cfg = parse_vless_xhttp_config(config, server, &servername, tls)?;
+            chain.push(Box::new(meow_transport::xhttp::XhttpLayer::new(xhttp_cfg)));
+        }
+        other => {
+            return Err(format!(
+                "vless: unsupported network '{other}'; valid values: tcp, ws, grpc, h2, httpupgrade, xhttp"
+            ));
+        }
+    }
+
+    #[cfg_attr(not(feature = "vless-encryption"), allow(unused_mut))]
+    let mut adapter = VlessAdapter::new(
+        name,
+        server,
+        port,
+        uuid_bytes,
+        flow,
+        udp,
+        chain,
+        Arc::clone(dialer),
+    );
+    #[cfg(feature = "vless-encryption")]
+    adapter.set_encryption(vless_encryption);
+
+    #[cfg(feature = "mux")]
+    if let Some(mux_options) = parse_mux_options(name, config)? {
+        // Vision + sing-mux (smux/yamux/h2mux) is rejected by both sing-box
+        // and Xray servers: the mux session dials the reserved mux
+        // destination and the server tears the Vision-wrapped connection
+        // down with no diagnostic — hard error at config time rather than a
+        // silent dial failure. Vision + Mux.Cool (`protocol: muxcool`) is
+        // the opposite case: Xray's own Mux.Cool signaling rides inside the
+        // VLESS request that Vision splices, and this has been live-tested
+        // against a real Xray node (see docs/specs/proxy-mux.md "Test Plan"
+        // items 2-3, issue #424) — so only the sing-mux protocols are gated
+        // here.
+        #[cfg(feature = "vless-vision")]
+        if flow == Some(VlessFlow::XtlsRprxVision)
+            && mux_options.protocol != meow_proxy::mux::Protocol::MuxCool
+        {
+            return Err(
+                "vless: flow xtls-rprx-vision is incompatible with sing-mux \
+                 (smux/yamux/h2mux); sing-box and Xray reject XTLS + sing-mux. \
+                 Use `protocol: muxcool` for Vision + multiplexing instead."
+                    .into(),
+            );
+        }
+        adapter = adapter.with_mux(mux_options);
+    }
+    #[cfg(not(feature = "mux"))]
+    parse_mux_options(name, config)?;
+
+    Ok(adapter)
+}
+
+/// Parse the optional mihomo `smux:` block shared by
+/// VLESS/Trojan/Shadowsocks/VMess.  `mux:` remains accepted as a legacy alias.
+///
+/// Two wire protocols are available, picked by `protocol`:
+///
+/// * sing-mux (smux/yamux/h2mux, default h2mux) — the first proxy request
+///   targets the reserved mux destination and streams carry a sing-encoded
+///   Socksaddr prefix.  Server must be sing-box / mihomo based.
+/// * muxcool — Xray's Mux.Cool (CommandMux 0x03 in the VLESS/VMess request
+///   header, frame mux).  Server must be Xray / sing-box based; VLESS and
+///   VMess support it (Trojan/Shadowsocks reject it).
+///
+/// `padding: true` is sing-mux session padding and is rejected with
+/// `protocol: muxcool`.
+///
+/// Returns `None` when the block is absent or disabled; `Err` for
+/// malformed values.  Only compiled when one of its call sites
+/// (trojan / vless / ss / vmess parsing) exists.
+#[cfg(all(
+    feature = "mux",
+    any(
+        feature = "trojan",
+        feature = "vless",
+        feature = "ss",
+        feature = "vmess"
+    )
+))]
+fn parse_mux_options(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+) -> std::result::Result<Option<meow_proxy::mux::MuxOptions>, String> {
+    let Some(mux_cfg) = mux_config_block(name, config)? else {
+        return Ok(None);
+    };
+    let enabled = mux_bool_field(name, mux_cfg, "enabled", false)?;
+    if !enabled {
+        return Ok(None);
+    }
+    // Empty protocol maps to h2mux, matching mihomo's default.
+    let protocol_str = match mux_cfg.get("protocol") {
+        None => "h2mux",
+        Some(serde_yaml::Value::String(s)) => s.as_str(),
+        Some(other) => {
+            return Err(format!(
+                "{name}: mux option 'protocol' must be a string, got {other:?}"
+            ))
+        }
+    };
+    let Some(protocol) = meow_proxy::mux::Protocol::parse(protocol_str) else {
+        // mihomo hard-errors on unknown protocols; do the same so a typo
+        // cannot silently speak the wrong wire protocol to the server.
+        return Err(format!(
+            "{name}: unknown mux protocol '{protocol_str}'; valid values: smux, yamux, h2mux, muxcool"
+        ));
+    };
+    // max-connections=0 AND max-streams=0 means one physical connection
+    // per stream (mirrors mihomo/sing-mux exactly) — almost never what an
+    // operator wants, so say so.
+    let max_connections = mux_usize_field(name, mux_cfg, "max-connections", 4)?;
+    let max_streams = mux_usize_field(name, mux_cfg, "max-streams", 4)?;
+    if max_connections == 0 && max_streams == 0 {
+        tracing::warn!(
+            proxy = %name,
+            "mux: max-connections and max-streams are both 0 — every stream dials its own \
+             physical connection (mirrors mihomo); consider the 4/4/4 defaults"
+        );
+    }
+    // Parsed but unsupported upstream fields: `statistic` (per-connection
+    // traffic attribution in mihomo's dialer) and `brutal-opts` (TCP Brutal,
+    // Linux-only upstream).  Warn once so operators know the divergence.
+    for unsupported in ["statistic", "brutal-opts"] {
+        if mux_cfg.get(unsupported).is_some() {
+            tracing::warn!(
+                proxy = %name,
+                "mux option '{}' is not supported in meow-rs and will be ignored",
+                unsupported
+            );
+        }
+    }
+    // Padding is a sing-mux session layer; Mux.Cool has none, so honouring
+    // the flag is impossible and ignoring it would send the unpadded traffic
+    // shape the operator opted out of (Class A per ADR-0002).
+    let padding = mux_bool_field(name, mux_cfg, "padding", false)?;
+    if padding && protocol == meow_proxy::mux::Protocol::MuxCool {
+        return Err(format!(
+            "{name}: mux option 'padding' is sing-mux only (smux/yamux/h2mux); \
+             Mux.Cool (`protocol: muxcool`) has no padding layer — remove `padding` \
+             or pick a sing-mux protocol"
+        ));
+    }
+    Ok(Some(meow_proxy::mux::MuxOptions {
+        protocol,
+        padding,
+        max_connections,
+        min_streams: mux_usize_field(name, mux_cfg, "min-streams", 4)?,
+        max_streams,
+        only_tcp: mux_bool_field(name, mux_cfg, "only-tcp", false)?,
+    }))
+}
+
+/// No-mux builds: warn loudly instead of silently ignoring an enabled
+/// `smux:`/`mux:` block (operators would otherwise think the node is multiplexed).
+/// Only compiled when one of its call sites (trojan / vless / ss / vmess
+/// parsing) exists.
+#[cfg(all(
+    not(feature = "mux"),
+    any(
+        feature = "trojan",
+        feature = "vless",
+        feature = "ss",
+        feature = "vmess"
+    )
+))]
+fn parse_mux_options(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+) -> std::result::Result<(), String> {
+    if let Some(mux_cfg) = mux_config_block(name, config)? {
+        let enabled = mux_cfg
+            .get("enabled")
+            .and_then(serde_yaml::Value::as_bool)
+            .unwrap_or(false);
+        if enabled {
+            tracing::warn!(
+                proxy = %name,
+                "mux is enabled in config but this build was compiled without the `mux` feature; the option is ignored"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(
+    feature = "trojan",
+    feature = "vless",
+    feature = "ss",
+    feature = "vmess"
+))]
+fn mux_config_block<'a>(
+    name: &str,
+    config: &'a HashMap<String, serde_yaml::Value>,
+) -> std::result::Result<Option<&'a serde_yaml::Value>, String> {
+    let block = match (config.get("smux"), config.get("mux")) {
+        (Some(_), Some(_)) => {
+            // Migration-friendly: prefer the canonical key and say so,
+            // instead of rejecting the node for a likely leftover.
+            tracing::warn!(
+                proxy = %name,
+                "both `smux` and legacy alias `mux` are configured; using the canonical `smux` key"
+            );
+            config.get("smux")
+        }
+        (Some(config), None) | (None, Some(config)) => Some(config),
+        (None, None) => None,
+    };
+    let Some(block) = block else {
+        return Ok(None);
+    };
+    // A scalar like `smux: true` must not be treated as "disabled" —
+    // the operator clearly tried to enable multiplexing.
+    if !block.is_mapping() {
+        return Err(format!(
+            "{name}: `smux`/`mux` must be a mapping, got {block:?}"
+        ));
+    }
+    Ok(Some(block))
+}
+
+#[cfg(all(
+    feature = "mux",
+    any(
+        feature = "trojan",
+        feature = "vless",
+        feature = "ss",
+        feature = "vmess"
+    )
+))]
+fn mux_bool_field(
+    name: &str,
+    mux_cfg: &serde_yaml::Value,
+    key: &str,
+    default: bool,
+) -> std::result::Result<bool, String> {
+    match mux_cfg.get(key) {
+        None => Ok(default),
+        Some(serde_yaml::Value::Bool(b)) => Ok(*b),
+        Some(other) => Err(format!(
+            "{name}: mux option '{key}' must be a boolean, got {other:?}"
+        )),
+    }
+}
+
+#[cfg(all(
+    feature = "mux",
+    any(
+        feature = "trojan",
+        feature = "vless",
+        feature = "ss",
+        feature = "vmess"
+    )
+))]
+fn mux_usize_field(
+    name: &str,
+    mux_cfg: &serde_yaml::Value,
+    key: &str,
+    default: usize,
+) -> std::result::Result<usize, String> {
+    match mux_cfg.get(key) {
+        None => Ok(default),
+        Some(serde_yaml::Value::Number(n)) if n.is_u64() => usize::try_from(n.as_u64().unwrap())
+            .map_err(|_| format!("{name}: mux option '{key}' is too large")),
+        Some(other) => Err(format!(
+            "{name}: mux option '{key}' must be a non-negative integer, got {other:?}"
+        )),
+    }
+}
+#[cfg(feature = "vless")]
+fn parse_vless_xhttp_config(
+    config: &HashMap<String, serde_yaml::Value>,
+    server: &str,
+    servername: &str,
+    tls: bool,
+) -> std::result::Result<meow_transport::xhttp::XhttpConfig, String> {
+    use meow_transport::xhttp::{XhttpConfig, MAX_EXTRA_HEADERS, MAX_X_PADDING_BYTES};
+
+    let xhttp_opts = config.get("xhttp-opts");
+    let path = xhttp_opts
+        .and_then(|o| o.get("path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("/")
+        .to_string();
+    let fallback_host = if servername.is_empty() {
+        server
+    } else {
+        servername
+    };
+    let hosts: Vec<String> = match xhttp_opts.and_then(|o| o.get("host")) {
+        None => vec![fallback_host.to_string()],
+        Some(value) if value.is_string() => {
+            vec![value.as_str().expect("checked string").to_string()]
+        }
+        Some(value) if value.is_sequence() => value
+            .as_sequence()
+            .expect("checked sequence")
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(std::string::ToString::to_string)
+                    .ok_or_else(|| "vless: xhttp-opts.host entries must be strings".to_string())
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?,
+        Some(_) => {
+            return Err("vless: xhttp-opts.host must be a string or string array".into());
+        }
+    };
+    if hosts.is_empty() {
+        return Err("vless: xhttp-opts.host must not be empty".into());
+    }
+    let mode = xhttp_opts
+        .and_then(|o| o.get("mode"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("stream-one")
+        .to_string();
+    if !mode.eq_ignore_ascii_case("stream-one") {
+        return Err(format!(
+            "vless: unsupported xhttp mode '{mode}'; only 'stream-one' is implemented"
+        ));
+    }
+    let extra_headers: Vec<(String, String)> = match xhttp_opts
+        .and_then(|o| o.get("headers"))
+        .and_then(|h| h.as_mapping())
+    {
+        Some(m) => {
+            // Bound remotely-supplied header lists — the padding cap below
+            // covers the worst case, but a giant `headers` map is still
+            // attacker-chosen process memory (issue #648).
+            if m.len() > MAX_EXTRA_HEADERS {
+                return Err(format!(
+                    "vless: xhttp-opts.headers has {} entries (max {MAX_EXTRA_HEADERS})",
+                    m.len()
+                ));
+            }
+            m.iter()
+                .filter_map(|(k, v)| {
+                    let key = k.as_str()?.to_string();
+                    let val = v.as_str()?.to_string();
+                    Some((key, val))
+                })
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    let no_grpc_header = xhttp_opts
+        .and_then(|o| o.get("no-grpc-header"))
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+    let x_padding_bytes =
+        if let Some(padding_val) = xhttp_opts.and_then(|o| o.get("x-padding-bytes")) {
+            if let Some(s) = padding_val.as_str() {
+                let parts: Vec<&str> = s.split('-').collect();
+                if parts.len() != 2 {
+                    return Err(format!(
+                        "vless: invalid x-padding-bytes range '{s}', expected 'min-max'"
+                    ));
+                }
+                let min = parts[0]
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|e| format!("vless: invalid min in x-padding-bytes '{s}': {e}"))?;
+                let max = parts[1]
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|e| format!("vless: invalid max in x-padding-bytes '{s}': {e}"))?;
+                if min > max {
+                    return Err(format!(
+                        "vless: x-padding-bytes min ({min}) exceeds max ({max})"
+                    ));
+                }
+                Some((min, max))
+            } else if let Some(seq) = padding_val.as_sequence() {
+                if seq.len() != 2 {
+                    return Err("vless: x-padding-bytes array must have 2 elements".into());
+                }
+                // `try_from`, not `as usize` — on 32-bit targets a u64 that
+                // exceeds usize::MAX would wrap under the cap check.
+                let min = usize::try_from(
+                    seq[0]
+                        .as_u64()
+                        .ok_or_else(|| "vless: invalid min in x-padding-bytes".to_string())?,
+                )
+                .map_err(|_| "vless: x-padding-bytes min out of range".to_string())?;
+                let max = usize::try_from(
+                    seq[1]
+                        .as_u64()
+                        .ok_or_else(|| "vless: invalid max in x-padding-bytes".to_string())?,
+                )
+                .map_err(|_| "vless: x-padding-bytes max out of range".to_string())?;
+                if min > max {
+                    return Err(format!(
+                        "vless: x-padding-bytes min ({min}) exceeds max ({max})"
+                    ));
+                }
+                Some((min, max))
+            } else {
+                return Err(
+                    "vless: x-padding-bytes must be a 'min-max' string or 2-element integer array"
+                        .to_string(),
+                );
+            }
+        } else {
+            Some((100, 1000))
+        };
+    // The padding becomes a `String` of `pad_len` bytes on every connect —
+    // unbounded, a provider/subscription node could abort the process via a
+    // remote health check or any routed dial (issue #648).
+    if let Some((_, max)) = x_padding_bytes {
+        if max > MAX_X_PADDING_BYTES {
+            return Err(format!(
+                "vless: x-padding-bytes max ({max}) exceeds {MAX_X_PADDING_BYTES}"
+            ));
+        }
+    }
+
+    Ok(XhttpConfig {
+        path,
+        hosts,
+        scheme: if tls { "https" } else { "http" }.to_string(),
+        extra_headers,
+        mode,
+        no_grpc_header,
+        x_padding_bytes,
+    })
+}
+
+/// Parse the VLESS `encryption` field.
+///
+/// With the `vless-encryption` feature: `""`/`"none"` → `None`, a
+/// `mlkem768x25519plus…` string → a shared [`VlessEncryptionClient`], anything
+/// else → error.
+#[cfg(all(feature = "vless", feature = "vless-encryption"))]
+fn parse_vless_encryption(
+    encryption: &str,
+) -> std::result::Result<Option<std::sync::Arc<meow_proxy::VlessEncryptionClient>>, String> {
+    meow_proxy::parse_client_encryption(encryption)
+        .map(|opt| opt.map(std::sync::Arc::new))
+        .map_err(|e| format!("vless: {e}"))
+}
+
+/// Without the feature: accept only `""`/`"none"`; reject everything else with a
+/// diagnostic that points at the missing feature for the ML-KEM string.
+#[cfg(all(feature = "vless", not(feature = "vless-encryption")))]
+fn parse_vless_encryption(encryption: &str) -> std::result::Result<(), String> {
+    if encryption.is_empty() || encryption == "none" {
+        return Ok(());
+    }
+    if encryption.starts_with("mlkem768x25519plus") {
+        return Err(format!(
+            "vless: encryption '{encryption}' (VLESS post-quantum Encryption) requires the \
+             `vless-encryption` Cargo feature; rebuild with --features vless-encryption"
+        ));
+    }
+    Err(format!(
+        "vless: encryption '{encryption}' is not supported; set `encryption: none`, omit the \
+         field, or use `mlkem768x25519plus…` on a build with the `vless-encryption` feature"
+    ))
+}
+
+/// Decode a base64 raw-url string the way Go's `base64.RawURLEncoding` does:
+/// no padding, and (unlike the crate's strict `URL_SAFE_NO_PAD`) tolerant of a
+/// final symbol's non-canonical trailing bits. 3x-ui / Xray configs in the wild
+/// carry such keys (see issue #301), so strict decoding would wrongly reject
+/// otherwise-valid 32-byte X25519 keys.
+#[cfg(feature = "vless")]
+fn decode_raw_url_base64_lenient(s: &str) -> Option<Vec<u8>> {
+    use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+    use base64::{alphabet, Engine};
+    let engine = GeneralPurpose::new(
+        &alphabet::URL_SAFE,
+        GeneralPurposeConfig::new()
+            .with_decode_padding_mode(DecodePaddingMode::RequireNone)
+            .with_decode_allow_trailing_bits(true),
+    );
+    engine.decode(s).ok()
+}
+
+/// Default the TLS ALPN by transport when the user configures none:
+/// WebSocket CDNs (notably Cloudflare) route on `http/1.1`; gRPC and h2 run
+/// on HTTP/2 and many servers — xray REALITY in particular — reject a client
+/// that does not offer `h2` (issue #377). An explicit `alpn:` always wins.
+/// upstream: mihomo forces `h2` in its gun (gRPC) transport TLS config.
+#[cfg(any(feature = "vless", feature = "vmess"))]
+fn default_transport_alpn(network: &str, alpn: Vec<String>) -> Vec<String> {
+    if !alpn.is_empty() {
+        return alpn;
+    }
+    match network {
+        "ws" => vec!["http/1.1".to_string()],
+        "grpc" | "h2" | "xhttp" => vec!["h2".to_string()],
+        _ => alpn,
+    }
+}
+
+/// Parse VLESS `reality-opts` into transport-layer REALITY parameters.
+///
+/// Matches mihomo's wire-facing fields: `public-key` is base64 RawURL X25519,
+/// `short-id` is hex-decoded and zero-padded to eight bytes, and
+/// `support-x25519mlkem768` is a capability flag. The TLS layer currently
+/// offers X25519 only; keeping the flag in config preserves the public surface
+/// for future fingerprint-specific ClientHello work.
+#[cfg(feature = "vless")]
+fn parse_vless_reality_opts(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+) -> std::result::Result<Option<meow_transport::tls::RealityConfig>, String> {
+    let Some(opts) = config.get("reality-opts") else {
+        return Ok(None);
+    };
+
+    let public_key_str = opts
+        .get("public-key")
+        .and_then(serde_yaml::Value::as_str)
+        .ok_or_else(|| "vless: reality-opts.public-key is required".to_string())?;
+
+    let public_key_bytes = decode_raw_url_base64_lenient(public_key_str)
+        .ok_or_else(|| "vless: invalid REALITY public key".to_string())?;
+    if public_key_bytes.len() != 32 {
+        return Err("vless: invalid REALITY public key".into());
+    }
+    let mut public_key = [0u8; 32];
+    public_key.copy_from_slice(&public_key_bytes);
+
+    // Subscription generators (e.g. Clash Verge) emit `short-id: null` when
+    // the server has no short-id; mihomo treats it as absent (#388).
+    //
+    // An all-decimal short-id (e.g. `short-id: 1234`, unquoted) parses as a
+    // YAML integer rather than a string, so it must be reformatted back to
+    // its decimal digits before hex-decoding — otherwise the `as_str()` arm
+    // below rejects it and the node is silently dropped. This mirrors
+    // mihomo's weakly-typed decoder, which does the same int-to-decimal-string
+    // coercion (`common/structure`'s `decodeString`) before hex-decoding, so
+    // a subscription that yields a valid node on mihomo yields one here too
+    // (#408). Note this only round-trips cleanly when the short-id happens to
+    // be all decimal digits, e.g. `0x1f` parses as the number 31 and becomes
+    // `"31"`, not `"1f"` — the same lossy coercion mihomo performs. (An
+    // all-decimal literal with a leading zero like `0012` is *not* affected:
+    // YAML's core-schema int resolver only matches decimal scalars without a
+    // leading zero, so `0012` parses as the plain string `"0012"` and never
+    // reaches this branch at all — verified by
+    // `parse_vless_reality_opts_leading_zero_short_id_preserved_no_warn`.)
+    // We warn on the Number coercion (see below) so operators who wrote a
+    // notation like `0x1f` expecting it to be read as literal hex digits
+    // know to quote the value instead.
+    let short_id_str = match opts.get("short-id") {
+        None | Some(serde_yaml::Value::Null) => String::new(),
+        Some(serde_yaml::Value::Number(n)) => {
+            let coerced = n
+                .as_u64()
+                .map(|u| u.to_string())
+                .or_else(|| n.as_i64().map(|i| i.to_string()))
+                .ok_or_else(|| "vless: reality-opts.short-id must be a hex string".to_string())?;
+            // A bare numeric short-id (e.g. `short-id: 0x1f`) is reinterpreted
+            // through YAML's own notation before we ever see it — `0x1f`
+            // arrives here as the decimal integer 31, which then hex-decodes
+            // to a different byte than the literal hex digits "1f" would.
+            // mihomo's decoder has the same lossy behavior, so we match it
+            // for the decoded value, but warn so operators who meant the
+            // literal digits know to quote the value instead of leaving it
+            // as a bare YAML number.
+            tracing::warn!(
+                proxy = %name,
+                "reality-opts.short-id was given as an unquoted YAML number \
+                 and coerced to its decimal digits \"{coerced}\" before hex-decoding; \
+                 if you wrote a different notation (e.g. `0x1f`) expecting it to be \
+                 read as literal hex digits, quote the value instead \
+                 (e.g. short-id: \"1f\")"
+            );
+            coerced
+        }
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| "vless: reality-opts.short-id must be a hex string".to_string())?
+            .to_string(),
+    };
+    let short_id_vec = parse_reality_short_id(&short_id_str)?;
+    let mut short_id = [0u8; 8];
+    short_id[..short_id_vec.len()].copy_from_slice(&short_id_vec);
+
+    let support_x25519_mlkem768 = opts
+        .get("support-x25519mlkem768")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+
+    Ok(Some(meow_transport::tls::RealityConfig {
+        public_key,
+        short_id,
+        support_x25519_mlkem768,
+    }))
+}
+
+#[cfg(feature = "vless")]
+fn parse_reality_short_id(s: &str) -> std::result::Result<Vec<u8>, String> {
+    if !s.len().is_multiple_of(2) || s.len() / 2 > 8 {
+        return Err("vless: invalid REALITY short ID".into());
+    }
+
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for chunk in s.as_bytes().chunks(2) {
+        let hex = std::str::from_utf8(chunk)
+            .map_err(|_| "vless: invalid REALITY short ID".to_string())?;
+        let byte = u8::from_str_radix(hex, 16)
+            .map_err(|_| "vless: invalid REALITY short ID".to_string())?;
+        out.push(byte);
+    }
+    Ok(out)
+}
+
+/// Parse a UUID string (dashed or hex-only) into a 16-byte array.
+///
+/// Accepts: `"b831381d-6324-4d53-ad4f-8cda48b30811"` or
+///          `"b831381d63244d53ad4f8cda48b30811"`.
+#[cfg(feature = "vless")]
+fn parse_uuid(s: &str) -> std::result::Result<[u8; 16], String> {
+    let hex: String = s.chars().filter(|c| *c != '-').collect();
+    if hex.len() != 32 {
+        return Err(format!(
+            "invalid uuid '{}': expected 32 hex chars (with or without dashes), got {}",
+            s,
+            hex.len()
+        ));
+    }
+    let mut bytes = [0u8; 16];
+    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let byte_str = std::str::from_utf8(chunk)
+            .map_err(|_| format!("invalid uuid '{s}': non-UTF8 chars"))?;
+        bytes[i] = u8::from_str_radix(byte_str, 16)
+            .map_err(|_| format!("invalid uuid '{s}': invalid hex char at byte {i}"))?;
+    }
+    Ok(bytes)
+}
+
+/// Convert a YAML `plugin-opts` value to the SIP003 semicolon-separated format.
+/// Accepts either a string (passed through) or a YAML map (serialized as `key=value;...`).
+///
+/// Nested maps are flattened: `headers` becomes repeated `header=K:V`
+/// tokens (the SIP003 convention shared by `v2ray-plugin` and
+/// `gost-plugin`), and any other map is dotted into its parent key
+/// (`ech-opts: {enable: true}` → `ech-opts.enable=true`).
+#[cfg(feature = "ss")]
+fn serialize_plugin_opts(opts: &serde_yaml::Value) -> Option<String> {
+    // `;` separates tokens and `=` separates key from value, so neither may
+    // appear inside a serialized name or value — otherwise a nested map
+    // could smuggle a top-level opt token (e.g. `headers: {X: "a;tls"}`
+    // would emit a bare `tls` token).
+    fn push_scalar(parts: &mut Vec<String>, key: &str, v: &serde_yaml::Value) {
+        let val = match v {
+            serde_yaml::Value::String(s) => s.clone(),
+            serde_yaml::Value::Bool(b) => b.to_string(),
+            serde_yaml::Value::Number(n) => n.to_string(),
+            // Sequences join on `,` — not a SIP003 separator, and the list
+            // opts that exist (shadow-tls `alpn`) are comma-split downstream.
+            // An element containing `,` or `;` would splice extra items or
+            // a whole extra token into the serialized value, so drop it.
+            serde_yaml::Value::Sequence(seq) => seq
+                .iter()
+                .filter_map(|i| {
+                    let s = match i {
+                        serde_yaml::Value::String(s) => s.clone(),
+                        serde_yaml::Value::Bool(b) => b.to_string(),
+                        serde_yaml::Value::Number(n) => n.to_string(),
+                        other => {
+                            tracing::warn!(
+                                "plugin-opts: dropping non-scalar sequence element under '{key}': {other:?}"
+                            );
+                            return None;
+                        }
+                    };
+                    if s.contains([',', ';']) {
+                        tracing::warn!(
+                            "plugin-opts: dropping sequence element under '{key}' containing a separator: {s:?}"
+                        );
+                        return None;
+                    }
+                    Some(s)
+                })
+                .collect::<Vec<_>>()
+                .join(","),
+            other => {
+                tracing::warn!("plugin-opts: dropping non-scalar value for '{key}': {other:?}");
+                return;
+            }
+        };
+        if key.contains([';', '=']) || val.contains(';') {
+            tracing::warn!(
+                "plugin-opts: dropping '{key}' — ';' and '=' cannot appear in serialized opt names, nor ';' in values"
+            );
+            return;
+        }
+        parts.push(format!("{key}={val}"));
+    }
+    match opts {
+        serde_yaml::Value::String(s) => Some(s.clone()),
+        serde_yaml::Value::Mapping(map) => {
+            let mut parts: Vec<String> = Vec::new();
+            for (k, v) in map {
+                let Some(key) = k.as_str() else {
+                    tracing::warn!("plugin-opts: dropping non-string key {k:?}");
+                    continue;
+                };
+                match v {
+                    serde_yaml::Value::Mapping(inner) if key.eq_ignore_ascii_case("headers") => {
+                        for (hk, hv) in inner {
+                            let Some(hk) = hk.as_str() else {
+                                tracing::warn!(
+                                    "plugin-opts: dropping non-string header name {hk:?}"
+                                );
+                                continue;
+                            };
+                            let hv = match hv {
+                                serde_yaml::Value::String(s) => s.clone(),
+                                serde_yaml::Value::Bool(b) => b.to_string(),
+                                serde_yaml::Value::Number(n) => n.to_string(),
+                                other => {
+                                    tracing::warn!(
+                                        "plugin-opts: dropping non-scalar value for header '{hk}': {other:?}"
+                                    );
+                                    continue;
+                                }
+                            };
+                            if hk.contains([';', '=', ':']) || hv.contains(';') {
+                                tracing::warn!(
+                                    "plugin-opts: dropping header '{hk}' — ';', '=' and ':' cannot appear in header names, nor ';' in values"
+                                );
+                                continue;
+                            }
+                            parts.push(format!("header={hk}:{hv}"));
+                        }
+                    }
+                    serde_yaml::Value::Mapping(inner) => {
+                        for (sk, sv) in inner {
+                            match sk.as_str() {
+                                Some(sk) => push_scalar(&mut parts, &format!("{key}.{sk}"), sv),
+                                None => tracing::warn!(
+                                    "plugin-opts: dropping non-string key {sk:?} under '{key}'"
+                                ),
+                            }
+                        }
+                    }
+                    other => push_scalar(&mut parts, key, other),
+                }
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(";"))
+            }
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "vmess")]
+fn parse_vmess(
+    name: &str,
+    config: &HashMap<String, serde_yaml::Value>,
+    dialer: &Arc<dyn meow_proxy::dialer::TcpDialer>,
+) -> std::result::Result<meow_proxy::VmessAdapter, String> {
+    use meow_proxy::vmess::header::Security;
+
+    let server = config
+        .get("server")
+        .and_then(|v| v.as_str())
+        .ok_or("vmess: missing server")?;
+    let port = required_port(config, "vmess")?;
+    let uuid_str = config
+        .get("uuid")
+        .and_then(|v| v.as_str())
+        .ok_or("vmess: missing uuid")?;
+    let uuid_bytes = parse_uuid(uuid_str).map_err(|e| format!("vmess: {e}"))?;
+
+    if server.len() > 255 {
+        return Err(format!(
+            "vmess: server domain is {} bytes; max 255",
+            server.len()
+        ));
+    }
+
+    // alterId: warn-and-coerce to 0
+    let alter_id = config
+        .get("alterId")
+        .and_then(serde_yaml::Value::as_u64)
+        .unwrap_or(0);
+    if alter_id > 0 {
+        tracing::warn!(
+            proxy = %name,
+            "vmess: alterId={alter_id} is deprecated and coerced to 0; \
+             AEAD header mode is always used"
+        );
+    }
+
+    let cipher_str = config
+        .get("cipher")
+        .and_then(|v| v.as_str())
+        .unwrap_or("auto");
+    let security = match cipher_str {
+        "auto" => meow_proxy::vmess::header::auto_security(),
+        "aes-128-gcm" => Security::Aes128Gcm,
+        "chacha20-poly1305" => Security::ChaCha20Poly1305,
+        "none" => Security::None,
+        "zero" => {
+            return Err(
+                "vmess: cipher 'zero' is rejected — it disables body encryption \
+                 with no visual cue in the config (security gap per ADR-0002)"
+                    .into(),
+            );
+        }
+        other => return Err(format!("vmess: unsupported cipher '{other}'")),
+    };
+
+    let udp = config
+        .get("udp")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+    let tls = config
+        .get("tls")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+    let skip_cert_verify = config
+        .get("skip-cert-verify")
+        .and_then(serde_yaml::Value::as_bool)
+        .unwrap_or(false);
+    let servername = config
+        .get("servername")
+        .and_then(|v| v.as_str())
+        .unwrap_or(server);
+    let alpn: Vec<String> = config
+        .get("alpn")
+        .and_then(|v| v.as_sequence())
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v.as_str().map(std::string::ToString::to_string))
+        .collect();
+    let network = config
+        .get("network")
+        .and_then(|v| v.as_str())
+        .unwrap_or("tcp");
+    let client_fingerprint = config.get("client-fingerprint").and_then(|v| v.as_str());
+
+    // Build transport chain (same pattern as VLESS)
+    let mut chain = TransportChain::empty();
+
+    if tls {
+        use meow_transport::tls::{TlsConfig, TlsLayer};
+        let sni = if servername.is_empty() {
+            server.to_string()
+        } else {
+            servername.to_string()
+        };
+        let mut tls_cfg = TlsConfig::new(sni);
+        tls_cfg.skip_cert_verify = skip_cert_verify;
+        tls_cfg.alpn = default_transport_alpn(network, alpn);
+        tls_cfg.fingerprint = client_fingerprint.map(std::string::ToString::to_string);
+        let tls_layer =
+            TlsLayer::new(&tls_cfg).map_err(|e| format!("vmess: TLS layer error: {e}"))?;
+        chain.push(Box::new(tls_layer));
+    }
+
+    match network {
+        "tcp" => {}
+        "ws" => {
+            use meow_transport::ws::{WsConfig, WsLayer};
+            let ws_opts = config.get("ws-opts");
+            let path = ws_opts
+                .and_then(|o| o.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("/")
+                .to_string();
+            let host_header = ws_opts
+                .and_then(|o| o.get("headers"))
+                .and_then(|h| h.get("Host"))
+                .and_then(|v| v.as_str())
+                .map_or_else(|| server.to_string(), std::string::ToString::to_string);
+            // `max-early-data` buffers caller writes until the upgrade
+            // completes — clamped to the 2048-byte ceiling (the transport
+            // layer re-clamps programmatic configs at connect; #648).
+            let max_early_data = ws_max_early_data(ws_opts);
+            let early_data_header_name = ws_opts
+                .and_then(|o| o.get("early-data-header-name"))
+                .and_then(|v| v.as_str())
+                .map(std::string::ToString::to_string);
+            let ws_cfg = WsConfig {
+                path,
+                host_header: Some(host_header),
+                extra_headers: vec![],
+                max_early_data,
+                early_data_header_name,
+            };
+            let ws_layer =
+                WsLayer::new(ws_cfg).map_err(|e| format!("vmess: ws layer error: {e}"))?;
+            chain.push(Box::new(ws_layer));
+        }
+        other => {
+            return Err(format!(
+                "vmess: unsupported network '{other}'; valid values: tcp, ws"
+            ));
+        }
+    }
+
+    #[cfg_attr(not(feature = "mux"), allow(unused_mut))]
+    let mut adapter = meow_proxy::VmessAdapter::new(
+        name,
+        server,
+        port,
+        uuid_bytes,
+        security,
+        udp,
+        chain,
+        Arc::clone(dialer),
+    );
+    #[cfg(feature = "mux")]
+    if let Some(mux_options) = parse_mux_options(name, config)? {
+        adapter = adapter.with_mux(mux_options);
+    }
+    #[cfg(not(feature = "mux"))]
+    parse_mux_options(name, config)?;
+
+    Ok(adapter)
+}
+
+pub fn parse_proxy_group(
+    config: &crate::raw::RawProxyGroup,
+    existing_proxies: &HashMap<SmolStr, Arc<dyn Proxy>>,
+    include_all_proxies: &[Arc<dyn Proxy>],
+    providers: &HashMap<String, Arc<crate::proxy_provider::ProxyProvider>>,
+) -> std::result::Result<Arc<dyn Proxy>, String> {
+    parse_proxy_group_inner(
+        config,
+        existing_proxies,
+        include_all_proxies,
+        true,
+        providers,
+        None,
+    )
+}
+
+/// Variant of [`parse_proxy_group`] that wires a persistent [`meow_proxy::SelectorStore`]
+/// into any `type: select` group it builds, so user picks survive restart.
+pub fn parse_proxy_group_with_store(
+    config: &crate::raw::RawProxyGroup,
+    existing_proxies: &HashMap<SmolStr, Arc<dyn Proxy>>,
+    include_all_proxies: &[Arc<dyn Proxy>],
+    providers: &HashMap<String, Arc<crate::proxy_provider::ProxyProvider>>,
+    store: Option<&Arc<meow_proxy::SelectorStore>>,
+) -> std::result::Result<Arc<dyn Proxy>, String> {
+    parse_proxy_group_inner(
+        config,
+        existing_proxies,
+        include_all_proxies,
+        true,
+        providers,
+        store,
+    )
+}
+
+/// Lenient variant: unknown members are warned and skipped rather than
+/// erroring out. The multi-pass group resolver uses the corresponding
+/// with-store variant when strict resolution stalls and every declared group
+/// dependency has been built, and again on its final fallback when no further
+/// progress is possible. This preserves meow-rs's existing missing-member
+/// behavior; mihomo instead rejects a group whose static member name is
+/// missing.
+pub fn parse_proxy_group_lenient(
+    config: &crate::raw::RawProxyGroup,
+    existing_proxies: &HashMap<SmolStr, Arc<dyn Proxy>>,
+    include_all_proxies: &[Arc<dyn Proxy>],
+    providers: &HashMap<String, Arc<crate::proxy_provider::ProxyProvider>>,
+) -> std::result::Result<Arc<dyn Proxy>, String> {
+    parse_proxy_group_inner(
+        config,
+        existing_proxies,
+        include_all_proxies,
+        false,
+        providers,
+        None,
+    )
+}
+
+/// Lenient variant with persistent-selector wiring; see
+/// [`parse_proxy_group_lenient`].
+pub fn parse_proxy_group_lenient_with_store(
+    config: &crate::raw::RawProxyGroup,
+    existing_proxies: &HashMap<SmolStr, Arc<dyn Proxy>>,
+    include_all_proxies: &[Arc<dyn Proxy>],
+    providers: &HashMap<String, Arc<crate::proxy_provider::ProxyProvider>>,
+    store: Option<&Arc<meow_proxy::SelectorStore>>,
+) -> std::result::Result<Arc<dyn Proxy>, String> {
+    parse_proxy_group_inner(
+        config,
+        existing_proxies,
+        include_all_proxies,
+        false,
+        providers,
+        store,
+    )
+}
+
+fn parse_proxy_group_inner(
+    config: &crate::raw::RawProxyGroup,
+    existing_proxies: &HashMap<SmolStr, Arc<dyn Proxy>>,
+    include_all_proxies: &[Arc<dyn Proxy>],
+    strict: bool,
+    providers: &HashMap<String, Arc<crate::proxy_provider::ProxyProvider>>,
+    selector_store: Option<&Arc<meow_proxy::SelectorStore>>,
+) -> std::result::Result<Arc<dyn Proxy>, String> {
+    let mut proxies: Vec<Arc<dyn Proxy>> = Vec::new();
+
+    // Match mihomo: include only top-level `proxies:` entries, not built-ins
+    // or proxy groups that happen to have entered the registry already.
+    if config.include_all_proxies.unwrap_or(false) {
+        for p in include_all_proxies {
+            proxies.push(Arc::clone(p));
+        }
+    }
+
+    let proxy_names = config.proxies.as_deref().unwrap_or(&[]);
+    for name in proxy_names {
+        match existing_proxies.get(name.as_str()) {
+            Some(proxy) => proxies.push(Arc::clone(proxy)),
+            None if strict => {
+                return Err(format!(
+                    "group '{}' references unknown proxy '{}'",
+                    config.name, name
+                ));
+            }
+            None => {
+                tracing::warn!(
+                    "Proxy '{}' not found for group '{}', skipping",
+                    name,
+                    config.name
+                );
+            }
+        }
+    }
+
+    // Group-level filter/exclude-filter/exclude-type (issue #358): applies to
+    // provider-sourced members only, mirroring mihomo (static `proxies:`
+    // members bypass it — upstream never filters compatible providers).
+    let group_filter = crate::proxy_provider::GroupFilter::from_raw_group(config)
+        .map_err(|e| format!("group '{}': {e}", config.name))?;
+    let provider_slot = |p: &Arc<crate::proxy_provider::ProxyProvider>| match &group_filter {
+        Some(f) => p.derived_slot(f),
+        None => Arc::clone(&p.slot),
+    };
+
+    // Collect provider slots: include_all wires every provider; use: wires
+    // specific ones. include-all iterates the map sorted by provider name so
+    // the slot order — which defines a load-balance pick space and a
+    // selector's default member — is stable across restarts/rebuilds
+    // instead of following HashMap iteration order.
+    let include_all_providers =
+        config.include_all.unwrap_or(false) || config.include_all_providers.unwrap_or(false);
+    let slots: Vec<meow_common::ProviderSlot> = if include_all_providers {
+        let mut sorted: Vec<_> = providers.iter().collect();
+        sorted.sort_by_key(|(name, _)| name.as_str());
+        sorted.into_iter().map(|(_, p)| provider_slot(p)).collect()
+    } else {
+        // Dedupe `use:` entries: listing the same provider twice would
+        // double-count its members in a load-balance pick space (and show
+        // them twice in `members()` for every group type). Static `proxies:`
+        // duplicates keep their double weight — matching upstream.
+        let mut seen = std::collections::HashSet::new();
+        let mut slots = Vec::new();
+        for pname in config.use_providers.as_deref().unwrap_or(&[]) {
+            if !seen.insert(pname.as_str()) {
+                continue;
+            }
+            match providers.get(pname.as_str()) {
+                Some(p) => slots.push(provider_slot(p)),
+                // Relay drops provider slots below anyway — an unknown
+                // `use:` name there is inert, not a defect (issue #533).
+                None if strict && config.group_type != "relay" => {
+                    return Err(format!(
+                        "group '{}' references unknown provider '{}'",
+                        config.name, pname
+                    ));
+                }
+                None => {
+                    tracing::warn!(
+                        "proxy-provider '{}' not found for group '{}', skipping",
+                        pname,
+                        config.name
+                    );
+                }
+            }
+        }
+        slots
+    };
+
+    if proxies.is_empty() && slots.is_empty() {
+        return Err(format!(
+            "group '{}' has no valid proxies or providers",
+            config.name
+        ));
+    }
+
+    match config.group_type.as_str() {
+        "select" => {
+            // Class B (ADR-0002): `select` never runs a health-check loop —
+            // upstream sweeps its static members since mihomo 90bf158, so
+            // warn on the inert probe fields instead of ignoring silently.
+            warn_inert_health_fields("select", &config.name, config);
+            let mut group = SelectorGroup::new_with_providers(&config.name, proxies, slots);
+            if let Some(store) = selector_store {
+                group = group.with_store(Arc::clone(store));
+            }
+            Ok(Arc::new(group))
+        }
+        "url-test" => {
+            let tolerance = config.tolerance.unwrap_or(150);
+            let group = UrlTestGroup::new_with_providers(&config.name, proxies, tolerance, slots)
+                .with_runtime_options(
+                    config
+                        .url
+                        .clone()
+                        .unwrap_or_else(|| "https://www.gstatic.com/generate_204".to_string()),
+                    config.expected_status.clone().unwrap_or_default(),
+                    selector_store.cloned(),
+                );
+            Ok(Arc::new(group))
+        }
+        "fallback" => {
+            let group = FallbackGroup::new_with_providers(&config.name, proxies, slots)
+                .with_runtime_options(
+                    config
+                        .url
+                        .clone()
+                        .unwrap_or_else(|| "https://www.gstatic.com/generate_204".to_string()),
+                    config.expected_status.clone().unwrap_or_default(),
+                    selector_store.cloned(),
+                );
+            Ok(Arc::new(group))
+        }
+        "load-balance" => {
+            let strategy = parse_lb_strategy(config.strategy.as_deref())?;
+            Ok(Arc::new(
+                LoadBalanceGroup::new_with_providers(&config.name, proxies, strategy, slots)
+                    .with_test_url(
+                        config
+                            .url
+                            .clone()
+                            .unwrap_or_else(|| "https://www.gstatic.com/generate_204".to_string()),
+                    )
+                    .with_expected_status(config.expected_status.clone().unwrap_or_default()),
+            ))
+        }
+        "relay" => {
+            // Relay is a fixed static chain — `use:`/`include-all` provider
+            // members are dropped here (upstream accepts provider members;
+            // `RelayGroup` here is static-only). `parse_relay_group` warns
+            // per dropped config field.
+            parse_relay_group(&config.name, proxies, config)
+        }
+        _ => Err(format!("unsupported group type: {}", config.group_type)),
+    }
+}
+
+/// Warn-once for each health-check field present on a group type that
+/// never runs probes (`select`, `relay`).
+///
+/// Since mihomo `90bf158` (v1.18.4) upstream health-checks the static
+/// members of *every* group type; meow sweeps only `fallback`,
+/// `url-test`, and `load-balance` — so `url`/`interval`/`lazy`/
+/// `tolerance`/`expected-status` are inert here.  Warn rather than
+/// silently ignore (Class B, ADR-0002); full parity is tracked in #555.
+/// (`tolerance` is `url-test`-only even upstream, so its "sweeps all
+/// group types" note refers to the probe loop, not that field.)
+fn warn_inert_health_fields(group_type: &str, name: &str, config: &crate::raw::RawProxyGroup) {
+    for (field, present) in [
+        ("url", config.url.is_some()),
+        ("interval", config.interval.is_some()),
+        ("lazy", config.lazy.is_some()),
+        ("tolerance", config.tolerance.is_some()),
+        ("expected-status", config.expected_status.is_some()),
+    ] {
+        if present {
+            // `tolerance` is `url-test`-only even upstream — the sweep
+            // note would wrongly imply upstream honors it here.
+            let note = if field == "tolerance" {
+                " (upstream: `tolerance` is a `url-test`-only field)"
+            } else {
+                " (upstream: sweeps static members of all group types since \
+                 mihomo 90bf158; meow does not — Class B ADR-0002)"
+            };
+            tracing::warn!(
+                group = name,
+                "{group_type}: '{field}' is not used by {group_type} groups and will be \
+                 ignored.{note}"
+            );
+        }
+    }
+}
+
+/// `(field, present)` pairs for the provider-member fields a
+/// `RawProxyGroup` can carry — shared by `warn_dropped_provider_fields`
+/// and `parse_relay_group`'s empty-`proxies` diagnostic so the list
+/// cannot drift between the warn and the error path.
+fn provider_member_fields(config: &crate::raw::RawProxyGroup) -> [(&'static str, bool); 6] {
+    [
+        (
+            "use",
+            config
+                .use_providers
+                .as_deref()
+                .is_some_and(|u| !u.is_empty()),
+        ),
+        ("include-all", config.include_all.unwrap_or(false)),
+        (
+            "include-all-providers",
+            config.include_all_providers.unwrap_or(false),
+        ),
+        ("filter", config.filter.is_some()),
+        ("exclude-filter", config.exclude_filter.is_some()),
+        ("exclude-type", config.exclude_type.is_some()),
+    ]
+}
+
+/// Warn-once for each provider-member field present on a group type that
+/// never consumes provider slots (currently only `relay` — upstream
+/// `NewRelay` takes providers; `RelayGroup` here is static-only).
+/// `filter`/`exclude-*` act on provider members only on every group type,
+/// so they are inert wherever no provider can supply members.
+fn warn_dropped_provider_fields(group_type: &str, name: &str, config: &crate::raw::RawProxyGroup) {
+    for (field, present) in provider_member_fields(config) {
+        if present {
+            tracing::warn!(
+                group = name,
+                "{group_type}: '{field}' is not used by {group_type} groups and will be \
+                 ignored; {group_type} members come from 'proxies'/'include-all-proxies' \
+                 only. (upstream: {group_type} accepts provider members — Class B ADR-0002)"
+            );
+        }
+    }
+}
+
+/// Parse a `type: relay` group config block into a `RelayGroup`.
+///
+/// # Hard errors (Class A per ADR-0002)
+///
+/// - `proxies` is empty — upstream panics; we hard-error.
+/// - `proxies` has length 1 — upstream silently acts as passthrough; we
+///   hard-error with a diagnostic pointing to the correct group type.
+///
+/// # Warn-once (Class B per ADR-0002)
+///
+/// - `url`/`interval`/`lazy`/`tolerance`/`expected-status` present —
+///   ignored; relay has no health-check loop.
+/// - `use`/`include-all`/`include-all-providers`/`filter`/`exclude-filter`/
+///   `exclude-type` present — ignored; upstream relay accepts provider
+///   members, ours is static-only.
+///
+/// upstream: adapter/outbound/relay.go
+fn parse_relay_group(
+    name: &str,
+    proxies: Vec<Arc<dyn Proxy>>,
+    config: &crate::raw::RawProxyGroup,
+) -> std::result::Result<Arc<dyn Proxy>, String> {
+    // Hard-error: empty proxies list. upstream panics. NOT panic. Class A.
+    // A `use:`/`include-all`-only relay reaches here on provider slots
+    // alone — name the dropped fields so the user sees why the list is
+    // empty instead of a bare "no proxies" error.
+    if proxies.is_empty() {
+        let provider_hint = if provider_member_fields(config)
+            .iter()
+            .any(|(_, present)| *present)
+        {
+            " Provider fields ('use'/'include-all*') do not supply relay \
+             members — relay chains come from 'proxies'/'include-all-proxies' \
+             only."
+        } else {
+            ""
+        };
+        return Err(format!(
+            "relay group '{name}': proxies list is empty; \
+             relay requires at least 2 proxies.{provider_hint} \
+             (upstream: panics; we reject — Class A ADR-0002)"
+        ));
+    }
+
+    // Hard-error: single proxy. upstream silently acts as passthrough. Class A.
+    if proxies.len() < 2 {
+        return Err(format!(
+            "relay group '{}': requires at least 2 proxies, got {}; \
+             use `type: selector` or `type: direct` for a single proxy. \
+             (upstream: silently acts as passthrough; we reject — Class A ADR-0002)",
+            name,
+            proxies.len()
+        ));
+    }
+
+    // Warn-once on inert fields (Class B — relay has no probe loop and
+    // consumes no provider slots).
+    warn_inert_health_fields("relay", name, config);
+    warn_dropped_provider_fields("relay", name, config);
+
+    Ok(Arc::new(RelayGroup::new(name, proxies)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hickory_proto::op::{Message, MessageType, OpCode};
+    use hickory_proto::rr::rdata::AAAA;
+    use hickory_proto::rr::{RData, Record, RecordType};
+    use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
+    use std::net::Ipv6Addr;
+
+    fn parse_proxy(
+        config: &HashMap<String, serde_yaml::Value>,
+    ) -> std::result::Result<Arc<dyn Proxy>, String> {
+        super::parse_proxy(config, true)
+    }
+
+    fn proxy_config(yaml: &str) -> HashMap<String, serde_yaml::Value> {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    #[cfg(feature = "vless")]
+    #[test]
+    fn lenient_base64_accepts_noncanonical_trailing_bits() {
+        // The REALITY public-key from issue #301 has non-canonical base64
+        // trailing bits; Go decodes it, and so must we (32-byte X25519 key).
+        let key = "OKkD6Wt1lC4-9avJj2t3PkvIDkvcA1Fu0b09QwJ7GGh";
+        let decoded = decode_raw_url_base64_lenient(key).expect("must decode");
+        assert_eq!(decoded.len(), 32);
+        // Garbage is still rejected.
+        assert!(decode_raw_url_base64_lenient("!!!not base64!!!").is_none());
+    }
+
+    #[cfg(any(feature = "vless", feature = "vmess"))]
+    #[test]
+    fn default_alpn_follows_transport() {
+        // Explicit alpn always wins.
+        assert_eq!(
+            default_transport_alpn("grpc", vec!["custom".to_string()]),
+            vec!["custom".to_string()]
+        );
+        // ws → http/1.1 (CDN routing); grpc/h2 → h2 (HTTP/2 transports —
+        // xray REALITY rejects clients that don't offer it, issue #377).
+        assert_eq!(
+            default_transport_alpn("ws", Vec::new()),
+            vec!["http/1.1".to_string()]
+        );
+        assert_eq!(
+            default_transport_alpn("grpc", Vec::new()),
+            vec!["h2".to_string()]
+        );
+        assert_eq!(
+            default_transport_alpn("h2", Vec::new()),
+            vec!["h2".to_string()]
+        );
+        assert_eq!(
+            default_transport_alpn("xhttp", Vec::new()),
+            vec!["h2".to_string()]
+        );
+        // Plain TCP keeps ALPN absent.
+        assert!(default_transport_alpn("tcp", Vec::new()).is_empty());
+    }
+
+    #[cfg(feature = "vless")]
+    #[test]
+    fn xhttp_config_resolves_fields_and_fallbacks() {
+        let full = proxy_config(
+            "name: v\ntype: vless\nserver: 203.0.113.7\nport: 443\n\
+             uuid: b831381d-6324-4d53-ad4f-8cda48b30811\ntls: true\n\
+             servername: cdn.example.com\nnetwork: xhttp\nxhttp-opts:\n\
+             \x20 path: /testpath\n\x20 host: xhttp.example.com\n\
+             \x20 mode: stream-one\n\x20 no-grpc-header: true\n\
+             \x20 x-padding-bytes: 200-800\n\x20 headers:\n\x20\x20 X-Custom: Hello\n",
+        );
+        let parsed = parse_vless_xhttp_config(&full, "203.0.113.7", "cdn.example.com", true)
+            .expect("full xhttp config");
+        assert_eq!(parsed.path, "/testpath");
+        assert_eq!(parsed.hosts, ["xhttp.example.com"]);
+        assert_eq!(parsed.scheme, "https");
+        assert_eq!(parsed.mode, "stream-one");
+        assert!(parsed.no_grpc_header);
+        assert_eq!(parsed.x_padding_bytes, Some((200, 800)));
+        assert_eq!(parsed.extra_headers, [("X-Custom".into(), "Hello".into())]);
+
+        let fallback = proxy_config("xhttp-opts:\n  path: /fallback\n");
+        let parsed = parse_vless_xhttp_config(&fallback, "203.0.113.7", "cdn.example.com", true)
+            .expect("fallback xhttp config");
+        assert_eq!(parsed.hosts, ["cdn.example.com"]);
+        assert_eq!(parsed.x_padding_bytes, Some((100, 1000)));
+
+        let parsed = parse_vless_xhttp_config(&HashMap::new(), "2001:db8::1", "", false)
+            .expect("h2c xhttp config");
+        assert_eq!(parsed.hosts, ["2001:db8::1"]);
+        assert_eq!(parsed.scheme, "http");
+    }
+
+    #[cfg(feature = "vless")]
+    #[test]
+    fn xhttp_padding_bytes_bounded() {
+        // Over-cap padding is a remotely-configurable allocation — a hostile
+        // provider/subscription node must not parse (issue #648).
+        for opts in [
+            "x-padding-bytes: 0-70000",
+            "x-padding-bytes: \"9000000000000000000-9000000000000000000\"",
+            "x-padding-bytes: [0, 70000]",
+        ] {
+            let cfg = proxy_config(&format!("xhttp-opts:\n  path: /x\n  {opts}\n"));
+            let Err(err) = parse_vless_xhttp_config(&cfg, "203.0.113.7", "cdn.example.com", true)
+            else {
+                panic!("{opts:?} must be rejected")
+            };
+            assert!(err.contains("exceeds"), "{opts:?}: {err}");
+        }
+        for opts in [
+            // Inverted range — both string and sequence forms.
+            "x-padding-bytes: 800-200",
+            "x-padding-bytes: [800, 200]",
+            // A bare scalar is neither a "min-max" string nor a 2-seq.
+            "x-padding-bytes: 100",
+            // A u64 that wraps `usize` on 32-bit targets must not sneak
+            // under the cap via the sequence form.
+            "x-padding-bytes: [0, 18446744073709551615]",
+        ] {
+            let cfg = proxy_config(&format!("xhttp-opts:\n  path: /x\n  {opts}\n"));
+            assert!(
+                parse_vless_xhttp_config(&cfg, "203.0.113.7", "cdn.example.com", true).is_err(),
+                "{opts:?} must be rejected"
+            );
+        }
+        let ok = proxy_config("xhttp-opts:\n  path: /x\n  x-padding-bytes: 0-65536\n");
+        assert!(
+            parse_vless_xhttp_config(&ok, "203.0.113.7", "cdn.example.com", true).is_ok(),
+            "at-cap padding must stay accepted"
+        );
+        // `0-0` disables padding upstream — stays accepted.
+        let disabled = proxy_config("xhttp-opts:\n  path: /x\n  x-padding-bytes: 0-0\n");
+        assert!(
+            parse_vless_xhttp_config(&disabled, "203.0.113.7", "cdn.example.com", true).is_ok(),
+            "'0-0' (disable) must stay accepted"
+        );
+    }
+
+    #[cfg(feature = "vless")]
+    #[test]
+    fn xhttp_headers_bounded() {
+        // A remote `headers` map is attacker-chosen process memory — cap the
+        // count like the padding bound (issue #648).
+        use meow_transport::xhttp::MAX_EXTRA_HEADERS;
+        use std::fmt::Write;
+        let mut opts = String::from("xhttp-opts:\n  path: /x\n  headers:\n");
+        for i in 0..=MAX_EXTRA_HEADERS {
+            writeln!(opts, "    X-H{i}: v").unwrap();
+        }
+        let cfg = proxy_config(&opts);
+        let err = parse_vless_xhttp_config(&cfg, "203.0.113.7", "cdn.example.com", true)
+            .expect_err("65 headers must be rejected");
+        assert!(err.contains("headers"), "msg: {err}");
+    }
+
+    #[cfg(feature = "vless")]
+    #[test]
+    fn httpupgrade_headers_bounded() {
+        // Sibling path to xhttp-opts.headers (issue #648).
+        use meow_transport::httpupgrade::MAX_EXTRA_HEADERS;
+        use std::fmt::Write;
+        let mut opts = String::from(
+            "name: v\ntype: vless\nserver: 203.0.113.7\nport: 443\n\
+             uuid: b831381d-6324-4d53-ad4f-8cda48b30811\n\
+             network: httpupgrade\nhttp-upgrade-opts:\n  path: /x\n  headers:\n",
+        );
+        for i in 0..=MAX_EXTRA_HEADERS {
+            writeln!(opts, "    X-H{i}: v").unwrap();
+        }
+        let cfg = proxy_config(&opts);
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("65 headers must be rejected")
+        };
+        assert!(err.contains("headers"), "msg: {err}");
+    }
+
+    #[cfg(any(feature = "vless", feature = "vmess"))]
+    #[test]
+    fn ws_max_early_data_clamps_to_ceiling() {
+        use meow_transport::ws::MAX_WS_EARLY_DATA;
+        // Absent → disabled.
+        assert_eq!(ws_max_early_data(None), 0);
+        // Boundary: the ceiling itself survives.
+        let at_cap = serde_yaml::from_str::<serde_yaml::Value>(&format!(
+            "max-early-data: {MAX_WS_EARLY_DATA}"
+        ))
+        .unwrap();
+        assert_eq!(ws_max_early_data(Some(&at_cap)), MAX_WS_EARLY_DATA);
+        // Above → clamped (not rejected; excess bytes flow as normal frames).
+        let over = serde_yaml::from_str::<serde_yaml::Value>("max-early-data: 99999").unwrap();
+        assert_eq!(ws_max_early_data(Some(&over)), MAX_WS_EARLY_DATA);
+        // u64::MAX must not wrap the usize conversion.
+        let huge =
+            serde_yaml::from_str::<serde_yaml::Value>("max-early-data: 18446744073709551615")
+                .unwrap();
+        assert_eq!(ws_max_early_data(Some(&huge)), MAX_WS_EARLY_DATA);
+    }
+
+    #[test]
+    fn parse_proxy_rejects_port_overflow() {
+        let cfg = proxy_config("name: bad\ntype: http\nserver: 1.2.3.4\nport: 65536\n");
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("overflowing port must hard-error");
+        };
+        assert!(err.contains("exceeds 65535"), "msg: {err}");
+    }
+
+    #[test]
+    fn parse_proxy_rejects_port_zero() {
+        let cfg = proxy_config("name: bad\ntype: http\nserver: 1.2.3.4\nport: 0\n");
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("zero port must hard-error");
+        };
+        assert!(err.contains("port must be non-zero"), "msg: {err}");
+    }
+
+    #[cfg(feature = "ss")]
+    #[test]
+    fn test_serialize_plugin_opts_map() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+mode: websocket
+host: example.com
+tls: true
+"#,
+        )
+        .unwrap();
+        let result = serialize_plugin_opts(&yaml).unwrap();
+        assert!(result.contains("mode=websocket"));
+        assert!(result.contains("host=example.com"));
+        assert!(result.contains("tls=true"));
+        // Verify semicolon-separated format
+        assert_eq!(result.matches(';').count(), 2);
+    }
+
+    #[cfg(feature = "ss")]
+    #[test]
+    fn test_serialize_plugin_opts_string_passthrough() {
+        let yaml = serde_yaml::Value::String("obfs=http;obfs-host=example.com".to_string());
+        let result = serialize_plugin_opts(&yaml).unwrap();
+        assert_eq!(result, "obfs=http;obfs-host=example.com");
+    }
+
+    #[cfg(feature = "ss")]
+    #[test]
+    fn test_serialize_plugin_opts_none_cases() {
+        // Every empty-ish YAML value must serialize to None. `empty mapping`
+        // exercises the `parts.is_empty()` branch; `null` exercises the
+        // catch-all arm of serialize_plugin_opts.
+        let cases: [(&str, serde_yaml::Value); 2] = [
+            (
+                "empty mapping",
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+            ),
+            ("null", serde_yaml::Value::Null),
+        ];
+        for (label, yaml) in cases {
+            assert!(
+                serialize_plugin_opts(&yaml).is_none(),
+                "{label}: expected None, got {:?}",
+                serialize_plugin_opts(&yaml)
+            );
+        }
+    }
+
+    #[cfg(feature = "ss")]
+    #[test]
+    fn test_serialize_plugin_opts_number_value() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str("port: 8080").unwrap();
+        let result = serialize_plugin_opts(&yaml).unwrap();
+        assert_eq!(result, "port=8080");
+    }
+
+    #[cfg(feature = "ss")]
+    #[test]
+    fn test_serialize_plugin_opts_nested_maps() {
+        // gost-plugin takes a `headers` map and an `ech-opts` map
+        // (issue #533).  `headers` flattens to repeated `header=K:V`
+        // tokens (SIP003 convention); any other nested map is dotted.
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "mode: websocket\nheaders:\n  CF-Token: abc\n  Host: edge.example.com\nech-opts:\n  enable: true\n  config: QUJD\n",
+        )
+        .unwrap();
+        let result = serialize_plugin_opts(&yaml).unwrap();
+        assert_eq!(
+            result,
+            "mode=websocket;header=CF-Token:abc;header=Host:edge.example.com;\
+             ech-opts.enable=true;ech-opts.config=QUJD"
+        );
+    }
+
+    #[cfg(feature = "ss")]
+    #[test]
+    fn test_serialize_plugin_opts_token_smuggling_guard() {
+        // A `;`/`=`/`:` inside a serialized name or value would split into
+        // extra SIP003 tokens — entries containing them are dropped.
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "mode: websocket\nheaders:\n  \"x;skip-cert-verify\": true\n  Good: ok\n\
+             weird;key: v\nfine: a;b\n",
+        )
+        .unwrap();
+        let result = serialize_plugin_opts(&yaml).unwrap();
+        let mut tokens = result.split(';');
+        assert_eq!(tokens.next(), Some("mode=websocket"));
+        assert_eq!(tokens.next(), Some("header=Good:ok"));
+        assert!(tokens.next().is_none(), "smuggled tokens leaked: {result}");
+    }
+
+    #[cfg(feature = "ss")]
+    #[test]
+    fn test_serialize_plugin_opts_headers_case_insensitive() {
+        // mapstructure decodes `Headers` onto the `headers` field — match
+        // its case-insensitive key handling.
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("mode: websocket\nHeaders:\n  X-A: b\n").unwrap();
+        assert_eq!(
+            serialize_plugin_opts(&yaml).unwrap(),
+            "mode=websocket;header=X-A:b"
+        );
+    }
+
+    #[cfg(feature = "ss")]
+    #[test]
+    fn test_serialize_plugin_opts_sequence_join() {
+        // `alpn` arrives as a YAML sequence (upstream `alpn []string`) —
+        // joined with `,`, which the shadow-tls parser splits back out.
+        let yaml: serde_yaml::Value =
+            serde_yaml::from_str("alpn:\n  - h2\n  - http/1.1\nversion: 3\n").unwrap();
+        assert_eq!(
+            serialize_plugin_opts(&yaml).unwrap(),
+            "alpn=h2,http/1.1;version=3"
+        );
+    }
+
+    /// End-to-end junction: `plugin-opts` map → SIP003 serialization →
+    /// the in-process shadow-tls parser → adapter construction, incl.
+    /// the `alpn` sequence and node-level `client-fingerprint` plumbing.
+    #[cfg(feature = "ss")]
+    #[test]
+    fn test_shadow_tls_node_parse_e2e() {
+        let cfg = proxy_config(
+            "name: stls\ntype: ss\nserver: 1.2.3.4\nport: 8388\n\
+             cipher: aes-256-gcm\npassword: pw\nclient-fingerprint: chrome\n\
+             plugin: shadow-tls\nplugin-opts:\n  host: cover.example.com\n  \
+             password: psk\n  version: 3\n  alpn:\n    - h2\n    - http/1.1\n",
+        );
+        let adapter = parse_proxy(&cfg).expect("shadow-tls node must parse");
+        assert_eq!(adapter.name(), "stls");
+        assert!(
+            !is_external_sip003_plugin(Some("shadow-tls")),
+            "provider/subscription path must treat shadow-tls as built-in"
+        );
+
+        // An invalid opt proves the serialized string reached the
+        // shadow-tls parser — a misrouted plugin would parse as a no-op.
+        let cfg = proxy_config(
+            "name: stls\ntype: ss\nserver: 1.2.3.4\nport: 8388\n\
+             cipher: aes-256-gcm\npassword: pw\n\
+             plugin: shadow-tls\nplugin-opts:\n  host: cover.example.com\n  version: 9\n",
+        );
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("version=9 must reach the shadow-tls parser and fail");
+        };
+        assert!(err.contains("version"), "msg: {err}");
+    }
+
+    /// End-to-end junction: `plugin-opts` map → SIP003 serialization →
+    /// the in-process restls parser → adapter construction.
+    #[cfg(feature = "ss")]
+    #[test]
+    fn test_restls_node_parse_e2e() {
+        let cfg = proxy_config(
+            "name: restls\ntype: ss\nserver: 1.2.3.4\nport: 8388\n\
+             cipher: aes-256-gcm\npassword: pw\n\
+             plugin: restls\nplugin-opts:\n  host: cover.example.com\n  \
+             password: psk\n  version-hint: tls13\n  \
+             restls-script: '250?100<1'\n",
+        );
+        let adapter = parse_proxy(&cfg).expect("restls node must parse");
+        assert_eq!(adapter.name(), "restls");
+        assert!(
+            !is_external_sip003_plugin(Some("restls")),
+            "provider/subscription path must treat restls as built-in"
+        );
+
+        // A missing required opt proves the serialized string reached the
+        // restls parser — a misrouted plugin would parse as a no-op.
+        let cfg = proxy_config(
+            "name: restls\ntype: ss\nserver: 1.2.3.4\nport: 8388\n\
+             cipher: aes-256-gcm\npassword: pw\n\
+             plugin: restls\nplugin-opts:\n  host: cover.example.com\n  password: psk\n",
+        );
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("missing version-hint must reach the restls parser and fail");
+        };
+        assert!(err.contains("version-hint"), "msg: {err}");
+    }
+
+    /// End-to-end junction: `plugin-opts` map → SIP003 serialization →
+    /// the in-process jls parser → adapter construction.
+    #[cfg(feature = "ss")]
+    #[test]
+    fn test_jls_node_parse_e2e() {
+        let cfg = proxy_config(
+            "name: jls\ntype: ss\nserver: 1.2.3.4\nport: 8388\n\
+             cipher: aes-256-gcm\npassword: pw\n\
+             plugin: jls\nplugin-opts:\n  host: cover.example.com\n  \
+             username: alice\n  password: psk\n  alpn: [h2, http/1.1]\n",
+        );
+        let adapter = parse_proxy(&cfg).expect("jls node must parse");
+        assert_eq!(adapter.name(), "jls");
+        assert!(
+            !is_external_sip003_plugin(Some("jls")),
+            "provider/subscription path must treat jls as built-in"
+        );
+
+        // A missing required opt proves the serialized string reached the
+        // jls parser — a misrouted plugin would parse as a no-op.
+        let cfg = proxy_config(
+            "name: jls\ntype: ss\nserver: 1.2.3.4\nport: 8388\n\
+             cipher: aes-256-gcm\npassword: pw\n\
+             plugin: jls\nplugin-opts:\n  host: cover.example.com\n  password: psk\n",
+        );
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("missing username must reach the jls parser and fail");
+        };
+        assert!(err.contains("username"), "msg: {err}");
+    }
+
+    /// End-to-end junction: `plugin-opts` map → SIP003 serialization →
+    /// the in-process kcptun parser → adapter construction.
+    #[cfg(feature = "kcptun")]
+    #[test]
+    fn test_kcptun_node_parse_e2e() {
+        let cfg = proxy_config(
+            "name: kcptun\ntype: ss\nserver: 1.2.3.4\nport: 8388\n\
+             cipher: aes-256-gcm\npassword: pw\n\
+             plugin: kcptun\nplugin-opts:\n  crypt: salsa20\n  mode: fast3\n  \
+             conn: 2\n  nocomp: true\n  datashard: 6\n  parityshard: 3\n",
+        );
+        let adapter = parse_proxy(&cfg).expect("kcptun node must parse");
+        assert_eq!(adapter.name(), "kcptun");
+        assert!(
+            !is_external_sip003_plugin(Some("kcptun")),
+            "provider/subscription path must treat kcptun as built-in"
+        );
+
+        // A rejected opt proves the serialized string reached the kcptun
+        // parser — a misrouted plugin would parse as a no-op.
+        let cfg = proxy_config(
+            "name: kcptun\ntype: ss\nserver: 1.2.3.4\nport: 8388\n\
+             cipher: aes-256-gcm\npassword: pw\n\
+             plugin: kcptun\nplugin-opts:\n  smuxver: 2\n",
+        );
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("smuxver=2 must reach the kcptun parser and fail");
+        };
+        assert!(err.contains("smuxver"), "msg: {err}");
+    }
+
+    // ─── direct proxy with per-proxy DNS (issue #67) ─────────────────────────
+
+    fn direct_config(yaml: &str) -> HashMap<String, serde_yaml::Value> {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    #[test]
+    fn parse_direct_without_dns_ok() {
+        let cfg = direct_config("name: my-direct\ntype: direct\n");
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[test]
+    fn parse_direct_with_single_dns_string() {
+        let cfg = direct_config("name: lan\ntype: direct\ndns: 192.168.1.1\n");
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[test]
+    fn parse_direct_with_dns_list_and_explicit_port() {
+        let cfg = direct_config("name: lan\ntype: direct\ndns:\n  - 192.168.1.1\n  - 8.8.8.8:53\n");
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[tokio::test]
+    async fn direct_dns_inherits_disabled_ipv6_policy() {
+        let dns = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let dns_addr = dns.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            for _ in 0..2 {
+                let (len, peer) = dns.recv_from(&mut buf).await.unwrap();
+                let request = Message::from_bytes(&buf[..len]).unwrap();
+                let query = request.queries[0].clone();
+                let mut response =
+                    Message::new(request.metadata.id, MessageType::Response, OpCode::Query);
+                response.add_query(query.clone());
+                if query.query_type == RecordType::AAAA {
+                    response.add_answer(Record::from_rdata(
+                        query.name,
+                        60,
+                        RData::AAAA(AAAA(Ipv6Addr::LOCALHOST)),
+                    ));
+                }
+                dns.send_to(&response.to_bytes().unwrap(), peer)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let target = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+        let cfg = proxy_config(&format!(
+            "name: direct-v6\ntype: direct\ndns: '{dns_addr}'\n"
+        ));
+        let proxy = super::parse_proxy(&cfg, false).unwrap();
+        let metadata = Metadata {
+            host: "v6-only.example".into(),
+            dst_port: target.local_addr().unwrap().port(),
+            ..Default::default()
+        };
+
+        assert!(proxy.dial_tcp(&metadata).await.is_err());
+    }
+
+    #[test]
+    fn parse_direct_rejects_invalid_dns_entry() {
+        let cfg = direct_config("name: bad\ntype: direct\ndns: not-an-ip\n");
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("invalid dns entry must hard-error (Class A)");
+        };
+        assert!(err.contains("not a valid IP or host:port"), "msg: {err}");
+    }
+
+    #[test]
+    fn parse_direct_rejects_empty_dns_list() {
+        let cfg = direct_config("name: bad\ntype: direct\ndns: []\n");
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("empty dns list must hard-error (Class A)");
+        };
+        assert!(err.contains("dns list is empty"), "msg: {err}");
+    }
+
+    #[test]
+    fn parse_direct_with_connect_timeout_wires_adapter() {
+        let cfg = direct_config("name: d\ntype: direct\nconnect-timeout: 7\n");
+        let adapter = parse_direct("d", &cfg, true).unwrap();
+        assert_eq!(
+            adapter.connect_timeout(),
+            Some(std::time::Duration::from_secs(7))
+        );
+    }
+
+    #[test]
+    fn parse_direct_without_connect_timeout_is_unbounded() {
+        let cfg = direct_config("name: d\ntype: direct\n");
+        let adapter = parse_direct("d", &cfg, true).unwrap();
+        assert_eq!(adapter.connect_timeout(), None);
+    }
+
+    #[test]
+    fn parse_direct_rejects_non_integer_connect_timeout() {
+        let cfg = direct_config("name: bad\ntype: direct\nconnect-timeout: fast\n");
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("non-integer connect-timeout must hard-error (Class A)");
+        };
+        assert!(err.contains("connect-timeout"), "msg: {err}");
+    }
+
+    #[test]
+    fn parse_direct_rejects_absurd_connect_timeout() {
+        // Seconds reach `tokio::time::timeout` — an out-of-range u64 panics on
+        // `Instant + Duration` at first dial (issue #648).
+        let cfg = direct_config("name: bad\ntype: direct\nconnect-timeout: 18446744073709551615\n");
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("absurd connect-timeout must hard-error");
+        };
+        assert!(err.contains("connect-timeout"), "msg: {err}");
+        // The ceiling itself stays usable.
+        let cfg = direct_config("name: ok\ntype: direct\nconnect-timeout: 315360000\n");
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[test]
+    fn http_headers_bounded() {
+        // The map is re-serialized into every CONNECT request — cap the count
+        // like xhttp-opts.headers (issue #648).
+        use std::fmt::Write;
+        let mut yaml = String::from("name: h\ntype: http\nserver: 1.2.3.4\nport: 8080\nheaders:\n");
+        for i in 0..=meow_transport::MAX_EXTRA_HEADERS {
+            writeln!(yaml, "  X-H{i}: v").unwrap();
+        }
+        let cfg = proxy_config(&yaml);
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("65 headers must be rejected")
+        };
+        assert!(err.contains("headers"), "msg: {err}");
+    }
+
+    #[test]
+    fn parse_direct_rejects_wrong_dns_type() {
+        let cfg = direct_config("name: bad\ntype: direct\ndns: 53\n");
+        // Integer 53 is neither a string nor a list — must be rejected.
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("scalar non-string dns must hard-error (Class A)");
+        };
+        assert!(err.contains("dns must be a string or list"), "msg: {err}");
+    }
+
+    // ─── anytls proxy parser (issue #75) ─────────────────────────────────────
+
+    #[cfg(feature = "anytls")]
+    fn anytls_config(yaml: &str) -> HashMap<String, serde_yaml::Value> {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    // The upstream `anytls-rs` Client constructor spawns a background pool
+    // reaper task synchronously, which requires a live tokio reactor. The
+    // production code path always calls parse_proxy from inside the main
+    // runtime, but tests have to opt in explicitly with #[tokio::test].
+
+    #[cfg(feature = "anytls")]
+    #[tokio::test]
+    async fn parse_anytls_minimum_fields_ok() {
+        let cfg =
+            anytls_config("name: jp\ntype: anytls\nserver: 1.2.3.4\nport: 443\npassword: secret\n");
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[cfg(feature = "anytls")]
+    #[tokio::test]
+    async fn parse_anytls_with_sni_and_skip_verify_ok() {
+        let cfg = anytls_config(
+            "name: jp\ntype: anytls\nserver: 1.2.3.4\nport: 443\npassword: secret\nsni: example.com\nskip-cert-verify: true\n",
+        );
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    /// mihomo's `AnyTLSOption.UDP` is `omitempty`/false by default; only an
+    /// explicit `udp: true` advertises datagram support to the tunnel.
+    #[cfg(feature = "anytls")]
+    #[tokio::test]
+    async fn parse_anytls_udp_is_opt_in() {
+        let off =
+            anytls_config("name: jp\ntype: anytls\nserver: 1.2.3.4\nport: 443\npassword: secret\n");
+        assert!(!parse_proxy(&off).unwrap().support_udp());
+
+        let on = anytls_config(
+            "name: jp\ntype: anytls\nserver: 1.2.3.4\nport: 443\npassword: secret\nudp: true\n",
+        );
+        assert!(parse_proxy(&on).unwrap().support_udp());
+    }
+
+    #[cfg(feature = "anytls")]
+    #[tokio::test]
+    async fn parse_anytls_rejects_missing_password() {
+        let cfg = anytls_config("name: jp\ntype: anytls\nserver: 1.2.3.4\nport: 443\n");
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("missing password must hard-error (Class A)");
+        };
+        assert!(err.contains("missing password"), "msg: {err}");
+    }
+
+    #[cfg(feature = "anytls")]
+    #[tokio::test]
+    async fn parse_anytls_rejects_zero_port() {
+        let cfg =
+            anytls_config("name: jp\ntype: anytls\nserver: 1.2.3.4\nport: 0\npassword: secret\n");
+        let Err(err) = parse_proxy(&cfg) else {
+            panic!("zero port must hard-error (Class A)");
+        };
+        assert!(err.contains("port must be non-zero"), "msg: {err}");
+    }
+
+    // ─── hysteria2 parser ────────────────────────────────────────────────────
+
+    #[cfg(feature = "hysteria2")]
+    fn hy2_config(yaml: &str) -> HashMap<String, serde_yaml::Value> {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    #[cfg(feature = "hysteria2")]
+    #[test]
+    fn parse_hysteria2_minimum_fields_ok() {
+        let cfg = hy2_config(
+            "name: jp-hy2\ntype: hysteria2\nserver: 1.2.3.4\nport: 443\npassword: secret\n",
+        );
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[cfg(feature = "hysteria2")]
+    #[test]
+    fn parse_hysteria2_rejects_invalid_configs() {
+        // (label, yaml, expected error substring)
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "missing password",
+                "name: jp-hy2\ntype: hysteria2\nserver: 1.2.3.4\nport: 443\n",
+                "missing password",
+            ),
+            (
+                "zero port without ports",
+                "name: jp-hy2\ntype: hysteria2\nserver: 1.2.3.4\nport: 0\npassword: secret\n",
+                "port must be non-zero",
+            ),
+            (
+                "missing both port and ports",
+                "name: jp-hy2\ntype: hysteria2\nserver: 1.2.3.4\npassword: secret\n",
+                "missing port",
+            ),
+            (
+                "wildcard ports without port",
+                "name: jp-hy2\ntype: hysteria2\nserver: 1.2.3.4\nports: '*'\npassword: secret\n",
+                "missing port",
+            ),
+            (
+                "empty password",
+                "name: jp-hy2\ntype: hysteria2\nserver: 1.2.3.4\nport: 443\npassword: ''\n",
+                "password must not be empty",
+            ),
+            (
+                "gecko obfs (mihomo divergence: unsupported)",
+                "name: jp-hy2\n\
+                 type: hysteria2\n\
+                 server: 1.2.3.4\n\
+                 port: 443\n\
+                 password: secret\n\
+                 obfs: gecko\n\
+                 obfs-password: secret\n",
+                "gecko",
+            ),
+            (
+                "obfs without obfs-password",
+                "name: jp-hy2\n\
+                 type: hysteria2\n\
+                 server: 1.2.3.4\n\
+                 port: 443\n\
+                 password: secret\n\
+                 obfs: salamander\n",
+                "missing obfs-password",
+            ),
+            (
+                "mTLS client certificate (mihomo divergence: unsupported)",
+                "name: jp-hy2\n\
+                 type: hysteria2\n\
+                 server: 1.2.3.4\n\
+                 port: 443\n\
+                 password: secret\n\
+                 certificate: ./client.crt\n",
+                "certificate",
+            ),
+        ];
+
+        // Collect every failure instead of asserting inline so one bad row does
+        // not mask the rest of the table.
+        let mut failures: Vec<String> = Vec::new();
+        for &(label, yaml, expected) in cases {
+            match parse_proxy(&hy2_config(yaml)) {
+                Ok(_) => failures.push(format!("[{label}] must hard-error (Class A), got Ok")),
+                Err(err) if !err.contains(expected) => {
+                    failures.push(format!(
+                        "[{label}] error must contain {expected:?}, got: {err}"
+                    ));
+                }
+                Err(_) => {}
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[cfg(feature = "hysteria2")]
+    #[test]
+    fn parse_hysteria2_accepts_ports_without_port() {
+        // Airport subscriptions commonly set only a hopping range (issue #377);
+        // mihomo accepts this, so we do too — first concrete port dials.
+        let cfg = hy2_config(
+            "name: jp-hy2\ntype: hysteria2\nserver: 1.2.3.4\nports: 20000-30000\npassword: secret\n",
+        );
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[cfg(feature = "hysteria2")]
+    #[test]
+    fn parse_hysteria2_accepts_zero_port_with_ports() {
+        let cfg = hy2_config(
+            "name: jp-hy2\ntype: hysteria2\nserver: 1.2.3.4\nport: 0\nports: '443,8443'\npassword: secret\n",
+        );
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[cfg(feature = "hysteria2")]
+    #[test]
+    fn parse_hysteria2_accepts_mihomo_common_fields() {
+        let cfg = hy2_config(
+            "name: jp-hy2\n\
+             type: hysteria2\n\
+             server: 1.2.3.4\n\
+             port: 443\n\
+             password: secret\n\
+             udp: true\n\
+             up: '30 Mbps'\n\
+             down: 100\n\
+             obfs: salamander\n\
+             obfs-password: obfs-secret\n\
+             ports: '443,8443-8444'\n\
+             hop-interval: '15-30'\n\
+             sni: example.com\n\
+             skip-cert-verify: true\n\
+             fingerprint: 'SHA256 Fingerprint=00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00'\n\
+             alpn:\n\
+               - h3\n",
+        );
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[cfg(feature = "hysteria2")]
+    #[test]
+    fn parse_hysteria2_bandwidth_matches_mihomo_units() {
+        assert_eq!(parse_hy2_bandwidth("8 Mbps").unwrap(), 1_000_000);
+        assert_eq!(parse_hy2_bandwidth("8 MBps").unwrap(), 8_000_000);
+        assert_eq!(parse_hy2_bandwidth("10").unwrap(), 1_250_000);
+        assert_eq!(parse_hy2_bandwidth("").unwrap(), 0);
+    }
+
+    #[cfg(feature = "hysteria2")]
+    #[test]
+    fn parse_hysteria2_hop_interval_matches_mihomo_floor() {
+        assert_eq!(parse_hy2_hop_interval("hy2", None).unwrap(), None);
+        assert_eq!(
+            parse_hy2_hop_interval("hy2", Some(&serde_yaml::Value::from(0))).unwrap(),
+            Some((30, 30))
+        );
+        assert_eq!(
+            parse_hy2_hop_interval("hy2", Some(&serde_yaml::Value::from("1-2"))).unwrap(),
+            Some((5, 5))
+        );
+        // The ceiling itself stays usable.
+        assert_eq!(
+            parse_hy2_hop_interval("hy2", Some(&serde_yaml::Value::from(315360000))).unwrap(),
+            Some((315360000, 315360000))
+        );
+    }
+
+    #[cfg(feature = "hysteria2")]
+    #[test]
+    fn parse_hysteria2_rejects_absurd_hop_interval_and_ports() {
+        // `hop-interval` seconds feed `Instant + Duration` at rotate and
+        // `ports` ranges expand pre-dedup — both provider-controlled
+        // (issue #648). Caught at load (`-t`), not first dial.
+        for (yaml, needle) in [
+            (
+                "name: h\ntype: hysteria2\nserver: 1.2.3.4\nport: 443\n\
+                 password: s\nhop-interval: 18446744073709551615\n",
+                "hop-interval",
+            ),
+            (
+                "name: h\ntype: hysteria2\nserver: 1.2.3.4\nport: 443\n\
+                 password: s\nhop-interval: \"10-18446744073709551615\"\n",
+                "hop-interval",
+            ),
+            (
+                "name: h\ntype: hysteria2\nserver: 1.2.3.4\nport: 443\n\
+                 password: s\nports: \"1-65535,1-65535\"\n",
+                "expand",
+            ),
+        ] {
+            let Err(err) = parse_proxy(&hy2_config(yaml)) else {
+                panic!("{yaml:?} must be rejected");
+            };
+            assert!(err.contains(needle), "{yaml:?} → {err}");
+        }
+    }
+
+    // ─── Load-balance strategy parser (F1-F7) ────────────────────────────────
+
+    #[test]
+    fn parse_load_balance_default_strategy() {
+        // No `strategy:` field → round-robin selected.
+        let s = parse_lb_strategy(None).unwrap();
+        assert!(matches!(s, LbStrategy::RoundRobin));
+    }
+
+    #[test]
+    fn parse_load_balance_explicit_round_robin() {
+        let s = parse_lb_strategy(Some("round-robin")).unwrap();
+        assert!(matches!(s, LbStrategy::RoundRobin));
+    }
+
+    #[test]
+    fn parse_load_balance_consistent_hashing() {
+        let s = parse_lb_strategy(Some("consistent-hashing")).unwrap();
+        assert!(matches!(s, LbStrategy::ConsistentHashing));
+    }
+
+    #[test]
+    fn parse_load_balance_empty_strategy_is_consistent_hashing() {
+        // Upstream `case "", "consistent-hashing"` — an explicit empty
+        // `strategy:` is CH, while absent/null defaults to round-robin.
+        let s = parse_lb_strategy(Some("")).unwrap();
+        assert!(matches!(s, LbStrategy::ConsistentHashing));
+    }
+
+    #[test]
+    fn parse_load_balance_unknown_strategy_hard_errors() {
+        // upstream also hard-errors (errStrategy). ADR-0002 Class A.
+        let err = parse_lb_strategy(Some("sticky")).unwrap_err();
+        assert!(
+            err.contains("unknown strategy"),
+            "error should mention unknown strategy: {err}"
+        );
+        assert!(
+            err.contains("Class A"),
+            "error should cite ADR-0002 Class A: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_load_balance_case_insensitive_strategy() {
+        // Mixed-case is an unknown value → hard error (consistent with Class A policy).
+        // Do not panic.
+        let err = parse_lb_strategy(Some("Round-Robin")).unwrap_err();
+        assert!(!err.is_empty());
+        let err2 = parse_lb_strategy(Some("ROUND-ROBIN")).unwrap_err();
+        assert!(!err2.is_empty());
+    }
+
+    // ─── Relay parser tests (B1-B5) ─────────────────────────────────────────
+
+    fn make_direct_proxy(_name: &str) -> Arc<dyn Proxy> {
+        use meow_proxy::DirectAdapter;
+        Arc::new(WrappedProxy::new(Box::new(DirectAdapter::new())))
+    }
+
+    fn relay_config(name: &str, proxies: Vec<String>) -> crate::raw::RawProxyGroup {
+        crate::raw::RawProxyGroup {
+            name: name.to_string(),
+            group_type: "relay".to_string(),
+            proxies: Some(proxies),
+            ..Default::default()
+        }
+    }
+
+    // B1: single-proxy relay → hard error containing "at least 2"
+    // upstream: silently acts as passthrough. NOT passthrough. ADR-0002 Class A.
+    #[test]
+    fn relay_single_proxy_hard_errors_at_parse() {
+        let existing = {
+            let mut m = std::collections::HashMap::new();
+            m.insert(SmolStr::new_static("DIRECT"), make_direct_proxy("DIRECT"));
+            m
+        };
+        let config = relay_config("r", vec!["DIRECT".to_string()]);
+        let err = parse_proxy_group(&config, &existing, &[], &Default::default())
+            .err()
+            .expect("single-proxy relay must error");
+        assert!(
+            err.contains("at least 2"),
+            "error must mention 'at least 2'; got: {err}"
+        );
+    }
+
+    // B2: empty proxies list → hard error (NOT parse_proxy_group_inner's generic
+    // "no valid proxies" error — relay fires before that path is reached when the
+    // YAML list itself is empty/missing).
+    // upstream: panics. NOT panic. ADR-0002 Class A.
+    #[test]
+    fn relay_empty_proxies_hard_errors_at_parse() {
+        // Empty existing proxies + empty config proxies list.
+        let existing = std::collections::HashMap::new();
+        let config = crate::raw::RawProxyGroup {
+            name: "r".to_string(),
+            group_type: "relay".to_string(),
+            proxies: Some(vec![]),
+            ..Default::default()
+        };
+        // parse_proxy_group_inner will return "no valid proxies" before reaching
+        // relay-specific check (0 proxies ≠ relay-specific error, but still errors).
+        // Both paths must return Err.
+        assert!(parse_proxy_group(&config, &existing, &[], &Default::default()).is_err());
+    }
+
+    // B3: url field on relay group → warn (NOT error). Class B per ADR-0002;
+    // the capture asserts the warning actually fires (docs/specs/
+    // group-relay-test-plan.md).
+    #[test]
+    fn relay_url_field_warns_not_errors() {
+        let config = crate::raw::RawProxyGroup {
+            name: "r".to_string(),
+            group_type: "relay".to_string(),
+            proxies: Some(vec!["DIRECT".to_string(), "REJECT".to_string()]),
+            url: Some("https://example.com/test".to_string()),
+            ..Default::default()
+        };
+        let (group, logs) = capture_warns(|| {
+            parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+        });
+        group.expect("relay with url must not hard-error");
+        assert!(
+            logs.contains("relay: 'url' is not used"),
+            "expected 'url' warning, got: {logs}"
+        );
+    }
+
+    // B4: interval field on relay group → warn (NOT error)
+    #[test]
+    fn relay_interval_field_warns_not_errors() {
+        let config = crate::raw::RawProxyGroup {
+            name: "r".to_string(),
+            group_type: "relay".to_string(),
+            proxies: Some(vec!["DIRECT".to_string(), "REJECT".to_string()]),
+            interval: Some(300),
+            ..Default::default()
+        };
+        let (group, logs) = capture_warns(|| {
+            parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+        });
+        group.expect("relay with interval must not hard-error");
+        assert!(
+            logs.contains("relay: 'interval' is not used"),
+            "expected 'interval' warning, got: {logs}"
+        );
+    }
+
+    // B5: both url and interval present → two separate warns, still not an error
+    #[test]
+    fn relay_url_and_interval_warn_not_errors() {
+        let config = crate::raw::RawProxyGroup {
+            name: "r".to_string(),
+            group_type: "relay".to_string(),
+            proxies: Some(vec!["DIRECT".to_string(), "REJECT".to_string()]),
+            url: Some("https://example.com/test".to_string()),
+            interval: Some(300),
+            ..Default::default()
+        };
+        let (group, logs) = capture_warns(|| {
+            parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+        });
+        group.expect("relay with url+interval must not hard-error");
+        for field in ["url", "interval"] {
+            assert_eq!(
+                logs.matches(&format!("relay: '{field}' is not used"))
+                    .count(),
+                1,
+                "expected exactly one '{field}' warning, got: {logs}"
+            );
+        }
+    }
+
+    // Provider-member fields on relay → warn (Class B): upstream relay
+    // consumes providers; ours is static-only, so the fields were silently
+    // dropped before (#555).
+    #[test]
+    fn relay_provider_fields_warn_not_errors() {
+        let config = crate::raw::RawProxyGroup {
+            name: "r".to_string(),
+            group_type: "relay".to_string(),
+            proxies: Some(vec!["DIRECT".to_string(), "REJECT".to_string()]),
+            use_providers: Some(vec!["airport".to_string()]),
+            include_all: Some(true),
+            include_all_providers: Some(true),
+            filter: Some("hk".to_string()),
+            exclude_filter: Some("tw".to_string()),
+            exclude_type: Some(vec!["trojan".to_string()]),
+            ..Default::default()
+        };
+        let (group, logs) = capture_warns(|| {
+            parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+        });
+        group.expect("relay with provider fields must not hard-error");
+        for field in [
+            "use",
+            "include-all",
+            "include-all-providers",
+            "filter",
+            "exclude-filter",
+            "exclude-type",
+        ] {
+            assert!(
+                logs.contains(&format!("relay: '{field}' is not used")),
+                "expected '{field}' warning, got: {logs}"
+            );
+        }
+    }
+
+    // ─── inert health fields on select/relay (issue #555) ──────────────────
+
+    // `lazy`/`tolerance`/`expected-status` were accepted silently before —
+    // the shared helper now warns on every inert probe field.
+    #[test]
+    fn relay_inert_health_fields_warn_not_errors() {
+        let config = crate::raw::RawProxyGroup {
+            name: "r".to_string(),
+            group_type: "relay".to_string(),
+            proxies: Some(vec!["DIRECT".to_string(), "REJECT".to_string()]),
+            lazy: Some(true),
+            tolerance: Some(100),
+            expected_status: Some("204".to_string()),
+            ..Default::default()
+        };
+        let (group, logs) = capture_warns(|| {
+            parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+        });
+        group.expect("relay with inert health fields must not hard-error");
+        for field in ["lazy", "tolerance", "expected-status"] {
+            assert!(
+                logs.contains(&format!("relay: '{field}' is not used")),
+                "expected '{field}' warning, got: {logs}"
+            );
+        }
+    }
+
+    // `select` runs no probe loop — the same warn applies to all five
+    // health fields (previously every one was ignored silently).
+    #[test]
+    fn select_with_health_fields_warns_not_errors() {
+        let config = crate::raw::RawProxyGroup {
+            name: "s".to_string(),
+            group_type: "select".to_string(),
+            proxies: Some(vec!["DIRECT".to_string(), "REJECT".to_string()]),
+            url: Some("https://example.com/test".to_string()),
+            interval: Some(300),
+            lazy: Some(true),
+            tolerance: Some(100),
+            expected_status: Some("204".to_string()),
+            ..Default::default()
+        };
+        let (group, logs) = capture_warns(|| {
+            parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+        });
+        group.expect("select with inert health fields must not hard-error");
+        for field in ["url", "interval", "lazy", "tolerance", "expected-status"] {
+            assert!(
+                logs.contains(&format!("select: '{field}' is not used")),
+                "expected '{field}' warning, got: {logs}"
+            );
+        }
+    }
+
+    // Negative: a plain select carries no probe fields → no warning.
+    #[test]
+    fn select_without_health_fields_does_not_warn() {
+        let config = crate::raw::RawProxyGroup {
+            name: "s".to_string(),
+            group_type: "select".to_string(),
+            proxies: Some(vec!["DIRECT".to_string(), "REJECT".to_string()]),
+            ..Default::default()
+        };
+        let (group, logs) = capture_warns(|| {
+            parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+        });
+        group.expect("plain select must parse");
+        assert!(logs.is_empty(), "plain select must not warn, got: {logs}");
+    }
+
+    // Negative: a plain relay likewise carries no inert fields → zero warns.
+    #[test]
+    fn relay_without_inert_fields_does_not_warn() {
+        let config = crate::raw::RawProxyGroup {
+            name: "r".to_string(),
+            group_type: "relay".to_string(),
+            proxies: Some(vec!["DIRECT".to_string(), "REJECT".to_string()]),
+            ..Default::default()
+        };
+        let (group, logs) = capture_warns(|| {
+            parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+        });
+        group.expect("plain relay must parse");
+        assert!(logs.is_empty(), "plain relay must not warn, got: {logs}");
+    }
+
+    // Provider fields ARE consumed on `select` (slots wire into
+    // SelectorGroup) — unlike relay they must not trip the dropped-field
+    // warn. `include-all*`/`filter`/`exclude-*` need no provider objects
+    // to exercise the consumed path (an unknown `use:` name is a strict
+    // error on select, so it stays out of this negative).
+    #[test]
+    fn select_with_provider_fields_does_not_warn() {
+        let config = crate::raw::RawProxyGroup {
+            name: "s".to_string(),
+            group_type: "select".to_string(),
+            proxies: Some(vec!["DIRECT".to_string(), "REJECT".to_string()]),
+            include_all: Some(true),
+            include_all_providers: Some(true),
+            filter: Some("hk".to_string()),
+            exclude_filter: Some("tw".to_string()),
+            exclude_type: Some(vec!["trojan".to_string()]),
+            ..Default::default()
+        };
+        let (group, logs) = capture_warns(|| {
+            parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+        });
+        group.expect("select with provider fields must parse");
+        assert!(
+            !logs.contains("is not used"),
+            "provider fields are consumed on select, got: {logs}"
+        );
+    }
+
+    // ─── load-balance provider members (issue #533 item 3) ──────────────────
+
+    const LB_UNKNOWN_PROVIDER_WARN: &str = "proxy-provider 'airport' not found";
+
+    /// Scoped WARN capture — `with_default` is thread-local, so parallel tests
+    /// in this binary don't see each other's lines.
+    fn capture_warns<R>(f: impl FnOnce() -> R) -> (R, String) {
+        #[derive(Clone)]
+        struct Sink(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Sink {
+            type Writer = Sink;
+            fn make_writer(&'a self) -> Sink {
+                self.clone()
+            }
+        }
+        let sink = Sink(Arc::new(std::sync::Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(sink.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        let out = tracing::subscriber::with_default(subscriber, f);
+        let captured = sink.0.lock().unwrap();
+        (out, String::from_utf8_lossy(&captured).into_owned())
+    }
+
+    fn lb_config_with_providers(
+        use_providers: Option<Vec<String>>,
+        include_all: Option<bool>,
+    ) -> crate::raw::RawProxyGroup {
+        crate::raw::RawProxyGroup {
+            name: "lb".to_string(),
+            group_type: "load-balance".to_string(),
+            proxies: Some(vec!["DIRECT".to_string(), "REJECT".to_string()]),
+            use_providers,
+            include_all,
+            ..Default::default()
+        }
+    }
+
+    fn direct_reject() -> HashMap<SmolStr, Arc<dyn Proxy>> {
+        let mut m = HashMap::new();
+        m.insert(SmolStr::new_static("DIRECT"), make_direct_proxy("DIRECT"));
+        m.insert(SmolStr::new_static("REJECT"), make_direct_proxy("REJECT"));
+        m
+    }
+
+    // `use:` naming an unknown provider → strict parse hard-errors (upstream
+    // `getProviders` does the same); the lenient fallback pass warns and
+    // skips the slot, keeping static members (same shape as every other
+    // group type).
+    #[test]
+    fn load_balance_use_providers_unknown_provider_warns() {
+        let config = lb_config_with_providers(Some(vec!["airport".to_string()]), None);
+        assert!(
+            parse_proxy_group(&config, &direct_reject(), &[], &Default::default()).is_err(),
+            "strict parse must reject an unknown provider"
+        );
+        let (group, logs) = capture_warns(|| {
+            parse_proxy_group_lenient(&config, &direct_reject(), &[], &Default::default())
+        });
+        let group = group.expect("lenient load-balance with use: must not hard-error");
+        assert_eq!(
+            group.members().unwrap_or_default().len(),
+            2,
+            "static members are kept"
+        );
+        assert!(
+            logs.contains(LB_UNKNOWN_PROVIDER_WARN),
+            "expected unknown-provider warning, got: {logs}"
+        );
+    }
+
+    // `include-all` with no providers loaded → empty slot set; the group
+    // still builds from statics alone.
+    #[test]
+    fn load_balance_include_all_with_no_providers_keeps_statics() {
+        let config = lb_config_with_providers(None, Some(true));
+        let group = parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+            .expect("load-balance with include-all must not hard-error");
+        assert_eq!(
+            group.members().unwrap_or_default().len(),
+            2,
+            "static members are kept"
+        );
+    }
+
+    // `use:` provider members join the pick space — round-robin distributes
+    // across statics AND slot members (issue #533 item 3).
+    #[cfg(feature = "ss")]
+    #[tokio::test]
+    async fn load_balance_use_providers_wires_slot_members() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let providers = file_provider_with(tmp.path(), PROVIDER_YAML).await;
+
+        let config = crate::raw::RawProxyGroup {
+            name: "lb".to_string(),
+            group_type: "load-balance".to_string(),
+            use_providers: Some(vec!["airport".to_string()]),
+            ..Default::default()
+        };
+        let group = parse_proxy_group(&config, &HashMap::new(), &[], &providers)
+            .expect("load-balance with use: must build");
+        assert_eq!(
+            group.members().unwrap_or_default(),
+            ["US 1", "US 2 expat", "HK 1"],
+            "provider members appear in the member list"
+        );
+        // Round-robin over three provider members must reach each in turn.
+        let meta = meow_common::Metadata::default();
+        let mut seen: std::collections::HashSet<String> = Default::default();
+        for _ in 0..6 {
+            seen.insert(group.unwrap_proxy(&meta, true).unwrap().name().to_string());
+        }
+        assert_eq!(seen.len(), 3, "every provider member gets picked");
+    }
+
+    // `use: [p, p]` must not double-weight the provider: the slot is wired
+    // once, so its members appear once in `members()` and get one share of
+    // the pick space.
+    #[cfg(feature = "ss")]
+    #[tokio::test]
+    async fn load_balance_use_providers_duplicate_entry_deduped() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let providers = file_provider_with(tmp.path(), PROVIDER_YAML).await;
+
+        let config = crate::raw::RawProxyGroup {
+            name: "lb".to_string(),
+            group_type: "load-balance".to_string(),
+            use_providers: Some(vec!["airport".to_string(), "airport".to_string()]),
+            ..Default::default()
+        };
+        let group = parse_proxy_group(&config, &HashMap::new(), &[], &providers)
+            .expect("load-balance with duplicated use: must build");
+        assert_eq!(
+            group.members().unwrap_or_default(),
+            ["US 1", "US 2 expat", "HK 1"],
+            "a duplicated use: entry wires the provider's slot once"
+        );
+    }
+
+    // `use: [unknown, unknown]` warns once — dedupe happens before lookup.
+    #[test]
+    fn load_balance_use_providers_duplicate_unknown_warns_once() {
+        let config = lb_config_with_providers(
+            Some(vec!["airport".to_string(), "airport".to_string()]),
+            None,
+        );
+        let (group, logs) = capture_warns(|| {
+            parse_proxy_group_lenient(&config, &direct_reject(), &[], &Default::default())
+        });
+        group.expect("lenient load-balance with use: must not hard-error");
+        assert_eq!(
+            logs.matches(LB_UNKNOWN_PROVIDER_WARN).count(),
+            1,
+            "the repeated unknown provider warns once, got: {logs}"
+        );
+    }
+
+    // `include-all` wires every loaded provider's slot — same coverage as
+    // `use:` but through the include-all collection path.
+    #[cfg(feature = "ss")]
+    #[tokio::test]
+    async fn load_balance_include_all_wires_slot_members() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let providers = file_provider_with(tmp.path(), PROVIDER_YAML).await;
+
+        let config = crate::raw::RawProxyGroup {
+            name: "lb".to_string(),
+            group_type: "load-balance".to_string(),
+            include_all: Some(true),
+            ..Default::default()
+        };
+        let group = parse_proxy_group(&config, &HashMap::new(), &[], &providers)
+            .expect("load-balance with include-all must build");
+        assert_eq!(
+            group.members().unwrap_or_default(),
+            ["US 1", "US 2 expat", "HK 1"],
+            "include-all provider members join the pick space"
+        );
+    }
+
+    // `include-all-providers` is the upstream providers-only alias — wired
+    // identically to `include-all` (ours never pulls statics).
+    #[cfg(feature = "ss")]
+    #[tokio::test]
+    async fn load_balance_include_all_providers_alias_wires_slots() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let providers = file_provider_with(tmp.path(), PROVIDER_YAML).await;
+
+        let config = crate::raw::RawProxyGroup {
+            name: "lb".to_string(),
+            group_type: "load-balance".to_string(),
+            include_all_providers: Some(true),
+            ..Default::default()
+        };
+        let group = parse_proxy_group(&config, &HashMap::new(), &[], &providers)
+            .expect("load-balance with include-all-providers must build");
+        assert_eq!(
+            group.members().unwrap_or_default(),
+            ["US 1", "US 2 expat", "HK 1"],
+            "the upstream alias wires provider members identically"
+        );
+    }
+
+    // `include-all` iterates providers sorted by name — the slot order
+    // (and therefore the pick space / a selector's default member) must
+    // not depend on the providers map's insertion or iteration order.
+    #[cfg(feature = "ss")]
+    #[tokio::test]
+    async fn load_balance_include_all_orders_slots_by_provider_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut providers = HashMap::new();
+        // Deliberately insert "zeta" before "alpha".
+        providers.insert(
+            "zeta".to_string(),
+            file_provider_named(
+                &dir.path().join("z.yaml"),
+                "proxies:\n  - {name: \"Z 1\", type: ss, server: 127.0.0.1, port: 443, cipher: aes-128-gcm, password: p}\n",
+                "zeta",
+            )
+            .await,
+        );
+        providers.insert(
+            "alpha".to_string(),
+            file_provider_named(
+                &dir.path().join("a.yaml"),
+                "proxies:\n  - {name: \"A 1\", type: ss, server: 127.0.0.1, port: 443, cipher: aes-128-gcm, password: p}\n",
+                "alpha",
+            )
+            .await,
+        );
+
+        let config = crate::raw::RawProxyGroup {
+            name: "lb".to_string(),
+            group_type: "load-balance".to_string(),
+            include_all: Some(true),
+            ..Default::default()
+        };
+        let group = parse_proxy_group(&config, &HashMap::new(), &[], &providers)
+            .expect("include-all load-balance must build");
+        assert_eq!(
+            group.members().unwrap_or_default(),
+            ["A 1", "Z 1"],
+            "slots follow provider-name order, not map order"
+        );
+    }
+
+    // Config-level: an unknown `use:` provider is absorbed by the
+    // multi-pass group resolver's lenient fallback — the group still
+    // builds from its static members and the config loads (warn + skip),
+    // rather than the strict pass's error failing the whole load.
+    #[tokio::test]
+    async fn load_config_unknown_use_provider_warns_and_loads() {
+        // A `direct` leaf normalizes to the built-in DIRECT name — use ss so
+        // the static member keeps its own name in `members()`.
+        let yaml = "proxies:\n  - {name: p, type: ss, server: 127.0.0.1, port: 443, cipher: aes-128-gcm, password: x}\n\
+            proxy-groups:\n  - {name: g, type: load-balance, proxies: [p], use: [ghost]}\n";
+        let cfg = crate::load_config_from_str(yaml)
+            .await
+            .expect("an unknown `use:` provider must not fail the config");
+        let group = cfg.proxies.get("g").expect("group builds from statics");
+        assert_eq!(group.members().unwrap_or_default(), ["p"]);
+    }
+
+    // `include-all` beats `use:` — upstream `Use = AllProviders`.
+    #[cfg(feature = "ss")]
+    #[tokio::test]
+    async fn load_balance_include_all_overrides_use() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let providers = file_provider_with(tmp.path(), PROVIDER_YAML).await;
+
+        let config = crate::raw::RawProxyGroup {
+            name: "lb".to_string(),
+            group_type: "load-balance".to_string(),
+            use_providers: Some(vec!["nonexistent".to_string()]),
+            include_all: Some(true),
+            ..Default::default()
+        };
+        let group = parse_proxy_group(&config, &HashMap::new(), &[], &providers)
+            .expect("load-balance with include-all + use: must build");
+        assert_eq!(
+            group.members().unwrap_or_default(),
+            ["US 1", "US 2 expat", "HK 1"],
+            "include-all supplies the membership; use: is ignored"
+        );
+    }
+
+    // Group-level `filter:`/`exclude-filter:` apply to LB provider members
+    // through the same `derived_slot` view the siblings use (issue #358).
+    #[cfg(feature = "ss")]
+    #[tokio::test]
+    async fn load_balance_filter_applies_to_slot_members() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let providers = file_provider_with(tmp.path(), PROVIDER_YAML).await;
+
+        let config = crate::raw::RawProxyGroup {
+            name: "lb".to_string(),
+            group_type: "load-balance".to_string(),
+            use_providers: Some(vec!["airport".to_string()]),
+            filter: Some("(?i)^us".to_string()),
+            exclude_filter: Some("expat".to_string()),
+            ..Default::default()
+        };
+        let group = parse_proxy_group(&config, &HashMap::new(), &[], &providers)
+            .expect("filtered load-balance must build");
+        assert_eq!(group.members().unwrap_or_default(), ["US 1"]);
+    }
+
+    // No provider fields → no warning (the warning is keyed on the raw config).
+    #[test]
+    fn load_balance_without_providers_does_not_warn() {
+        let config = lb_config_with_providers(None, None);
+        let (group, logs) = capture_warns(|| {
+            parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+        });
+        group.expect("plain load-balance must parse");
+        assert!(
+            logs.is_empty(),
+            "no provider fields must not warn, got: {logs}"
+        );
+    }
+
+    // `expected-status` on load-balance reaches the probe loop — upstream
+    // `GroupCommonOption` honors it on every swept group type; previously
+    // it was silently dropped (#555).
+    #[test]
+    fn load_balance_expected_status_reaches_probe_loop() {
+        let config = crate::raw::RawProxyGroup {
+            expected_status: Some("204".to_string()),
+            ..lb_config_with_providers(None, None)
+        };
+        let group = parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+            .expect("load-balance with expected-status must parse");
+        assert_eq!(group.expected_status(), Some("204"));
+    }
+
+    // `url` on load-balance is the consistent-hashing eligibility probe URL
+    // (`test_url`); previously the group had no such field at all (#621).
+    #[test]
+    fn load_balance_url_reaches_test_url() {
+        let config = crate::raw::RawProxyGroup {
+            url: Some("https://example.com/ping".to_string()),
+            ..lb_config_with_providers(None, None)
+        };
+        let group = parse_proxy_group(&config, &direct_reject(), &[], &Default::default())
+            .expect("load-balance with url must parse");
+        assert_eq!(group.test_url(), Some("https://example.com/ping"));
+        // Absent `url` → the shared generate_204 default.
+        let group = parse_proxy_group(
+            &lb_config_with_providers(None, None),
+            &direct_reject(),
+            &[],
+            &Default::default(),
+        )
+        .expect("load-balance without url must parse");
+        assert_eq!(
+            group.test_url(),
+            Some("https://www.gstatic.com/generate_204")
+        );
+    }
+
+    // Upstream maps an explicit empty strategy to consistent-hashing
+    // (`case "", "consistent-hashing"`).
+    #[test]
+    fn load_balance_empty_strategy_is_consistent_hashing() {
+        let config = crate::raw::RawProxyGroup {
+            strategy: Some("".to_string()),
+            ..lb_config_with_providers(None, None)
+        };
+        assert!(parse_proxy_group(&config, &direct_reject(), &[], &Default::default()).is_ok());
+    }
+
+    // A `use:`-only relay (no `proxies:`) reaches `parse_relay_group` on
+    // provider slots alone and hits the empty-`proxies` hard error — the
+    // error must say *why*: provider fields do not supply relay members.
+    #[cfg(feature = "ss")]
+    #[tokio::test]
+    async fn relay_provider_only_errors_naming_dropped_fields() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let providers = file_provider_with(tmp.path(), PROVIDER_YAML).await;
+        let config = crate::raw::RawProxyGroup {
+            name: "r".to_string(),
+            group_type: "relay".to_string(),
+            use_providers: Some(vec!["airport".to_string()]),
+            ..Default::default()
+        };
+        let Err(err) = parse_proxy_group(&config, &HashMap::new(), &[], &providers) else {
+            panic!("provider-only relay must hard-error")
+        };
+        assert!(err.contains("proxies list is empty"), "got: {err}");
+        assert!(
+            err.contains("do not supply relay members"),
+            "error must explain provider fields were dropped, got: {err}"
+        );
+    }
+
+    // A `use:`-only group wires the provider slot as its whole membership —
+    // previously the members were dropped at build time and only a warn
+    // remained (#533 item 3).
+    #[cfg(feature = "ss")]
+    #[tokio::test]
+    async fn load_balance_provider_only_balances_slot_members() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let providers = file_provider_with(tmp.path(), PROVIDER_YAML).await;
+        let config = crate::raw::RawProxyGroup {
+            name: "lb".to_string(),
+            group_type: "load-balance".to_string(),
+            use_providers: Some(vec!["airport".to_string()]),
+            ..Default::default()
+        };
+        let group = parse_proxy_group(&config, &HashMap::new(), &[], &providers)
+            .expect("provider-only load-balance must build");
+        assert_eq!(
+            group.members().unwrap_or_default(),
+            ["US 1", "US 2 expat", "HK 1"],
+            "provider members join the pick space"
+        );
+    }
+
+    // ─── group-level filter on provider members (issue #358) ────────────────
+
+    #[cfg(feature = "ss")]
+    async fn file_provider_named(
+        path: &std::path::Path,
+        entries: &str,
+        name: &str,
+    ) -> Arc<crate::proxy_provider::ProxyProvider> {
+        std::fs::write(path, entries).unwrap();
+        let raw = crate::raw::RawProxyProvider {
+            provider_type: "file".to_string(),
+            url: None,
+            path: Some(path.to_str().unwrap().to_string()),
+            interval: None,
+            filter: None,
+            exclude_filter: None,
+            exclude_type: None,
+            health_check: None,
+            header: None,
+            allow_external_plugin: None,
+            override_: None,
+            proxy: None,
+            dialer_proxy: None,
+        };
+        let cache_dir = path.parent().expect("temp file has a parent dir");
+        let provider = crate::proxy_provider::ProxyProvider::new(
+            name,
+            &raw,
+            Some(cache_dir),
+            true,
+            false,
+            Default::default(),
+        )
+        .unwrap();
+        provider.refresh().await.unwrap();
+        Arc::new(provider)
+    }
+
+    #[cfg(feature = "ss")]
+    async fn file_provider_with(
+        path: &std::path::Path,
+        entries: &str,
+    ) -> HashMap<String, Arc<crate::proxy_provider::ProxyProvider>> {
+        let provider = file_provider_named(path, entries, "airport").await;
+        let mut providers = HashMap::new();
+        providers.insert("airport".to_string(), provider);
+        providers
+    }
+
+    #[cfg(feature = "ss")]
+    const PROVIDER_YAML: &str = "proxies:\n\
+        - {name: \"US 1\", type: ss, server: 127.0.0.1, port: 443, cipher: aes-128-gcm, password: p}\n\
+        - {name: \"US 2 expat\", type: ss, server: 127.0.0.1, port: 443, cipher: aes-128-gcm, password: p}\n\
+        - {name: \"HK 1\", type: ss, server: 127.0.0.1, port: 443, cipher: aes-128-gcm, password: p}\n";
+
+    #[cfg(feature = "ss")]
+    #[tokio::test]
+    async fn group_filter_applies_to_provider_members() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let providers = file_provider_with(tmp.path(), PROVIDER_YAML).await;
+
+        let config = crate::raw::RawProxyGroup {
+            name: "US".to_string(),
+            group_type: "url-test".to_string(),
+            use_providers: Some(vec!["airport".to_string()]),
+            filter: Some("(?i)^us".to_string()),
+            exclude_filter: Some("expat".to_string()),
+            ..Default::default()
+        };
+        let group = parse_proxy_group(&config, &HashMap::new(), &[], &providers).unwrap();
+        assert_eq!(group.members().unwrap(), ["US 1"]);
+    }
+
+    #[cfg(feature = "ss")]
+    #[tokio::test]
+    async fn group_without_filter_sees_all_provider_members() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let providers = file_provider_with(tmp.path(), PROVIDER_YAML).await;
+
+        let config = crate::raw::RawProxyGroup {
+            name: "ALL".to_string(),
+            group_type: "select".to_string(),
+            use_providers: Some(vec!["airport".to_string()]),
+            ..Default::default()
+        };
+        let group = parse_proxy_group(&config, &HashMap::new(), &[], &providers).unwrap();
+        assert_eq!(group.members().unwrap(), ["US 1", "US 2 expat", "HK 1"]);
+    }
+
+    #[cfg(feature = "ss")]
+    #[tokio::test]
+    async fn group_filter_invalid_regex_errors_with_group_name() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let providers = file_provider_with(tmp.path(), PROVIDER_YAML).await;
+
+        let config = crate::raw::RawProxyGroup {
+            name: "US".to_string(),
+            group_type: "select".to_string(),
+            use_providers: Some(vec!["airport".to_string()]),
+            filter: Some("(".to_string()),
+            ..Default::default()
+        };
+        let err = parse_proxy_group(&config, &HashMap::new(), &[], &providers)
+            .err()
+            .expect("invalid filter regex must error");
+        assert!(
+            err.contains("group 'US'") && err.contains("filter regex error"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ─── snell proxy parser ───────────────────────────────────────────────────
+
+    #[cfg(feature = "snell")]
+    fn snell_config(yaml: &str) -> HashMap<String, serde_yaml::Value> {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    #[cfg(feature = "snell")]
+    #[test]
+    fn parse_snell_minimal_ok() {
+        let cfg = snell_config("name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: secret\n");
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[cfg(feature = "snell")]
+    #[test]
+    fn parse_snell_full_ok() {
+        let cfg = snell_config(
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: secret\nversion: 5\nudp: true\nreuse: true\nobfs-opts:\n  mode: http\n  host: bing.com\n",
+        );
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[cfg(feature = "snell")]
+    #[test]
+    fn parse_snell_rejects_invalid_fields() {
+        // (label, yaml, expected error substring). Every row is a Class A hard
+        // error: a required field is missing or invalid, and parsing must fail
+        // with a message naming that field.
+        let cases: &[(&str, &str, &str)] = &[
+            (
+                "missing psk",
+                "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\n",
+                "missing psk",
+            ),
+            (
+                "missing server",
+                "name: sn\ntype: snell\nport: 8388\npsk: secret\n",
+                "missing server",
+            ),
+            (
+                "missing port",
+                "name: sn\ntype: snell\nserver: 1.2.3.4\npsk: secret\n",
+                "missing port",
+            ),
+            (
+                "port zero",
+                "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 0\npsk: secret\n",
+                "port must be non-zero",
+            ),
+            (
+                "empty psk (caught by SnellAdapter::new)",
+                "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: ''\n",
+                "psk must not be empty",
+            ),
+        ];
+
+        // Collect every failure instead of asserting inline so one bad row does
+        // not mask the rest of the table.
+        let mut failures: Vec<String> = Vec::new();
+        for &(label, yaml, expected) in cases {
+            match parse_proxy(&snell_config(yaml)) {
+                Ok(_) => failures.push(format!("[{label}] must hard-error (Class A), got Ok")),
+                Err(err) if !err.contains(expected) => {
+                    failures.push(format!(
+                        "[{label}] error must contain {expected:?}, got: {err}"
+                    ));
+                }
+                Err(_) => {}
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[cfg(feature = "snell")]
+    #[test]
+    fn parse_snell_version_aliases() {
+        for yaml in &[
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: 3\n",
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: v3\n",
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: 4\n",
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: v4\n",
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: V5\n",
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: 5\n",
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: 6\n",
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: v6\n",
+        ] {
+            let cfg = snell_config(yaml);
+            assert!(parse_proxy(&cfg).is_ok(), "expected Ok for yaml: {yaml}");
+        }
+    }
+
+    #[cfg(feature = "snell")]
+    #[test]
+    fn parse_snell_v6_modes() {
+        for mode in ["default", "unshaped", "unsafe-raw", "Unshaped", "''"] {
+            let cfg = snell_config(&format!(
+                "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: 6\nudp: true\nreuse: true\nmode: {mode}\n"
+            ));
+            assert!(parse_proxy(&cfg).is_ok(), "mode {mode} must parse");
+        }
+        let cases: &[(&str, &str)] = &[
+            ("version: 6\nmode: shaped\n", "mode 'shaped' invalid"),
+            ("version: 6\nmode: 1\n", "mode must be a string"),
+            ("version: 5\nmode: default\n", "mode is a snell v6 option"),
+            ("mode: unshaped\n", "mode is a snell v6 option"),
+            (
+                "version: 6\nobfs-opts:\n  mode: http\n",
+                "obfs-opts is not supported by snell v6",
+            ),
+        ];
+        for (extra, expected) in cases {
+            let cfg = snell_config(&format!(
+                "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\n{extra}"
+            ));
+            let Err(err) = parse_proxy(&cfg) else {
+                panic!("{extra:?} must hard-error (Class A)");
+            };
+            assert!(err.contains(expected), "{extra:?}: msg: {err}");
+        }
+        let cfg = snell_config(
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: 6\nobfs-opts:\n  mode: off\n",
+        );
+        assert!(parse_proxy(&cfg).is_ok(), "obfs off is fine on v6");
+    }
+
+    #[cfg(feature = "snell")]
+    #[test]
+    fn parse_snell_rejects_unsupported_legacy_versions() {
+        for (yaml, ver) in &[
+            (
+                "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: 1\n",
+                "1",
+            ),
+            (
+                "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: 2\n",
+                "2",
+            ),
+            (
+                "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: v2\n",
+                "v2",
+            ),
+        ] {
+            let cfg = snell_config(yaml);
+            let Err(err) = parse_proxy(&cfg) else {
+                panic!("unsupported legacy version {ver} must hard-error (Class A)");
+            };
+            assert!(
+                err.contains("not supported"),
+                "version {ver}: expected 'not supported' in msg: {err}"
+            );
+        }
+    }
+
+    #[cfg(feature = "snell")]
+    #[test]
+    fn parse_snell_rejects_unknown_version() {
+        let cfg_seven = snell_config(
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: '7'\n",
+        );
+        let Err(err) = parse_proxy(&cfg_seven) else {
+            panic!("unknown version '7' must hard-error (Class A)");
+        };
+        assert!(err.contains("unknown version"), "msg: {err}");
+
+        let cfg_bool = snell_config(
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nversion: true\n",
+        );
+        let Err(err) = parse_proxy(&cfg_bool) else {
+            panic!("boolean version must hard-error (Class A)");
+        };
+        assert!(err.contains("must be an integer or string"), "msg: {err}");
+    }
+
+    #[cfg(feature = "snell")]
+    #[test]
+    fn parse_snell_obfs_modes() {
+        let cfg_tls = snell_config(
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nobfs-opts:\n  mode: tls\n",
+        );
+        assert!(parse_proxy(&cfg_tls).is_ok(), "tls obfs mode must be Ok");
+
+        let cfg_none = snell_config(
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nobfs-opts:\n  mode: none\n",
+        );
+        assert!(parse_proxy(&cfg_none).is_ok(), "none obfs mode must be Ok");
+
+        let cfg_socks = snell_config(
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nobfs-opts:\n  mode: socks\n",
+        );
+        let Err(err) = parse_proxy(&cfg_socks) else {
+            panic!("invalid obfs mode 'socks' must hard-error (Class A)");
+        };
+        assert!(err.contains("obfs-opts.mode"), "msg: {err}");
+    }
+
+    #[cfg(feature = "snell")]
+    #[test]
+    fn parse_snell_obfs_host_falls_back_to_server() {
+        // obfs-opts with mode: http but no host key → falls back to server value.
+        let cfg = snell_config(
+            "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nobfs-opts:\n  mode: http\n",
+        );
+        assert!(parse_proxy(&cfg).is_ok());
+    }
+
+    #[cfg(feature = "snell")]
+    #[test]
+    fn parse_snell_obfs_host_rejects_ctl() {
+        // `obfs-opts.host` lands verbatim in the emitted `Host:` header —
+        // provider-supplied CTLs must not parse (issue #648).
+        for mode in ["http", "tls"] {
+            let cfg = snell_config(&format!(
+                "name: sn\ntype: snell\nserver: 1.2.3.4\nport: 8388\npsk: s\nobfs-opts:\n  mode: {mode}\n  host: \"a\\rb\\nc\"\n"
+            ));
+            let Err(err) = parse_proxy(&cfg) else {
+                panic!("{mode} obfs host with CRLF must hard-error");
+            };
+            assert!(err.contains("obfs-opts.host"), "{mode}: msg: {err}");
+        }
+    }
+
+    // ─── issue #513: provider nodes cannot select a local executable ─────────
+
+    #[cfg(feature = "ss")]
+    fn direct_dialer() -> std::sync::Arc<dyn meow_proxy::dialer::TcpDialer> {
+        std::sync::Arc::new(meow_proxy::dialer::DirectDialer)
+    }
+
+    #[cfg(feature = "ss")]
+    fn external_plugin_ss() -> HashMap<String, serde_yaml::Value> {
+        proxy_config(
+            "name: s\ntype: ss\nserver: 1.2.3.4\nport: 8388\npassword: p\ncipher: aes-128-gcm\n\
+             plugin: evil-plugin-from-provider\n",
+        )
+    }
+
+    /// Default: the provider path rejects external SIP003 plugins before the
+    /// adapter can reach `Command::new`. The local `proxies:` path is trusted
+    /// and unaffected.
+    #[cfg(feature = "ss")]
+    #[test]
+    fn provider_node_rejects_external_plugin_by_default() {
+        let cfg = external_plugin_ss();
+        let Err(err) = super::parse_proxy_provider_node(&cfg, true, false, &direct_dialer()) else {
+            panic!("external plugin must be rejected without the opt-in")
+        };
+        assert!(err.contains("allow-external-plugin"), "msg: {err}");
+
+        // With the opt-in the gate opens: parse proceeds and fails at the
+        // *plugin spawn* boundary (the binary does not exist), proving the
+        // gate — not the plugin dispatch — did the rejecting above.
+        let Err(err) = super::parse_proxy_provider_node(&cfg, true, true, &direct_dialer()) else {
+            panic!("with opt-in, parse must reach adapter construction")
+        };
+        assert!(err.contains("failed to start ss plugin"), "msg: {err}");
+    }
+
+    /// Built-in in-process plugins and non-ss nodes are untouched by the gate.
+    #[cfg(feature = "ss")]
+    #[test]
+    fn provider_node_allows_builtin_plugins_and_other_types() {
+        let cfg = proxy_config(
+            "name: s\ntype: ss\nserver: 1.2.3.4\nport: 8388\npassword: p\ncipher: aes-128-gcm\n\
+             plugin: obfs\nplugin-opts:\n  mode: http\n",
+        );
+        assert!(super::parse_proxy_provider_node(&cfg, true, false, &direct_dialer()).is_ok());
+
+        // A stray `plugin:` on a trojan node is ignored by its parser —
+        // the gate must not reject it either.
+        let cfg = proxy_config(
+            "name: t\ntype: trojan\nserver: 1.2.3.4\nport: 443\npassword: p\nplugin: whatever\n",
+        );
+        assert!(super::parse_proxy_provider_node(&cfg, true, false, &direct_dialer()).is_ok());
+    }
+
+    /// v2ray-plugin is a built-in in-process plugin — the gate must let it
+    /// through on provider nodes too.
+    #[cfg(feature = "ss")]
+    #[test]
+    fn provider_node_allows_v2ray_plugin() {
+        let cfg = proxy_config(
+            "name: s\ntype: ss\nserver: 1.2.3.4\nport: 8388\npassword: p\ncipher: aes-128-gcm\n\
+             plugin: v2ray-plugin\n",
+        );
+        assert!(super::parse_proxy_provider_node(&cfg, true, false, &direct_dialer()).is_ok());
+    }
+
+    /// gost-plugin is likewise built-in — the external-plugin gate must not
+    /// reject it on provider nodes, and `is_external_sip003_plugin` must
+    /// agree (a misclassification would silently drop subscription nodes).
+    /// `mux: false` keeps the fixture valid under a `ss`-without-`mux` build.
+    #[cfg(feature = "ss")]
+    #[test]
+    fn provider_node_allows_gost_plugin() {
+        assert!(!is_external_sip003_plugin(Some("gost-plugin")));
+        let cfg = proxy_config(
+            "name: s\ntype: ss\nserver: 1.2.3.4\nport: 8388\npassword: p\ncipher: aes-128-gcm\n\
+             plugin: gost-plugin\nplugin-opts:\n  mode: websocket\n  mux: false\n",
+        );
+        assert!(super::parse_proxy_provider_node(
+            &cfg,
+            true,
+            false,
+            &(std::sync::Arc::new(meow_proxy::dialer::DirectDialer)
+                as std::sync::Arc<dyn meow_proxy::dialer::TcpDialer>),
+        )
+        .is_ok());
+    }
+
+    /// shadow-tls is a built-in in-process plugin too — the provider gate
+    /// must route it through without `allow-external-plugin`.
+    #[cfg(feature = "ss")]
+    #[test]
+    fn provider_node_allows_shadow_tls_plugin() {
+        assert!(!is_external_sip003_plugin(Some("shadow-tls")));
+        let cfg = proxy_config(
+            "name: s\ntype: ss\nserver: 1.2.3.4\nport: 8388\npassword: p\ncipher: aes-128-gcm\n\
+             plugin: shadow-tls\nplugin-opts:\n  host: cover.example.com\n  version: 3\n",
+        );
+        assert!(super::parse_proxy_provider_node(
+            &cfg,
+            true,
+            false,
+            &(std::sync::Arc::new(meow_proxy::dialer::DirectDialer)
+                as std::sync::Arc<dyn meow_proxy::dialer::TcpDialer>),
+        )
+        .is_ok());
+    }
+
+    /// The provider opt-in key is `allow-external-plugin` (kebab-case like
+    /// the rest of `RawProxyProvider`) — a rename regression would leave the
+    /// gate permanently closed for users who set it.
+    #[test]
+    fn provider_allow_external_plugin_uses_kebab_case() {
+        let raw: crate::raw::RawProxyProvider =
+            serde_yaml::from_str("type: file\npath: p.yaml\nallow-external-plugin: true\n")
+                .unwrap();
+        assert_eq!(raw.allow_external_plugin, Some(true));
+    }
+
+    /// Subscriptions land remote nodes in the trusted `proxies:` list —
+    /// `parse_subscription_yaml` must drop external-SIP003 nodes before they
+    /// reach `Command::new`, while keeping built-in plugins.
+    #[cfg(feature = "ss")]
+    #[test]
+    fn subscription_drops_external_plugin_nodes() {
+        let text = "proxies:\n\
+             - name: evil\n  type: ss\n  server: 1.2.3.4\n  port: 8388\n  \
+             password: p\n  cipher: aes-128-gcm\n  plugin: evil-plugin\n\
+             - name: ok\n  type: ss\n  server: 1.2.3.4\n  port: 8389\n  \
+             password: p\n  cipher: aes-128-gcm\n  plugin: v2ray-plugin\n\
+             - name: plain\n  type: trojan\n  server: 1.2.3.4\n  port: 443\n  password: p\n";
+        let data = crate::subscription::parse_subscription_yaml(text, false).unwrap();
+        let names: Vec<&str> = data
+            .proxies
+            .iter()
+            .filter_map(|p| p.get("name").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(names, ["ok", "plain"], "dropped: {names:?}");
+    }
+}

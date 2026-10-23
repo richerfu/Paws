@@ -402,27 +402,33 @@ func applyConfig(params *SetupParams) error {
 	setTestURL(params.TestURL)
 	cfg, err := loadConfig(filepath.Join(constant.Path.HomeDir(), "config.yaml"))
 	if err != nil {
-		// The fallback is what keeps the listeners serving while the host
-		// reports the error, but it applies a config with no proxies in it.
-		// From the UI that is indistinguishable from a subscription that went
-		// dead: the profile still lists every node, every delay test answers
-		// Timeout, and nothing routes. Name the real cause in the log.
-		logError(
-			"config apply failed, falling back to the built-in default - no proxies will be available: %v",
-			err,
-		)
-		fallback, fallbackErr := config.ParseRawConfig(config.DefaultRawConfig())
-		if fallbackErr != nil {
-			return err
-		}
-		cfg = fallback
+		logError("config apply failed; keeping the previously applied native configuration until teardown: %v", err)
+		return err
 	}
 
 	currentConfig = cfg
+	if previous := pawsMihomoCurrent.Load(); previous != nil {
+		if err := previous.close(); err != nil {
+			return err
+		}
+	}
+	raw, readErr := os.ReadFile(filepath.Join(constant.Path.HomeDir(), "config.yaml"))
+	if readErr != nil {
+		return readErr
+	}
+	if _, prepareErr := preparePawsMihomo(cfg, raw); prepareErr != nil {
+		return prepareErr
+	}
+	handleStartLog()
 	hub.ApplyConfig(cfg)
 	patchSelectGroup(params.SelectedMap)
 	bumpRouteEpoch()
 	updateListeners(cfg)
+	if isRunning.Load() {
+		if err := validatePawsRequiredListeners(cfg); err != nil {
+			return err
+		}
+	}
 	reconcileGeoUpdater()
 	return err
 }

@@ -1,0 +1,457 @@
+--- a/adapter/outbound/manager.go
++++ b/adapter/outbound/manager.go
+@@ -18,7 +18,13 @@
+ 
+ var _ adapter.OutboundManager = (*Manager)(nil)
+ 
++type DynamicOutboundSource interface {
++	Outbounds() []adapter.Outbound
++	Outbound(string) (adapter.Outbound, bool)
++}
++
+ type Manager struct {
++	dynamicSource           DynamicOutboundSource
+ 	logger                  log.ContextLogger
+ 	registry                adapter.OutboundRegistry
+ 	endpoint                adapter.EndpointManager
+@@ -192,18 +198,35 @@
+ 	return nil
+ }
+ 
++// SetDynamicSource is installed before Start and owns only additional tags.
++// Static native outbounds keep their original identity and lifecycle.
++func (m *Manager) SetDynamicSource(source DynamicOutboundSource) {
++	m.access.Lock()
++	m.dynamicSource = source
++	m.access.Unlock()
++}
+ func (m *Manager) Outbounds() []adapter.Outbound {
+ 	m.access.RLock()
+-	defer m.access.RUnlock()
+-	return m.outbounds
+-}
+-
++	result := append([]adapter.Outbound(nil), m.outbounds...)
++	source := m.dynamicSource
++	m.access.RUnlock()
++	if source != nil {
++		result = append(result, source.Outbounds()...)
++	}
++	return result
++}
+ func (m *Manager) Outbound(tag string) (adapter.Outbound, bool) {
+ 	m.access.RLock()
+ 	outbound, found := m.outboundByTag[tag]
++	source := m.dynamicSource
+ 	m.access.RUnlock()
+ 	if found {
+ 		return outbound, true
++	}
++	if source != nil {
++		if result, ok := source.Outbound(tag); ok {
++			return result, true
++		}
+ 	}
+ 	return m.endpoint.Get(tag)
+ }
+--- /dev/null
++++ b/adapter/runtime_management.go
+@@ -0,0 +1,23 @@
++package adapter
++
++import (
++	"net"
++	"net/http"
++)
++
++// RuntimeManagement is an explicitly owned embedding hook. It is resolved once
++// while the native controller is created, never from process-global state.
++type RuntimeManagement interface {
++	WrapHandler(http.Handler) http.Handler
++	ConnectionState(net.Conn, http.ConnState)
++}
++type RuntimeDNSObserver interface {
++	DNSQuery(name string, recordType uint16, cached bool)
++}
++
++// RuntimeDNSPolicyTransport makes delegated fake-IP behavior explicit to the
++// native router. Real outbound Lookup must never receive a synthetic address.
++type RuntimeDNSPolicyTransport interface {
++	UsesFakeIP() bool
++	WithoutFakeIP() DNSTransport
++}
+--- a/box.go
++++ b/box.go
+@@ -419,8 +419,17 @@
+ 	return nil
+ }
+ 
+-func (s *Box) Start() error {
+-	err := s.start()
++func (s *Box) Start() error { return s.startAndCloseOnFailure(nil) }
++
++// StartWithPreparation runs the owner transaction after dependencies start, but
++// before any inbound/controller can serve a partially loaded provider roster.
++func (s *Box) StartWithPreparation(prepare func() error) error {
++	// The embedding owner must cancel and drain its hooks before Close. Keep
++	// failed instances owned by that caller; the legacy Start cleanup is unchanged.
++	return s.startWithPreparation(prepare)
++}
++func (s *Box) startAndCloseOnFailure(prepare func() error) error {
++	err := s.startWithPreparation(prepare)
+ 	if err != nil {
+ 		// TODO: remove catch error
+ 		defer func() {
+@@ -461,10 +470,15 @@
+ 	return nil
+ }
+ 
+-func (s *Box) start() error {
++func (s *Box) startWithPreparation(prepare func() error) error {
+ 	err := s.preStart()
+ 	if err != nil {
+ 		return err
++	}
++	if prepare != nil {
++		if err := prepare(); err != nil {
++			return err
++		}
+ 	}
+ 	err = adapter.StartNamed(s.logger, adapter.StartStateStart, s.internalService)
+ 	if err != nil {
+@@ -559,3 +573,5 @@
+ func (s *Box) LogFactory() log.Factory {
+ 	return s.logFactory
+ }
++
++func (s *Box) Logger() log.ContextLogger { return s.logger }
+--- a/dns/client.go
++++ b/dns/client.go
+@@ -32,6 +32,7 @@
+ var _ adapter.DNSClient = (*Client)(nil)
+ 
+ type Client struct {
++	runtimeObserver    adapter.RuntimeDNSObserver
+ 	timeout            time.Duration
+ 	disableCache       bool
+ 	disableExpire      bool
+@@ -47,6 +48,7 @@
+ }
+ 
+ type ClientOptions struct {
++	RuntimeObserver  adapter.RuntimeDNSObserver
+ 	Timeout          time.Duration
+ 	DisableCache     bool
+ 	DisableExpire    bool
+@@ -59,6 +61,7 @@
+ 
+ func NewClient(options ClientOptions) *Client {
+ 	client := &Client{
++		runtimeObserver:  options.RuntimeObserver,
+ 		timeout:          options.Timeout,
+ 		disableCache:     options.DisableCache,
+ 		disableExpire:    options.DisableExpire,
+@@ -126,6 +129,10 @@
+ 		return FixedResponseStatus(message, dns.RcodeFormatError), nil
+ 	}
+ 	question := message.Question[0]
++	cached := false
++	if c.runtimeObserver != nil {
++		defer func() { c.runtimeObserver.DNSQuery(question.Name, question.Qtype, cached) }()
++	}
+ 	if question.Qtype == dns.TypeA && options.Strategy == C.DomainStrategyIPv6Only || question.Qtype == dns.TypeAAAA && options.Strategy == C.DomainStrategyIPv4Only {
+ 		if c.logger != nil {
+ 			c.logger.DebugContext(ctx, "strategy rejected")
+@@ -182,6 +189,7 @@
+ 		}
+ 		response, ttl := c.loadResponse(question, transport)
+ 		if response != nil {
++			cached = true
+ 			logCachedResponse(c.logger, ctx, response, ttl)
+ 			response.Id = message.Id
+ 			return response, nil
+--- a/dns/router.go
++++ b/dns/router.go
+@@ -50,6 +50,7 @@
+ 		defaultDomainStrategy: C.DomainStrategy(options.Strategy),
+ 	}
+ 	router.client = NewClient(ClientOptions{
++		RuntimeObserver:  service.FromContext[adapter.RuntimeDNSObserver](ctx),
+ 		DisableCache:     options.DNSClientOptions.DisableCache,
+ 		DisableExpire:    options.DNSClientOptions.DisableExpire,
+ 		IndependentCache: options.DNSClientOptions.IndependentCache,
+@@ -154,6 +155,7 @@
+ 				if isFakeIP && !allowFakeIP {
+ 					continue
+ 				}
++				transport = runtimeDNSPolicyTransport(transport, allowFakeIP, options)
+ 				if action.Strategy != C.DomainStrategyAsIS {
+ 					options.Strategy = action.Strategy
+ 				}
+@@ -195,7 +197,7 @@
+ 			}
+ 		}
+ 	}
+-	transport := r.transport.Default()
++	transport := runtimeDNSPolicyTransport(r.transport.Default(), allowFakeIP, options)
+ 	if legacyTransport, isLegacy := transport.(adapter.LegacyDNSTransport); isLegacy {
+ 		if options.Strategy == C.DomainStrategyAsIS {
+ 			options.Strategy = legacyTransport.LegacyStrategy()
+@@ -238,7 +240,7 @@
+ 	}
+ 	metadata.Domain = FqdnToDomain(message.Question[0].Name)
+ 	if options.Transport != nil {
+-		transport = options.Transport
++		transport = runtimeDNSPolicyTransport(options.Transport, true, &options)
+ 		if legacyTransport, isLegacy := transport.(adapter.LegacyDNSTransport); isLegacy {
+ 			if options.Strategy == C.DomainStrategyAsIS {
+ 				options.Strategy = legacyTransport.LegacyStrategy()
+@@ -314,8 +316,14 @@
+ 			for _, answer := range response.Answer {
+ 				switch record := answer.(type) {
+ 				case *mDNS.A:
++					if r.runtimeFakeIPResponse(transport, M.AddrFromIP(record.A)) {
++						continue
++					}
+ 					r.dnsReverseMapping.AddWithLifetime(M.AddrFromIP(record.A), FqdnToDomain(record.Hdr.Name), time.Duration(record.Hdr.Ttl)*time.Second)
+ 				case *mDNS.AAAA:
++					if r.runtimeFakeIPResponse(transport, M.AddrFromIP(record.AAAA)) {
++						continue
++					}
+ 					r.dnsReverseMapping.AddWithLifetime(M.AddrFromIP(record.AAAA), FqdnToDomain(record.Hdr.Name), time.Duration(record.Hdr.Ttl)*time.Second)
+ 				}
+ 			}
+@@ -351,7 +359,7 @@
+ 	metadata.Destination = M.Socksaddr{}
+ 	metadata.Domain = FqdnToDomain(domain)
+ 	if options.Transport != nil {
+-		transport := options.Transport
++		transport := runtimeDNSPolicyTransport(options.Transport, false, &options)
+ 		if legacyTransport, isLegacy := transport.(adapter.LegacyDNSTransport); isLegacy {
+ 			if options.Strategy == C.DomainStrategyAsIS {
+ 				options.Strategy = legacyTransport.LegacyStrategy()
+@@ -458,3 +466,25 @@
+ 		transport.Reset()
+ 	}
+ }
++
++// A wrapping dispatcher is not itself TypeFakeIP. Its native policy must be
++// applied in all explicit/default/rule paths, including ordinary real Lookup.
++func runtimeDNSPolicyTransport(transport adapter.DNSTransport, allowFakeIP bool, options *adapter.DNSQueryOptions) adapter.DNSTransport {
++	if policy, ok := transport.(adapter.RuntimeDNSPolicyTransport); ok && policy.UsesFakeIP() {
++		if !allowFakeIP {
++			return policy.WithoutFakeIP()
++		}
++		// As with native fake-IP, response caching must not retain mappings after
++		// Store.Reset or mix synthetic answers into real resolver lookups.
++		options.DisableCache = true
++	}
++	return transport
++}
++func (r *Router) runtimeFakeIPResponse(transport adapter.DNSTransport, address netip.Addr) bool {
++	policy, ok := transport.(adapter.RuntimeDNSPolicyTransport)
++	if !ok || !policy.UsesFakeIP() {
++		return false
++	}
++	fakeIP := r.transport.FakeIP()
++	return fakeIP != nil && fakeIP.Store().Contains(address)
++}
+--- a/experimental/clashapi/proxies.go
++++ b/experimental/clashapi/proxies.go
+@@ -67,6 +67,9 @@
+ 	default:
+ 		clashType = C.ProxyDisplayName(detour.Type())
+ 	}
++	if dynamic, ok := detour.(interface{ ClashType() string }); ok {
++		clashType = dynamic.ClashType()
++	}
+ 	info.Put("type", clashType)
+ 	info.Put("name", detour.Tag())
+ 	info.Put("udp", common.Contains(detour.Network(), N.NetworkUDP))
+@@ -168,7 +171,7 @@
+ 	}
+ 
+ 	proxy := r.Context().Value(CtxKeyProxy).(adapter.Outbound)
+-	selector, ok := proxy.(*group.Selector)
++	selector, ok := proxy.(interface{ SelectOutbound(string) bool })
+ 	if !ok {
+ 		render.Status(r, http.StatusBadRequest)
+ 		render.JSON(w, r, newError("Must be a Selector"))
+@@ -223,7 +226,7 @@
+ 		}
+ 
+ 		proxy := r.Context().Value(CtxKeyProxy).(adapter.Outbound)
+-		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(timeout))
++		ctx, cancel := context.WithTimeout(r.Context(), time.Millisecond*time.Duration(timeout))
+ 		defer cancel()
+ 
+ 		delay, err := urltest.URLTest(ctx, url, proxy)
+--- a/experimental/clashapi/server.go
++++ b/experimental/clashapi/server.go
+@@ -140,6 +140,10 @@
+ 			r.Handle("/ui/*", http.StripPrefix("/ui/", http.FileServer(Dir(s.externalUI))))
+ 		})
+ 	}
++	if management := service.FromContext[adapter.RuntimeManagement](ctx); management != nil {
++		s.httpServer.Handler = management.WrapHandler(chiRouter)
++		s.httpServer.ConnState = management.ConnectionState
++	}
+ 	return s, nil
+ }
+ 
+--- a/experimental/clashapi/trafficontrol/manager.go
++++ b/experimental/clashapi/trafficontrol/manager.go
+@@ -44,7 +44,8 @@
+ 	closedConnections       list.List[TrackerMetadata]
+ 	memory                  uint64
+ 
+-	eventSubscriber *observable.Subscriber[ConnectionEvent]
++	eventSubscriber   *observable.Subscriber[ConnectionEvent]
++	lifecycleObserver func(ConnectionEvent)
+ }
+ 
+ func NewManager() *Manager {
+@@ -53,11 +54,20 @@
+ 
+ func (m *Manager) SetEventHook(subscriber *observable.Subscriber[ConnectionEvent]) {
+ 	m.eventSubscriber = subscriber
++}
++
++// SetLifecycleObserver is called before inbounds start. Unlike Subscriber, the
++// callback cannot drop a short connection when a consumer queue is full.
++func (m *Manager) SetLifecycleObserver(observer func(ConnectionEvent)) {
++	m.lifecycleObserver = observer
+ }
+ 
+ func (m *Manager) Join(c Tracker) {
+ 	metadata := c.Metadata()
+ 	m.connections.Store(metadata.ID, c)
++	if m.lifecycleObserver != nil {
++		m.lifecycleObserver(ConnectionEvent{Type: ConnectionEventNew, ID: metadata.ID, Metadata: metadata})
++	}
+ 	if m.eventSubscriber != nil {
+ 		m.eventSubscriber.Emit(ConnectionEvent{
+ 			Type:     ConnectionEventNew,
+@@ -80,6 +90,9 @@
+ 		}
+ 		m.closedConnections.PushBack(metadataCopy)
+ 		m.closedConnectionsAccess.Unlock()
++		if m.lifecycleObserver != nil {
++			m.lifecycleObserver(ConnectionEvent{Type: ConnectionEventClosed, ID: metadata.ID, Metadata: &metadataCopy, ClosedAt: closedAt})
++		}
+ 		if m.eventSubscriber != nil {
+ 			m.eventSubscriber.Emit(ConnectionEvent{
+ 				Type:     ConnectionEventClosed,
+@@ -116,6 +129,16 @@
+ 	return connections
+ }
+ 
++// RangeConnections visits current native connections without a snapshot allocation.
++func (m *Manager) RangeConnections(visit func(*TrackerMetadata)) {
++	m.connections.Range(func(_ uuid.UUID, value Tracker) bool {
++		if value.Metadata().OutboundType != C.TypeDNS {
++			visit(value.Metadata())
++		}
++		return true
++	})
++}
++
+ func (m *Manager) ClosedConnections() []*TrackerMetadata {
+ 	m.closedConnectionsAccess.Lock()
+ 	values := m.closedConnections.Array()
+--- a/option/simple.go
++++ b/option/simple.go
+@@ -3,6 +3,7 @@
+ import (
+ 	"github.com/sagernet/sing/common/auth"
+ 	"github.com/sagernet/sing/common/json/badoption"
++	"net/netip"
+ )
+ 
+ type SocksInboundOptions struct {
+@@ -12,6 +13,7 @@
+ }
+ 
+ type HTTPMixedInboundOptions struct {
++	PawsSkipAuthPrefixes []netip.Prefix `json:"paws_skip_auth_prefixes,omitempty"`
+ 	ListenOptions
+ 	Users          []auth.User           `json:"users,omitempty"`
+ 	DomainResolver *DomainResolveOptions `json:"domain_resolver,omitempty"`
+--- a/protocol/mixed/inbound.go
++++ b/protocol/mixed/inbound.go
+@@ -4,6 +4,7 @@
+ 	std_bufio "bufio"
+ 	"context"
+ 	"net"
++	"net/netip"
+ 	"time"
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+@@ -36,6 +37,7 @@
+ 	logger        log.ContextLogger
+ 	listener      *listener.Listener
+ 	authenticator *auth.Authenticator
++	skipAuth      []netip.Prefix
+ 	tlsConfig     tls.ServerConfig
+ 	udpTimeout    time.Duration
+ }
+@@ -52,6 +54,7 @@
+ 		router:        uot.NewRouter(router, logger),
+ 		logger:        logger,
+ 		authenticator: auth.NewAuthenticator(options.Users),
++		skipAuth:      options.PawsSkipAuthPrefixes,
+ 		udpTimeout:    udpTimeout,
+ 	}
+ 	if options.TLS != nil {
+@@ -128,11 +131,18 @@
+ 	if err != nil {
+ 		return E.Cause(err, "peek first byte")
+ 	}
++	authenticator := h.authenticator
++	for _, prefix := range h.skipAuth {
++		if prefix.Contains(metadata.Source.Addr.Unmap()) {
++			authenticator = nil
++			break
++		}
++	}
+ 	switch headerBytes[0] {
+ 	case socks4.Version, socks5.Version:
+-		return socks.HandleConnectionEx(ctx, conn, reader, h.authenticator, adapter.NewUpstreamHandlerEx(metadata, h.newUserConnection, h.streamUserPacketConnection), h.listener, h.udpTimeout, metadata.Source, onClose)
++		return socks.HandleConnectionEx(ctx, conn, reader, authenticator, adapter.NewUpstreamHandlerEx(metadata, h.newUserConnection, h.streamUserPacketConnection), h.listener, h.udpTimeout, metadata.Source, onClose)
+ 	default:
+-		return http.HandleConnectionEx(ctx, conn, reader, h.authenticator, adapter.NewUpstreamHandlerEx(metadata, h.newUserConnection, h.streamUserPacketConnection), metadata.Source, onClose)
++		return http.HandleConnectionEx(ctx, conn, reader, authenticator, adapter.NewUpstreamHandlerEx(metadata, h.newUserConnection, h.streamUserPacketConnection), metadata.Source, onClose)
+ 	}
+ }
+ 
+@@ -171,3 +181,12 @@
+ 	}
+ 	h.router.RoutePacketConnectionEx(ctx, conn, metadata, onClose)
+ }
++
++// RuntimeListenerAddress is queried only after successful Start and before
++// owner retirement. It reports this exact listener, never an occupied port.
++func (h *Inbound) RuntimeListenerAddress() net.Addr {
++	if listener := h.listener.TCPListener(); listener != nil {
++		return listener.Addr()
++	}
++	return nil
++}
+--- a/route/rule/rule_set_local.go
++++ b/route/rule/rule_set_local.go
+@@ -47,7 +47,7 @@
+ 		fileFormat: options.Format,
+ 	}
+ 	if options.Type == C.RuleSetTypeInline {
+-		if len(options.InlineOptions.Rules) == 0 {
++		if len(options.InlineOptions.Rules) == 0 && !(strings.HasPrefix(options.Tag, "paws-provider:") || strings.HasPrefix(options.Tag, "paws-geosite:") || strings.HasPrefix(options.Tag, "paws-geoip:") || strings.HasPrefix(options.Tag, "paws-asn:")) {
+ 			return nil, E.New("empty inline rule-set")
+ 		}
+ 		err := ruleSet.reloadRules(options.InlineOptions.Rules)
+@@ -221,3 +221,6 @@
+ 	metadata.DefinitiveMatchStates = uint16(definitiveStateSet)
+ 	return stateSet
+ }
++
++// Update compiles all new rules before the existing native atomic publication.
++func (s *LocalRuleSet) Update(rules []option.HeadlessRule) error { return s.reloadRules(rules) }

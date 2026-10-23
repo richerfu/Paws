@@ -1,5 +1,43 @@
 use super::*;
 
+/// Telemetry is ordered within one actual native owner. A delayed lane cannot
+/// regress counters or resurrect an error after a newer success/Off frame.
+pub(super) fn platform_telemetry_is_current(
+    state: &CoreState,
+    frame: &PlatformVpnTelemetry,
+) -> bool {
+    frame.session_id == state.platform_start_attempt_id
+        && frame.management_epoch
+            == state
+                .platform_controller_endpoint
+                .as_ref()
+                .map(engine::management_epoch)
+        && state
+            .platform_telemetry_cursor
+            .as_ref()
+            .is_none_or(|(session, updated_at)| {
+                session != &frame.session_id || frame.updated_at >= *updated_at
+            })
+}
+pub(super) fn apply_platform_archive_status(state: &mut CoreState, frame: &PlatformVpnTelemetry) {
+    if !platform_telemetry_is_current(state, frame) {
+        return;
+    }
+    state.platform_telemetry_cursor = Some((frame.session_id.clone(), frame.updated_at));
+    state.platform_archive_status = frame
+        .recording_error
+        .as_ref()
+        .filter(|status| status.matches(state))
+        .cloned()
+        .map(|mut status| {
+            status.error = status
+                .error
+                .as_deref()
+                .map(runtime_observation::bounded_recording_error);
+            status
+        });
+}
+
 struct RuntimeUiCacheQueue {
     pending: Mutex<HashMap<PathBuf, RuntimeUiCache>>,
     ready: std::sync::Condvar,
@@ -243,6 +281,9 @@ pub(super) fn proxy_test_metadata(url: &str, in_name: &str) -> Result<Metadata, 
 
 pub(super) fn dns_snapshot(options: &VpnOptions, tun_stats: Option<&TunStats>) -> DnsSnapshot {
     DnsSnapshot {
+        statistics_error: None,
+        configuration_error: None,
+        statistics_available: tun_stats.is_some(),
         model: if options.dns_hijacking {
             "tun-hijack".to_owned()
         } else {
@@ -334,6 +375,10 @@ pub(super) fn persist_runtime_ui_cache_best_effort(state: &mut CoreState) {
 
 pub(super) fn platform_vpn_state(state: &CoreState) -> PlatformVpnState {
     PlatformVpnState {
+        public_controller_addr: state
+            .platform_public_controller_addr
+            .filter(|_| state.platform_vpn_running),
+        controller_endpoint: state.platform_controller_endpoint.clone(),
         start_attempt_id: state.platform_start_attempt_id.clone(),
         start_outcome: state.platform_start_outcome,
         delivery_observed: state.platform_start_delivery_observed,

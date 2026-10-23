@@ -107,6 +107,7 @@ pub async fn probe_and_record(
     expected: Option<&str>,
     timeout: Duration,
 ) -> Result<u16, UrlTestError> {
+    let observation = proxy.health().observation();
     let _permit = global_delay_probe_limiter()
         .acquire()
         .await
@@ -114,8 +115,8 @@ pub async fn probe_and_record(
     let adapter: &dyn ProxyAdapter = proxy.as_ref();
     let result = url_test(adapter, url, expected, timeout).await;
     match &result {
-        Ok(d) => proxy.health().record_delay(*d),
-        Err(_) => proxy.health().record_delay(0),
+        Ok(d) => proxy.health().record_observed_delay(*d, &observation),
+        Err(_) => proxy.health().record_observed_delay(0, &observation),
     }
     result
 }

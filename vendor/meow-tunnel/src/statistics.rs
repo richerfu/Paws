@@ -112,6 +112,8 @@ impl Serialize for ConnCounters {
 
 #[derive(Serialize, Clone)]
 pub struct ConnectionInfo {
+    #[serde(skip)]
+    observer: Option<Arc<dyn ConnectionObserver>>,
     /// 16 B inline UUID; serialises as `"xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"`.
     pub id: Uuid,
     /// 8 B thin-ptr; refcount drop on close instead of 272 B drop chain.
@@ -138,6 +140,13 @@ pub struct ConnectionInfo {
     pub rule_payload: SmolStr,
 }
 
+/// A connection captures its observer at creation, so a late close can never
+/// be attributed to a replacement session's observer.
+pub trait ConnectionObserver: Send + Sync {
+    fn opened(&self, connection: &ConnectionInfo);
+    fn closed(&self, connection: &ConnectionInfo);
+}
+
 /// Values exposed by the mihomo `/traffic` stream, captured together under
 /// one lock so a reader never mixes rates and totals from different sampling
 /// ticks (issue #338). Totals are the cumulative counters as observed at the
@@ -153,6 +162,7 @@ struct TrafficSnapshot {
 }
 
 pub struct Statistics {
+    observer: std::sync::RwLock<Option<Arc<dyn ConnectionObserver>>>,
     /// Cumulative relay byte totals. The only global counters the relay hot
     /// path touches (one relaxed `fetch_add` per direction per chunk). The
     /// sampler derives per-interval rates as deltas of consecutive
@@ -174,6 +184,7 @@ pub struct Statistics {
 impl Statistics {
     pub fn new() -> Self {
         Self {
+            observer: std::sync::RwLock::new(None),
             upload_total: AtomicI::new(0),
             download_total: AtomicI::new(0),
             traffic: Mutex::new(TrafficSnapshot::default()),
@@ -181,6 +192,12 @@ impl Statistics {
             headless_connections: OnceLock::new(),
             rule_match: Arc::new(RuleMatchCounters::new()),
         }
+    }
+    pub fn set_connection_observer(&self, observer: Option<Arc<dyn ConnectionObserver>>) {
+        *self
+            .observer
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = observer;
     }
 
     pub fn add_upload(&self, n: Int) {
@@ -267,6 +284,11 @@ impl Statistics {
         let uuid = Uuid::new_v4();
         let counters = Arc::new(ConnCounters::default());
         let info = ConnectionInfo {
+            observer: self
+                .observer
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
             id: uuid,
             metadata: Arc::new(metadata),
             counters: Arc::clone(&counters),
@@ -275,6 +297,9 @@ impl Statistics {
             rule,
             rule_payload,
         };
+        if let Some(observer) = &info.observer {
+            observer.opened(&info);
+        }
         self.connections.insert(uuid, info);
         (uuid, counters)
     }
@@ -313,6 +338,9 @@ impl Statistics {
     pub fn close_connection(&self, id: Uuid) {
         if let Some((_, info)) = self.connections.remove(&id) {
             info.counters.close();
+            if let Some(observer) = &info.observer {
+                observer.closed(&info);
+            }
         }
     }
 
@@ -359,6 +387,9 @@ impl Statistics {
         // followed by clear could erase newly inserted, unsignalled entries.
         self.connections.retain(|_, info| {
             info.counters.close();
+            if let Some(observer) = &info.observer {
+                observer.closed(info);
+            }
             closed += 1;
             false
         });

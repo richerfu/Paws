@@ -142,39 +142,38 @@ impl PlatformIpc {
     }
 
     pub(crate) fn publish_state(&self, state: PlatformVpnState) -> Result<()> {
-        let envelope = {
-            let mut published = self
-                .published
-                .lock()
-                .map_err(|_| PlatformIpcError::LockPoisoned)?;
-            published.state = Some(state);
-            published.clone()
-        };
-        self.publish(&envelope)
+        let mut published = self
+            .published
+            .lock()
+            .map_err(|_| PlatformIpcError::LockPoisoned)?;
+        published.state = Some(state);
+        self.publish(&published)
     }
 
     pub(crate) fn publish_control(&self, control: PlatformVpnControl) -> Result<()> {
-        let envelope = {
-            let mut published = self
-                .published
-                .lock()
-                .map_err(|_| PlatformIpcError::LockPoisoned)?;
-            published.control = Some(control);
-            published.clone()
-        };
-        self.publish(&envelope)
+        let mut published = self
+            .published
+            .lock()
+            .map_err(|_| PlatformIpcError::LockPoisoned)?;
+        published.control = Some(control);
+        self.publish(&published)
     }
 
     pub(crate) fn publish_telemetry(&self, telemetry: PlatformVpnTelemetry) -> Result<()> {
-        let envelope = {
-            let mut published = self
-                .published
-                .lock()
-                .map_err(|_| PlatformIpcError::LockPoisoned)?;
-            published.telemetry = Some(telemetry);
-            published.clone()
-        };
-        self.publish(&envelope)
+        // Keep envelope replacement and Ashmem publication in the same order
+        // across the independent counter and observation lanes.
+        let mut published = self
+            .published
+            .lock()
+            .map_err(|_| PlatformIpcError::LockPoisoned)?;
+        if published.telemetry.as_ref().is_some_and(|previous| {
+            previous.session_id == telemetry.session_id
+                && previous.updated_at > telemetry.updated_at
+        }) {
+            return Ok(());
+        }
+        published.telemetry = Some(telemetry);
+        self.publish(&published)
     }
 
     pub(crate) fn read_remote(&self) -> Result<Option<PlatformEnvelope>> {

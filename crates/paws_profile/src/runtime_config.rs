@@ -399,6 +399,43 @@ pub fn validate_profile_app_config(raw_yaml: &str) -> Result<(), PawsError> {
     vpn_options_from_yaml(raw_yaml)?;
     controller_access_from_yaml(raw_yaml)?;
     network_ports_from_yaml(raw_yaml)?;
+    let value: Value =
+        serde_yaml::from_str(raw_yaml).map_err(|error| PawsError::Core(error.to_string()))?;
+    let root = value
+        .as_mapping()
+        .ok_or_else(|| PawsError::Core("profile root must be a YAML map".into()))?;
+    for field in ["authentication", "skip-auth-prefixes"] {
+        let Some(value) = root.get(value_key(field)).filter(|value| !value.is_null()) else {
+            continue;
+        };
+        let entries = value
+            .as_sequence()
+            .ok_or_else(|| invalid_profile_field(field, "a list of strings"))?;
+        for entry in entries {
+            let entry = entry
+                .as_str()
+                .ok_or_else(|| invalid_profile_field(field, "a list of strings"))?;
+            let valid = if field == "authentication" {
+                entry
+                    .split_once(':')
+                    .is_some_and(|(username, _)| !username.is_empty())
+            } else {
+                entry.parse::<IpNet>().is_ok()
+            };
+            if !valid {
+                // Never include a credential or the complete raw entry in an
+                // import/validation error that can reach logs or the UI.
+                return Err(invalid_profile_field(
+                    field,
+                    if field == "authentication" {
+                        "credentials with a nonempty username followed by ':'"
+                    } else {
+                        "valid IPv4/IPv6 CIDR prefixes"
+                    },
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -542,13 +579,7 @@ pub(super) fn patch_dns(root: &mut Mapping, options: &VpnOptions) {
 }
 
 pub(super) fn remove_app_managed_dns_fields(dns: &mut Mapping) {
-    for key in [
-        "enhanced-mode",
-        "fake-ip-range",
-        "fake-ip-filter",
-        "fake-ip-filter-mode",
-        "fallback-filter",
-    ] {
+    for key in ["fallback-filter"] {
         dns.remove(&value_key(key));
     }
 }
@@ -574,8 +605,6 @@ pub(super) fn sanitize_app_managed_config(root: &mut Mapping) {
         "bind-address",
         "lan-allowed-ips",
         "lan-disallowed-ips",
-        "authentication",
-        "skip-auth-prefixes",
         "external-controller",
         "external-controller-tls",
         "external-controller-unix",

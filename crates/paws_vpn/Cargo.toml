@@ -8,16 +8,18 @@ rust-version.workspace = true
 [dependencies]
 futures.workspace = true
 paws_model.workspace = true
+paws_engine.workspace = true
 libc.workspace = true
 lwip.workspace = true
-meow-common.workspace = true
-meow-dns.workspace = true
-meow-listener.workspace = true
-meow-trie.workspace = true
-meow-tunnel.workspace = true
 netstack-smoltcp.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 async-trait.workspace = true
+
+paws_engine_meow.workspace = true
+meow-common.workspace = true
+meow-dns.workspace = true
+meow-trie.workspace = true
+meow-tunnel.workspace = true

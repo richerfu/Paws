@@ -88,37 +88,42 @@ pub(super) async fn service_watch_loop(weak: std::sync::Weak<CoreHandle>) {
         let Ok(policy) = core.service_watch_policy() else {
             continue;
         };
-        let Ok(snapshot) = core.snapshot() else {
+        if !policy.enabled {
+            failures = 0;
+            continue;
+        }
+        let Ok(Some(target)) = core.runtime_management() else {
+            failures = 0;
+            continue;
+        };
+        let Ok(source) = target.log_source() else {
             continue;
         };
         let signature = format!(
-            "{}:{}:{:?}",
-            policy.group, policy.url, snapshot.vpn_session_id
+            "{}:{}:{}:{}",
+            policy.group, policy.url, target.attempt, source.epoch
         );
         if signature != last_policy {
             failures = 0;
             last_switch = None;
             last_policy = signature;
         }
-        if !policy.enabled || !snapshot.vpn_running {
-            failures = 0;
-            continue;
-        }
         if last_switch.is_some_and(|time| time.elapsed() < Duration::from_secs(300)) {
             continue;
         }
-        let Some(group) = snapshot
-            .proxy_groups
-            .iter()
-            .find(|g| g.name == policy.group && g.group_type.eq_ignore_ascii_case("selector"))
-        else {
-            continue;
-        };
         let result = tokio::time::timeout(
             Duration::from_secs(10),
-            core.test_proxy_delay(&policy.group, Some(&policy.url), Some(8000)),
+            target
+                .management
+                .proxy_delay(&policy.group, &policy.url, Duration::from_millis(8000)),
         )
         .await;
+        if core
+            .ensure_management_owner(&target.attempt, target.revision, &target.endpoint)
+            .is_err()
+        {
+            continue;
+        }
         if matches!(result, Ok(Ok(_))) {
             failures = 0;
             continue;
@@ -129,6 +134,21 @@ pub(super) async fn service_watch_loop(weak: std::sync::Weak<CoreHandle>) {
         }
         failures = 0;
         // Limit each recovery round to three leaf candidates; no unbounded subscription scan.
+        let group = match tokio::time::timeout(
+            Duration::from_secs(4),
+            target.management.proxy_group(&policy.group),
+        )
+        .await
+        {
+            Ok(Ok(group)) if group.group_type.eq_ignore_ascii_case("selector") => group,
+            _ => continue,
+        };
+        if core
+            .ensure_management_owner(&target.attempt, target.revision, &target.endpoint)
+            .is_err()
+        {
+            continue;
+        }
         let candidates: Vec<_> = group
             .proxies
             .iter()
@@ -149,7 +169,9 @@ pub(super) async fn service_watch_loop(weak: std::sync::Weak<CoreHandle>) {
             .map(|p| p.name.clone())
             .collect();
         for candidate in candidates {
-            let valid = matches!(core.snapshot(), Ok(now) if now.vpn_session_id == snapshot.vpn_session_id && now.config_revision == snapshot.config_revision && now.vpn_running);
+            let valid = core
+                .ensure_management_owner(&target.attempt, target.revision, &target.endpoint)
+                .is_ok();
             if !valid
                 || !matches!(core.service_watch_policy(), Ok(now) if now.enabled && now.group == policy.group && now.url == policy.url)
             {
@@ -157,7 +179,9 @@ pub(super) async fn service_watch_loop(weak: std::sync::Weak<CoreHandle>) {
             }
             let result = tokio::time::timeout(
                 Duration::from_secs(10),
-                core.test_proxy_delay(&candidate, Some(&policy.url), Some(8000)),
+                target
+                    .management
+                    .proxy_delay(&candidate, &policy.url, Duration::from_millis(8000)),
             )
             .await;
             if matches!(result, Ok(Ok(_))) {
@@ -165,17 +189,16 @@ pub(super) async fn service_watch_loop(weak: std::sync::Weak<CoreHandle>) {
                 {
                     break;
                 }
-                if !matches!(core.snapshot(), Ok(now) if now.vpn_session_id == snapshot.vpn_session_id && now.vpn_running)
+                if core
+                    .ensure_management_owner(&target.attempt, target.revision, &target.endpoint)
+                    .is_err()
                 {
                     break;
                 }
-                // Revision-checked selection prevents recovery crossing a user's newer route change.
+                // Every probe and the resulting mutation retain one credential
+                // epoch; a same-session reload cannot inherit this recovery.
                 if core
-                    .select_proxy_at_revision(
-                        &policy.group,
-                        &candidate,
-                        Some(snapshot.config_revision),
-                    )
+                    .select_managed_proxy(&policy.group, &candidate, target)
                     .await
                     .is_ok()
                 {

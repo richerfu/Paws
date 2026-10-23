@@ -45,6 +45,20 @@ func (th *TunHandler) start(fd int, stack, address, dns string) bool {
 	configMu.Lock()
 	defer configMu.Unlock()
 
+	// quickSetup completes before startTUN. Read the same applied configuration
+	// under its lock; a stale/failed setup must not open a TUN using a default
+	// MTU that differs from the platform interface.
+	owner := pawsMihomoCurrent.Load()
+	if currentConfig == nil || currentConfig.General == nil || owner == nil ||
+		owner.config != currentConfig || !owner.observations.active.Load() {
+		th.mu.Lock()
+		th.clear()
+		th.mu.Unlock()
+		logError("TUN: no applied native configuration")
+		return false
+	}
+	mtu := currentConfig.General.Tun.MTU
+
 	th.mu.Lock()
 	th.initHook()
 	th.mu.Unlock()
@@ -54,7 +68,7 @@ func (th *TunHandler) start(fd int, stack, address, dns string) bool {
 	// on this very goroutine — an RLock taken while this one holds the write
 	// lock deadlocks the start outright. Nothing is lost by dropping it: both
 	// hooks return early until th.listener is set, which is below.
-	tunListener := t.Start(fd, stack, address, dns)
+	tunListener := t.Start(fd, stack, address, dns, mtu)
 
 	th.mu.Lock()
 	defer th.mu.Unlock()
@@ -205,6 +219,11 @@ var (
 )
 
 func handleStopTun() {
+	if owner := pawsMihomoCurrent.Load(); owner != nil {
+		if err := owner.close(); err != nil {
+			logError("public controller shutdown failed: %v", err)
+		}
+	}
 	tunLock.Lock()
 	defer tunLock.Unlock()
 	stopTunLocked()
@@ -303,7 +322,10 @@ func startTUN(callback unsafe.Pointer, fd C.int, stackChar, addressChar, dnsChar
 		return false
 	}
 	if !isRunning.Load() {
-		handleStartListener()
+		if !handleStartListener() {
+			handleStopTun()
+			return false
+		}
 	} else {
 		handleResetConnections()
 	}

@@ -570,8 +570,14 @@ rules:
     assert!(runtime_root.get(&value_key("bind-address")).is_none());
     assert!(runtime_root.get(&value_key("lan-allowed-ips")).is_none());
     assert!(runtime_root.get(&value_key("lan-disallowed-ips")).is_none());
-    assert!(runtime_root.get(&value_key("authentication")).is_none());
-    assert!(runtime_root.get(&value_key("skip-auth-prefixes")).is_none());
+    assert_eq!(
+        runtime_root[&value_key("authentication")],
+        serde_yaml::from_str::<Value>("[user:pass]").unwrap()
+    );
+    assert_eq!(
+        runtime_root[&value_key("skip-auth-prefixes")],
+        serde_yaml::from_str::<Value>("[127.0.0.1/8]").unwrap()
+    );
     assert!(runtime_root.get(&value_key("subscriptions")).is_none());
     assert!(runtime_root.get(&value_key("listeners")).is_none());
     assert!(runtime_root
@@ -824,8 +830,11 @@ proxies: []
     assert!(root.get(&value_key("listeners")).is_none());
     assert!(dns.get(&value_key("listen")).is_none());
     assert!(dns.get(&value_key("default-nameserver")).is_none());
-    assert!(dns.get(&value_key("enhanced-mode")).is_none());
-    assert!(dns.get(&value_key("fake-ip-range")).is_none());
+    assert_eq!(get_string(dns, "enhanced-mode").as_deref(), Some("fake-ip"));
+    assert_eq!(
+        get_string(dns, "fake-ip-range").as_deref(),
+        Some("198.18.0.1/16")
+    );
     assert!(dns.get(&value_key("fallback-filter")).is_none());
     assert_eq!(get_bool(dns, "use-system-hosts"), Some(false));
     assert_eq!(get_string_list(dns, "nameserver"), vec!["223.5.5.5"]);
@@ -3439,9 +3448,12 @@ rules: []
     assert_eq!(get_string_list(dns, "nameserver"), vec!["1.1.1.1"]);
     assert!(dns.get(&value_key("fallback")).is_none());
     assert!(dns.get(&value_key("nameserver-policy")).is_none());
-    assert!(dns.get(&value_key("enhanced-mode")).is_none());
-    assert!(dns.get(&value_key("fake-ip-range")).is_none());
-    assert!(dns.get(&value_key("fake-ip-filter")).is_none());
+    assert_eq!(get_string(dns, "enhanced-mode").as_deref(), Some("fake-ip"));
+    assert_eq!(
+        get_string(dns, "fake-ip-range").as_deref(),
+        Some("198.18.0.1/16")
+    );
+    assert_eq!(get_string_list(dns, "fake-ip-filter"), vec!["*.lan"]);
     assert!(dns.get(&value_key("fallback-filter")).is_none());
 }
 
@@ -3519,4 +3531,126 @@ fn tinypaws_overrides_survive_subscription_refresh_without_rewriting_source() {
         "paws:\n  trusted-applications: [com.example.a]\n  blocked-applications: [com.example.b]\n"
     )
     .is_err());
+}
+
+#[test]
+fn runtime_yaml_preserves_public_proxy_authentication_and_explicit_skip_prefixes() {
+    let root = std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("mixed-auth")));
+    let mut store = ProfileStore::open(root.clone()).unwrap();
+    let source = "authentication: ['fixture-user:fixture:password', 'empty-password:']\nskip-auth-prefixes: [192.0.2.0/24, '2001:db8::/32']\nproxies: []\nrules: ['MATCH,DIRECT']\n";
+    let id = store
+        .import_profile_content("synthetic", "test", source, None)
+        .unwrap();
+    let rendered = store
+        .render_runtime_yaml(&id, RuntimeMode::Rule, &VpnOptions::default())
+        .unwrap();
+    let actual: Value = serde_yaml::from_str(&rendered).unwrap();
+    let original: Value = serde_yaml::from_str(source).unwrap();
+    assert_eq!(actual["authentication"], original["authentication"]);
+    assert_eq!(actual["skip-auth-prefixes"], original["skip-auth-prefixes"]);
+    assert_eq!(actual["external-controller"], "127.0.0.1:9090");
+    assert_ne!(
+        actual["secret"], "fixture:password",
+        "proxy credentials never substitute for controller authentication"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn invalid_public_proxy_auth_is_rejected_before_profile_persistence_without_disclosing_credentials()
+{
+    let root = std::env::temp_dir().join(format!(
+        "paws-profile-test-{}",
+        next_id("invalid-mixed-auth")
+    ));
+    let mut store = ProfileStore::open(root.clone()).unwrap();
+    for field in [
+        "authentication: ['sensitive-without-colon']",
+        "authentication: [':sensitive-empty-user']",
+        "authentication: [false]",
+        "authentication: user:sensitive-not-a-list",
+        "skip-auth-prefixes: [sensitive-invalid-prefix]",
+        "skip-auth-prefixes: [true]",
+    ] {
+        let source = format!("{field}\nproxies: []\nrules: ['MATCH,DIRECT']\n");
+        let error = store
+            .import_profile_content("synthetic", "test", source, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(if field.starts_with("authentication") {
+            "authentication"
+        } else {
+            "skip-auth-prefixes"
+        }));
+        assert!(!error.contains("sensitive"));
+        assert!(store.summaries().is_empty());
+    }
+    assert_eq!(
+        fs::read_dir(root.join("profiles")).unwrap().count(),
+        0,
+        "rejected authentication must not leave plaintext profile files behind"
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+thread_local! {
+    static STORE_COMMIT_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+pub(super) fn record_store_commit() {
+    STORE_COMMIT_COUNT.with(|count| count.set(count.get() + 1));
+}
+
+#[test]
+fn vpn_settings_commit_mtu_engine_and_apps_once_and_preserve_state_on_write_failure() {
+    let root = std::env::temp_dir().join(format!("paws-profile-test-{}", next_id("vpn-atomic")));
+    let mut store = ProfileStore::open(root.clone()).unwrap();
+    let id = store
+        .import_profile_content(
+            "MTU",
+            "test",
+            "proxies: []\nrules: ['MATCH,DIRECT']\ntun: {mtu: 7777}\n",
+            None,
+        )
+        .unwrap();
+    let source_path = root.join(&store.profile(&id).unwrap().raw_yaml_path);
+    let source = fs::read(&source_path).unwrap();
+    let mut options = store.vpn_options_for_profile(&id).unwrap();
+    options.mtu = 2816;
+    options.engine = paws_model::VpnEngine::SingBox;
+    options.blocked_applications = vec!["com.example.synthetic".into()];
+    let commits = STORE_COMMIT_COUNT.with(std::cell::Cell::get);
+    store
+        .set_profile_vpn_config_with_apps_and_engine(&id, &options)
+        .unwrap();
+    assert_eq!(STORE_COMMIT_COUNT.with(std::cell::Cell::get), commits + 1);
+    assert_eq!(store.vpn_options_for_profile(&id).unwrap(), options);
+    assert_eq!(fs::read(&source_path).unwrap(), source);
+
+    // The old entry points supply no MTU: retain the current explicit value.
+    store
+        .set_profile_vpn_config_with_engine(&id, "meow".into(), false, true, false, "lwip".into())
+        .unwrap();
+    let before = store.vpn_options_for_profile(&id).unwrap();
+    assert_eq!(before.mtu, 2816);
+    assert_eq!(before.blocked_applications, options.blocked_applications);
+    let index = root.join("profiles.json");
+    let saved_index = root.join("profiles.json.saved");
+    fs::rename(&index, &saved_index).unwrap();
+    fs::create_dir(&index).unwrap();
+    options.mtu = 9000;
+    options.engine = paws_model::VpnEngine::Mihomo;
+    options.blocked_applications = vec!["com.example.changed".into()];
+    let commits = STORE_COMMIT_COUNT.with(std::cell::Cell::get);
+    assert!(store
+        .set_profile_vpn_config_with_apps_and_engine(&id, &options)
+        .is_err());
+    assert_eq!(STORE_COMMIT_COUNT.with(std::cell::Cell::get), commits + 1);
+    assert_eq!(store.vpn_options_for_profile(&id).unwrap(), before);
+    fs::remove_dir(&index).unwrap();
+    fs::rename(&saved_index, &index).unwrap();
+    let reopened = ProfileStore::open(root.clone()).unwrap();
+    assert_eq!(reopened.vpn_options_for_profile(&id).unwrap(), before);
+    assert_eq!(fs::read(&source_path).unwrap(), source);
+    let _ = fs::remove_dir_all(root);
 }

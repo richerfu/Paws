@@ -1,3 +1,5 @@
+//go:build !paws_host_test
+
 package main
 
 /*
@@ -30,7 +32,6 @@ import (
 
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/include"
 	boxlog "github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	tun "github.com/sagernet/sing-tun"
@@ -45,24 +46,30 @@ import (
 
 var runtimeState struct {
 	sync.Mutex
-	instance  *box.Box
-	cancel    context.CancelFunc
-	lastErr   string
-	log       *ringLog
-	directory string
-	traffic   *trafficTracker
+	instance     *box.Box
+	owner        *pawsSingRuntime
+	cleanupError error
+	cancel       context.CancelFunc
+	lastErr      string
+	log          *ringLog
+	directory    string
+	traffic      *trafficTracker
 }
 
 type ringLog struct {
 	sync.Mutex
-	text       string
-	traceFile  *os.File
-	traceBytes int64
+	text         string
+	observations *pawsObservations
+	traceFile    *os.File
+	traceBytes   int64
 }
 
 func (l *ringLog) WriteMessage(level boxlog.Level, message string) {
 	l.Lock()
 	defer l.Unlock()
+	if l.observations != nil {
+		_ = l.observations.log(boxlog.FormatLevel(level), message, time.Now().UTC().Format(time.RFC3339Nano))
+	}
 	line := boxlog.FormatLevel(level) + " atMs=" + fmt.Sprint(time.Now().UnixMilli()) + " " + message + "\n"
 	l.text += line
 	if l.traceFile != nil && l.traceBytes+int64(len(line)) <= 8*1024*1024 {
@@ -211,11 +218,26 @@ func setLastError(err error) C.int {
 }
 
 func stopLocked() error {
-	var err error
-	if runtimeState.instance != nil {
-		err = runtimeState.instance.Close()
-		runtimeState.instance = nil
+	if runtimeState.cleanupError != nil {
+		return runtimeState.cleanupError
 	}
+	// Revoke credentials, cancel owned requests/timers, join native publications
+	// and close keepalive/WS sockets before disposing the native data plane.
+	if runtimeState.owner != nil {
+		if err := runtimeState.owner.close(); err != nil {
+			runtimeState.cleanupError = err
+			return err
+		}
+	}
+	if runtimeState.instance != nil {
+		if err := runtimeState.instance.Close(); err != nil {
+			// Box.Close is terminal even on partial error. Retain the owner and
+			// quarantine this process instead of pretending a second Close joined it.
+			runtimeState.cleanupError = err
+			return err
+		}
+	}
+	runtimeState.instance, runtimeState.owner = nil, nil
 	if runtimeState.cancel != nil {
 		runtimeState.cancel()
 		runtimeState.cancel = nil
@@ -230,15 +252,12 @@ func stopLocked() error {
 		runtimeState.log.Unlock()
 		path := filepath.Join(runtimeState.directory, "last-session.log")
 		temporary := path + ".tmp"
-		if writeErr := os.WriteFile(temporary, []byte(runtimeState.log.String()), 0600); writeErr == nil {
+		if err := os.WriteFile(temporary, []byte(runtimeState.log.String()), 0600); err == nil {
 			_ = os.Rename(temporary, path)
 		}
 	}
-	go func() {
-		runtime.GC()
-		debug.FreeOSMemory()
-	}()
-	return err
+	go func() { runtime.GC(); debug.FreeOSMemory() }()
+	return nil
 }
 
 //export TinyPawsSingVersion
@@ -250,7 +269,9 @@ func TinyPawsSingVersion() *C.char {
 func TinyPawsSingStart(tunFD C.int, netID C.int, configJSON *C.char, workDir *C.char) C.int {
 	runtimeState.Lock()
 	defer runtimeState.Unlock()
-	_ = stopLocked()
+	if err := stopLocked(); err != nil {
+		return setLastError(err)
+	}
 	if tunFD < 0 || netID <= 0 || configJSON == nil || workDir == nil {
 		return setLastError(errors.New("invalid TinyPaws sing-box start arguments"))
 	}
@@ -259,44 +280,53 @@ func TinyPawsSingStart(tunFD C.int, netID C.int, configJSON *C.char, workDir *C.
 		return setLastError(err)
 	}
 	ctx := filemanager.WithDefault(context.Background(), directory, directory, -1, -1)
-	ctx = include.Context(ctx)
 	physical, err := physicalInterface(int(netID))
 	if err != nil {
 		return setLastError(err)
 	}
 	platform := &harmonyPlatform{fd: int(tunFD), netID: int(netID), physical: physical, monitor: &staticMonitor{physical: &physical.Interface}}
 	ctx = service.ContextWith[adapter.PlatformInterface](ctx, platform)
-	runtimeLog := &ringLog{}
-	socketTraceEnabled.Store(os.Getenv("PAWS_SOCKET_TRACE") == "1")
-	if socketTraceEnabled.Load() {
-		runtimeLog.traceFile, _ = os.OpenFile(filepath.Join(directory, "socket-trace.log"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
-	}
-	runtimeState.log = runtimeLog
-	runtimeState.directory = directory
-	activeTraceLog.Store(runtimeLog)
 	preparedConfig, err := withPhysicalDNS([]byte(C.GoString(configJSON)), physical.DNSServers)
 	if err != nil {
 		return setLastError(err)
 	}
-	options, err := json.UnmarshalExtendedContext[option.Options](ctx, preparedConfig)
+	owner, native, err := newPawsSingRuntime(ctx, preparedConfig, directory)
 	if err != nil {
 		return setLastError(err)
 	}
-	runCtx, cancel := context.WithCancel(ctx)
-	instance, err := box.New(box.Options{Context: runCtx, Options: options, PlatformLogWriter: runtimeLog})
+	ctx = owner.nativeContext()
+	runtimeLog := &ringLog{observations: owner.observations}
+	socketTraceEnabled.Store(os.Getenv("PAWS_SOCKET_TRACE") == "1")
+	if socketTraceEnabled.Load() {
+		runtimeLog.traceFile, _ = os.OpenFile(filepath.Join(directory, "socket-trace.log"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	}
+	runtimeState.log, runtimeState.directory = runtimeLog, directory
+	activeTraceLog.Store(runtimeLog)
+	options, err := json.UnmarshalExtendedContext[option.Options](ctx, native)
 	if err != nil {
-		cancel()
+		_ = owner.close()
 		return setLastError(err)
 	}
+	instance, err := box.New(box.Options{Context: ctx, Options: options, PlatformLogWriter: runtimeLog})
+	if err != nil {
+		_ = owner.close()
+		return setLastError(err)
+	}
+	// Retain ownership before starting: any partial cleanup error must quarantine
+	// the exact instance rather than lose its still-live listener/TUN owners.
+	runtimeState.instance, runtimeState.owner = instance, owner
 	traffic := newTrafficTracker(time.Now())
 	instance.Router().AppendTracker(traffic)
-	if err = instance.Start(); err != nil {
-		_ = instance.Close()
-		cancel()
+	if err = instance.StartWithPreparation(func() error { return owner.initialize(instance) }); err == nil {
+		err = owner.started()
+	}
+	if err != nil {
+		cleanup := stopLocked()
+		if cleanup != nil {
+			err = errors.Join(err, cleanup)
+		}
 		return setLastError(err)
 	}
-	runtimeState.instance = instance
-	runtimeState.cancel = cancel
 	runtimeState.traffic = traffic
 	go func() {
 		runtime.GC()
@@ -351,6 +381,13 @@ func TinyPawsSingStop() C.int {
 	runtimeState.Lock()
 	defer runtimeState.Unlock()
 	return setLastError(stopLocked())
+}
+
+//export TinyPawsSingTrimMemory
+func TinyPawsSingTrimMemory() C.int {
+	runtimeState.Lock()
+	defer runtimeState.Unlock()
+	return setLastError(trimPawsSingRuntimeMemory(runtimeState.owner))
 }
 
 //export TinyPawsSingCopyLastError
