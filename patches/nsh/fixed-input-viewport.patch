@@ -1,0 +1,901 @@
+--- a/crates/nsh-core/src/core/mod.rs
++++ b/crates/nsh-core/src/core/mod.rs
+@@ -12,7 +12,9 @@
+ 
+ use nsh_animation::AnimationProp;
+ use slab::Slab;
+-use taffy::{AvailableSpace, NodeId as LayoutId, Overflow, Position, TaffyTree};
++use taffy::{
++    AvailableSpace, NodeId as LayoutId, Overflow, Position, TaffyTree, util::MaybeResolve,
++};
+ 
+ use self::list::{ExtraKind, Follow, ListState, PinTarget};
+ pub use self::measure::Measurement;
+@@ -510,6 +512,8 @@
+ /// Taffy context of a text block.
+ struct TextContext<P> {
+     text: Arc<AttributedText>,
++    /// Native inputs own scrolling within their fixed content viewport.
++    input: Option<Key>,
+     /// `text.layout_hash()`, computed once per content.
+     layout_hash: u64,
+     /// Platform typesetting state, created on first use.
+@@ -526,9 +530,17 @@
+         Self {
+             layout_hash: text.layout_hash(),
+             text,
++            input: None,
+             prepared: None,
+             cache: None,
+             laid_out: None,
++        }
++    }
++
++    fn input(text: Arc<AttributedText>, owner: Key) -> Self {
++        Self {
++            input: Some(owner),
++            ..Self::new(text)
+         }
+     }
+ }
+@@ -1288,7 +1300,7 @@
+         let kind = Kind::of(tag);
+         let key = self.alloc(id, kind)?;
+         let style = Style::default().layout;
+-        let layout = match leaf_context(kind) {
++        let layout = match leaf_context(kind, key) {
+             Some(context) => self.layout.new_leaf_with_context(style.clone(), context),
+             None => self.layout.new_leaf(style.clone()),
+         }
+@@ -1367,7 +1379,9 @@
+         node.control = fresh.control;
+         node.component = fresh.component;
+         let layout = node.layout.expect("a view has a layout");
+-        let _ = self.layout.set_node_context(layout, leaf_context(kind));
++        let _ = self
++            .layout
++            .set_node_context(layout, leaf_context(kind, key));
+         let style = self.layout.style(layout).cloned().unwrap_or_default();
+         self.became(key, style);
+         if let Some((parent, before)) = at {
+@@ -1407,7 +1421,7 @@
+         if ctx.text.layout_eq(&text) {
+             return;
+         }
+-        *ctx = TextContext::new(Arc::new(text));
++        *ctx = TextContext::input(Arc::new(text), key);
+         self.layout.mark_dirty(layout).expect("taffy dirty");
+         self.needs_layout = true;
+     }
+@@ -3112,7 +3126,13 @@
+         let Some(LeafContext::Text(ctx)) = self.layout.get_node_context_mut(layout) else {
+             return;
+         };
+-        let size = measure_text(&self.text_engine, &mut self.measure_cache, ctx, max);
++        let size = measure_text(
++            &self.text_engine,
++            &mut self.measure_cache,
++            ctx,
++            max,
++            MeasureReason::ContentSize,
++        );
+         let node = &mut self.nodes[key as usize];
+         let input = node.input.as_mut().expect("input state");
+         if input.content_size == Some(size) {
+@@ -3350,7 +3370,7 @@
+             let dirty = self.layout.dirty(layout).unwrap_or(true);
+             if dirty {
+                 self.layout_root(
+-                    layout,
++                    a,
+                     taffy::Size {
+                         width: AvailableSpace::MaxContent,
+                         height: AvailableSpace::MaxContent,
+@@ -3418,7 +3438,7 @@
+         // Even a clean root costs a full rounding walk in taffy: skip it.
+         let main = self.layout.dirty(root).unwrap_or(true);
+         if main {
+-            self.layout_root(root, available);
++            self.layout_root(self.root, available);
+         }
+         main
+     }
+@@ -3609,7 +3629,7 @@
+             .as_mut()
+             .expect("root state")
+             .laid_out = Some((size, header));
+-        self.layout_root(layout, available);
++        self.layout_root(key, available);
+         self.emit_frames(key);
+         if kind == Kind::Screen && header_changed {
+             let id = self.nodes[key as usize].id;
+@@ -3689,7 +3709,7 @@
+                     Some(_) => extra_cross,
+                 };
+                 if resized || self.layout.dirty(cell_layout).unwrap_or(true) {
+-                    self.layout_root(cell_layout, available(c));
++                    self.layout_root(cell, available(c));
+                     self.nodes[cell as usize].relaid = true;
+                 }
+             }
+@@ -3697,12 +3717,117 @@
+         }
+     }
+ 
++    /// Inputs whose percentage width has a content-independent basis in this
++    /// layout root. Work is local to this subtree: O(subtree + input depths),
++    /// followed by sorting the proven keys for lookup only in the probe gap.
++    /// Other native roots and non-view layout owners are separate boundaries.
++    fn input_width_proofs(&self, root: Key, available_width: AvailableSpace) -> Vec<Key> {
++        let mut proven = Vec::new();
++        let mut pending = vec![root];
++        while let Some(key) = pending.pop() {
++            let node = &self.nodes[key as usize];
++            if key != root && !matches!(node.kind, Kind::View | Kind::Input) {
++                continue;
++            }
++            if node.kind == Kind::Input && self.input_has_width_basis(root, key, available_width) {
++                proven.push(key);
++            }
++            pending.extend_from_slice(&node.children);
++        }
++        proven.sort_unstable();
++        proven
++    }
++
++    fn input_has_width_basis(
++        &self,
++        root: Key,
++        mut key: Key,
++        available_width: AvailableSpace,
++    ) -> bool {
++        use taffy::{
++            AlignItemsKeyword, Display, FlexDirection, FlexWrap, style::ExpandedDimension,
++        };
++
++        let fixed_bound = |dimension: taffy::LengthPercentageAuto| match dimension.expand() {
++            taffy::style::ExpandedLengthPercentageAuto::Auto => true,
++            taffy::style::ExpandedLengthPercentageAuto::Length(value) => {
++                value.is_finite() && value >= 0.0
++            }
++            _ => false,
++        };
++        loop {
++            let node = &self.nodes[key as usize];
++            let Some(layout) = node.layout else {
++                return false;
++            };
++            let style = self.layout.style(layout).expect("taffy style");
++            if style.position != Position::Relative
++                || style.display != Display::Flex
++                || style.aspect_ratio.is_some()
++                || style.margin.left.is_auto()
++                || style.margin.right.is_auto()
++                || style.overflow.x != Overflow::Visible
++                || style.overflow.y != Overflow::Visible
++                || !fixed_bound(style.min_size.width)
++                || !fixed_bound(style.max_size.width)
++            {
++                return false;
++            }
++            if key == root {
++                // Only the main root is intrinsically the actual viewport.
++                // Detached roots must have a currently resolved length; an
++                // Auto attachment/header/cell is not fixed by available space.
++                return matches!(style.size.width.expand(), ExpandedDimension::Length(width) if width.is_finite() && width >= 0.0)
++                    || (root == self.root
++                        && matches!(available_width, AvailableSpace::Definite(width) if width.is_finite() && width >= 0.0));
++            }
++            if !matches!(node.kind, Kind::View | Kind::Input) {
++                return false;
++            }
++            let Some(parent) = self.nodes.get(node.parent as usize) else {
++                return false;
++            };
++            let Some(parent_layout) = parent.layout else {
++                return false;
++            };
++            let parent_style = self.layout.style(parent_layout).expect("taffy style");
++            // A row can flex-shrink even an explicit length. Check the whole
++            // chain, including explicit/percentage nodes, before using a basis.
++            if parent_style.display != Display::Flex
++                || !matches!(
++                    parent_style.flex_direction,
++                    FlexDirection::Column | FlexDirection::ColumnReverse
++                )
++                || parent_style.flex_wrap != FlexWrap::NoWrap
++            {
++                return false;
++            }
++            match style.size.width.expand() {
++                ExpandedDimension::Length(width) | ExpandedDimension::Percent(width)
++                    if width.is_finite() && width >= 0.0 => {}
++                ExpandedDimension::Auto => {
++                    let alignment = style.align_self.unwrap_or(parent_style.align_items);
++                    if !matches!(
++                        alignment.keyword,
++                        AlignItemsKeyword::Normal | AlignItemsKeyword::Stretch
++                    ) {
++                        return false;
++                    }
++                }
++                _ => return false,
++            }
++            key = node.parent;
++        }
++    }
++
+     /// Lays out the tree under `root` within `available`.
+-    fn layout_root(&mut self, root: LayoutId, available: taffy::Size<AvailableSpace>) {
++    fn layout_root(&mut self, root: Key, available: taffy::Size<AvailableSpace>) {
++        let proven_inputs = self.input_width_proofs(root, available.width);
++        let layout = self.nodes[root as usize].layout.expect("root layout");
+         let engine = &self.text_engine;
+         let cache = &mut self.measure_cache;
+         self.layout
+-            .compute_layout_with_measure(root, available, |input, _, ctx, style| {
++            .compute_layout_with_measure(layout, available, |input, _, ctx, style| {
+                 // Taffy resolves style sizes, padding, border, min/max and
+                 // aspect ratio; only content is measured here.
+                 taffy::compute_leaf_layout(
+@@ -3711,6 +3836,32 @@
+                     |_, _| 0.0,
+                     |known, available| match ctx {
+                         Some(LeafContext::Text(ctx)) => {
++                            // PerformLayout measures leaves even with fixed dimensions.
++                            // Native editors lay out their full document themselves;
++                            // shaping it again cannot affect a resolved viewport.
++                            // Auto-size inputs still measure, and explicit content-size
++                            // listeners retain their separate report_content_size path.
++                            let viewport = input
++                                .known_dimensions
++                                .or(style.size.maybe_resolve(input.parent_size, |_, _| 0.0));
++                            if let Some(owner) = ctx.input {
++                                if viewport.width.is_some() && viewport.height.is_some() {
++                                    return taffy::Size::ZERO;
++                                }
++                                // Flex intrinsic probes deliberately erase a percentage's
++                                // parent width. Only a proven column/stretch chain can use
++                                // this finite viewport without letting the document enlarge
++                                // an Auto ancestor. Row allocation and intrinsic available
++                                // widths retain the normal text measurement path.
++                                if matches!(style.size.width.expand(), taffy::style::ExpandedDimension::Percent(width) if width.is_finite() && width >= 0.0)
++                                    && viewport.height.is_some_and(|height| height.is_finite() && height >= 0.0)
++                                    && let AvailableSpace::Definite(width) = available.width
++                                    && width.is_finite() && width >= 0.0
++                                    && proven_inputs.binary_search(&owner).is_ok()
++                                {
++                                    return taffy::Size { width, height: 0.0 };
++                                }
++                            }
+                             let max_width = if ctx.text.no_wrap {
+                                 None
+                             } else {
+@@ -3720,7 +3871,7 @@
+                                     AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
+                                 })
+                             };
+-                            let measured = measure_text(engine, cache, ctx, max_width);
++                            let measured = measure_text(engine, cache, ctx, max_width, MeasureReason::Intrinsic);
+                             taffy::Size {
+                                 width: known.width.unwrap_or(measured.width),
+                                 height: known.height.unwrap_or(measured.height),
+@@ -3783,11 +3934,18 @@
+                 // One line at its natural width, past the box if need be.
+                 content.width = content
+                     .width
+-                    .max(measure_text(engine, cache, ctx, None).width);
++                    .max(measure_text(engine, cache, ctx, None, MeasureReason::Intrinsic).width);
+             }
+             if align_vertical > 0.0 {
+                 // Text shorter than its box: moved down within it.
+-                let height = measure_text(engine, cache, ctx, Some(content.width)).height;
++                let height = measure_text(
++                    engine,
++                    cache,
++                    ctx,
++                    Some(content.width),
++                    MeasureReason::Intrinsic,
++                )
++                .height;
+                 if height < content.height {
+                     content.y += (content.height - height) * align_vertical;
+                     content.height = height;
+@@ -4505,11 +4663,18 @@
+     scaled(lo)
+ }
+ 
++#[derive(Clone, Copy, Debug)]
++enum MeasureReason {
++    Intrinsic,
++    ContentSize,
++}
++
+ fn measure_text<M: TextEngine>(
+     engine: &M,
+     cache: &mut MeasureCache,
+     ctx: &mut TextContext<M::Prepared>,
+     max_width: Option<f32>,
++    reason: MeasureReason,
+ ) -> Size {
+     if let Some((w, size)) = ctx.cache
+         && w == max_width
+@@ -4519,10 +4684,28 @@
+     let size = match cache.get(ctx.layout_hash, max_width) {
+         Some(size) => size,
+         None => {
+-            let prepared = ctx
+-                .prepared
+-                .get_or_insert_with(|| engine.prepare(&ctx.text));
++            // Diagnose only actual cache-miss work for large native editors.
++            // Never log text or run a timer for ordinary text/cache hits.
++            let large_input = ctx.input.filter(|_| ctx.text.text.len() >= 64 * 1024);
++            let prepared = ctx.prepared.get_or_insert_with(|| {
++                let started = large_input.map(|owner| {
++                    log::warn!(target: "nsh::perf", "input prepare BEGIN owner={owner} cause={reason:?} bytes={} max_width={max_width:?}", ctx.text.text.len());
++                    (owner, std::time::Instant::now())
++                });
++                let prepared = engine.prepare(&ctx.text);
++                if let Some((owner, started)) = started {
++                    log::warn!(target: "nsh::perf", "input prepare END owner={owner} cause={reason:?} bytes={} elapsed_us={}", ctx.text.text.len(), started.elapsed().as_micros());
++                }
++                prepared
++            });
++            let started = large_input.map(|owner| {
++                log::warn!(target: "nsh::perf", "input measure BEGIN owner={owner} cause={reason:?} bytes={} max_width={max_width:?}", ctx.text.text.len());
++                (owner, std::time::Instant::now())
++            });
+             let size = engine.measure(prepared, max_width);
++            if let Some((owner, started)) = started {
++                log::warn!(target: "nsh::perf", "input measure END owner={owner} cause={reason:?} bytes={} size={size:?} elapsed_us={}", ctx.text.text.len(), started.elapsed().as_micros());
++            }
+             // Round up so rendering never truncates the last glyph.
+             let size = Size::new(size.width.ceil(), size.height.ceil());
+             cache.insert(ctx.layout_hash, max_width, size);
+@@ -4620,9 +4803,10 @@
+ /// What a leaf of `kind` measures with, if anything: texts and inputs (an
+ /// input measures like a text block holding its text or placeholder) their
+ /// text, images their image, native components the size they report.
+-fn leaf_context<P>(kind: Kind) -> Option<LeafContext<P>> {
++fn leaf_context<P>(kind: Kind, owner: Key) -> Option<LeafContext<P>> {
+     match kind {
+-        Kind::Text | Kind::Input => Some(LeafContext::Text(TextContext::new(Arc::default()))),
++        Kind::Text => Some(LeafContext::Text(TextContext::new(Arc::default()))),
++        Kind::Input => Some(LeafContext::Text(TextContext::input(Arc::default(), owner))),
+         Kind::Image => Some(LeafContext::Image(None)),
+         Kind::Native => Some(LeafContext::Native(None)),
+         _ => None,
+--- a/crates/nsh-core/src/core/tests.rs
++++ b/crates/nsh-core/src/core/tests.rs
+@@ -1908,6 +1908,95 @@
+ }
+ 
+ #[test]
++fn fixed_input_viewports_do_not_typeset_the_document() {
++    let mut c = input_core();
++    let document = "rules:\n  - DOMAIN-SUFFIX,example.com,DIRECT\n".repeat(24_000);
++    apply(
++        &mut c,
++        vec![
++            Op::SetProp {
++                id: 2,
++                prop: Prop::Multiline(true),
++            },
++            style_op(
++                2,
++                &[
++                    ("width", StyleValue::Str("100%")),
++                    ("height", StyleValue::Number(260.0)),
++                ],
++            ),
++            Op::SetProp {
++                id: 2,
++                prop: Prop::Value(document.clone()),
++            },
++        ],
++    );
++    let batch = c.commit().unwrap();
++    assert_eq!(c.text_engine.measures.get(), 0);
++    assert_eq!(
++        frame_of(&batch, 2),
++        Some(Rect {
++            x: 0.0,
++            y: 0.0,
++            width: 320.0,
++            height: 260.0
++        })
++    );
++    assert!(batch.items.iter().any(|item| matches!(item,
++        MountItem::InputValue { id: 2, text, .. } if text == &document)));
++    // A controlled edit still reaches the platform in full without measuring
++    // an intrinsic document size that cannot change its fixed viewport.
++    let edited = format!("{document}\n# edited");
++    c.apply(Op::SetProp {
++        id: 2,
++        prop: Prop::Value(edited.clone()),
++    })
++    .unwrap();
++    let batch = c.commit().unwrap();
++    assert_eq!(c.text_engine.measures.get(), 0);
++    assert!(batch.items.iter().any(|item| matches!(item,
++        MountItem::InputValue { id: 2, text, .. } if text == &edited)));
++}
++
++#[test]
++fn fixed_inputs_still_report_explicit_document_content_size() {
++    let mut c = input_core();
++    apply(
++        &mut c,
++        vec![
++            Op::SetProp {
++                id: 2,
++                prop: Prop::Multiline(true),
++            },
++            style_op(
++                2,
++                &[
++                    ("width", StyleValue::Str("100%")),
++                    ("height", StyleValue::Number(100.0)),
++                ],
++            ),
++            Op::SetProp {
++                id: 2,
++                prop: Prop::Value("x".repeat(1000)),
++            },
++            Op::Listen {
++                id: 2,
++                event: EventKind::ContentSizeChange,
++                enabled: true,
++            },
++        ],
++    );
++    let batch = c.commit().unwrap();
++    assert_eq!(frame_of(&batch, 2).map(|rect| rect.height), Some(100.0));
++    assert!(c.text_engine.measures.get() > 0);
++    assert!(js_events(&mut c).iter().any(|(_, kind, payload)| matches!(
++        (kind, payload),
++        (EventKind::ContentSizeChange, EventPayload::Map(fields))
++            if fields.iter().any(|(key, value)| *key == "height" && matches!(value, PayloadValue::Number(height) if *height > 100.0))
++    )));
++}
++
++#[test]
+ fn commands_reach_created_views_only() {
+     let mut c = input_core();
+     c.apply(Op::Command {
+@@ -7680,3 +7769,435 @@
+         assert!(!events.contains(event));
+     }
+ }
++
++fn modal_input_document(
++    row: bool,
++    card_width: bool,
++    min_axes: u8,
++    document: &str,
++) -> Core<FakeEngine> {
++    let mut c = core();
++    let mut card = vec![
++        ("maxWidth", StyleValue::Number(512.0)),
++        ("maxHeight", StyleValue::Str("90%")),
++        ("padding", StyleValue::Number(24.0)),
++        ("gap", StyleValue::Number(16.0)),
++        (
++            "flexDirection",
++            StyleValue::Str(if row { "row" } else { "column" }),
++        ),
++    ];
++    if card_width {
++        card.push(("width", StyleValue::Str("100%")));
++    }
++    let mut field = vec![
++        ("minWidth", StyleValue::Number(0.0)),
++        ("gap", StyleValue::Number(4.0)),
++    ];
++    if row {
++        field.push(("flex", StyleValue::Number(1.0)));
++    }
++    let mut input = vec![
++        ("width", StyleValue::Str("100%")),
++        ("height", StyleValue::Number(260.0)),
++        ("padding", StyleValue::Number(4.0)),
++    ];
++    if min_axes & 1 != 0 {
++        input.push(("minWidth", StyleValue::Number(0.0)));
++    }
++    if min_axes & 2 != 0 {
++        input.push(("minHeight", StyleValue::Number(0.0)));
++    }
++    apply(
++        &mut c,
++        vec![
++            Op::Create {
++                id: 2,
++                tag: Tag::Modal,
++            },
++            Op::Create {
++                id: 4,
++                tag: Tag::View,
++            },
++            Op::Create {
++                id: 6,
++                tag: Tag::View,
++            },
++            Op::Create {
++                id: 8,
++                tag: Tag::View,
++            },
++            Op::Create {
++                id: 10,
++                tag: Tag::View,
++            },
++            Op::Create {
++                id: 12,
++                tag: Tag::Input,
++            },
++            style_op(
++                4,
++                &[
++                    ("flex", StyleValue::Number(1.0)),
++                    ("alignItems", StyleValue::Str("center")),
++                    ("justifyContent", StyleValue::Str("center")),
++                    ("padding", StyleValue::Number(8.0)),
++                ],
++            ),
++            style_op(6, &card),
++            style_op(8, &field),
++            style_op(
++                10,
++                &[
++                    ("minWidth", StyleValue::Number(0.0)),
++                    ("position", StyleValue::Str("relative")),
++                ],
++            ),
++            style_op(12, &input),
++            Op::SetProp {
++                id: 12,
++                prop: Prop::Multiline(true),
++            },
++        ],
++    );
++    for (parent, child) in [(ROOT_ID, 2), (2, 4), (4, 6), (6, 8), (8, 10), (10, 12)] {
++        c.apply(Op::Insert {
++            parent,
++            child,
++            before: None,
++        })
++        .unwrap();
++    }
++    c.commit().unwrap();
++    c.text_engine.measures.set(0);
++    c.text_engine.layouts.set(0);
++    c.apply(Op::SetProp {
++        id: 12,
++        prop: Prop::Value(document.to_owned()),
++    })
++    .unwrap();
++    c
++}
++
++#[test]
++fn percentage_input_viewports_preserve_intrinsic_ancestors() {
++    let long = "rules:\n  - DOMAIN-SUFFIX,example.com,DIRECT\n".repeat(4000);
++    for (short, document) in [(true, "name: p\n"), (false, long.as_str())] {
++        for (row, card_width) in [(false, true), (true, true), (false, false), (true, false)] {
++            // Input min-size declarations alone do not remove the percentage
++            // probe. The enclosing column/stretch width basis is what matters.
++            for min_axes in [0, 1, 2, 3] {
++                let mut c = modal_input_document(row, card_width, min_axes, document);
++                let batch = c.commit().unwrap();
++                let expected_measures = if !row && card_width {
++                    0
++                } else if !row && short {
++                    2
++                } else {
++                    1
++                };
++                let expected_width = if row && !card_width {
++                    8.0
++                } else if !card_width && short {
++                    80.0
++                } else {
++                    256.0
++                };
++                assert_eq!(
++                    c.text_engine.measures.get(),
++                    expected_measures,
++                    "short={short} row={row} card_width={card_width} min_axes={min_axes}"
++                );
++                assert_eq!(
++                    c.measure(12).unwrap().frame,
++                    Rect {
++                        x: 0.0,
++                        y: 0.0,
++                        width: expected_width,
++                        height: 260.0
++                    }
++                );
++                assert_eq!(c.text_engine.layouts.get(), 0);
++                assert!(batch.items.iter().any(|item| matches!(item, MountItem::InputValue { id: 12, text, .. } if text == document)));
++                assert!(
++                    !batch
++                        .items
++                        .iter()
++                        .any(|item| matches!(item, MountItem::Text { id: 12, .. }))
++                );
++            }
++        }
++    }
++}
++
++#[test]
++fn percentage_input_width_proof_tracks_current_ancestor_alignment() {
++    let mut c = modal_input_document(false, true, 0, "initial document");
++    c.commit().unwrap();
++    assert_eq!(c.text_engine.measures.get(), 0);
++    c.text_engine.measures.set(0);
++    apply(
++        &mut c,
++        vec![
++            style_op(
++                10,
++                &[
++                    ("minWidth", StyleValue::Number(0.0)),
++                    ("position", StyleValue::Str("relative")),
++                    ("alignSelf", StyleValue::Str("center")),
++                ],
++            ),
++            Op::SetProp {
++                id: 12,
++                prop: Prop::Value("name: p\n".into()),
++            },
++        ],
++    );
++    c.commit().unwrap();
++    assert!(c.text_engine.measures.get() > 0);
++    assert_eq!(c.measure(12).unwrap().frame.width, 80.0);
++    c.text_engine.measures.set(0);
++    apply(
++        &mut c,
++        vec![
++            style_op(
++                10,
++                &[
++                    ("minWidth", StyleValue::Number(0.0)),
++                    ("position", StyleValue::Str("relative")),
++                    ("alignSelf", StyleValue::Str("stretch")),
++                ],
++            ),
++            Op::SetProp {
++                id: 12,
++                prop: Prop::Value("name: next\n".into()),
++            },
++        ],
++    );
++    c.commit().unwrap();
++    assert_eq!(c.text_engine.measures.get(), 0);
++    assert_eq!(c.measure(12).unwrap().frame.width, 256.0);
++}
++
++#[test]
++fn percentage_input_width_proof_rejects_uncertain_constraints() {
++    for extra in [
++        ("aspectRatio", StyleValue::Number(2.0)),
++        ("minWidth", StyleValue::Str("50%")),
++        ("maxWidth", StyleValue::Str("90%")),
++        ("marginLeft", StyleValue::Str("auto")),
++        ("position", StyleValue::Str("absolute")),
++    ] {
++        let mut c = modal_input_document(false, true, 0, "name: uncertain\n");
++        c.apply(style_op(
++            12,
++            &[
++                ("width", StyleValue::Str("100%")),
++                ("height", StyleValue::Number(260.0)),
++                ("padding", StyleValue::Number(4.0)),
++                extra,
++            ],
++        ))
++        .unwrap();
++        let key = c.key(12).unwrap();
++        let root = c.key(2).unwrap();
++        assert!(
++            !c.input_has_width_basis(root, key, AvailableSpace::Definite(320.0)),
++            "{extra:?}"
++        );
++        c.commit().unwrap();
++    }
++    // A scroll ancestor is not a viewport basis, even if descendants declare
++    // percentage sizes. Consult effective Taffy styles, not previous frames.
++    let mut c = modal_input_document(false, true, 0, "name: ancestor\n");
++    apply(
++        &mut c,
++        vec![
++            Op::Create {
++                id: 14,
++                tag: Tag::Scroll,
++            },
++            style_op(
++                14,
++                &[
++                    ("width", StyleValue::Str("100%")),
++                    ("height", StyleValue::Number(300.0)),
++                ],
++            ),
++            Op::Insert {
++                parent: 8,
++                child: 14,
++                before: Some(10),
++            },
++            Op::Insert {
++                parent: 14,
++                child: 10,
++                before: None,
++            },
++        ],
++    );
++    let scroll = c.nodes[c.key(14).unwrap() as usize].layout.unwrap();
++    assert_eq!(c.layout.style(scroll).unwrap().overflow.y, Overflow::Scroll);
++    assert!(!c.input_has_width_basis(
++        c.key(2).unwrap(),
++        c.key(12).unwrap(),
++        AvailableSpace::Definite(320.0)
++    ));
++    c.commit().unwrap();
++}
++
++#[test]
++fn percentage_input_width_proof_rejects_row_shrink_and_preserves_column_frames() {
++    for row in [false, true] {
++        let mut c = modal_input_document(row, true, 0, "name: sibling\n");
++        let mut field = vec![
++            ("width", StyleValue::Number(256.0)),
++            ("minWidth", StyleValue::Number(0.0)),
++            ("flexShrink", StyleValue::Number(1.0)),
++        ];
++        if !row {
++            field.push(("height", StyleValue::Number(180.0)));
++        }
++        apply(
++            &mut c,
++            vec![
++                style_op(8, &field),
++                Op::Create {
++                    id: 14,
++                    tag: Tag::View,
++                },
++                style_op(
++                    14,
++                    &[
++                        ("width", StyleValue::Number(120.0)),
++                        ("height", StyleValue::Number(80.0)),
++                        ("flexShrink", StyleValue::Number(0.0)),
++                    ],
++                ),
++                Op::Insert {
++                    parent: 6,
++                    child: 14,
++                    before: None,
++                },
++            ],
++        );
++        let proven = c.input_has_width_basis(
++            c.key(2).unwrap(),
++            c.key(12).unwrap(),
++            AvailableSpace::Definite(320.0),
++        );
++        assert_eq!(proven, !row);
++        c.commit().unwrap();
++        assert_eq!(
++            c.measure(12).unwrap().frame.width,
++            if row { 120.0 } else { 256.0 }
++        );
++        assert_eq!(c.measure(12).unwrap().frame.height, 260.0);
++        assert_eq!(c.text_engine.measures.get() == 0, !row);
++    }
++}
++
++#[test]
++fn auto_input_axes_and_unresolved_constraints_still_measure_text() {
++    for (width, height, available) in [
++        (
++            StyleValue::Str("auto"),
++            StyleValue::Number(260.0),
++            taffy::Size {
++                width: AvailableSpace::MaxContent,
++                height: AvailableSpace::MaxContent,
++            },
++        ),
++        (
++            StyleValue::Number(80.0),
++            StyleValue::Str("auto"),
++            taffy::Size {
++                width: AvailableSpace::MaxContent,
++                height: AvailableSpace::MaxContent,
++            },
++        ),
++        (
++            StyleValue::Number(80.0),
++            StyleValue::Str("50%"),
++            taffy::Size {
++                width: AvailableSpace::Definite(320.0),
++                height: AvailableSpace::MaxContent,
++            },
++        ),
++        (
++            StyleValue::Str("100%"),
++            StyleValue::Number(260.0),
++            taffy::Size {
++                width: AvailableSpace::MinContent,
++                height: AvailableSpace::Definite(480.0),
++            },
++        ),
++        (
++            StyleValue::Str("100%"),
++            StyleValue::Number(260.0),
++            taffy::Size {
++                width: AvailableSpace::MaxContent,
++                height: AvailableSpace::Definite(480.0),
++            },
++        ),
++    ] {
++        let mut c = input_core();
++        apply(
++            &mut c,
++            vec![
++                style_op(2, &[("width", width), ("height", height)]),
++                Op::SetProp {
++                    id: 2,
++                    prop: Prop::Value("name: auto dimensions".into()),
++                },
++            ],
++        );
++        c.layout_root(c.key(2).unwrap(), available);
++        assert!(
++            c.text_engine.measures.get() > 0,
++            "width={width:?} height={height:?} available={available:?}"
++        );
++    }
++}
++
++#[test]
++fn percentage_input_viewports_still_report_explicit_content_size() {
++    let mut c = modal_input_document(false, true, 0, &"x".repeat(4000));
++    c.apply(Op::Listen {
++        id: 12,
++        event: EventKind::ContentSizeChange,
++        enabled: true,
++    })
++    .unwrap();
++    c.commit().unwrap();
++    assert_eq!(c.measure(12).unwrap().frame.height, 260.0);
++    assert!(c.text_engine.measures.get() > 0);
++    assert!(js_events(&mut c).iter().any(|(_, kind, payload)| matches!((kind,payload), (EventKind::ContentSizeChange, EventPayload::Map(fields)) if fields.iter().any(|(key,value)| *key == "height" && matches!(value, PayloadValue::Number(height) if *height > 260.0)))));
++}
++
++#[test]
++#[ignore = "diagnostic host timing for the per-layout-root scan"]
++fn bench_input_width_proofs_without_inputs() {
++    let mut c = core();
++    for id in 2..=1001 {
++        c.apply(Op::Create { id, tag: Tag::View }).unwrap();
++        c.apply(Op::Insert {
++            parent: ROOT_ID,
++            child: id,
++            before: None,
++        })
++        .unwrap();
++    }
++    c.commit().unwrap();
++    let start = std::time::Instant::now();
++    for _ in 0..1000 {
++        assert!(
++            std::hint::black_box(c.input_width_proofs(c.root, AvailableSpace::Definite(320.0)))
++                .is_empty()
++        );
++    }
++    eprintln!(
++        "input-width-proof 1001 nodes, no inputs: {}ns/scan (host, unoptimized test profile)",
++        start.elapsed().as_nanos() / 1000
++    );
++}

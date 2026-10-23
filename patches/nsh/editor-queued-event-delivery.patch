@@ -1,0 +1,208 @@
+--- a/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
++++ b/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
+@@ -265,6 +265,14 @@
+       phase, settings.targetId, length, settings.width, settings.height, elapsed);
+   }
+ }
++interface PendingEditorEvent {
++  kind: string;
++  text: string;
++  start: number;
++  end: number;
++  width: number;
++  height: number;
++}
+ class EditorEntry {
+   readonly node: BuilderNode<[EditorEntry]>;
+   readonly line: TextInputController = new TextInputController();
+@@ -272,6 +280,10 @@
+   settings: EditorSettings;
+   text: string;
+   count: number;
++  private events: PendingEditorEvent[] = [];
++  private eventTimer: number = -1;
++  private delivering: boolean = false;
++  private pendingChanges: number = 0;
+   private updating: boolean = false;
+   private closed: boolean = false;
+   private retired: boolean = false;
+@@ -330,7 +342,9 @@
+     ) {
+       throw new Error("Editor replacement requires a new generation");
+     }
+-    if (settings.count === this.count) { this.text = settings.text; }
++    // An SDK edit is already local even when its native receipt is queued.
++    // A controlled value based on the preceding count must not erase it.
++    if (this.pendingChanges === 0 && settings.count === this.count) { this.text = settings.text; }
+     this.settings = settings;
+     this.refresh();
+   }
+@@ -394,12 +408,39 @@
+     if (!this.attached || this.closed || !this.context.isActive() || (this.updating && kind !== "focus" && kind !== "blur")) {
+       return;
+     }
+-    const response = this.context.invokeNativeSync(
+-      "editor-event", "nsh.arkui.EditorNotification", "nsh.arkui.EditorReceipt",
+-      { targetId: this.settings.targetId, event: new EditorEvent(this, kind, text, start, end, width, height) },
+-    ) as EditorReceipt;
+-    if (response.accepted) { this.count = response.count; }
+-
++    this.events.push({ kind, text, start, end, width, height });
++    if (kind === "change") { this.pendingChanges++; }
++    if (this.eventTimer < 0 && !this.delivering) {
++      // ArkUI can synchronously emit selection while NativeAttachment is
++      // measuring or laying out this editor. A task (not a N-API microtask)
++      // lets that operation release its ownership guard before dispatch.
++      this.eventTimer = setTimeout((): void => this.deliverEvents(), 0);
++    }
++  }
++  private deliverEvents(): void {
++    this.eventTimer = -1;
++    this.delivering = true;
++    try {
++      while (this.events.length > 0 && !this.closed && this.context.isActive()) {
++        const event = this.events.shift();
++        if (!event) { break; }
++        const response = this.context.invokeNativeSync(
++          "editor-event", "nsh.arkui.EditorNotification", "nsh.arkui.EditorReceipt",
++          { targetId: this.settings.targetId, event: new EditorEvent(this, event.kind, event.text,
++            event.start, event.end, event.width, event.height) },
++        ) as EditorReceipt;
++        if (!this.closed && response.accepted) { this.count = response.count; }
++        if (event.kind === "change") { this.pendingChanges = Math.max(0, this.pendingChanges - 1); }
++      }
++    } finally {
++      this.delivering = false;
++      if (this.closed || !this.context.isActive()) { this.clearEvents(); }
++    }
++  }
++  private clearEvents(): void {
++    if (this.eventTimer >= 0) { clearTimeout(this.eventTimer); this.eventTimer = -1; }
++    this.events = [];
++    this.pendingChanges = 0;
+   }
+   appeared(): void {
+     this.scheduleSize();
+@@ -439,6 +480,7 @@
+   dispose(cleanup: BridgePluginContext = this.context): void {
+     if (this.disposed) { return; }
+     this.closed = true;
++    this.clearEvents();
+     try {
+       if (!this.retired) {
+         const response = cleanup.invokeNativeSync(
+--- a/crates/nsh-platform-ohos/arkts/tests/editors.test.mjs
++++ b/crates/nsh-platform-ohos/arkts/tests/editors.test.mjs
+@@ -10,7 +10,8 @@
+ const effects = `
+ const quarantinedEditors = new Set();
+ class FrameCallback {}
+-class TextInputController { selections=[]; setTextSelection(a,b){this.selections.push([a,b]);} getTextContentRect(){return {width:10,height:20};} stopEditing(){} }
++const hilog={warn(){}};
++class TextInputController { selections=[]; setTextSelection(a,b){this.selections.push([a,b]);} getTextContentRect(){globalThis.sdkMeasure?.();return {width:10,height:20};} stopEditing(){} }
+ class TextAreaController extends TextInputController {}
+ class BuilderNode { updates=0; disposals=0; build(){globalThis.sdkBuild?.();} update(){this.updates++; globalThis.sdkUpdate?.();} dispose(){this.disposals++;} getFrameNode(){return {};} }
+ const editorContent = () => {};
+@@ -31,8 +32,10 @@
+   if (ready) { entry.create(); calls.length=0; }
+   return {entry,settings,calls,context,accept(value){accepted=value;},active(value){active=value;}};
+ }
+-test('full strings including NUL cross one SDK callback and count comes from Rust receipt',()=>{
++const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
++test('full strings including NUL cross one SDK callback and count comes from Rust receipt',async()=>{
+   const f=fixture(); f.entry.change('a\0😀');
++  assert.equal(f.calls.length,0); await nextTask();
+   assert.equal(f.calls[0].value.event.text,'a\0😀');
+   assert.equal(f.entry.count,1);
+   f.entry.update({...f.settings,text:'stale',count:0});
+@@ -49,10 +52,10 @@
+   f.entry.command({kind:'selection',start:1,end:3});
+   assert.deepEqual(controller.selections,[[1,3]]);
+ });
+-test('SDK update failure clears applying guard and is observable',()=>{
++test('SDK update failure clears applying guard and is observable',async()=>{
+   const f=fixture(); globalThis.sdkUpdate=()=>{throw Error('SDK failed');};
+   try {assert.throws(()=>f.entry.update({...f.settings,text:'wanted'}),/SDK failed/);}finally{globalThis.sdkUpdate=undefined;}
+-  f.entry.change('user'); assert.equal(f.entry.count,1);
++  f.entry.change('user'); await nextTask(); assert.equal(f.entry.count,1);
+ });
+ test('retirement failure retains SDK owner and permits a later successful retry',()=>{
+   const f=fixture(); f.accept(false);
+@@ -76,11 +79,76 @@
+   b.dispose(second.context);
+ });
+ 
+-test('initial autofocus waits for native attachment and synchronous focus is delivered',()=>{
++test('initial autofocus waits for native attachment and synchronous SDK focus is delivered later',async()=>{
+   const f=fixture(21,false); f.entry.settings.autoFocus=true;
+   globalThis.sdkBuild=()=>f.entry.appeared();
+   globalThis.sdkFocus=()=>f.entry.emit('focus');
+   try {f.entry.create();} finally {globalThis.sdkBuild=undefined;globalThis.sdkFocus=undefined;}
++  assert.deepEqual(f.calls.map(c=>c.name),['native-node-ready']); await nextTask();
+   assert.deepEqual(f.calls.map(c=>c.name),['native-node-ready','editor-event']);
+   assert.equal(f.calls[1].value.event.kind,'focus');
+ });
++
++test('native measure selection callback waits for the attachment operation to return',async()=>{
++  const f=fixture(); const invoke=f.context.invokeNativeSync; let busy=false;
++  f.context.invokeNativeSync=(...args)=>{
++    if(busy && args[0]==='editor-event') throw Error('Native attachment target 1 already has an operation in progress');
++    return invoke(...args);
++  };
++  globalThis.sdkMeasure=()=>f.entry.emit('selection','',1,3);
++  try {
++    busy=true; f.entry.line.getTextContentRect();
++    await Promise.resolve(); // A microtask must not reenter the still-active SDK operation.
++    assert.equal(f.calls.length,0);
++  } finally {busy=false;globalThis.sdkMeasure=undefined;}
++  await nextTask();
++  assert.equal(f.calls.length,1); assert.equal(f.calls[0].value.event.kind,'selection');
++  assert.equal(f.calls[0].value.event.start,1); assert.equal(f.calls[0].value.event.end,3);
++});
++
++test('queued edits preserve callback order, receipt counts and pending local text',async()=>{
++  const f=fixture(); let kept=0;
++  f.entry.change('first'); f.entry.emit('selection','',1,1); f.entry.emit('key','a');
++  f.entry.change('second'); f.entry.submit({keepEditableState(){kept++;}});
++  assert.equal(kept,1); // The borrowed SubmitEvent is handled synchronously.
++  assert.equal(f.entry.text,'second'); assert.equal(f.entry.count,0); assert.equal(f.calls.length,0);
++  f.entry.update({...f.settings,text:'stale-before-receipt',count:0});
++  assert.equal(f.entry.text,'second');
++  await nextTask();
++  assert.deepEqual(f.calls.map(c=>c.value.event.kind),['change','selection','key','change','submit']);
++  assert.deepEqual(f.calls.map(c=>c.value.event.count),[0,1,1,1,2]);
++  assert.deepEqual(f.calls.filter(c=>c.value.event.kind==='change').map(c=>c.value.event.text),['first','second']);
++  assert.equal(f.entry.count,2);
++  f.entry.update({...f.settings,text:'stale-after-receipt',count:1}); assert.equal(f.entry.text,'second');
++  f.entry.update({...f.settings,text:'confirmed',count:2}); assert.equal(f.entry.text,'confirmed');
++});
++
++test('events generated during delivery wait until that native attachment dispatch returns',async()=>{
++  const f=fixture(); const invoke=f.context.invokeNativeSync; let busy=false;
++  f.context.invokeNativeSync=(...args)=>{
++    if(args[0]!=='editor-event') return invoke(...args);
++    assert.equal(busy,false,'native dispatch reentered its active attachment');
++    busy=true;
++    try {
++      if(args[3].event.kind==='change') f.entry.emit('selection','',2,2);
++      return invoke(...args);
++    } finally {busy=false;}
++  };
++  f.entry.change('ab'); await nextTask();
++  assert.deepEqual(f.calls.map(c=>c.value.event.kind),['change','selection']);
++  assert.deepEqual(f.calls.map(c=>c.value.event.count),[0,1]);
++});
++
++test('retired and inactive entries cancel pending events without dispatch to old targets',async()=>{
++  const retired=fixture(31),inactive=fixture(32);
++  retired.entry.change('retired edit'); retired.entry.emit('focus'); retired.entry.dispose();
++  inactive.entry.change('inactive edit'); inactive.entry.emit('selection','',1,1); inactive.active(false);
++  await nextTask();
++  assert.deepEqual(retired.calls.map(c=>c.name),['native-node-retiring']);
++  assert.equal(inactive.calls.length,0);
++  assert.equal(retired.entry.events.length,0); assert.equal(inactive.entry.events.length,0);
++  assert.equal(retired.entry.pendingChanges,0); assert.equal(inactive.entry.pendingChanges,0);
++  const replacement=fixture(33); replacement.entry.change('new target'); await nextTask();
++  assert.equal(replacement.calls[0].value.targetId,33);
++  assert.equal(retired.calls.filter(c=>c.name==='editor-event').length,0); assert.equal(inactive.calls.length,0);
++});

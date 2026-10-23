@@ -1,0 +1,641 @@
+--- /dev/null
++++ b/tests/host.rs
+@@ -0,0 +1,70 @@
++//! Pure host regressions for callback-owned event decoding.
++#![allow(non_snake_case, non_camel_case_types, dead_code)]
++
++extern crate self as ohos_arkui_sys;
++
++use std::{
++    ffi::c_void,
++    sync::atomic::{AtomicUsize, Ordering},
++};
++
++pub struct NodeCustomEvent;
++pub struct ArkUI_LayoutConstraint;
++pub struct ArkUI_DrawContext;
++pub struct ArkUI_IntOffset {
++    pub x: i32,
++    pub y: i32,
++}
++pub struct ArkUI_IntSize {
++    pub width: i32,
++    pub height: i32,
++}
++static RELEASED: AtomicUsize = AtomicUsize::new(0);
++
++unsafe fn OH_ArkUI_LayoutConstraint_GetMaxWidth(_: *mut ArkUI_LayoutConstraint) -> i32 {
++    320
++}
++unsafe fn OH_ArkUI_LayoutConstraint_GetMaxHeight(_: *mut ArkUI_LayoutConstraint) -> i32 {
++    240
++}
++unsafe fn OH_ArkUI_LayoutConstraint_Dispose(raw: *mut ArkUI_LayoutConstraint) -> *mut c_void {
++    // SAFETY: the test transfers exactly one Box into each production guard.
++    unsafe {
++        drop(Box::from_raw(raw));
++    }
++    RELEASED.fetch_add(1, Ordering::SeqCst);
++    std::ptr::null_mut()
++}
++unsafe fn OH_ArkUI_DrawContext_GetCanvas(_: *mut ArkUI_DrawContext) -> *mut c_void {
++    std::ptr::null_mut()
++}
++unsafe fn OH_ArkUI_DrawContext_GetSize(_: *mut ArkUI_DrawContext) -> ArkUI_IntSize {
++    ArkUI_IntSize {
++        width: 0,
++        height: 0,
++    }
++}
++
++#[path = "../src/api/node_custom_event/geometry.rs"]
++mod geometry;
++
++#[path = "../src/event/mixed_string.rs"]
++mod mixed_string;
++
++#[test]
++fn constraint_allocations_retire_once_on_return_and_unwind() {
++    let event = NodeCustomEvent;
++    let before = RELEASED.load(Ordering::SeqCst);
++    {
++        let raw = Box::into_raw(Box::new(ArkUI_LayoutConstraint));
++        let guard = geometry::LayoutConstraintHandle::from_raw(raw, &event).unwrap();
++        assert_eq!((guard.max_width(), guard.max_height()), (320, 240));
++    }
++    assert_eq!(RELEASED.load(Ordering::SeqCst), before + 1);
++    let _ = std::panic::catch_unwind(|| {
++        let raw = Box::into_raw(Box::new(ArkUI_LayoutConstraint));
++        let _guard = geometry::LayoutConstraintHandle::from_raw(raw, &event).unwrap();
++        panic!("consumer failed");
++    });
++    assert_eq!(RELEASED.load(Ordering::SeqCst), before + 2);
++}
+--- /dev/null
++++ b/tests/dialog_host.rs
+@@ -0,0 +1,195 @@
++//! Production dialog ownership with deterministic native substitutes.
++#![allow(dead_code, non_camel_case_types)]
++extern crate self as log;
++extern crate self as ohos_arkui_sys;
++#[macro_export]
++macro_rules! error {
++    ($($args:tt)*) => { eprintln!($($args)*); }
++}
++
++use std::{
++    cell::RefCell,
++    ffi::c_void,
++    rc::Rc,
++    sync::{
++        atomic::{AtomicBool, AtomicUsize, Ordering},
++        Mutex,
++    },
++};
++pub type ArkUI_NativeDialogHandle = *mut c_void;
++#[derive(Clone, Copy)]
++pub struct Alignment;
++#[derive(Clone, Copy)]
++pub struct DismissReason;
++#[derive(Debug)]
++pub struct ArkUIError;
++pub type ArkUIResult<T> = Result<T, ArkUIError>;
++mod arkui_input_binding {
++    pub enum ArkUIErrorCode {
++        ParamInvalid,
++    }
++}
++impl ArkUIError {
++    fn new(_: arkui_input_binding::ArkUIErrorCode, _: &str) -> Self {
++        Self
++    }
++}
++pub struct ArkUINode {
++    self_weak: std::rc::Weak<RefCell<ArkUINode>>,
++    disposed: bool,
++}
++static NODE_DISPOSALS: AtomicUsize = AtomicUsize::new(0);
++impl ArkUINode {
++    fn new() -> Self {
++        Self {
++            self_weak: Default::default(),
++            disposed: false,
++        }
++    }
++    fn raw(&self) -> *mut c_void {
++        std::ptr::dangling_mut()
++    }
++    fn is_owned(&self) -> bool {
++        !self.disposed
++    }
++    fn into_rc(self) -> Rc<RefCell<Self>> {
++        Rc::new_cyclic(|weak| {
++            let mut node = self;
++            node.self_weak = weak.clone();
++            RefCell::new(node)
++        })
++    }
++    fn bind_rc(rc: &Rc<RefCell<Self>>) {
++        if rc.borrow().self_weak.strong_count() == 0 {
++            rc.borrow_mut().self_weak = Rc::downgrade(rc);
++        }
++    }
++    fn dispose(&mut self) -> ArkUIResult<()> {
++        if self.self_weak.strong_count() > 1 {
++            return Err(ArkUIError);
++        }
++        self.disposed = true;
++        NODE_DISPOSALS.fetch_add(1, Ordering::SeqCst);
++        Ok(())
++    }
++}
++
++static FAIL_REMOVE: AtomicBool = AtomicBool::new(false);
++static REMOVED: AtomicUsize = AtomicUsize::new(0);
++static TEST_LOCK: Mutex<()> = Mutex::new(());
++struct Api;
++impl Api {
++    fn create(&self) -> ArkUIResult<ArkUI_NativeDialogHandle> {
++        Ok(std::ptr::dangling_mut())
++    }
++    fn set_content(&self, _: ArkUI_NativeDialogHandle, _: *mut c_void) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn remove_content(&self, _: ArkUI_NativeDialogHandle) -> ArkUIResult<()> {
++        if FAIL_REMOVE.load(Ordering::SeqCst) {
++            return Err(ArkUIError);
++        }
++        REMOVED.fetch_add(1, Ordering::SeqCst);
++        Ok(())
++    }
++    fn register_dismiss(&self, _: ArkUI_NativeDialogHandle, _: *mut c_void) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn dispose(&self, _: ArkUI_NativeDialogHandle) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn close(&self, _: ArkUI_NativeDialogHandle) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn show(&self, _: ArkUI_NativeDialogHandle, _: bool) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn custom_style(&self, _: ArkUI_NativeDialogHandle, _: bool) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn custom_animation(&self, _: ArkUI_NativeDialogHandle, _: bool) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn set_modal_mode(&self, _: ArkUI_NativeDialogHandle, _: bool) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn set_auto_cancel(&self, _: ArkUI_NativeDialogHandle, _: bool) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn set_background_color(&self, _: ArkUI_NativeDialogHandle, _: u32) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn set_content_alignment(
++        &self,
++        _: ArkUI_NativeDialogHandle,
++        _: Alignment,
++        _: f32,
++        _: f32,
++    ) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn set_corner_radius(
++        &self,
++        _: ArkUI_NativeDialogHandle,
++        _: f32,
++        _: f32,
++        _: f32,
++        _: f32,
++    ) -> ArkUIResult<()> {
++        Ok(())
++    }
++}
++struct ApiSlot;
++impl ApiSlot {
++    fn with<T>(&self, use_api: impl FnOnce(&Api) -> T) -> T {
++        use_api(&Api)
++    }
++}
++mod api {
++    pub(crate) static ARK_UI_NATIVE_DIALOG_API_1: crate::ApiSlot = crate::ApiSlot;
++}
++#[path = "../src/dialog/mod.rs"]
++mod dialog;
++
++#[test]
++fn shared_content_stays_owned_until_successful_native_removal() {
++    let _serial = TEST_LOCK.lock().unwrap();
++    REMOVED.store(0, Ordering::SeqCst);
++    let node = Rc::new(RefCell::new(ArkUINode::new()));
++    let dialog = dialog::Dialog::new().unwrap();
++    dialog.content_node(&node).unwrap();
++    assert_eq!(Rc::strong_count(&node), 2);
++    assert!(node.borrow_mut().dispose().is_err());
++    FAIL_REMOVE.store(true, Ordering::SeqCst);
++    assert!(dialog.remove_content().is_err());
++    assert!(node.borrow_mut().dispose().is_err());
++    FAIL_REMOVE.store(false, Ordering::SeqCst);
++    dialog.remove_content().unwrap();
++    dialog.remove_content().unwrap();
++    assert_eq!(REMOVED.load(Ordering::SeqCst), 1);
++    assert_eq!(Rc::strong_count(&node), 1);
++    node.borrow_mut().dispose().unwrap();
++}
++
++#[test]
++fn transferred_content_disposes_after_its_dialog_edge_retires() {
++    let _serial = TEST_LOCK.lock().unwrap();
++    let before = NODE_DISPOSALS.load(Ordering::SeqCst);
++    let dialog = dialog::Dialog::new().unwrap();
++    dialog.content(ArkUINode::new()).unwrap();
++    dialog.remove_content().unwrap();
++    assert_eq!(NODE_DISPOSALS.load(Ordering::SeqCst), before + 1);
++}
++
++#[test]
++fn failed_drop_keeps_the_native_contents_rc_retained() {
++    let _serial = TEST_LOCK.lock().unwrap();
++    let node = Rc::new(RefCell::new(ArkUINode::new()));
++    let dialog = dialog::Dialog::new().unwrap();
++    dialog.content_node(&node).unwrap();
++    FAIL_REMOVE.store(true, Ordering::SeqCst);
++    drop(dialog);
++    FAIL_REMOVE.store(false, Ordering::SeqCst);
++    assert_eq!(Rc::strong_count(&node), 2);
++    assert!(node.borrow_mut().dispose().is_err());
++}
+--- /dev/null
++++ b/tests/node_host.rs
+@@ -0,0 +1,206 @@
++//! Run production node ownership and registry tests with Rust native API substitutes.
++// This harness targets the baseline API without optional native capabilities.
++#![cfg(not(any(feature = "napi", feature = "xcomponent", feature = "api-13")))]
++#![allow(dead_code, non_snake_case, non_camel_case_types)]
++extern crate self as ohos_arkui_input_binding;
++extern crate self as ohos_arkui_sys;
++
++use std::{cell::RefCell, ffi::c_void};
++pub mod sys {
++    pub type ArkUI_NodeHandle = *mut std::ffi::c_void;
++}
++#[derive(Debug)]
++pub enum ArkUIErrorCode {
++    ParamInvalid,
++}
++#[derive(Debug)]
++pub struct ArkUIError;
++impl ArkUIError {
++    fn new(_: ArkUIErrorCode, _: &str) -> Self {
++        Self
++    }
++}
++pub type ArkUIResult<T> = Result<T, ArkUIError>;
++#[derive(Clone, Copy)]
++pub enum ArkUINodeType {
++    Custom,
++}
++#[derive(Clone, Default)]
++pub struct EventHandle {
++    callbacks: Vec<(u32, ())>,
++}
++pub struct NodeDirtyFlag;
++pub trait ArkUIAttributeBasic {
++    fn raw(&self) -> &ArkUINode;
++    fn borrow_mut(&mut self) -> &mut ArkUINode;
++}
++pub trait ArkUICommonAttribute: ArkUIAttributeBasic {}
++pub trait ArkUIEvent {}
++pub trait ArkUIGesture {}
++pub mod types {
++    pub mod advanced {
++        pub struct LengthMetricUnit;
++    }
++}
++#[macro_export]
++macro_rules! check_arkui_status {
++    ($status:expr) => {{
++        let _ = $status;
++        Ok::<(), $crate::ArkUIError>(())
++    }};
++}
++pub struct ArkUI_IntOffset {
++    pub x: i32,
++    pub y: i32,
++}
++pub struct ArkUI_IntSize {
++    pub width: i32,
++    pub height: i32,
++}
++unsafe fn OH_ArkUI_GetContextByNode(_: sys::ArkUI_NodeHandle) -> *mut c_void {
++    std::ptr::null_mut()
++}
++unsafe fn OH_ArkUI_NodeUtils_GetLayoutSize(_: sys::ArkUI_NodeHandle, _: *mut ArkUI_IntSize) {}
++unsafe fn OH_ArkUI_NodeUtils_GetLayoutPositionInScreen(
++    _: sys::ArkUI_NodeHandle,
++    _: *mut ArkUI_IntOffset,
++) {
++}
++unsafe fn OH_ArkUI_NodeUtils_GetLayoutPosition(_: sys::ArkUI_NodeHandle, _: *mut ArkUI_IntOffset) {}
++unsafe fn OH_ArkUI_NodeUtils_GetLayoutPositionInWindow(
++    _: sys::ArkUI_NodeHandle,
++    _: *mut ArkUI_IntOffset,
++) {
++}
++unsafe fn OH_ArkUI_NodeUtils_GetPositionWithTranslateInWindow(
++    _: sys::ArkUI_NodeHandle,
++    _: *mut ArkUI_IntOffset,
++) {
++}
++
++pub mod animate {
++    pub mod options {
++        use super::super::*;
++        pub struct Context;
++        impl Context {
++            pub fn raw(&self) -> *mut c_void {
++                std::ptr::null_mut()
++            }
++        }
++        pub struct Animation {
++            pub update_ctx: RefCell<Context>,
++            pub finish_ctx: RefCell<Context>,
++        }
++        impl Animation {
++            pub fn raw(&self) -> *mut c_void {
++                std::ptr::null_mut()
++            }
++        }
++    }
++}
++pub mod api {
++    pub mod node_custom_event {
++        pub struct IntOffset;
++        pub struct IntSize;
++        impl From<crate::ArkUI_IntOffset> for IntOffset {
++            fn from(_: crate::ArkUI_IntOffset) -> Self {
++                Self
++            }
++        }
++        impl From<crate::ArkUI_IntSize> for IntSize {
++            fn from(_: crate::ArkUI_IntSize) -> Self {
++                Self
++            }
++        }
++    }
++    pub(crate) static ARK_UI_NATIVE_ANIMATE_API_1: crate::ApiSlot = crate::ApiSlot;
++}
++struct Api;
++impl Api {
++    fn add_event_receiver(&self, _: &ArkUINode) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn remove_event_receiver(&self, _: &ArkUINode) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn get_parent(&self, _: &ArkUINode) -> ArkUIResult<Option<sys::ArkUI_NodeHandle>> {
++        Ok(None)
++    }
++    fn remove_child(&self, _: &ArkUINode, _: &ArkUINode) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn unregister_node_event(&self, _: &ArkUINode, _: u32) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn dispose(&self, _: &ArkUINode) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn set_length_metric_unit(
++        &self,
++        _: &ArkUINode,
++        _: types::advanced::LengthMetricUnit,
++    ) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn mark_dirty(&self, _: &ArkUINode, _: NodeDirtyFlag) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn animate_to(
++        &self,
++        _: *mut c_void,
++        _: *mut c_void,
++        _: *mut c_void,
++        _: *mut c_void,
++    ) -> ArkUIResult<()> {
++        Ok(())
++    }
++}
++struct ApiSlot;
++impl ApiSlot {
++    fn with<T>(&self, use_api: impl FnOnce(&Api) -> T) -> T {
++        use_api(&Api)
++    }
++}
++static ARK_UI_NATIVE_NODE_API_1: ApiSlot = ApiSlot;
++#[allow(unused_imports)]
++#[path = "../src/common/node.rs"]
++pub mod node;
++#[path = "../src/common/node_registry.rs"]
++pub mod node_registry;
++pub mod common {
++    pub use crate::{node, node_registry, ArkUIResult};
++}
++pub use node::ArkUINode;
++
++#[test]
++fn disposal_succeeds_after_the_extra_rc_owner_retires() {
++    let node = ArkUINode {
++        raw: std::ptr::dangling_mut(),
++        owns_raw: true,
++        ..Default::default()
++    }
++    .into_rc();
++    let other_owner = node.clone();
++    assert!(node.borrow_mut().dispose().is_err());
++    assert!(node.borrow().is_owned());
++    drop(other_owner);
++    node.borrow_mut().dispose().unwrap();
++    assert!(node.borrow().raw_handle().is_null());
++    assert!(!node.borrow().is_owned());
++}
++
++#[test]
++fn registry_binds_a_callers_rc_without_retaining_it() {
++    let node = std::rc::Rc::new(RefCell::new(ArkUINode {
++        raw: std::ptr::dangling_mut(),
++        owns_raw: true,
++        ..Default::default()
++    }));
++    let view = node.borrow().borrowed_clone();
++    node_registry::register(&view, node.clone()).unwrap();
++    assert_eq!(node.borrow().self_weak.strong_count(), 1);
++    let other_owner = node.clone();
++    assert!(node.borrow_mut().dispose().is_err());
++    drop(other_owner);
++    node.borrow_mut().dispose().unwrap();
++}
+--- /dev/null
++++ b/tests/root_host.rs
+@@ -0,0 +1,158 @@
++//! Run the production root lifecycle with deterministic native substitutes.
++#![allow(dead_code, non_upper_case_globals)]
++
++extern crate self as log;
++extern crate self as ohos_arkui_input_binding;
++#[macro_export]
++macro_rules! error {
++    ($($args:tt)*) => { eprintln!($($args)*); }
++}
++
++use std::{
++    cell::RefCell,
++    rc::Rc,
++    sync::{
++        atomic::{AtomicBool, AtomicUsize, Ordering},
++        Mutex,
++    },
++};
++
++#[derive(Debug)]
++pub enum ArkUIErrorCode {
++    ChildNodeExist,
++    ParamInvalid,
++}
++#[derive(Debug)]
++pub struct ArkUIError;
++impl ArkUIError {
++    fn new(_: ArkUIErrorCode, _: &str) -> Self {
++        Self
++    }
++}
++pub type ArkUIResult<T> = Result<T, ArkUIError>;
++
++pub struct ArkUINode {
++    owns_raw: bool,
++    self_weak: std::rc::Weak<RefCell<ArkUINode>>,
++    disposed: bool,
++}
++impl ArkUINode {
++    fn new() -> Self {
++        Self {
++            owns_raw: true,
++            self_weak: Default::default(),
++            disposed: false,
++        }
++    }
++    fn into_rc(self) -> Rc<RefCell<Self>> {
++        Rc::new_cyclic(|weak| {
++            let mut node = self;
++            node.self_weak = weak.clone();
++            RefCell::new(node)
++        })
++    }
++    fn bind_rc(rc: &Rc<RefCell<Self>>) {
++        if rc.borrow().self_weak.strong_count() == 0 {
++            rc.borrow_mut().self_weak = Rc::downgrade(rc);
++        }
++    }
++    fn raw_handle(&self) -> *mut std::ffi::c_void {
++        if self.disposed {
++            std::ptr::null_mut()
++        } else {
++            std::ptr::dangling_mut()
++        }
++    }
++    fn dispose(&mut self) -> ArkUIResult<()> {
++        if self.self_weak.strong_count() > 1 {
++            return Err(ArkUIError);
++        }
++        self.disposed = true;
++        Ok(())
++    }
++}
++
++pub struct ArkUIHandle;
++static REMOVALS: AtomicUsize = AtomicUsize::new(0);
++static FAIL_REMOVAL: AtomicBool = AtomicBool::new(false);
++static TEST_LOCK: Mutex<()> = Mutex::new(());
++impl ArkUIHandle {
++    fn add_node(&self, _: &ArkUINode) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn remove_node(&self, _: &ArkUINode) -> ArkUIResult<()> {
++        if FAIL_REMOVAL.load(Ordering::SeqCst) {
++            REMOVALS.fetch_add(1, Ordering::SeqCst);
++            return Err(ArkUIError);
++        }
++        // Repeating a successful native removal is an error, as on the device.
++        if REMOVALS.fetch_add(1, Ordering::SeqCst) != 0 {
++            return Err(ArkUIError);
++        }
++        Ok(())
++    }
++}
++struct Api;
++impl Api {
++    fn add_event_receiver(&self, _: &ArkUINode) -> ArkUIResult<()> {
++        Ok(())
++    }
++    fn remove_event_receiver(&self, _: &ArkUINode) -> ArkUIResult<()> {
++        Ok(())
++    }
++}
++struct ApiSlot;
++impl ApiSlot {
++    fn with<T>(&self, use_api: impl FnOnce(&Api) -> T) -> T {
++        use_api(&Api)
++    }
++}
++static ARK_UI_NATIVE_NODE_API_1: ApiSlot = ApiSlot;
++mod common {
++    pub(crate) mod node_registry {
++        pub(crate) fn register(
++            _: &crate::ArkUINode,
++            _: std::rc::Rc<std::cell::RefCell<crate::ArkUINode>>,
++        ) -> crate::ArkUIResult<()> {
++            Ok(())
++        }
++        pub(crate) fn unregister(_: &crate::ArkUINode) {}
++    }
++}
++#[path = "../src/component/root.rs"]
++mod root;
++
++#[test]
++fn detached_roots_retry_disposal_without_repeating_native_removal() {
++    let _serial = TEST_LOCK.lock().unwrap();
++    REMOVALS.store(0, Ordering::SeqCst);
++    let node = ArkUINode::new().into_rc();
++    let other_owner = node.clone();
++    let weak = Rc::downgrade(&node);
++    let mut root = root::RootNode::new(ArkUIHandle);
++    root.mount_node(node).unwrap();
++    assert_eq!(other_owner.borrow().self_weak.strong_count(), 2);
++    assert!(root.unmount().is_err());
++    assert_eq!(REMOVALS.load(Ordering::SeqCst), 1);
++    assert!(!other_owner.borrow().disposed);
++    drop(other_owner);
++    root.unmount().unwrap();
++    assert_eq!(REMOVALS.load(Ordering::SeqCst), 1);
++    assert!(weak.upgrade().is_none());
++}
++
++#[test]
++fn dropping_a_root_retains_its_rc_when_the_native_edge_survives() {
++    let _serial = TEST_LOCK.lock().unwrap();
++    REMOVALS.store(0, Ordering::SeqCst);
++    // Exercise binding of a caller-created Rc as well as into_rc above.
++    let node = Rc::new(RefCell::new(ArkUINode::new()));
++    let mut root = root::RootNode::new(ArkUIHandle);
++    root.mount_node(node.clone()).unwrap();
++    FAIL_REMOVAL.store(true, Ordering::SeqCst);
++    drop(root);
++    FAIL_REMOVAL.store(false, Ordering::SeqCst);
++    assert_eq!(REMOVALS.load(Ordering::SeqCst), 1);
++    assert_eq!(Rc::strong_count(&node), 2);
++    assert!(node.borrow_mut().dispose().is_err());
++}

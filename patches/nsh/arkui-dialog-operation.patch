@@ -1,0 +1,85 @@
+--- a/src/dialog/mod.rs
++++ b/src/dialog/mod.rs
+@@ -6,6 +6,26 @@
+ use crate::{Alignment, ArkUINode, ArkUIResult, DismissReason};
+ 
+ use ohos_arkui_sys::ArkUI_NativeDialogHandle;
++
++#[derive(Default)]
++struct Operation(std::cell::Cell<bool>);
++
++impl Operation {
++    fn enter(&self) -> Option<Active<'_>> {
++        if self.0.replace(true) {
++            None
++        } else {
++            Some(Active(&self.0))
++        }
++    }
++}
++
++struct Active<'a>(&'a std::cell::Cell<bool>);
++impl Drop for Active<'_> {
++    fn drop(&mut self) {
++        self.0.set(false);
++    }
++}
+ 
+ pub(crate) struct InnerDialogDismissData {
+     pub dismiss_handle: Option<fn(DialogDismissData) -> Option<bool>>,
+@@ -28,6 +48,7 @@
+     pub(crate) raw: ArkUI_NativeDialogHandle,
+     pub(crate) inner_dismiss_data: Rc<RefCell<InnerDialogDismissData>>,
+     content: RefCell<Option<DialogContent>>,
++    operation: Operation,
+ }
+ 
+ struct DialogContent {
+@@ -50,6 +71,7 @@
+             raw: dialog_controller,
+             inner_dismiss_data: data,
+             content: RefCell::default(),
++            operation: Default::default(),
+         })
+     }
+ 
+@@ -66,7 +88,14 @@
+         self.set_content(node.clone(), false)
+     }
+ 
++    fn begin(&self) -> ArkUIResult<Active<'_>> {
++        self.operation
++            .enter()
++            .ok_or_else(|| invalid("dialog ownership operation is in progress"))
++    }
++
+     fn set_content(&self, node: Rc<RefCell<ArkUINode>>, owned: bool) -> ArkUIResult<()> {
++        let _active = self.begin()?;
+         if self.raw.is_null() || self.content.borrow().is_some() {
+             return Err(invalid(
+                 "remove existing content before attaching a new dialog node",
+@@ -88,6 +117,11 @@
+ 
+     /// Detaches the controller's content before its owner disposes the node.
+     pub fn remove_content(&self) -> ArkUIResult<()> {
++        let _active = self.begin()?;
++        self.remove_content_inner()
++    }
++
++    fn remove_content_inner(&self) -> ArkUIResult<()> {
+         let attached = self
+             .content
+             .borrow()
+@@ -139,7 +173,11 @@
+ 
+     /// Releases a closed dialog controller. Repeated calls are harmless.
+     pub fn dispose(&mut self) -> ArkUIResult<()> {
+-        self.remove_content()?;
++        let _active = self
++            .operation
++            .enter()
++            .ok_or_else(|| invalid("dialog ownership operation is in progress"))?;
++        self.remove_content_inner()?;
+         if self.raw.is_null() {
+             return Ok(());
+         }

@@ -17,6 +17,17 @@ interface SystemExitRecord {
   process: string;
   pid: string;
   foreground: string;
+  errorName?: string;
+  stackFrames?: string[];
+}
+
+interface CrashReason {
+  name?: string;
+  stack?: string;
+}
+interface FaultDiagnostic {
+  name?: string;
+  stack?: string[];
 }
 
 /** Each process writes its own file. Never infer a kill cause from missing events. */
@@ -24,8 +35,10 @@ export class SystemExitRecorder {
   private path: string = '';
   private records: SystemExitRecord[] = [];
   private holder?: hiAppEvent.AppEventPackageHolder;
+  private debugFaults: boolean = false;
 
-  start(filesDir: string, launch?: AbilityConstant.LaunchParam, vpn: boolean = false): void {
+  start(filesDir: string, launch?: AbilityConstant.LaunchParam, vpn: boolean = false, debugFaults: boolean = false): void {
+    this.debugFaults = debugFaults;
     this.path = `${filesDir}/paws/${vpn ? 'system-exits-vpn' : 'system-exits'}.json`;
     try {
       if (fileIo.statSync(this.path).size <= 65536) {
@@ -69,6 +82,7 @@ export class SystemExitRecorder {
   }
 
   private receive(info: hiAppEvent.AppEventInfo): void {
+    const fault = this.debugCrashReason(info);
     const rawReason = this.scalar(info, 'reason') || 'system-reason-not-scalar';
     const subReason = this.scalar(info, 'sub_reason') || this.scalar(info, 'subReason');
     const killId = this.scalar(info, 'kill_id') || this.scalar(info, 'killId');
@@ -95,7 +109,26 @@ export class SystemExitRecorder {
       process: this.scalar(info, 'process_name'),
       pid: this.scalar(info, 'pid'),
       foreground: this.scalar(info, 'foreground'),
+      errorName: fault?.name,
+      stackFrames: fault?.stack,
     });
+  }
+
+  private debugCrashReason(info: hiAppEvent.AppEventInfo): FaultDiagnostic | undefined {
+    if (!this.debugFaults || info.name !== hiAppEvent.event.APP_CRASH) { return undefined; }
+    const params = info.params as Record<string, hiAppEvent.ParamType>;
+    const value = params['reason'];
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) { return undefined; }
+    const reason = value as CrashReason;
+    // Do not stringify reason: its message and first stack line can contain
+    // entered text. Keep only the error class and source-location frames.
+    const name = typeof reason.name === 'string' && /^[A-Za-z][A-Za-z0-9_.]{0,63}$/.test(reason.name)
+      ? reason.name : undefined;
+    const stack = typeof reason.stack === 'string' ? reason.stack.slice(0, 32768).split('\n')
+      .map((line: string): string => line.trim())
+      .filter((line: string): boolean => /^at\s+.{1,448}:\d+:\d+\)?$/.test(line))
+      .slice(0, 20).map((line: string): string => line.slice(0, 512)) : [];
+    return { name, stack: stack.length > 0 ? stack : undefined };
   }
 
   private scalar(info: hiAppEvent.AppEventInfo, key: string): string {
@@ -120,6 +153,12 @@ export class SystemExitRecorder {
       fileIo.closeSync(file); file = undefined;
       fileIo.renameSync(`${this.path}.tmp`, this.path);
       hilog.info(0, 'TinyPawsExit', 'recorded %{public}s: %{public}s', record.event, record.reason);
+      if (this.debugFaults && record.errorName) {
+        hilog.error(0, 'TinyPawsExit', 'debug fault class %{public}s', record.errorName);
+      }
+      if (this.debugFaults && record.stackFrames) {
+        for (const frame of record.stackFrames) { hilog.error(0, 'TinyPawsExit', 'debug fault frame %{public}s', frame); }
+      }
     } catch (_) { hilog.warn(0, 'TinyPawsExit', 'OS exit record write failed'); }
     finally { if (file !== undefined) { fileIo.closeSync(file); } }
   }

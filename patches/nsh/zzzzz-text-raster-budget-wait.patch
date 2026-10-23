@@ -1,0 +1,792 @@
+--- /dev/null
++++ b/crates/nsh-platform-ohos/src/text/budget.rs
+@@ -0,0 +1,488 @@
++//! Per-engine raster reservations. Only producer workers wait for capacity;
++//! published layouts release it from any thread, without waiting for producers.
++use std::{
++    sync::{Arc, Condvar, Mutex, MutexGuard},
++    time::{Duration, Instant},
++};
++
++const LIMIT: usize = 96 << 20;
++const MAX_WAIT: Duration = Duration::from_millis(100);
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Status {
++    Open,
++    Exhausted,
++    Closed,
++}
++
++#[derive(Debug)]
++struct State {
++    used: usize,
++    releases: u64,
++    waiters: usize,
++    next_wait: u64,
++    status: Status,
++}
++
++#[derive(Debug)]
++pub(crate) struct Budget {
++    limit: usize,
++    state: Mutex<State>,
++    changed: Condvar,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[repr(u8)]
++pub(crate) enum Rejected {
++    TimedOut = 2,
++    Exhausted = 3,
++    Closed = 4,
++    TooLarge = 5,
++}
++
++#[derive(Debug)]
++pub(crate) struct Failure {
++    pub(crate) reason: Rejected,
++    pub(crate) used: usize,
++}
++
++#[derive(Debug, Clone, Copy)]
++pub(crate) struct Wait {
++    pub(crate) id: u64,
++    pub(crate) phase: u8,
++    pub(crate) used: usize,
++    pub(crate) requested: usize,
++    pub(crate) releases: u64,
++    pub(crate) elapsed_micros: u64,
++    pub(crate) outcome: u8,
++}
++
++#[derive(Debug)]
++pub(crate) struct Reservation {
++    budget: Arc<Budget>,
++    bytes: usize,
++}
++
++/// Cancels a producer before a later-created local engine can be joined during
++/// a failed startup. Successful startup transfers this duty to its UI owner.
++pub(crate) struct CancelOnDrop(Option<Arc<Budget>>);
++impl CancelOnDrop {
++    pub(crate) fn disarm(mut self) {
++        self.0 = None;
++    }
++}
++impl Drop for CancelOnDrop {
++    fn drop(&mut self) {
++        if let Some(budget) = &self.0 {
++            budget.cancel();
++        }
++    }
++}
++
++impl Budget {
++    pub(crate) fn new() -> Arc<Self> {
++        Self::with_limit(LIMIT)
++    }
++
++    fn with_limit(limit: usize) -> Arc<Self> {
++        Arc::new(Self {
++            limit,
++            state: Mutex::new(State {
++                used: 0,
++                releases: 0,
++                waiters: 0,
++                next_wait: 0,
++                status: Status::Open,
++            }),
++            changed: Condvar::new(),
++        })
++    }
++
++    fn lock(&self) -> MutexGuard<'_, State> {
++        // Shutdown and RAII release must still work after an unrelated panic.
++        self.state
++            .lock()
++            .unwrap_or_else(std::sync::PoisonError::into_inner)
++    }
++
++    pub(crate) fn used(&self) -> usize {
++        self.lock().used
++    }
++
++    pub(crate) fn cancel_on_drop(self: &Arc<Self>) -> CancelOnDrop {
++        CancelOnDrop(Some(self.clone()))
++    }
++
++    pub(crate) fn cancel(&self) {
++        let mut state = self.lock();
++        state.status = Status::Closed;
++        self.changed.notify_all();
++    }
++
++    fn fits(&self, state: &State, bytes: usize) -> bool {
++        state
++            .used
++            .checked_add(bytes)
++            .is_some_and(|next| next <= self.limit)
++    }
++
++    fn failure(state: &State) -> Option<Failure> {
++        let reason = match state.status {
++            Status::Open => return None,
++            Status::Closed => Rejected::Closed,
++            Status::Exhausted => Rejected::Exhausted,
++        };
++        Some(Failure {
++            reason,
++            used: state.used,
++        })
++    }
++
++    pub(crate) fn reserve(
++        self: &Arc<Self>,
++        bytes: usize,
++        observe: impl Fn(Wait),
++    ) -> Result<Reservation, Failure> {
++        let mut state = self.lock();
++        if let Some(failure) = Self::failure(&state) {
++            return Err(failure);
++        }
++        if bytes > self.limit {
++            state.status = Status::Exhausted;
++            self.changed.notify_all();
++            return Err(Failure {
++                reason: Rejected::TooLarge,
++                used: state.used,
++            });
++        }
++        if self.fits(&state, bytes) {
++            state.used += bytes;
++            return Ok(Reservation {
++                budget: self.clone(),
++                bytes,
++            });
++        }
++
++        // One absolute deadline, including diagnostics and every spurious wake.
++        // No drawing, Core, native UI or observer code runs under this mutex.
++        let start = Instant::now();
++        let deadline = start + MAX_WAIT;
++        state.next_wait = state.next_wait.saturating_add(1);
++        let id = state.next_wait;
++        let before = Wait {
++            id,
++            phase: 1,
++            used: state.used,
++            requested: bytes,
++            releases: state.releases,
++            elapsed_micros: 0,
++            outcome: 0,
++        };
++        drop(state);
++        observe(before);
++        state = self.lock();
++        if state.status == Status::Open && !self.fits(&state, bytes) {
++            state.waiters += 1;
++            self.changed.notify_all();
++            let remaining = deadline.saturating_duration_since(Instant::now());
++            let (next, _) = self
++                .changed
++                .wait_timeout_while(state, remaining, |state| {
++                    state.status == Status::Open && !self.fits(state, bytes)
++                })
++                .unwrap_or_else(std::sync::PoisonError::into_inner);
++            state = next;
++            state.waiters -= 1;
++        }
++        let result = if let Some(failure) = Self::failure(&state) {
++            Err(failure)
++        } else if self.fits(&state, bytes) {
++            state.used += bytes;
++            Ok(Reservation {
++                budget: self.clone(),
++                bytes,
++            })
++        } else {
++            // A failed layout is already fatal. Latch the same-generation
++            // failure so subsequent Text items cannot each wait another 100ms.
++            state.status = Status::Exhausted;
++            self.changed.notify_all();
++            Err(Failure {
++                reason: Rejected::TimedOut,
++                used: state.used,
++            })
++        };
++        let after = Wait {
++            id,
++            phase: 2,
++            used: state.used,
++            requested: bytes,
++            releases: state.releases,
++            elapsed_micros: start.elapsed().as_micros().min(u64::MAX as u128) as u64,
++            outcome: result
++                .as_ref()
++                .map_or_else(|failure| failure.reason as u8, |_| 1),
++        };
++        drop(state);
++        observe(after);
++        result
++    }
++}
++
++impl Drop for Reservation {
++    fn drop(&mut self) {
++        let mut state = self.budget.lock();
++        // Private, non-Clone tokens release exactly their successful acquire.
++        state.used -= self.bytes;
++        state.releases = state.releases.saturating_add(1);
++        self.budget.changed.notify_all();
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::sync::{Barrier, mpsc};
++    use std::thread;
++
++    fn reserve(budget: &Arc<Budget>, bytes: usize) -> Result<Reservation, Failure> {
++        budget.reserve(bytes, |_| {})
++    }
++
++    fn waiting(budget: &Budget) {
++        let (state, result) = budget
++            .changed
++            .wait_timeout_while(budget.lock(), Duration::from_secs(2), |state| {
++                state.waiters == 0
++            })
++            .unwrap();
++        assert!(
++            !result.timed_out() && state.waiters > 0,
++            "producer did not enter capacity wait"
++        );
++    }
++
++    #[test]
++    fn actual_drop_wakes_a_capacity_waiter_without_exceeding_limit() {
++        let budget = Budget::with_limit(10);
++        let old = reserve(&budget, 10).unwrap();
++        let worker = budget.clone();
++        let reports = Arc::new(Mutex::new(Vec::new()));
++        let observed = reports.clone();
++        let thread = thread::spawn(move || {
++            worker.reserve(7, |event| {
++                // The numeric observer may inspect counters: it must not run under
++                // the budget mutex or gate the UI's release of an old reservation.
++                let _ = worker.used();
++                observed.lock().unwrap().push(event);
++            })
++        });
++        waiting(&budget);
++        drop(old);
++        let next = thread.join().unwrap().unwrap();
++        let reports = reports.lock().unwrap();
++        assert_eq!(reports.len(), 2);
++        assert_eq!((reports[0].id, reports[1].id), (1, 1));
++        assert_eq!((reports[0].phase, reports[1].phase), (1, 2));
++        assert_eq!((reports[0].used, reports[1].used), (10, 7));
++        assert_eq!((reports[0].requested, reports[1].requested), (7, 7));
++        assert_eq!((reports[0].releases, reports[1].releases), (0, 1));
++        assert_eq!((reports[0].outcome, reports[1].outcome), (0, 1));
++        assert_eq!(reports[0].elapsed_micros, 0);
++        assert!(reports[1].elapsed_micros > 0);
++        assert_eq!(budget.used(), 7);
++        drop(next);
++        assert_eq!(budget.used(), 0);
++    }
++
++    #[test]
++    fn release_between_pressure_check_and_wait_cannot_be_lost() {
++        let budget = Budget::with_limit(10);
++        let old = reserve(&budget, 10).unwrap();
++        let (entered, receive) = mpsc::channel();
++        let resume = Arc::new(Barrier::new(2));
++        let worker = budget.clone();
++        let gate = resume.clone();
++        let thread = thread::spawn(move || {
++            worker.reserve(10, |event| {
++                if event.phase == 1 {
++                    entered.send(()).unwrap();
++                    gate.wait();
++                }
++            })
++        });
++        receive.recv_timeout(Duration::from_secs(2)).unwrap();
++        drop(old);
++        resume.wait();
++        let next = thread.join().unwrap().unwrap();
++        assert_eq!(budget.used(), 10);
++        drop(next);
++        assert_eq!(budget.used(), 0);
++    }
++
++    #[test]
++    fn timeout_is_terminal_and_late_release_does_not_revive_it() {
++        let budget = Budget::with_limit(10);
++        let old = reserve(&budget, 10).unwrap();
++        let failure = reserve(&budget, 1).unwrap_err();
++        assert_eq!(failure.reason, Rejected::TimedOut);
++        assert_eq!(failure.used, 10);
++        // Any attempted second wait would invoke this observer and fail.
++        assert_eq!(
++            budget
++                .reserve(1, |_| panic!("terminal budget waited again"))
++                .unwrap_err()
++                .reason,
++            Rejected::Exhausted
++        );
++        drop(old);
++        assert_eq!(budget.used(), 0);
++        assert_eq!(reserve(&budget, 1).unwrap_err().reason, Rejected::Exhausted);
++        let next_generation = Budget::with_limit(10);
++        assert!(reserve(&next_generation, 10).is_ok());
++    }
++
++    #[test]
++    fn spurious_notifications_do_not_extend_the_absolute_deadline() {
++        let budget = Budget::with_limit(10);
++        let _old = reserve(&budget, 10).unwrap();
++        let wake = budget.clone();
++        let (done, stop) = mpsc::channel();
++        let noise = thread::spawn(move || {
++            loop {
++                match stop.recv_timeout(Duration::from_millis(2)) {
++                    Err(mpsc::RecvTimeoutError::Timeout) => wake.changed.notify_all(),
++                    _ => break,
++                }
++            }
++        });
++        let start = Instant::now();
++        assert_eq!(reserve(&budget, 1).unwrap_err().reason, Rejected::TimedOut);
++        let elapsed = start.elapsed();
++        done.send(()).unwrap();
++        noise.join().unwrap();
++        assert!(elapsed >= MAX_WAIT);
++        assert!(
++            elapsed < Duration::from_secs(1),
++            "spurious wakes reset the deadline"
++        );
++    }
++
++    #[test]
++    fn cancel_wakes_waiter_and_rejects_even_when_capacity_is_free() {
++        let budget = Budget::with_limit(10);
++        let old = reserve(&budget, 10).unwrap();
++        let worker = budget.clone();
++        let thread = thread::spawn(move || reserve(&worker, 1));
++        waiting(&budget);
++        budget.cancel();
++        assert_eq!(thread.join().unwrap().unwrap_err().reason, Rejected::Closed);
++        drop(old);
++        assert_eq!(budget.used(), 0);
++        assert_eq!(
++            budget
++                .reserve(1, |_| panic!("closed budget waited"))
++                .unwrap_err()
++                .reason,
++            Rejected::Closed
++        );
++    }
++
++    #[test]
++    fn independent_budgets_never_share_capacity_or_cancellation() {
++        let a = Budget::with_limit(10);
++        let b = Budget::with_limit(10);
++        let _a = reserve(&a, 10).unwrap();
++        let _b = reserve(&b, 10).unwrap();
++        a.cancel();
++        assert_eq!(b.used(), 10);
++        assert_eq!(b.lock().status, Status::Open);
++    }
++
++    #[test]
++    fn oversized_or_overflowing_request_is_rejected_without_wait_or_allocation() {
++        let budget = Budget::with_limit(10);
++        assert_eq!(
++            budget
++                .reserve(usize::MAX, |_| panic!("oversized request waited"))
++                .unwrap_err()
++                .reason,
++            Rejected::TooLarge
++        );
++        assert_eq!(budget.used(), 0);
++        assert_eq!(reserve(&budget, 1).unwrap_err().reason, Rejected::Exhausted);
++        let budget = Budget::with_limit(usize::MAX);
++        let _max = reserve(&budget, usize::MAX).unwrap();
++        assert!(!budget.fits(&budget.lock(), 1));
++    }
++
++    #[test]
++    fn exact_limit_and_shared_layout_arc_release_once() {
++        let budget = Budget::new();
++        let layout = Arc::new(reserve(&budget, LIMIT).unwrap());
++        let native = layout.clone();
++        drop(layout);
++        assert_eq!(budget.used(), LIMIT);
++        drop(native);
++        assert_eq!(budget.used(), 0);
++        assert_eq!(budget.lock().releases, 1);
++    }
++
++    #[test]
++    fn startup_rollback_cancels_before_join_but_success_disarms_it() {
++        struct JoinOnDrop(Option<thread::JoinHandle<Rejected>>, mpsc::Sender<Rejected>);
++        impl Drop for JoinOnDrop {
++            fn drop(&mut self) {
++                let reason = self.0.take().unwrap().join().unwrap();
++                self.1.send(reason).unwrap();
++            }
++        }
++        let budget = Budget::with_limit(10);
++        let old = reserve(&budget, 10).unwrap();
++        let (send, receive) = mpsc::channel();
++        let startup = || -> Result<(), ()> {
++            let worker = budget.clone();
++            // This mirrors the actual local order in Runtime::start: engine,
++            // then cancel guard, then a fallible native mounter construction.
++            let _engine = JoinOnDrop(
++                Some(thread::spawn(move || {
++                    reserve(&worker, 1).unwrap_err().reason
++                })),
++                send,
++            );
++            let _rollback = budget.cancel_on_drop();
++            waiting(&budget);
++            Err(())
++        };
++        assert_eq!(startup(), Err(()));
++        assert_eq!(
++            receive.recv_timeout(Duration::from_secs(2)).unwrap(),
++            Rejected::Closed
++        );
++        drop(old);
++        assert_eq!(budget.used(), 0);
++        assert_eq!(reserve(&budget, 1).unwrap_err().reason, Rejected::Closed);
++        let budget = Budget::with_limit(10);
++        budget.cancel_on_drop().disarm();
++        assert!(reserve(&budget, 10).is_ok());
++    }
++
++    #[test]
++    fn poisoned_counter_lock_does_not_break_cancel_or_raii_release() {
++        let budget = Budget::with_limit(10);
++        let old = reserve(&budget, 10).unwrap();
++        let worker = budget.clone();
++        assert!(
++            thread::spawn(move || {
++                let _guard = worker.state.lock().unwrap();
++                panic!("synthetic poison");
++            })
++            .join()
++            .is_err()
++        );
++        budget.cancel();
++        drop(old);
++        assert_eq!(budget.used(), 0);
++        assert_eq!(reserve(&budget, 1).unwrap_err().reason, Rejected::Closed);
++    }
++}
+--- a/crates/nsh-platform-ohos/src/text/mod.rs
++++ b/crates/nsh-platform-ohos/src/text/mod.rs
+@@ -1,3 +1,4 @@
++pub(crate) mod budget;
+ pub(crate) mod decoration;
+ pub(crate) mod selection;
+ pub(crate) mod typography;
+--- a/crates/nsh-platform-ohos/src/text/typography.rs
++++ b/crates/nsh-platform-ohos/src/text/typography.rs
+@@ -1,13 +1,7 @@
+ //! Engine-thread typography. Only owned pixels and geometry cross to the UI thread;
+ //! native font, paragraph and bitmap objects are created and freed here.
+ 
+-use std::{
+-    cell::RefCell,
+-    sync::{
+-        Arc,
+-        atomic::{AtomicUsize, Ordering},
+-    },
+-};
++use std::{cell::RefCell, sync::Arc};
+ 
+ use nsh_core::{AttributedText, Color, Size, TextAlign, TextEngine, TextLayout};
+ use ohos_drawing_binding::{
+@@ -15,6 +9,8 @@
+     TextDirection, TextStyle, Typography, TypographyBuilder, TypographyStyle,
+ };
+ use unicode_segmentation::UnicodeSegmentation;
++
++use super::budget::{Budget, Rejected, Reservation};
+ 
+ pub(crate) fn argb(color: Color) -> u32 {
+     color.0.rotate_right(8)
+@@ -36,16 +32,6 @@
+ 
+ // Reserve for the engine bitmap, owned pixels and the UI copy together.
+ // A layout retained by core also retains its reservation.
+-const RASTER_BUDGET: usize = 96 << 20;
+-struct Reservation {
+-    used: Arc<AtomicUsize>,
+-    bytes: usize,
+-}
+-impl Drop for Reservation {
+-    fn drop(&mut self) {
+-        self.used.fetch_sub(self.bytes, Ordering::Relaxed);
+-    }
+-}
+ pub(crate) struct Prepared {
+     paragraph: RefCell<Typography>,
+     no_wrap: bool,
+@@ -59,18 +45,18 @@
+     fonts: RefCell<FontCollection>,
+     scale: f32,
+     font_data: RefCell<Vec<Box<[u8]>>>,
+-    budget: Arc<AtomicUsize>,
++    budget: Arc<Budget>,
+ }
+ 
+ impl OhosTextEngine {
+-    pub(crate) fn new(scale: f32) -> Self {
++    pub(crate) fn new(scale: f32, budget: Arc<Budget>) -> Self {
+         Self {
+             // The legacy collection supports only one paragraph builder.
+             // A shared collection is reusable within this engine thread.
+             fonts: RefCell::new(FontCollection::shared()),
+             scale,
+             font_data: RefCell::default(),
+-            budget: Arc::default(),
++            budget,
+         }
+     }
+ }
+@@ -303,7 +289,7 @@
+         if width > 0 && height > 0 && u64::from(width) * u64::from(height) <= 4_194_304 {
+             let selection_bytes = if let Some(text) = &prepared.selectable {
+                 if text.len() > crate::text::selection::layout::MAX_TEXT_BYTES {
+-                    log::error!(target: "nsh::perf", "NSHTextBudget reason=3 width={} height={} used={} requested={} selectionUtf8Bytes={} clusters=0", width, height, self.budget.load(Ordering::Relaxed), width as usize * height as usize * 12, text.len());
++                    log::error!(target: "nsh::perf", "NSHTextBudget reason=3 width={} height={} used={} requested={} selectionUtf8Bytes={} clusters=0", width, height, self.budget.used(), width as usize * height as usize * 12, text.len());
+                     raster.exhausted = true;
+                     return TextLayout(Arc::new(raster));
+                 }
+@@ -312,7 +298,7 @@
+                     .take(crate::text::selection::layout::MAX_CLUSTERS + 1)
+                     .count();
+                 if clusters > crate::text::selection::layout::MAX_CLUSTERS {
+-                    log::error!(target: "nsh::perf", "NSHTextBudget reason=4 width={} height={} used={} requested={} selectionUtf8Bytes={} clusters={}", width, height, self.budget.load(Ordering::Relaxed), width as usize * height as usize * 12 + text.len() + clusters * 512, text.len(), clusters);
++                    log::error!(target: "nsh::perf", "NSHTextBudget reason=4 width={} height={} used={} requested={} selectionUtf8Bytes={} clusters={}", width, height, self.budget.used(), width as usize * height as usize * 12 + text.len() + clusters * 512, text.len(), clusters);
+                     raster.exhausted = true;
+                     return TextLayout(Arc::new(raster));
+                 }
+@@ -321,21 +307,19 @@
+                 0
+             };
+             let bytes = width as usize * height as usize * 12 + selection_bytes;
+-            if let Err(used) =
+-                self.budget
+-                    .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+-                        used.checked_add(bytes)
+-                            .filter(|next| *next <= RASTER_BUDGET)
+-                    })
+-            {
+-                log::error!(target: "nsh::perf", "NSHTextBudget reason=2 width={} height={} used={} requested={} selectionReserve={}", width, height, used, bytes, selection_bytes);
+-                raster.exhausted = true;
+-                return TextLayout(Arc::new(raster));
+-            }
+-            raster._budget = Some(Reservation {
+-                used: self.budget.clone(),
+-                bytes,
++            let reservation = self.budget.reserve(bytes, |wait| {
++                log::info!(target: "nsh::perf", "NSHTextBudgetWait id={} phase={} width={} height={} used={} requested={} releaseCount={} elapsedMicros={} outcome={}", wait.id, wait.phase, width, height, wait.used, wait.requested, wait.releases, wait.elapsed_micros, wait.outcome);
+             });
++            match reservation {
++                Ok(reservation) => raster._budget = Some(reservation),
++                Err(failure) => {
++                    if failure.reason != Rejected::Closed {
++                        log::error!(target: "nsh::perf", "NSHTextBudget reason=2 width={} height={} used={} requested={} selectionReserve={} outcome={}", width, height, failure.used, bytes, selection_bytes, failure.reason as u8);
++                    }
++                    raster.exhausted = true;
++                    return TextLayout(Arc::new(raster));
++                }
++            }
+             if let Some(text) = &prepared.selectable {
+                 raster.selection = crate::text::selection::layout::Layout::new(
+                     text.clone(),
+@@ -353,7 +337,7 @@
+                     },
+                 );
+                 if raster.selection.is_none() {
+-                    log::error!(target: "nsh::perf", "NSHTextBudget reason=5 width={} height={} used={} requested={} selectionReserve={}", width, height, self.budget.load(Ordering::Relaxed), bytes, selection_bytes);
++                    log::error!(target: "nsh::perf", "NSHTextBudget reason=5 width={} height={} used={} requested={} selectionReserve={}", width, height, self.budget.used(), bytes, selection_bytes);
+                     raster.exhausted = true;
+                     return TextLayout(Arc::new(raster));
+                 }
+@@ -402,7 +386,7 @@
+                 .collect();
+             raster.pixels = canvas.bitmap().expect("bitmap canvas").pixels().to_vec();
+         } else if width > 0 && height > 0 {
+-            log::error!(target: "nsh::perf", "NSHTextBudget reason=1 width={} height={} used={} requestedPixels={} logicalWidth={} logicalHeight={} scale={} paddingTop={} bottom={}", width, height, self.budget.load(Ordering::Relaxed), u64::from(width) * u64::from(height), size.width, size.height, self.scale, padding_top, bottom);
++            log::error!(target: "nsh::perf", "NSHTextBudget reason=1 width={} height={} used={} requestedPixels={} logicalWidth={} logicalHeight={} scale={} paddingTop={} bottom={}", width, height, self.budget.used(), u64::from(width) * u64::from(height), size.width, size.height, self.scale, padding_top, bottom);
+             raster.exhausted = true;
+             log::error!("OHOS text raster exceeds 4 megapixels: {width}x{height}");
+         }
+--- a/crates/nsh-platform-ohos/src/app/runtime.rs
++++ b/crates/nsh-platform-ohos/src/app/runtime.rs
+@@ -20,7 +20,7 @@
+         mount::Mounter,
+         node::{Error, NativeNode, Result},
+     },
+-    text::typography::OhosTextEngine,
++    text::{budget::Budget, typography::OhosTextEngine},
+ };
+ 
+ type ErrorCallback = ThreadsafeFunction<String, (), String, Status, false>;
+@@ -211,6 +211,7 @@
+ struct State {
+     running: Rc<Cell<bool>>,
+     engine: Option<Engine>,
++    text_budget: Arc<Budget>,
+     mounter: Option<Mounter>,
+     dispatcher: Weak<Dispatcher>,
+     vsync: Vsync,
+@@ -496,6 +497,8 @@
+                 .live
+                 .store(false, std::sync::atomic::Ordering::Release);
+         }
++        // Wake capacity waiters before Engine::Drop joins the producer.
++        self.text_budget.cancel();
+         self.engine.take();
+         if let Some(mounter) = &mut self.mounter {
+             mounter.close()?;
+@@ -506,6 +509,8 @@
+ }
+ impl Drop for State {
+     fn drop(&mut self) {
++        // Wake capacity waiters before Engine::Drop joins the producer.
++        self.text_budget.cancel();
+         self.engine.take();
+         self.mounter.take();
+     }
+@@ -565,9 +570,11 @@
+         let vsync = Vsync::try_new("nsh")
+             .ok_or_else(|| napi_ohos::Error::from_reason("failed to create OHOS native VSync"))?;
+         let running = Rc::new(Cell::new(true));
++        let text_budget = Budget::new();
+         let state = Rc::new(RefCell::new(State {
+             running: running.clone(),
+             engine: None,
++            text_budget: text_budget.clone(),
+             mounter: None,
+             dispatcher: Weak::new(),
+             vsync,
+@@ -631,12 +638,16 @@
+             ui_sets: vec![nsh_ui_mobile::registry()],
+             runtime: None,
+         };
++        let engine_budget = text_budget.clone();
+         let engine = Engine::start(
+             engine_config,
+-            move || OhosTextEngine::new(scale),
++            move || OhosTextEngine::new(scale, engine_budget),
+             Sink(dispatcher.clone(), app.chunks),
+         )
+         .map_err(|error| napi_ohos::Error::from_reason(error.to_string()))?;
++        // Declared after the local engine: failed Mounter/host startup cancels
++        // capacity waits before that engine can be dropped and joined.
++        let startup_budget = text_budget.cancel_on_drop();
+         let control = engine.control();
+         let context = Rc::new(crate::render::mount::UiContext {
+             scene: RefCell::default(),
+@@ -676,6 +687,7 @@
+         // Keep rollback ownership before registering with the shared session.
+         // A rejected route must still close the engine and detach its root.
+         config.host.attach(Arc::downgrade(&runtime._dispatcher))?;
++        startup_budget.disarm();
+         Ok(runtime)
+     }
+     pub(crate) fn resize(&self, size: Size) -> napi_ohos::Result<()> {
+--- a/crates/nsh-platform-ohos/src/input/secure/raster.rs
++++ b/crates/nsh-platform-ohos/src/input/secure/raster.rs
+@@ -9,7 +9,10 @@
+ 
+ use crate::{
+     app::runtime::{Dispatcher, Message},
+-    text::typography::{OhosTextEngine, RasterText},
++    text::{
++        budget::Budget,
++        typography::{OhosTextEngine, RasterText},
++    },
+ };
+ 
+ pub(crate) struct Request {
+@@ -34,15 +37,20 @@
+     blink: Option<(NodeId, u32, Instant)>,
+     closed: bool,
+ }
+-pub(crate) struct Worker(Arc<(Mutex<Queue>, Condvar)>);
++pub(crate) struct Worker {
++    queue: Arc<(Mutex<Queue>, Condvar)>,
++    budget: Arc<Budget>,
++}
+ impl Worker {
+     pub(crate) fn new(scale: f32, route: Weak<Dispatcher>) -> std::io::Result<Self> {
+         let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
+         let worker = queue.clone();
++        let budget = Budget::new();
++        let worker_budget = budget.clone();
+         std::thread::Builder::new()
+             .name("nsh-password-layout".into())
+             .spawn(move || {
+-                let engine = OhosTextEngine::new(scale);
++                let engine = OhosTextEngine::new(scale, worker_budget);
+                 'worker: loop {
+                     let request = {
+                         let (lock, wake) = &*worker;
+@@ -83,10 +91,10 @@
+                     route.send(Message::SecureRaster(ready));
+                 }
+             })?;
+-        Ok(Self(queue))
++        Ok(Self { queue, budget })
+     }
+     pub(crate) fn request(&self, request: Request) {
+-        let (lock, wake) = &*self.0;
++        let (lock, wake) = &*self.queue;
+         let mut queue = lock.lock().unwrap();
+         if let Some(previous) = queue
+             .requests
+@@ -100,7 +108,7 @@
+         wake.notify_one();
+     }
+     pub(crate) fn cancel(&self, id: NodeId, generation: u32) {
+-        let mut queue = self.0.0.lock().unwrap();
++        let mut queue = self.queue.0.lock().unwrap();
+         queue
+             .requests
+             .retain(|request| request.id != id || request.generation != generation);
+@@ -112,7 +120,7 @@
+         }
+     }
+     pub(crate) fn blink(&self, id: NodeId, generation: u32, enabled: bool) {
+-        let mut queue = self.0.0.lock().unwrap();
++        let mut queue = self.queue.0.lock().unwrap();
+         if enabled {
+             queue.blink = Some((id, generation, Instant::now() + Duration::from_millis(500)));
+         } else if queue
+@@ -121,12 +129,13 @@
+         {
+             queue.blink = None;
+         }
+-        self.0.1.notify_one();
++        self.queue.1.notify_one();
+     }
+ }
+ impl Drop for Worker {
+     fn drop(&mut self) {
+-        let (lock, wake) = &*self.0;
++        self.budget.cancel();
++        let (lock, wake) = &*self.queue;
+         let mut queue = lock.lock().unwrap();
+         queue.closed = true;
+         queue.requests.clear();

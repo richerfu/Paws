@@ -1,0 +1,181 @@
+--- a/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
++++ b/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
+@@ -250,10 +250,19 @@
+     this.entry.measureSize();
+   }
+ }
+-function reportEditorWork(phase: string, started: number, length: number): void {
++function beginEditorWork(phase: string, settings: EditorSettings, length: number): number {
++  const started = Date.now();
++  if (length >= 64 * 1024) {
++    hilog.warn(0x0000, "NshEditor", "%{public}s BEGIN id=%{public}d chars=%{public}d width=%{public}f height=%{public}f",
++      phase, settings.targetId, length, settings.width, settings.height);
++  }
++  return started;
++}
++function reportEditorWork(phase: string, started: number, settings: EditorSettings, length: number): void {
+   const elapsed = Date.now() - started;
+-  if (elapsed >= 16) {
+-    hilog.warn(0x0000, "NshEditor", "%{public}s blocked host for %{public}d ms (%{public}d chars)", phase, elapsed, length);
++  if (length >= 64 * 1024 || elapsed >= 16) {
++    hilog.warn(0x0000, "NshEditor", "%{public}s END id=%{public}d chars=%{public}d width=%{public}f height=%{public}f elapsed=%{public}dms",
++      phase, settings.targetId, length, settings.width, settings.height, elapsed);
+   }
+ }
+ class EditorEntry {
+@@ -287,16 +296,20 @@
+     this.updating = true;
+     this.sdkBusy = true;
+     try {
+-      const started = Date.now();
+-      this.node.build(wrapBuilder(editorContent), this);
+-      reportEditorWork("build", started, this.text.length);
++      const started = beginEditorWork("build", this.settings, this.text.length);
++      try { this.node.build(wrapBuilder(editorContent), this); }
++      finally { reportEditorWork("build", started, this.settings, this.text.length); }
+       if (this.closed || !this.context.isActive()) { throw new Error("Editor creation was cancelled"); }
+-      const response = this.context.invokeNativeSync(
+-        "native-node-ready",
+-        "ohos.node.NativeNodeReady",
+-        "ohos.node.Acknowledgement",
+-        { targetId: this.settings.targetId, content: this.node.getFrameNode() },
+-      ) as Acknowledgement;
++      const attachedAt = beginEditorWork("attach", this.settings, this.text.length);
++      let response: Acknowledgement;
++      try {
++        response = this.context.invokeNativeSync(
++          "native-node-ready",
++          "ohos.node.NativeNodeReady",
++          "ohos.node.Acknowledgement",
++          { targetId: this.settings.targetId, content: this.node.getFrameNode() },
++        ) as Acknowledgement;
++      } finally { reportEditorWork("attach", attachedAt, this.settings, this.text.length); }
+       if (response.accepted !== true || this.closed) { throw new Error("Native editor target is no longer live"); }
+       this.attached = true;
+     } catch (error) {
+@@ -325,9 +338,9 @@
+     this.updating = true;
+     this.sdkBusy = true;
+     try {
+-      const started = Date.now();
+-      this.node.update(this);
+-      reportEditorWork("update", started, this.text.length);
++      const started = beginEditorWork("update", this.settings, this.text.length);
++      try { this.node.update(this); }
++      finally { reportEditorWork("update", started, this.settings, this.text.length); }
+     } finally {
+       this.updating = false;
+       this.sdkBusy = false;
+@@ -362,16 +375,20 @@
+     if (this.closed || !this.context.isActive()) {
+       return;
+     }
+-    const started = Date.now();
+-    const rect = this.settings.multiline
+-      ? this.area.getTextContentRect()
+-      : this.line.getTextContentRect();
+-    reportEditorWork("measure", started, this.text.length);
++    const rect = this.readContentRect();
+     if (rect.width !== this.contentWidth || rect.height !== this.contentHeight) {
+       this.contentWidth = rect.width;
+       this.contentHeight = rect.height;
+       this.emit("size", "", 0, 0, rect.width, rect.height);
+     }
++  }
++  private readContentRect(): RectResult {
++    const started = beginEditorWork("getTextContentRect", this.settings, this.text.length);
++    try {
++      return this.settings.multiline
++        ? this.area.getTextContentRect()
++        : this.line.getTextContentRect();
++    } finally { reportEditorWork("getTextContentRect", started, this.settings, this.text.length); }
+   }
+   emit(kind: string, text = "", start = 0, end = 0, width = 0, height = 0): void {
+     if (!this.attached || this.closed || !this.context.isActive() || (this.updating && kind !== "focus" && kind !== "blur")) {
+--- a/crates/nsh-platform-ohos/src/input/editor.rs
++++ b/crates/nsh-platform-ohos/src/input/editor.rs
+@@ -2,6 +2,7 @@
+ use std::{
+     cell::{Cell, RefCell},
+     rc::{Rc, Weak},
++    time::Instant,
+ };
+ 
+ use nsh_core::{
+@@ -34,7 +35,60 @@
+     hit_test: Cell<u32>,
+     secure: RefCell<Option<Rc<crate::input::secure::editor::SecureInput>>>,
+ }
++
++struct EditorWork {
++    phase: &'static str,
++    id: u32,
++    bytes: usize,
++    content_px: (f32, f32),
++    max_px: Option<(i32, i32)>,
++    started: Instant,
++}
++impl EditorWork {
++    fn log(&self, boundary: &str) {
++        log::info!(
++            target: "nsh::perf",
++            "OHOS editor {} {} id={} bytes={} content_px={:?} max_px={:?} elapsed={}ms",
++            self.phase,
++            boundary,
++            self.id,
++            self.bytes,
++            self.content_px,
++            self.max_px,
++            self.started.elapsed().as_millis(),
++        );
++    }
++}
++impl Drop for EditorWork {
++    fn drop(&mut self) {
++        self.log("END");
++    }
++}
+ impl Input {
++    fn trace_work(
++        &self,
++        phase: &'static str,
++        event: Option<&NodeCustomEvent>,
++    ) -> Option<EditorWork> {
++        let bytes = self.state.borrow().text.len();
++        if bytes < 64 * 1024 {
++            return None;
++        }
++        let owner = self.owner.upgrade()?;
++        let content = self.content.get();
++        let work = EditorWork {
++            phase,
++            id: self.target_id()?,
++            bytes,
++            content_px: (content.width * owner.scale, content.height * owner.scale),
++            max_px: event
++                .and_then(NodeCustomEvent::layout_constraint_in_measure)
++                .map(|constraint| (constraint.max_width(), constraint.max_height())),
++            started: Instant::now(),
++        };
++        work.log("BEGIN");
++        Some(work)
++    }
+     pub(crate) fn new(owner: Weak<Node>) -> Result<Rc<Self>> {
+         let node = owner.upgrade().ok_or(Error::InvalidNode(0))?;
+         let target = NativeAttachment::new(&node.native)?;
+@@ -360,6 +414,7 @@
+         if self.is_secure() {
+             return Ok(());
+         }
++        let _work = self.trace_work("child-measure", Some(event));
+         self.with_child(|node| event.measure_child(node))?
+             .transpose()?;
+         Ok(())
+@@ -368,6 +423,7 @@
+         if self.is_secure() {
+             return Ok(());
+         }
++        let _work = self.trace_work("child-layout", None);
+         let content = self.content.get();
+         self.with_child(|node| {
+             event.layout_child(

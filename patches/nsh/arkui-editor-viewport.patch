@@ -1,0 +1,158 @@
+--- a/paws-patches/ohos-arkui-binding/src/api/node_custom_event/geometry.rs
++++ b/paws-patches/ohos-arkui-binding/src/api/node_custom_event/geometry.rs
+@@ -72,6 +72,25 @@
+ }
+ 
+ impl<'event> LayoutConstraintHandle<'event> {
++    pub(crate) fn set_exact_size(&mut self, size: IntSize) {
++        // SAFETY: this callback owns the constraint allocation; the checked
++        // measure helper accepts only nonnegative physical pixel dimensions.
++        unsafe {
++            ohos_arkui_sys::OH_ArkUI_LayoutConstraint_SetMinWidth(self.raw(), size.width);
++            ohos_arkui_sys::OH_ArkUI_LayoutConstraint_SetMaxWidth(self.raw(), size.width);
++            ohos_arkui_sys::OH_ArkUI_LayoutConstraint_SetMinHeight(self.raw(), size.height);
++            ohos_arkui_sys::OH_ArkUI_LayoutConstraint_SetMaxHeight(self.raw(), size.height);
++            ohos_arkui_sys::OH_ArkUI_LayoutConstraint_SetPercentReferenceWidth(
++                self.raw(),
++                size.width,
++            );
++            ohos_arkui_sys::OH_ArkUI_LayoutConstraint_SetPercentReferenceHeight(
++                self.raw(),
++                size.height,
++            );
++        }
++    }
++
+     /// Maximum measured width in physical pixels.
+     pub fn max_width(&self) -> i32 {
+         // SAFETY: this guard owns the live constraint allocation.
+--- a/paws-patches/ohos-arkui-binding/src/api/node_custom_event/event.rs
++++ b/paws-patches/ohos-arkui-binding/src/api/node_custom_event/event.rs
+@@ -16,5 +16,5 @@
+ use super::{
+     CustomSpanDrawInfo, CustomSpanMeasureInfo, CustomSpanMetrics, DrawContext, IntOffset,
+-    LayoutConstraintHandle,
++    IntSize, LayoutConstraintHandle,
+ };
+ 
+@@ -50,13 +50,37 @@
+     /// Measures a live child with this measure event's constraints.
+     /// The child must belong to this custom node on the current UI thread.
+     pub fn measure_child(&self, child: &ArkUINode) -> ArkUIResult<()> {
++        self.measure_child_with_constraint(child, None)
++    }
++
++    /// Measures a live child in an exact, nonnegative physical pixel viewport.
++    /// Both bounds and percentage references use `size`, independently of the
++    /// ancestor's constraints. Valid only during this node's measure callback.
++    pub fn measure_child_with_size(&self, child: &ArkUINode, size: IntSize) -> ArkUIResult<()> {
++        if size.width < 0 || size.height < 0 {
++            return Err(crate::ArkUIError::new(
++                crate::arkui_input_binding::ArkUIErrorCode::ParamInvalid,
++                "child viewport dimensions must be nonnegative",
++            ));
++        }
++        self.measure_child_with_constraint(child, Some(size))
++    }
++
++    fn measure_child_with_constraint(
++        &self,
++        child: &ArkUINode,
++        size: Option<IntSize>,
++    ) -> ArkUIResult<()> {
+         self.layout_node(crate::NodeCustomEventType::OnMeasure)?;
+-        let constraint = self.layout_constraint_in_measure().ok_or_else(|| {
++        let mut constraint = self.layout_constraint_in_measure().ok_or_else(|| {
+             crate::ArkUIError::new(
+                 crate::arkui_input_binding::ArkUIErrorCode::ParamInvalid,
+                 "measure event has no layout constraint",
+             )
+         })?;
++        if let Some(size) = size {
++            constraint.set_exact_size(size);
++        }
+         // SAFETY: the guard owns this constraint and releases it after the
+         // synchronous measureNode call; native code does not retain it.
+         crate::ARK_UI_NATIVE_NODE_API_1
+--- a/paws-patches/ohos-arkui-binding/tests/host.rs
++++ b/paws-patches/ohos-arkui-binding/tests/host.rs
+@@ -9,7 +9,16 @@
+ };
+ 
+ pub struct NodeCustomEvent;
+-pub struct ArkUI_LayoutConstraint;
++pub struct ArkUI_LayoutConstraint {
++    dimensions: [i32; 6],
++}
++impl Default for ArkUI_LayoutConstraint {
++    fn default() -> Self {
++        Self {
++            dimensions: [100, 320, 80, 240, 640, 480],
++        }
++    }
++}
+ pub struct ArkUI_DrawContext;
+ pub struct ArkUI_IntOffset {
+     pub x: i32,
+@@ -21,12 +30,27 @@
+ }
+ static RELEASED: AtomicUsize = AtomicUsize::new(0);
+ 
+-unsafe fn OH_ArkUI_LayoutConstraint_GetMaxWidth(_: *mut ArkUI_LayoutConstraint) -> i32 {
+-    320
++unsafe fn OH_ArkUI_LayoutConstraint_GetMaxWidth(raw: *mut ArkUI_LayoutConstraint) -> i32 {
++    unsafe { (*raw).dimensions[1] }
+ }
+-unsafe fn OH_ArkUI_LayoutConstraint_GetMaxHeight(_: *mut ArkUI_LayoutConstraint) -> i32 {
+-    240
++unsafe fn OH_ArkUI_LayoutConstraint_GetMaxHeight(raw: *mut ArkUI_LayoutConstraint) -> i32 {
++    unsafe { (*raw).dimensions[3] }
+ }
++macro_rules! setter {
++    ($name:ident, $index:expr) => {
++        unsafe fn $name(raw: *mut ArkUI_LayoutConstraint, value: i32) {
++            unsafe {
++                (*raw).dimensions[$index] = value;
++            }
++        }
++    };
++}
++setter!(OH_ArkUI_LayoutConstraint_SetMinWidth, 0);
++setter!(OH_ArkUI_LayoutConstraint_SetMaxWidth, 1);
++setter!(OH_ArkUI_LayoutConstraint_SetMinHeight, 2);
++setter!(OH_ArkUI_LayoutConstraint_SetMaxHeight, 3);
++setter!(OH_ArkUI_LayoutConstraint_SetPercentReferenceWidth, 4);
++setter!(OH_ArkUI_LayoutConstraint_SetPercentReferenceHeight, 5);
+ unsafe fn OH_ArkUI_LayoutConstraint_Dispose(raw: *mut ArkUI_LayoutConstraint) -> *mut c_void {
+     // SAFETY: the test transfers exactly one Box into each production guard.
+     unsafe {
+@@ -59,13 +83,26 @@
+     let event = NodeCustomEvent;
+     let before = RELEASED.load(Ordering::SeqCst);
+     {
+-        let raw = Box::into_raw(Box::new(ArkUI_LayoutConstraint));
+-        let guard = geometry::LayoutConstraintHandle::from_raw(raw, &event).unwrap();
++        let raw = Box::into_raw(Box::new(ArkUI_LayoutConstraint::default()));
++        let mut guard = geometry::LayoutConstraintHandle::from_raw(raw, &event).unwrap();
+         assert_eq!((guard.max_width(), guard.max_height()), (320, 240));
++        guard.set_exact_size(geometry::IntSize {
++            width: 962,
++            height: 787,
++        });
++        assert_eq!((guard.max_width(), guard.max_height()), (962, 787));
++        // Every inherited dimension must be replaced, including nonzero
++        // parent minimums and unrelated percentage references.
++        assert_eq!(unsafe { (*raw).dimensions }, [962, 962, 787, 787, 962, 787]);
++        guard.set_exact_size(geometry::IntSize {
++            width: 0,
++            height: 0,
++        });
++        assert_eq!(unsafe { (*raw).dimensions }, [0; 6]);
+     }
+     assert_eq!(RELEASED.load(Ordering::SeqCst), before + 1);
+     let _ = std::panic::catch_unwind(|| {
+-        let raw = Box::into_raw(Box::new(ArkUI_LayoutConstraint));
++        let raw = Box::into_raw(Box::new(ArkUI_LayoutConstraint::default()));
+         let _guard = geometry::LayoutConstraintHandle::from_raw(raw, &event).unwrap();
+         panic!("consumer failed");
+     });

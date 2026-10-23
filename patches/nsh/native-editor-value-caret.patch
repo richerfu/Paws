@@ -1,0 +1,221 @@
+--- a/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
++++ b/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
+@@ -317,6 +317,15 @@
+     && (a.accessibility?.hidden === true) === (b.accessibility?.hidden === true)
+     && (a.accessibility?.accessible !== false) === (b.accessibility?.accessible !== false);
+ }
++// Native and Rust selection offsets are UTF-16. Only the adjacent surrogate
++// pair needs inspection when a shorter replacement truncates the old caret.
++function caretBoundary(text: string, end: number): number {
++  const index = Math.min(Math.max(Math.floor(end), 0), text.length);
++  const before = text.charCodeAt(index - 1);
++  const after = text.charCodeAt(index);
++  return index > 0 && index < text.length && before >= 0xd800 && before <= 0xdbff &&
++    after >= 0xdc00 && after <= 0xdfff ? index - 1 : index;
++}
+ class EditorEntry {
+   readonly node: BuilderNode<[EditorEntry]>;
+   readonly line: TextInputController = new TextInputController();
+@@ -325,6 +334,7 @@
+   settings: EditorSettings;
+   frame: EditorFrame;
+   private renderDirty: boolean = true;
++  private pendingCaretEnd: number | undefined = undefined;
+   text: string;
+   count: number;
+   private events: PendingEditorEvent[] = [];
+@@ -406,6 +416,15 @@
+     const value = update.value;
+     // Native edits already exist locally while their FIFO receipts wait for Rust.
+     if (value != null && this.pendingChanges === 0 && value.count === this.count && value.text !== this.text) {
++      if (this.pendingCaretEnd === undefined) {
++        // API 15 returns the actual selection, including an unfocused caret.
++        const selection = this.settings.multiline ? this.area.getSelection() : this.line.getSelection();
++        const end = selection?.end;
++        if (end == null || !Number.isFinite(end)) {
++          throw new Error("Native editor selection is unavailable");
++        }
++        this.pendingCaretEnd = end;
++      }
+       this.text = value.text;
+       this.renderDirty = true;
+     }
+@@ -419,7 +438,17 @@
+       const started = beginEditorWork("update", this, this.text.length);
+       try {
+         this.node.update(this);
+-        // A thrown SDK operation keeps desired state dirty for the batch retry.
++        if (this.pendingCaretEnd !== undefined) {
++          if (this.closed || !this.context.isActive()) {
++            throw new Error("Native editor is unavailable during caret restoration");
++          }
++          const end = caretBoundary(this.text, this.pendingCaretEnd);
++          // Restore through API 8 without requesting focus or showing the IME.
++          if (this.settings.multiline) { this.area.caretPosition(end); }
++          else { this.line.caretPosition(end); }
++          this.pendingCaretEnd = undefined;
++        }
++        // Both SDK rendering and a pending caret restoration must succeed.
+         this.renderDirty = false;
+       }
+       finally { reportEditorWork("update", started, this, this.text.length); }
+@@ -435,6 +464,8 @@
+     if (this.updating || this.closed || this.text === text) {
+       return;
+     }
++    // New native input supersedes a failed programmatic replacement's caret.
++    this.pendingCaretEnd = undefined;
+     this.text = text;
+     this.emit("change", text);
+     this.scheduleSize();
+@@ -548,6 +579,7 @@
+   dispose(cleanup: BridgePluginContext = this.context): void {
+     if (this.disposed) { return; }
+     this.closed = true;
++    this.pendingCaretEnd = undefined;
+     this.clearEvents();
+     try {
+       if (!this.retired) {
+--- a/crates/nsh-platform-ohos/arkts/tests/editors.test.mjs
++++ b/crates/nsh-platform-ohos/arkts/tests/editors.test.mjs
+@@ -14,7 +14,12 @@
+ const enterType=x=>x, contentType=x=>x, areaType=x=>x, inputType=x=>x;
+ class FrameCallback {}
+ const hilog={warn(){}};
+-class TextInputController { selections=[]; setTextSelection(a,b){this.selections.push([a,b]);} getTextContentRect(){globalThis.sdkMeasure?.();return {width:10,height:20};} stopEditing(){} }
++class TextInputController {
++  selections=[]; caretCalls=[]; selectionReads=0; selection={start:0,end:0};
++  getSelection(){this.selectionReads++;globalThis.sdkGetSelection?.(this);return this.selection;}
++  caretPosition(end){this.caretCalls.push(end);globalThis.sdkCaretPosition?.(this,end);this.selection={start:end,end};}
++  setTextSelection(a,b){this.selections.push([a,b]);this.selection={start:a,end:b};globalThis.sdkSetSelection?.(this,a,b);}
++  getTextContentRect(){globalThis.sdkMeasure?.();return {width:10,height:20};} stopEditing(){} }
+ class TextAreaController extends TextInputController {}
+ class BuilderNode { updates=0; disposals=0; build(){globalThis.sdkBuild?.();} update(entry){this.updates++; globalThis.sdkUpdate?.(entry);} dispose(){this.disposals++;} getFrameNode(){return {};} }
+ const editorContent = () => {};
+@@ -290,3 +295,126 @@
+   editors.update([{...f.settings,targetId:152}],[],f.context);assert.equal(editors.entries.get(152).attached,true);
+   editors.dispose(f.context);
+ });
++
++
++function controller(entry) {return entry.settings.multiline ? entry.area : entry.line;}
++
++test('accepted replacement restores native selectionEnd without focus and explicit selection stays last',()=>{
++  for (const multiline of [false,true]) {
++    const f=fixture(201+Number(multiline),false,multiline),editors=new NativeEditors(),order=[];
++    editors.update([f.settings],[],f.context);
++    const entry=editors.entries.get(f.settings.targetId),c=controller(entry);
++    c.selection={start:1,end:4};
++    globalThis.sdkGetSelection=()=>order.push('read');
++    globalThis.sdkUpdate=()=>{c.selection={start:16,end:16};order.push('render');};
++    globalThis.sdkCaretPosition=(_c,end)=>order.push('restore:'+end);
++    globalThis.sdkSetSelection=(_c,a,b)=>order.push('explicit:'+a+':'+b);
++    try {
++      editors.update([{targetId:entry.targetId,value:{text:'abcdefghijklmnop',count:0}}],
++        [{targetId:entry.targetId,kind:'selection',start:1,end:1}],f.context);
++      assert.deepEqual(order,['read','render','restore:4','explicit:1:1']);
++      assert.deepEqual(c.selection,{start:1,end:1});assert.equal(c.selectionReads,1);
++      assert.deepEqual(c.caretCalls,[4]);assert.deepEqual(c.selections,[[1,1]]);
++      assert.equal(f.calls.filter(c=>c.name==='editor-event').length,0);
++    } finally {
++      globalThis.sdkGetSelection=undefined;globalThis.sdkUpdate=undefined;
++      globalThis.sdkCaretPosition=undefined;globalThis.sdkSetSelection=undefined;editors.dispose(f.context);
++    }
++  }
++});
++
++test('new target seed and style frame same stale or pending values perform no caret I/O',async()=>{
++  const f=fixture(211,false,false,7);
++  globalThis.sdkGetSelection=()=>{throw Error('unexpected caret read');};
++  globalThis.sdkCaretPosition=()=>{throw Error('unexpected caret write');};
++  try {
++    f.entry.create();const c=controller(f.entry);
++    f.entry.update({targetId:211,settings:{...f.settings.settings,lineHeight:20}});
++    f.entry.update({targetId:211,frame:{width:300,height:250}});
++    f.entry.update({targetId:211,value:{text:'initial',count:7}});
++    f.entry.update({targetId:211,value:{text:'stale',count:6}});
++    f.entry.change('native pending');
++    f.entry.update({targetId:211,value:{text:'late',count:7}});
++    await nextTask();
++    f.entry.update({targetId:211,value:{text:'native pending',count:8}});
++    assert.equal(c.selectionReads,0);assert.deepEqual(c.caretCalls,[]);
++  } finally {globalThis.sdkGetSelection=undefined;globalThis.sdkCaretPosition=undefined;}
++});
++
++test('unavailable or nonfinite selection rejects replacement before changing text and can retry',()=>{
++  for (const invalid of [undefined,{}, {end:NaN},{end:Infinity}]) {
++    const f=fixture(221),c=controller(f.entry);c.selection=invalid;
++    const update={targetId:221,settings:{...f.settings.settings,lineHeight:20},value:{text:'longer replacement',count:0}};
++    assert.throws(()=>f.entry.update(update),/selection is unavailable/);
++    assert.equal(f.entry.text,'initial');assert.equal(f.entry.node.updates,0);
++    assert.equal(f.entry.pendingCaretEnd,undefined);assert.equal(f.entry.renderDirty,true);
++    c.selection={start:2,end:4};f.entry.update(update);
++    assert.equal(c.selectionReads,2);assert.deepEqual(c.caretCalls,[4]);
++    assert.equal(f.entry.text,'longer replacement');assert.equal(f.entry.renderDirty,false);
++  }
++  const f=fixture(222),c=controller(f.entry);
++  globalThis.sdkGetSelection=()=>{throw Error('getter failed');};
++  try {assert.throws(()=>f.entry.update({targetId:222,value:{text:'replacement',count:0}}),/getter failed/);}
++  finally {globalThis.sdkGetSelection=undefined;}
++  assert.equal(f.entry.text,'initial');assert.equal(c.caretCalls.length,0);
++  c.selection={start:0,end:3};f.entry.update({targetId:222,value:{text:'replacement',count:0}});
++  assert.equal(c.selectionReads,2);assert.deepEqual(c.caretCalls,[3]);
++});
++
++test('Builder failure preserves original end and retry never rereads the moved native cursor',()=>{
++  const f=fixture(231),c=controller(f.entry);c.selection={start:1,end:4};
++  const update={targetId:231,value:{text:'abcdefghijklmnop',count:0}};
++  globalThis.sdkUpdate=()=>{c.selection={start:16,end:16};throw Error('render failed');};
++  try {assert.throws(()=>f.entry.update(update),/render failed/);}finally{globalThis.sdkUpdate=undefined;}
++  assert.equal(f.entry.pendingCaretEnd,4);assert.equal(f.entry.renderDirty,true);assert.equal(c.selectionReads,1);
++  globalThis.sdkGetSelection=()=>{throw Error('must not reread');};
++  globalThis.sdkUpdate=()=>{c.selection={start:16,end:16};};
++  try {f.entry.update(update);}finally{globalThis.sdkGetSelection=undefined;globalThis.sdkUpdate=undefined;}
++  assert.equal(c.selectionReads,1);assert.deepEqual(c.caretCalls,[4]);assert.deepEqual(c.selection,{start:4,end:4});
++  assert.equal(f.entry.pendingCaretEnd,undefined);assert.equal(f.entry.renderDirty,false);assert.equal(f.entry.node.updates,2);
++});
++
++test('caret setter failure keeps the restore pending until retry succeeds',()=>{
++  const f=fixture(241),c=controller(f.entry);c.selection={start:2,end:3};
++  const update={targetId:241,value:{text:'replacement',count:0}};
++  globalThis.sdkCaretPosition=()=>{throw Error('caret failed');};
++  try {assert.throws(()=>f.entry.update(update),/caret failed/);}finally{globalThis.sdkCaretPosition=undefined;}
++  assert.equal(f.entry.pendingCaretEnd,3);assert.equal(f.entry.renderDirty,true);assert.equal(c.selectionReads,1);
++  globalThis.sdkGetSelection=()=>{throw Error('must not reread');};
++  try {f.entry.update(update);}finally{globalThis.sdkGetSelection=undefined;}
++  assert.deepEqual(c.caretCalls,[3,3]);assert.equal(c.selectionReads,1);assert.equal(f.entry.renderDirty,false);
++  assert.equal(f.entry.pendingCaretEnd,undefined);assert.deepEqual(c.selection,{start:3,end:3});
++});
++
++test('native input after a failed replacement cancels its restore before metadata retry',async()=>{
++  for (const failing of ['render','caret']) {
++    const f=fixture(251),c=controller(f.entry);c.selection={start:1,end:4};
++    if(failing==='render')globalThis.sdkUpdate=()=>{throw Error('failed');};
++    else globalThis.sdkCaretPosition=()=>{throw Error('failed');};
++    try {assert.throws(()=>f.entry.update({targetId:251,value:{text:'old desired replacement',count:0}}),/failed/);}
++    finally {globalThis.sdkUpdate=undefined;globalThis.sdkCaretPosition=undefined;}
++    const writes=c.caretCalls.length;c.selection={start:5,end:5};f.entry.change('new native edit');
++    assert.equal(f.entry.pendingCaretEnd,undefined);
++    f.entry.update({targetId:251,frame:{width:400,height:260},value:{text:'old desired replacement',count:0}});
++    assert.equal(c.caretCalls.length,writes);assert.equal(c.selectionReads,1);assert.deepEqual(c.selection,{start:5,end:5});
++    assert.equal(f.entry.text,'new native edit');await nextTask();
++    assert.equal(f.entry.count,1);assert.equal(f.entry.renderDirty,false);
++  }
++});
++
++test('restored end clamps to new UTF16 length and never splits a surrogate pair',()=>{
++  for (const [end,text,expected] of [[4,'xy',2],[2,'a😀b',1],[3,'a😀b',3],[99,'a😀b',4],[-1,'a😀b',0],[4,'',0],[3,'a\0😀b',2]]) {
++    const f=fixture(261),c=controller(f.entry);c.selection={start:end,end};
++    f.entry.update({targetId:261,value:{text,count:0}});
++    assert.deepEqual(c.caretCalls,[expected]);assert.equal(f.entry.text,text);
++  }
++});
++
++test('retirement during a replacement never calls a disposed caret controller',()=>{
++  const f=fixture(271),c=controller(f.entry);c.selection={start:0,end:3};
++  globalThis.sdkUpdate=()=>f.entry.dispose();
++  try {f.entry.update({targetId:271,value:{text:'replacement',count:0}});}
++  finally {globalThis.sdkUpdate=undefined;}
++  assert.equal(c.selectionReads,1);assert.equal(c.caretCalls.length,0);
++  assert.equal(f.entry.pendingCaretEnd,undefined);assert.equal(f.entry.closed,true);assert.equal(f.entry.node.disposals,1);
++});

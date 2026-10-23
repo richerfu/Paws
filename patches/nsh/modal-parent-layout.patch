@@ -1,0 +1,34 @@
+--- a/crates/nsh-platform-ohos/src/render/node.rs
++++ b/crates/nsh-platform-ohos/src/render/node.rs
+@@ -1130,7 +1130,14 @@
+         if let Some(component) = self.component.borrow().as_ref() {
+             event.measure_child(&component.native.borrow())?;
+         }
+-        for child in self.children.borrow().iter().filter_map(Weak::upgrade) {
++        // Modal roots belong to their native Dialog, not this logical parent.
++        for child in self
++            .children
++            .borrow()
++            .iter()
++            .filter_map(Weak::upgrade)
++            .filter(|child| child.kind != ViewKind::Modal)
++        {
+             event.measure_child(&child.mounted().borrow())?;
+         }
+         Ok(())
+@@ -1166,7 +1173,14 @@
+         if let Some(component) = self.component.borrow().as_ref() {
+             event.layout_child(&component.native.borrow(), 0, 0)?;
+         }
+-        for child in self.children.borrow().iter().filter_map(Weak::upgrade) {
++        // Modal roots belong to their native Dialog, not this logical parent.
++        for child in self
++            .children
++            .borrow()
++            .iter()
++            .filter_map(Weak::upgrade)
++            .filter(|child| child.kind != ViewKind::Modal)
++        {
+             let frame = child.frame.get();
+             event.layout_child(
+                 &child.mounted().borrow(),

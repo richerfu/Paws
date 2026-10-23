@@ -1,0 +1,891 @@
+--- a/crates/nsh-platform-ohos/src/interop/sdk.rs
++++ b/crates/nsh-platform-ohos/src/interop/sdk.rs
+@@ -185,13 +185,8 @@
+ #[derive(Clone, Debug, PartialEq)]
+ #[napi(object)]
+ pub(crate) struct EditorSettings {
+-    pub target_id: u32,
+     pub multiline: bool,
+     pub secure: bool,
+-    pub text: String,
+-    pub count: u32,
+-    pub width: f64,
+-    pub height: f64,
+     pub placeholder: String,
+     pub font_size: f64,
+     /// Resolved line height, in the same units as font_size; absent uses natural height.
+@@ -218,6 +213,60 @@
+     pub accessibility: Option<EditorAccessibility>,
+ }
+ 
++/// Only a real viewport change crosses this boundary; it carries no document.
++#[derive(Clone, Debug, PartialEq)]
++#[napi(object)]
++pub(crate) struct EditorFrame {
++    pub width: f64,
++    pub height: f64,
++}
++
++/// A controlled replacement, fenced by the latest native edit count.
++#[derive(Clone, Debug, PartialEq)]
++#[napi(object)]
++pub(crate) struct EditorValue {
++    pub text: String,
++    pub count: u32,
++}
++
++/// The independently dirty domains of one live attachment target.
++#[derive(Clone, Debug, Default, PartialEq)]
++#[napi(object)]
++pub(crate) struct EditorUpdate {
++    pub target_id: u32,
++    pub settings: Option<EditorSettings>,
++    pub frame: Option<EditorFrame>,
++    pub value: Option<EditorValue>,
++}
++impl EditorUpdate {
++    /// Domains absent from a newer turn retain their older pending values.
++    pub(crate) fn merge(&mut self, newer: Self) {
++        debug_assert_eq!(self.target_id, newer.target_id);
++        if newer.settings.is_some() {
++            self.settings = newer.settings;
++        }
++        if newer.frame.is_some() {
++            self.frame = newer.frame;
++        }
++        if newer.value.is_some() {
++            self.value = newer.value;
++        }
++    }
++    /// Failed work can fill missing domains, but cannot replace fresher work.
++    pub(crate) fn retry(&mut self, older: Self) {
++        debug_assert_eq!(self.target_id, older.target_id);
++        if self.settings.is_none() {
++            self.settings = older.settings;
++        }
++        if self.frame.is_none() {
++            self.frame = older.frame;
++        }
++        if self.value.is_none() {
++            self.value = older.value;
++        }
++    }
++}
++
+ #[derive(Clone, Debug, PartialEq)]
+ #[napi(object)]
+ pub(crate) struct EditorAccessibility {
+@@ -389,7 +438,7 @@
+ #[derive(Default, Clone)]
+ #[napi(object)]
+ pub(crate) struct Batch {
+-    pub editors: Vec<EditorSettings>,
++    pub editors: Vec<EditorUpdate>,
+     pub commands: Vec<EditorCommand>,
+     pub remove_editors: Vec<u32>,
+     pub views: Vec<ViewOptions>,
+@@ -397,6 +446,46 @@
+ }
+ impl_bridge_napi_type!(Batch, "nsh.arkui.Batch");
+ impl Batch {
++    pub(crate) fn editor(&mut self, update: EditorUpdate) {
++        if self.remove_editors.contains(&update.target_id) {
++            return;
++        }
++        if let Some(pending) = self
++            .editors
++            .iter_mut()
++            .find(|p| p.target_id == update.target_id)
++        {
++            pending.merge(update);
++        } else {
++            self.editors.push(update);
++        }
++    }
++    pub(crate) fn retry_editors(&mut self, updates: Vec<EditorUpdate>) {
++        for older in updates {
++            if self.remove_editors.contains(&older.target_id) {
++                continue;
++            }
++            if let Some(pending) = self
++                .editors
++                .iter_mut()
++                .find(|p| p.target_id == older.target_id)
++            {
++                pending.retry(older);
++            } else {
++                self.editors.push(older);
++            }
++        }
++    }
++    pub(crate) fn retry_editor_commands(&mut self, mut commands: Vec<EditorCommand>) {
++        commands.retain(|command| !self.remove_editors.contains(&command.target_id));
++        commands.append(&mut self.commands);
++        self.commands = commands;
++    }
++    pub(crate) fn remove_editor(&mut self, id: u32) {
++        self.editors.retain(|p| p.target_id != id);
++        self.commands.retain(|p| p.target_id != id);
++        self.remove_editors.push(id);
++    }
+     pub(crate) fn is_empty(&self) -> bool {
+         self.editors.is_empty()
+             && self.commands.is_empty()
+--- a/crates/nsh-platform-ohos/src/input/editor.rs
++++ b/crates/nsh-platform-ohos/src/input/editor.rs
+@@ -19,7 +19,10 @@
+ pub(crate) use crate::interop::sdk::EditorEvent;
+ use crate::{
+     input::editor_state::{self, State},
+-    interop::sdk::{EditorAccessibility, EditorCommand, EditorRoute, EditorSettings},
++    interop::sdk::{
++        EditorAccessibility, EditorCommand, EditorFrame, EditorRoute, EditorSettings, EditorUpdate,
++        EditorValue,
++    },
+     render::node::{Error, Node, Result, callback},
+     text::typography::argb,
+ };
+@@ -33,6 +36,7 @@
+     state: RefCell<State>,
+     content: Cell<Rect>,
+     closed: Cell<bool>,
++    needs_initialization: Cell<bool>,
+     hit_test: Cell<u32>,
+     secure: RefCell<Option<Rc<crate::input::secure::editor::SecureInput>>>,
+ }
+@@ -105,6 +109,7 @@
+             state: RefCell::default(),
+             content: Cell::new(Rect::default()),
+             closed: Cell::new(false),
++            needs_initialization: Cell::new(true),
+             hit_test: Cell::new(i32::from(HitTestMode::Default) as u32),
+             secure: RefCell::default(),
+         });
+@@ -133,6 +138,7 @@
+             .map_or(Ok(None), |target| Ok(target.with_child(f)?))
+     }
+     fn listen(&self) {
++        self.needs_initialization.set(true);
+         *self.route.borrow_mut() = self
+             .target_id()
+             .map(|id| EditorRoute::new(id, self.weak.clone()));
+@@ -308,7 +314,7 @@
+         let selection = config
+             .selection_color
+             .unwrap_or(nsh_core::Color(0x3388ff55));
+-        owner.editor_update(EditorSettings {
++        let settings = EditorSettings {
+             accessibility: Some(EditorAccessibility {
+                 label: accessibility.label.as_deref().unwrap_or("").to_owned(),
+                 hint: accessibility.hint.as_deref().unwrap_or("").to_owned(),
+@@ -316,13 +322,8 @@
+                 accessible: accessibility.accessible,
+                 disabled: accessibility.state.disabled,
+             }),
+-            target_id,
+             multiline: config.multiline,
+             secure: config.secure,
+-            text: self.state.borrow().text.clone(),
+-            count: self.state.borrow().count,
+-            width: self.content.get().width as f64,
+-            height: self.content.get().height as f64,
+             placeholder: config.placeholder.clone(),
+             font_size: config.style.font_size as f64,
+             line_height: (config.style.line_height > 0.0)
+@@ -362,17 +363,68 @@
+             auto_fill: config.auto_fill != nsh_core::AutoFill::Off,
+             content_type: hint.map(str::to_owned),
+             auto_focus: config.auto_focus,
++        };
++        // New targets seed the SDK with the current count, which may already be nonzero.
++        let initialize = self.needs_initialization.replace(false);
++        owner.editor_update(EditorUpdate {
++            target_id,
++            settings: Some(settings),
++            frame: initialize.then(|| self.editor_frame()),
++            value: initialize.then(|| self.editor_value()),
+         });
++    }
++    fn editor_frame(&self) -> EditorFrame {
++        let content = self.content.get();
++        EditorFrame {
++            width: content.width as f64,
++            height: content.height as f64,
++        }
++    }
++    fn editor_value(&self) -> EditorValue {
++        let state = self.state.borrow();
++        EditorValue {
++            text: state.text.clone(),
++            count: state.count,
++        }
+     }
+     pub(crate) fn value(&self, text: String, count: u32) -> Result<()> {
+         if self.state.borrow_mut().controlled(text, count) {
+-            self.update();
++            if self.is_secure() || self.needs_initialization.get() {
++                self.update();
++            } else if let Some(owner) = self
++                .owner
++                .upgrade()
++                .filter(|owner| !self.closed.get() && owner.host.has_ui_context())
++                && let Some(target_id) = self.target_id()
++            {
++                owner.editor_update(EditorUpdate {
++                    target_id,
++                    value: Some(self.editor_value()),
++                    ..Default::default()
++                });
++            }
+         }
+         Ok(())
+     }
+     pub(crate) fn content(&self, content: Rect) -> Result<()> {
+-        if self.content.replace(content) != content {
+-            self.update();
++        let old = self.content.replace(content);
++        if old != content {
++            if self.is_secure() || self.needs_initialization.get() {
++                self.update();
++            } else if (old.width != content.width || old.height != content.height)
++                && let Some(owner) = self
++                    .owner
++                    .upgrade()
++                    .filter(|owner| !self.closed.get() && owner.host.has_ui_context())
++                && let Some(target_id) = self.target_id()
++            {
++                // Origin-only changes are positioned by child layout, without a bridge update.
++                owner.editor_update(EditorUpdate {
++                    target_id,
++                    frame: Some(self.editor_frame()),
++                    ..Default::default()
++                });
++            }
+         }
+         Ok(())
+     }
+--- a/crates/nsh-platform-ohos/src/render/arkui.rs
++++ b/crates/nsh-platform-ohos/src/render/arkui.rs
+@@ -1,23 +1,15 @@
+ //! One NSH SDK call per mount or native input turn; failed retirement keeps its owner.
+ use openharmony_ability::NativeAttachment;
+ 
+-use crate::interop::sdk::{Batch, EditorCommand, EditorSettings, ViewOptions};
++use crate::interop::sdk::{Batch, EditorCommand, EditorUpdate, ViewOptions};
+ 
+ impl crate::render::mount::UiContext {
+-    pub(crate) fn editor_update(&self, settings: EditorSettings) {
++    pub(crate) fn editor_update(&self, update: EditorUpdate) {
+         let mut pending = self.arkui.borrow_mut();
+         let wake = pending.editors.is_empty()
+             && pending.commands.is_empty()
+             && pending.remove_editors.is_empty();
+-        if let Some(old) = pending
+-            .editors
+-            .iter_mut()
+-            .find(|old| old.target_id == settings.target_id)
+-        {
+-            *old = settings;
+-        } else {
+-            pending.editors.push(settings);
+-        }
++        pending.editor(update);
+         drop(pending);
+         if wake {
+             self.editor_wake();
+@@ -46,7 +38,7 @@
+         drop(pending);
+         let target = self.retire_unattached(target);
+         if let Some(target) = target {
+-            self.arkui.borrow_mut().remove_editors.push(id);
++            self.arkui.borrow_mut().remove_editor(id);
+             self.arkui_views.borrow_mut().push(target);
+         }
+         self.editor_wake();
+@@ -80,16 +70,7 @@
+             if let Err(error) = crate::interop::sdk::apply(self, batch.clone()) {
+                 // A synchronous native callback may have queued fresher state during this call.
+                 let mut pending = self.arkui.borrow_mut();
+-                for update in batch.editors {
+-                    if !pending
+-                        .editors
+-                        .iter()
+-                        .any(|next| next.target_id == update.target_id)
+-                        && !pending.remove_editors.contains(&update.target_id)
+-                    {
+-                        pending.editors.push(update);
+-                    }
+-                }
++                pending.retry_editors(batch.editors);
+                 for update in batch.views {
+                     if !pending
+                         .views
+@@ -100,9 +81,7 @@
+                         pending.views.push(update);
+                     }
+                 }
+-                let mut commands = batch.commands;
+-                commands.append(&mut pending.commands);
+-                pending.commands = commands;
++                pending.retry_editor_commands(batch.commands);
+                 pending.remove_editors.extend(batch.remove_editors);
+                 pending.remove_views.extend(batch.remove_views);
+                 self.arkui_views.borrow_mut().extend(retired);
+--- a/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
++++ b/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
+@@ -6,13 +6,8 @@
+ } from "@ohos-rs/ability";
+ 
+ export interface EditorSettings {
+-  targetId: number;
+   multiline: boolean;
+   secure: boolean;
+-  text: string;
+-  count: number;
+-  width: number;
+-  height: number;
+   placeholder: string;
+   fontSize: number;
+   lineHeight?: number | null;
+@@ -37,6 +32,21 @@
+   autoFocus: boolean;
+   accessibility?: EditorAccessibility | null;
+ }
++export interface EditorFrame {
++  width: number;
++  height: number;
++}
++export interface EditorValue {
++  text: string;
++  count: number;
++}
++export interface EditorUpdate {
++  targetId: number;
++  settings?: EditorSettings | null;
++  frame?: EditorFrame | null;
++  value?: EditorValue | null;
++}
++
+ interface EditorAccessibility {
+   label: string;
+   hint: string;
+@@ -162,8 +172,8 @@
+   applyNormalAttribute(node: TextInputAttribute | TextAreaAttribute): void {
+     const s = this.entry.settings;
+     node
+-      .width(s.width)
+-      .height(s.height)
++      .width(this.entry.frame.width)
++      .height(this.entry.frame.height)
+       .padding(0)
+       .borderWidth(0)
+       // The outer NSH node owns corners; theme rounding would clip this content box.
+@@ -212,7 +222,7 @@
+ function editorContent(entry: EditorEntry) {
+   if (entry.settings.multiline) {
+     TextArea({ text: entry.text, placeholder: entry.settings.placeholder, controller: entry.area })
+-      .id(`nsh-editor-${entry.settings.targetId}`)
++      .id(`nsh-editor-${entry.targetId}`)
+       .attributeModifier(new EditorModifier(entry))
+       .onChange((text: string) => entry.change(text))
+       .onFocus(() => entry.emit("focus"))
+@@ -226,7 +236,7 @@
+       .onAppear(() => entry.appeared());
+   } else {
+     TextInput({ text: entry.text, placeholder: entry.settings.placeholder, controller: entry.line })
+-      .id(`nsh-editor-${entry.settings.targetId}`)
++      .id(`nsh-editor-${entry.targetId}`)
+       .attributeModifier(new EditorModifier(entry))
+       .onChange((text: string) => entry.change(text))
+       .onFocus(() => entry.emit("focus"))
+@@ -253,19 +263,19 @@
+     this.entry.measureSize();
+   }
+ }
+-function beginEditorWork(phase: string, settings: EditorSettings, length: number): number {
++function beginEditorWork(phase: string, entry: EditorEntry, length: number): number {
+   const started = Date.now();
+   if (length >= 64 * 1024) {
+     hilog.warn(0x0000, "NshEditor", "%{public}s BEGIN id=%{public}d chars=%{public}d width=%{public}s height=%{public}s",
+-      phase, settings.targetId, length, String(settings.width), String(settings.height));
++      phase, entry.targetId, length, String(entry.frame.width), String(entry.frame.height));
+   }
+   return started;
+ }
+-function reportEditorWork(phase: string, started: number, settings: EditorSettings, length: number): void {
++function reportEditorWork(phase: string, started: number, entry: EditorEntry, length: number): void {
+   const elapsed = Date.now() - started;
+   if (length >= 64 * 1024 || elapsed >= 16) {
+     hilog.warn(0x0000, "NshEditor", "%{public}s END id=%{public}d chars=%{public}d width=%{public}s height=%{public}s elapsed=%{public}dms",
+-      phase, settings.targetId, length, String(settings.width), String(settings.height), elapsed);
++      phase, entry.targetId, length, String(entry.frame.width), String(entry.frame.height), elapsed);
+   }
+ }
+ interface PendingEditorEvent {
+@@ -276,11 +286,45 @@
+   width: number;
+   height: number;
+ }
++// Compare effective rendered attributes, not DTO identity or the controlled edit count.
++// Auto-focus is a lifecycle action handled separately, without rebuilding the editor.
++function sameEditorSettings(a: EditorSettings, b: EditorSettings): boolean {
++  return a.multiline === b.multiline
++    && a.secure === b.secure
++    && a.placeholder === b.placeholder
++    && a.fontSize === b.fontSize
++    && a.fontWeight === b.fontWeight
++    && a.italic === b.italic
++    && a.color === b.color
++    && a.placeholderColor === b.placeholderColor
++    && a.caretColor === b.caretColor
++    && a.selectionColor === b.selectionColor
++    && a.hitTest === b.hitTest
++    && a.align === b.align
++    && a.rtl === b.rtl
++    && a.capitalize === b.capitalize
++    && a.keyboard === b.keyboard
++    && a.enterKey === b.enterKey
++    && a.blurOnSubmit === b.blurOnSubmit
++    && a.autoFill === b.autoFill
++    && (a.lineHeight ?? 0) === (b.lineHeight ?? 0)
++    && (a.fontFamily ?? "HarmonyOS Sans") === (b.fontFamily ?? "HarmonyOS Sans")
++    && (a.maxLength ?? 2147483647) === (b.maxLength ?? 2147483647)
++    && (a.contentType ?? undefined) === (b.contentType ?? undefined)
++    && (a.editable && a.accessibility?.disabled !== true) === (b.editable && b.accessibility?.disabled !== true)
++    && (a.accessibility?.label ?? "") === (b.accessibility?.label ?? "")
++    && (a.accessibility?.hint ?? "") === (b.accessibility?.hint ?? "")
++    && (a.accessibility?.hidden === true) === (b.accessibility?.hidden === true)
++    && (a.accessibility?.accessible !== false) === (b.accessibility?.accessible !== false);
++}
+ class EditorEntry {
+   readonly node: BuilderNode<[EditorEntry]>;
+   readonly line: TextInputController = new TextInputController();
+   readonly area: TextAreaController = new TextAreaController();
++  readonly targetId: number;
+   settings: EditorSettings;
++  frame: EditorFrame;
++  private renderDirty: boolean = true;
+   text: string;
+   count: number;
+   private events: PendingEditorEvent[] = [];
+@@ -300,33 +344,40 @@
+   private sizePending: boolean = false;
+   private contentWidth: number = -1;
+   private contentHeight: number = -1;
+-  constructor(settings: EditorSettings, context: BridgePluginContext) {
++  constructor(update: EditorUpdate, context: BridgePluginContext) {
++    if (update.settings == null || update.frame == null || update.value == null) {
++      throw new Error("New editor target requires configuration, frame and value");
++    }
+     this.context = context;
+-    this.settings = settings;
+-    this.text = settings.text;
+-    this.count = settings.count;
++    this.targetId = update.targetId;
++    this.settings = update.settings;
++    this.frame = update.frame;
++    this.text = update.value.text;
++    // Remounting an existing Rust input preserves its native edit-count baseline.
++    this.count = update.value.count;
+     this.node = new BuilderNode<[EditorEntry]>(context.getUIContext());
+   }
+   create(): void {
+     this.updating = true;
+     this.sdkBusy = true;
+     try {
+-      const started = beginEditorWork("build", this.settings, this.text.length);
++      const started = beginEditorWork("build", this, this.text.length);
+       try { this.node.build(wrapBuilder(editorContent), this); }
+-      finally { reportEditorWork("build", started, this.settings, this.text.length); }
++      finally { reportEditorWork("build", started, this, this.text.length); }
+       if (this.closed || !this.context.isActive()) { throw new Error("Editor creation was cancelled"); }
+-      const attachedAt = beginEditorWork("attach", this.settings, this.text.length);
++      const attachedAt = beginEditorWork("attach", this, this.text.length);
+       let response: Acknowledgement;
+       try {
+         response = this.context.invokeNativeSync(
+           "native-node-ready",
+           "ohos.node.NativeNodeReady",
+           "ohos.node.Acknowledgement",
+-          { targetId: this.settings.targetId, content: this.node.getFrameNode() },
++          { targetId: this.targetId, content: this.node.getFrameNode() },
+         ) as Acknowledgement;
+-      } finally { reportEditorWork("attach", attachedAt, this.settings, this.text.length); }
++      } finally { reportEditorWork("attach", attachedAt, this, this.text.length); }
+       if (response.accepted !== true || this.closed) { throw new Error("Native editor target is no longer live"); }
+       this.attached = true;
++      this.renderDirty = false;
+     } catch (error) {
+       this.dispose();
+       throw new Error(String(error));
+@@ -337,27 +388,41 @@
+       this.autoFocus();
+     }
+   }
+-  update(settings: EditorSettings): void {
++  update(update: EditorUpdate): void {
+     if (this.closed) { throw new Error("Native editor is retired"); }
+-    if (
+-      settings.targetId !== this.settings.targetId ||
+-      settings.multiline !== this.settings.multiline
+-    ) {
++    if (update.targetId !== this.targetId ||
++        (update.settings != null && update.settings.multiline !== this.settings.multiline)) {
+       throw new Error("Editor replacement requires a new generation");
+     }
+-    // An SDK edit is already local even when its native receipt is queued.
+-    // A controlled value based on the preceding count must not erase it.
+-    if (this.pendingChanges === 0 && settings.count === this.count) { this.text = settings.text; }
+-    this.settings = settings;
+-    this.refresh();
++    if (update.settings != null) {
++      this.renderDirty = this.renderDirty || !sameEditorSettings(this.settings, update.settings);
++      this.settings = update.settings;
++    }
++    if (update.frame != null) {
++      this.renderDirty = this.renderDirty || this.frame.width !== update.frame.width ||
++        this.frame.height !== update.frame.height;
++      this.frame = update.frame;
++    }
++    const value = update.value;
++    // Native edits already exist locally while their FIFO receipts wait for Rust.
++    if (value != null && this.pendingChanges === 0 && value.count === this.count && value.text !== this.text) {
++      this.text = value.text;
++      this.renderDirty = true;
++    }
++    if (this.renderDirty) { this.refresh(); }
++    else { this.autoFocus(); }
+   }
+   private refresh(): void {
+     this.updating = true;
+     this.sdkBusy = true;
+     try {
+-      const started = beginEditorWork("update", this.settings, this.text.length);
+-      try { this.node.update(this); }
+-      finally { reportEditorWork("update", started, this.settings, this.text.length); }
++      const started = beginEditorWork("update", this, this.text.length);
++      try {
++        this.node.update(this);
++        // A thrown SDK operation keeps desired state dirty for the batch retry.
++        this.renderDirty = false;
++      }
++      finally { reportEditorWork("update", started, this, this.text.length); }
+     } finally {
+       this.updating = false;
+       this.sdkBusy = false;
+@@ -400,12 +465,12 @@
+     }
+   }
+   private readContentRect(): RectResult {
+-    const started = beginEditorWork("getTextContentRect", this.settings, this.text.length);
++    const started = beginEditorWork("getTextContentRect", this, this.text.length);
+     try {
+       return this.settings.multiline
+         ? this.area.getTextContentRect()
+         : this.line.getTextContentRect();
+-    } finally { reportEditorWork("getTextContentRect", started, this.settings, this.text.length); }
++    } finally { reportEditorWork("getTextContentRect", started, this, this.text.length); }
+   }
+   emit(kind: string, text = "", start = 0, end = 0, width = 0, height = 0): void {
+     if (!this.attached || this.closed || !this.context.isActive() || (this.updating && kind !== "focus" && kind !== "blur")) {
+@@ -429,7 +494,7 @@
+         if (!event) { break; }
+         const response = this.context.invokeNativeSync(
+           "editor-event", "nsh.arkui.EditorNotification", "nsh.arkui.EditorReceipt",
+-          { targetId: this.settings.targetId, event: new EditorEvent(this, event.kind, event.text,
++          { targetId: this.targetId, event: new EditorEvent(this, event.kind, event.text,
+             event.start, event.end, event.width, event.height) },
+         ) as EditorReceipt;
+         if (!this.closed && response.accepted) { this.count = response.count; }
+@@ -454,12 +519,12 @@
+     if (this.sdkBusy || !this.attached || this.closed || !this.context.isActive()) { return; }
+     if (this.appearedPending && !this.focusedOnce && this.settings.autoFocus) {
+       this.focusedOnce = true;
+-      this.context.getUIContext().getFocusController().requestFocus(`nsh-editor-${this.settings.targetId}`);
++      this.context.getUIContext().getFocusController().requestFocus(`nsh-editor-${this.targetId}`);
+     }
+   }
+   command(command: EditorCommand): void {
+     if (command.kind === "focus") {
+-      this.context.getUIContext().getFocusController().requestFocus(`nsh-editor-${this.settings.targetId}`);
++      this.context.getUIContext().getFocusController().requestFocus(`nsh-editor-${this.targetId}`);
+     } else if (command.kind === "blur") {
+       if (this.settings.multiline) {
+         this.area.stopEditing();
+@@ -488,7 +553,7 @@
+       if (!this.retired) {
+         const response = cleanup.invokeNativeSync(
+           "native-node-retiring", "ohos.node.NativeNodeRetiring", "ohos.node.Acknowledgement",
+-          { targetId: this.settings.targetId },
++          { targetId: this.targetId },
+         ) as Acknowledgement;
+         if (!response.accepted) { throw new Error("Native editor retirement was rejected"); }
+         this.retired = true;
+@@ -507,15 +572,27 @@
+   remove(ids: number[], context: BridgePluginContext): void {
+     for (const id of ids) { this.entries.get(id)?.dispose(context); this.entries.delete(id); }
+   }
+-  update(states: EditorSettings[], commands: EditorCommand[], context: BridgePluginContext): void {
+-    for (const state of states) {
++  update(updates: EditorUpdate[], commands: EditorCommand[], context: BridgePluginContext): void {
++    // Merge all domains before touching a target: one build/update at most per batch.
++    const pending: Map<number, EditorUpdate> = new Map();
++    for (const update of updates) {
++      let combined = pending.get(update.targetId);
++      if (!combined) {
++        combined = { targetId: update.targetId };
++        pending.set(update.targetId, combined);
++      }
++      if (update.settings != null) { combined.settings = update.settings; }
++      if (update.frame != null) { combined.frame = update.frame; }
++      if (update.value != null) { combined.value = update.value; }
++    }
++    for (const update of pending.values()) {
+       if (!context.isActive()) { throw new Error("NSH SDK session is inactive"); }
+-      let entry = this.entries.get(state.targetId);
+-      if (entry) { entry.update(state); }
++      let entry = this.entries.get(update.targetId);
++      if (entry) { entry.update(update); }
+       else {
+-        entry = new EditorEntry(state, context);
++        entry = new EditorEntry(update, context);
+         // Publish before SDK build: onAppear/onClosing may reenter synchronously.
+-        this.entries.set(state.targetId, entry);
++        this.entries.set(update.targetId, entry);
+         entry.create();
+       }
+     }
+--- a/crates/nsh-platform-ohos/arkts/src/main/ets/NshPlugin.ets
++++ b/crates/nsh-platform-ohos/arkts/src/main/ets/NshPlugin.ets
+@@ -3,11 +3,11 @@
+   BridgeCallContext, BridgeContextRequirement, BridgeLifecycleEvent, BridgePluginContext,
+   BridgePluginHookContext, BridgeTypedValue, MainThreadSyncBridgePlugin, expectBridgeRequestType,
+ } from "@ohos-rs/ability";
+-import { NativeEditors, EditorSettings, EditorCommand } from "./NativeEditors";
++import { NativeEditors, EditorUpdate, EditorCommand } from "./NativeEditors";
+ import { NativeViews, Settings } from "./NativeViews";
+ 
+ interface Batch {
+-  editors: EditorSettings[];
++  editors: EditorUpdate[];
+   commands: EditorCommand[];
+   removeEditors: number[];
+   views: Settings[];
+--- a/crates/nsh-platform-ohos/arkts/tests/editors.test.mjs
++++ b/crates/nsh-platform-ohos/arkts/tests/editors.test.mjs
+@@ -16,24 +16,28 @@
+ const hilog={warn(){}};
+ class TextInputController { selections=[]; setTextSelection(a,b){this.selections.push([a,b]);} getTextContentRect(){globalThis.sdkMeasure?.();return {width:10,height:20};} stopEditing(){} }
+ class TextAreaController extends TextInputController {}
+-class BuilderNode { updates=0; disposals=0; build(){globalThis.sdkBuild?.();} update(){this.updates++; globalThis.sdkUpdate?.();} dispose(){this.disposals++;} getFrameNode(){return {};} }
++class BuilderNode { updates=0; disposals=0; build(){globalThis.sdkBuild?.();} update(entry){this.updates++; globalThis.sdkUpdate?.(entry);} dispose(){this.disposals++;} getFrameNode(){return {};} }
+ const editorContent = () => {};
+ const wrapBuilder = value => value;
+ `;
+ const { EditorEntry, NativeEditors, EditorModifier } = await import(`data:text/javascript;base64,${Buffer.from(stripTypeScriptTypes(effects+event+modifier+classes+'\nexport { EditorEntry, EditorModifier };')).toString('base64')}`);
+-function fixture(id=1, ready=true, multiline=false) {
++function fixture(id=1, ready=true, multiline=false, count=0) {
+   const calls=[];
+-  let active=true, accepted=true, count=0;
+-  const ui={ postFrameCallback(){}, getFocusController(){return {requestFocus(){globalThis.sdkFocus?.();}}} };
++  let active=true, accepted=true, nativeCount=count, frames=0;
++  const ui={ postFrameCallback(){frames++;}, getFocusController(){return {requestFocus(){globalThis.sdkFocus?.();}}} };
+   const context={getUIContext:()=>ui, isActive:()=>active, invokeNativeSync(name,_req,_res,value){
+     calls.push({name,value});
+-    if(name==='editor-event' && value.event.kind==='change') count++;
+-    return {accepted,count};
++    if(name==='editor-event' && value.event.kind==='change') nativeCount++;
++    return {accepted,count:nativeCount};
+   }};
+-  const settings={targetId:id, multiline, text:'initial',count:0};
++  const config={multiline,secure:false,placeholder:'Name',fontSize:14,fontWeight:400,italic:false,
++    color:0xff000000,placeholderColor:0xff888888,caretColor:0xff000000,selectionColor:0x3388ff55,
++    editable:true,hitTest:0,align:0,rtl:false,capitalize:0,keyboard:'normal',enterKey:'done',
++    blurOnSubmit:false,autoFill:false,autoFocus:false};
++  const settings={targetId:id,settings:config,frame:{width:296,height:242},value:{text:'initial',count}};
+   const entry=new EditorEntry(settings,context);
+   if (ready) { entry.create(); calls.length=0; }
+-  return {entry,settings,calls,context,accept(value){accepted=value;},active(value){active=value;}};
++  return {entry,settings,calls,context,frames:()=>frames,accept(value){accepted=value;},active(value){active=value;}};
+ }
+ const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
+ test('full strings including NUL cross one SDK callback and count comes from Rust receipt',async()=>{
+@@ -41,15 +45,15 @@
+   assert.equal(f.calls.length,0); await nextTask();
+   assert.equal(f.calls[0].value.event.text,'a\0😀');
+   assert.equal(f.entry.count,1);
+-  f.entry.update({...f.settings,text:'stale',count:0});
++  f.entry.update({targetId:f.settings.targetId,value:{text:'stale',count:0}});
+   assert.equal(f.entry.text,'a\0😀');
+-  f.entry.update({...f.settings,text:'accepted',count:1});
++  f.entry.update({targetId:f.settings.targetId,value:{text:'accepted',count:1}});
+   assert.equal(f.entry.text,'accepted');
+ });
+ test('controlled updates reuse BuilderNode and controllers; callback echo is suppressed',()=>{
+   const f=fixture(), node=f.entry.node, controller=f.entry.line;
+   globalThis.sdkUpdate=()=>f.entry.change('programmatic echo');
+-  try {f.entry.update({...f.settings,text:'controlled'});}finally{globalThis.sdkUpdate=undefined;}
++  try {f.entry.update({targetId:f.settings.targetId,value:{text:'controlled',count:0}});}finally{globalThis.sdkUpdate=undefined;}
+   assert.equal(f.entry.node,node); assert.equal(f.entry.line,controller);
+   assert.equal(node.updates,1); assert.equal(f.entry.text,'controlled'); assert.equal(f.calls.length,0);
+   f.entry.command({kind:'selection',start:1,end:3});
+@@ -57,7 +61,7 @@
+ });
+ test('SDK update failure clears applying guard and is observable',async()=>{
+   const f=fixture(); globalThis.sdkUpdate=()=>{throw Error('SDK failed');};
+-  try {assert.throws(()=>f.entry.update({...f.settings,text:'wanted'}),/SDK failed/);}finally{globalThis.sdkUpdate=undefined;}
++  try {assert.throws(()=>f.entry.update({targetId:f.settings.targetId,value:{text:'wanted',count:0}}),/SDK failed/);}finally{globalThis.sdkUpdate=undefined;}
+   f.entry.change('user'); await nextTask(); assert.equal(f.entry.count,1);
+ });
+ test('retirement failure retains SDK owner and permits a later successful retry',()=>{
+@@ -77,7 +81,7 @@
+   const first=fixture(11),second=fixture(12),a=new NativeEditors(),b=new NativeEditors();
+   a.update([first.settings],[],first.context); b.update([second.settings],[],second.context);
+   a.dispose(first.context); const before=second.calls.length;
+-  b.update([{...second.settings,text:'still live'}],[],second.context);
++  b.update([{targetId:second.settings.targetId,value:{text:'still live',count:0}}],[],second.context);
+   assert.equal(second.calls.length,before);
+   b.dispose(second.context);
+ });
+@@ -115,15 +119,15 @@
+   f.entry.change('second'); f.entry.submit({keepEditableState(){kept++;}});
+   assert.equal(kept,1); // The borrowed SubmitEvent is handled synchronously.
+   assert.equal(f.entry.text,'second'); assert.equal(f.entry.count,0); assert.equal(f.calls.length,0);
+-  f.entry.update({...f.settings,text:'stale-before-receipt',count:0});
++  f.entry.update({targetId:f.settings.targetId,value:{text:'stale-before-receipt',count:0}});
+   assert.equal(f.entry.text,'second');
+   await nextTask();
+   assert.deepEqual(f.calls.map(c=>c.value.event.kind),['change','selection','key','change','submit']);
+   assert.deepEqual(f.calls.map(c=>c.value.event.count),[0,1,1,1,2]);
+   assert.deepEqual(f.calls.filter(c=>c.value.event.kind==='change').map(c=>c.value.event.text),['first','second']);
+   assert.equal(f.entry.count,2);
+-  f.entry.update({...f.settings,text:'stale-after-receipt',count:1}); assert.equal(f.entry.text,'second');
+-  f.entry.update({...f.settings,text:'confirmed',count:2}); assert.equal(f.entry.text,'confirmed');
++  f.entry.update({targetId:f.settings.targetId,value:{text:'stale-after-receipt',count:1}}); assert.equal(f.entry.text,'second');
++  f.entry.update({targetId:f.settings.targetId,value:{text:'confirmed',count:2}}); assert.equal(f.entry.text,'confirmed');
+ });
+ 
+ test('events generated during delivery wait until that native attachment dispatch returns',async()=>{
+@@ -168,10 +172,10 @@
+     const node=f.entry.node,controller=f.entry.line;
+     globalThis.sdkUpdate=()=>new EditorModifier(f.entry).applyNormalAttribute(native.node);
+     try {
+-      f.entry.update({...f.settings,multiline,lineHeight:20,fontSize:14});
+-      f.entry.update({...f.settings,multiline,fontSize:14}); // NAPI object None omits the property.
+-      f.entry.update({...f.settings,multiline,lineHeight:24,fontSize:14});
+-      f.entry.update({...f.settings,multiline,lineHeight:null,fontSize:14});
++      f.entry.update({targetId:f.settings.targetId,settings:{...f.settings.settings,multiline,lineHeight:20,fontSize:14}});
++      f.entry.update({targetId:f.settings.targetId,settings:{...f.settings.settings,multiline,fontSize:14}}); // NAPI object None omits the property.
++      f.entry.update({targetId:f.settings.targetId,settings:{...f.settings.settings,multiline,lineHeight:24,fontSize:14}});
++      f.entry.update({targetId:f.settings.targetId,settings:{...f.settings.settings,multiline,lineHeight:null,fontSize:14}});
+     } finally {globalThis.sdkUpdate=undefined;}
+     assert.deepEqual(native.calls.filter(c=>c[0]==='lineHeight').map(c=>c[1]),[20,0,24,0]);
+     assert.equal(f.entry.node,node);assert.equal(f.entry.line,controller);
+@@ -183,9 +187,106 @@
+   const f=fixture(81),native=nativeAttributes();
+   f.entry.change('user text');
+   globalThis.sdkUpdate=()=>new EditorModifier(f.entry).applyNormalAttribute(native.node);
+-  try {f.entry.update({...f.settings,text:'stale',lineHeight:20,count:0});}
++  try {f.entry.update({targetId:f.settings.targetId,settings:{...f.settings.settings,lineHeight:20},value:{text:'stale',count:0}});}
+   finally {globalThis.sdkUpdate=undefined;}
+   assert.equal(f.entry.text,'user text');assert.equal(f.calls.length,0);
+   assert.deepEqual(native.calls.filter(c=>c[0]==='lineHeight'),[['lineHeight',20]]);
+   await nextTask();assert.equal(f.calls[0].value.event.text,'user text');assert.equal(f.entry.count,1);
+ });
++
++
++test('equal metadata, frame, value and stale counts do no Builder work or size query',async()=>{
++  const f=fixture(91,true,false,7), frames=f.frames();
++  const node=f.entry.node,controller=f.entry.line;
++  f.entry.update(f.settings);
++  f.entry.update({targetId:91,settings:{...f.settings.settings,fontFamily:'HarmonyOS Sans',lineHeight:0,
++    maxLength:2147483647,accessibility:{label:'',hint:'',hidden:false,accessible:true,disabled:false}}});
++  f.entry.update({targetId:91,frame:{width:296,height:242}});
++  f.entry.update({targetId:91,value:{text:'initial',count:7}});
++  f.entry.update({targetId:91,value:{text:'older',count:6}});
++  assert.equal(node.updates,0);assert.equal(f.frames(),frames);assert.equal(f.entry.count,7);
++  f.entry.change('pending user');
++  const afterEdit=f.frames();
++  f.entry.update({targetId:91,value:{text:'late controlled',count:7}});
++  assert.equal(node.updates,0);assert.equal(f.frames(),afterEdit);assert.equal(f.entry.text,'pending user');
++  await nextTask();
++  f.entry.update({targetId:91,value:{text:'pending user',count:8}});
++  assert.equal(node.updates,0);assert.equal(f.entry.node,node);assert.equal(f.entry.line,controller);
++});
++
++test('native target merges configuration, frame and full Unicode value before one build or refresh',()=>{
++  const f=fixture(101,false,false,9), editors=new NativeEditors();let builds=0,seen;
++  const document='YAML\0😀界\n'.repeat(8000);
++  globalThis.sdkBuild=()=>{builds++;};globalThis.sdkUpdate=entry=>{seen=entry;};
++  try {
++    editors.update([{targetId:101,settings:f.settings.settings},{targetId:101,frame:f.settings.frame},
++      {targetId:101,value:{text:document,count:9}}],[],f.context);
++    assert.equal(builds,1);
++    const entry=editors.entries.get(101),node=entry.node;
++    assert.equal(entry.count,9);assert.equal(entry.text,document);
++    editors.update([{targetId:101,settings:{...f.settings.settings,placeholder:'Updated'}},
++      {targetId:101,frame:{width:400,height:260}},{targetId:101,value:{text:document+'tail',count:9}}],
++      [{targetId:101,kind:'selection',start:2,end:4}],f.context);
++    assert.equal(node.updates,1);assert.equal(entry.node,node);assert.equal(seen.text,document+'tail');
++    assert.equal(seen.settings.placeholder,'Updated');assert.deepEqual(seen.frame,{width:400,height:260});
++    assert.deepEqual(entry.line.selections,[[2,4]]);
++  } finally {globalThis.sdkBuild=undefined;globalThis.sdkUpdate=undefined;editors.dispose(f.context);}
++});
++
++test('style and viewport changes each refresh once without a value payload',()=>{
++  const f=fixture(111);const node=f.entry.node,identity=f.entry.text;
++  const style={targetId:111,settings:{...f.settings.settings,placeholder:'New',lineHeight:20}};
++  const frame={targetId:111,frame:{width:300,height:250}};
++  assert.equal('value' in style,false);assert.equal('value' in frame,false);
++  f.entry.update(style);assert.equal(node.updates,1);assert.equal(f.entry.text,identity);
++  f.entry.update(frame);assert.equal(node.updates,2);assert.equal(f.entry.text,identity);
++  f.entry.update(style);f.entry.update(frame);assert.equal(node.updates,2);
++});
++
++test('failed SDK render stays dirty and retries the same desired domains without losing newer input',async()=>{
++  const f=fixture(121);const style={targetId:121,settings:{...f.settings.settings,lineHeight:20}};
++  globalThis.sdkUpdate=()=>{throw Error('native update failed');};
++  try {assert.throws(()=>f.entry.update(style),/native update failed/);}finally{globalThis.sdkUpdate=undefined;}
++  assert.equal(f.entry.node.updates,1);assert.equal(f.entry.renderDirty,true);
++  f.entry.change('new native text');
++  f.entry.update({targetId:121,value:{text:'stale retry',count:0}});
++  assert.equal(f.entry.node.updates,2);assert.equal(f.entry.text,'new native text');
++  assert.equal(f.entry.settings.lineHeight,20);assert.equal(f.entry.renderDirty,false);
++  await nextTask();
++  f.entry.update(style);assert.equal(f.entry.node.updates,2);
++});
++
++test('incomplete initialization and retired targets reject work; surviving entries are not rebuilt on a batch retry',()=>{
++  const f=fixture(131,false,false,4), editors=new NativeEditors();
++  assert.throws(()=>new EditorEntry({targetId:131,settings:f.settings.settings},f.context),/requires configuration/);
++  editors.update([f.settings],[],f.context);const entry=editors.entries.get(131),node=entry.node;
++  editors.update([f.settings],[],f.context);assert.equal(node.updates,0);
++  editors.remove([131],f.context);assert.equal(node.disposals,1);
++  assert.throws(()=>entry.update({targetId:131,value:{text:'late',count:4}}),/retired/);
++});
++
++
++test('create failure retires the old target and recovery requires a fresh target identity',()=>{
++  const f=fixture(141,false,false,5),editors=new NativeEditors();
++  globalThis.sdkBuild=()=>{throw Error('SDK build failed');};
++  try {assert.throws(()=>editors.update([f.settings],[],f.context),/SDK build failed/);}
++  finally {globalThis.sdkBuild=undefined;}
++  const old=editors.entries.get(141);assert.equal(old.closed,true);assert.equal(old.node.disposals,1);
++  assert.throws(()=>editors.update([f.settings],[],f.context),/retired/);
++  assert.equal(f.calls.filter(c=>c.name==='native-node-retiring').length,1);
++  editors.update([{...f.settings,targetId:142}],[],f.context);
++  const fresh=editors.entries.get(142);assert.notEqual(fresh,old);assert.equal(fresh.count,5);
++  assert.equal(fresh.text,'initial');assert.equal(fresh.attached,true);editors.dispose(f.context);
++});
++
++test('create failure with rejected retirement retains its owner until explicit successful cleanup',()=>{
++  const f=fixture(151,false),editors=new NativeEditors();f.accept(false);
++  globalThis.sdkBuild=()=>{throw Error('SDK build failed');};
++  try {assert.throws(()=>editors.update([f.settings],[],f.context),/retirement failed/);}
++  finally {globalThis.sdkBuild=undefined;}
++  const old=editors.entries.get(151);assert.equal(old.closed,true);assert.equal(old.node.disposals,0);
++  assert.throws(()=>editors.update([f.settings],[],f.context),/retired/);
++  f.accept(true);editors.remove([151],f.context);assert.equal(old.node.disposals,1);
++  editors.update([{...f.settings,targetId:152}],[],f.context);assert.equal(editors.entries.get(152).attached,true);
++  editors.dispose(f.context);
++});

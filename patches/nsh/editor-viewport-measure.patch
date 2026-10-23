@@ -1,0 +1,134 @@
+--- a/crates/nsh-platform-ohos/src/input/editor.rs
++++ b/crates/nsh-platform-ohos/src/input/editor.rs
+@@ -10,7 +10,8 @@
+     ReturnKeyType, SubmitBehavior, TextAlign,
+ };
+ use ohos_arkui_binding::{
+-    api::node_custom_event::NodeCustomEvent, component::attribute::ArkUICommonAttribute,
++    api::node_custom_event::{IntSize, NodeCustomEvent},
++    component::attribute::ArkUICommonAttribute,
+     types::view::HitTestMode,
+ };
+ use openharmony_ability::NativeAttachment;
+@@ -42,19 +43,21 @@
+     bytes: usize,
+     content_px: (f32, f32),
+     max_px: Option<(i32, i32)>,
++    used_px: Option<(i32, i32)>,
+     started: Instant,
+ }
+ impl EditorWork {
+     fn log(&self, boundary: &str) {
+         log::info!(
+             target: "nsh::perf",
+-            "OHOS editor {} {} id={} bytes={} content_px={:?} max_px={:?} elapsed={}ms",
++            "OHOS editor {} {} id={} bytes={} content_px={:?} ancestor_max_px={:?} used_px={:?} elapsed={}ms",
+             self.phase,
+             boundary,
+             self.id,
+             self.bytes,
+             self.content_px,
+             self.max_px,
++            self.used_px,
+             self.started.elapsed().as_millis(),
+         );
+     }
+@@ -84,6 +87,7 @@
+             max_px: event
+                 .and_then(NodeCustomEvent::layout_constraint_in_measure)
+                 .map(|constraint| (constraint.max_width(), constraint.max_height())),
++            used_px: editor_state::viewport_size(content.width, content.height, owner.scale),
+             started: Instant::now(),
+         };
+         work.log("BEGIN");
+@@ -414,8 +418,15 @@
+         if self.is_secure() {
+             return Ok(());
+         }
+-        let _work = self.trace_work("child-measure", Some(event));
+-        self.with_child(|node| event.measure_child(node))?
++        let _work = self.trace_work("child-measure-content", Some(event));
++        let Some(owner) = self.owner.upgrade() else {
++            return Ok(());
++        };
++        let content = self.content.get();
++        let (width, height) =
++            editor_state::viewport_size(content.width, content.height, owner.scale)
++                .ok_or(Error::Unsupported("invalid native editor viewport"))?;
++        self.with_child(|node| event.measure_child_with_size(node, IntSize { width, height }))?
+             .transpose()?;
+         Ok(())
+     }
+--- a/crates/nsh-platform-ohos/src/input/editor_state.rs
++++ b/crates/nsh-platform-ohos/src/input/editor_state.rs
+@@ -1,4 +1,17 @@
+ //! Controlled editor values and focus acknowledgements, independent of SDK objects.
++
++/// Core content dimensions in vp become the editor's exact physical viewport.
++pub(crate) fn viewport_size(width: f32, height: f32, scale: f32) -> Option<(i32, i32)> {
++    if !scale.is_finite() || scale <= 0.0 {
++        return None;
++    }
++    let pixels = |value: f32| {
++        let result = (value * scale).round() as f64;
++        (value.is_finite() && value >= 0.0 && result.is_finite() && result <= i32::MAX as f64)
++            .then_some(result as i32)
++    };
++    Some((pixels(width)?, pixels(height)?))
++}
+ 
+ #[derive(Default)]
+ pub(crate) struct State {
+@@ -67,6 +80,29 @@
+     use super::*;
+ 
+     #[test]
++    fn editor_viewport_uses_content_dimensions_and_device_scale() {
++        assert_eq!(viewport_size(296.0, 242.0, 3.25), Some((962, 787)));
++        assert_eq!(viewport_size(320.0, 260.0, 1.0), Some((320, 260)));
++        assert_eq!(viewport_size(0.0, 0.0, 2.0), Some((0, 0)));
++    }
++
++    #[test]
++    fn editor_viewport_rejects_invalid_or_unrepresentable_dimensions() {
++        for (width, height, scale) in [
++            (f32::NAN, 10.0, 1.0),
++            (10.0, f32::INFINITY, 1.0),
++            (-1.0, 10.0, 1.0),
++            (10.0, 10.0, 0.0),
++            (10.0, 10.0, -1.0),
++            (10.0, 10.0, f32::INFINITY),
++            (f32::MAX, 10.0, 2.0),
++            (i32::MAX as f32, 10.0, 1.0),
++        ] {
++            assert_eq!(viewport_size(width, height, scale), None);
++        }
++    }
++
++    #[test]
+     fn controlled_values_require_the_current_native_count() {
+         let mut state = State::default();
+         assert_eq!(state.changed("native".into()), Some(1));
+--- a/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
++++ b/crates/nsh-platform-ohos/arkts/src/main/ets/NativeEditors.ets
+@@ -253,16 +253,16 @@
+ function beginEditorWork(phase: string, settings: EditorSettings, length: number): number {
+   const started = Date.now();
+   if (length >= 64 * 1024) {
+-    hilog.warn(0x0000, "NshEditor", "%{public}s BEGIN id=%{public}d chars=%{public}d width=%{public}f height=%{public}f",
+-      phase, settings.targetId, length, settings.width, settings.height);
++    hilog.warn(0x0000, "NshEditor", "%{public}s BEGIN id=%{public}d chars=%{public}d width=%{public}s height=%{public}s",
++      phase, settings.targetId, length, String(settings.width), String(settings.height));
+   }
+   return started;
+ }
+ function reportEditorWork(phase: string, started: number, settings: EditorSettings, length: number): void {
+   const elapsed = Date.now() - started;
+   if (length >= 64 * 1024 || elapsed >= 16) {
+-    hilog.warn(0x0000, "NshEditor", "%{public}s END id=%{public}d chars=%{public}d width=%{public}f height=%{public}f elapsed=%{public}dms",
+-      phase, settings.targetId, length, settings.width, settings.height, elapsed);
++    hilog.warn(0x0000, "NshEditor", "%{public}s END id=%{public}d chars=%{public}d width=%{public}s height=%{public}s elapsed=%{public}dms",
++      phase, settings.targetId, length, String(settings.width), String(settings.height), elapsed);
+   }
+ }
+ interface PendingEditorEvent {

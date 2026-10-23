@@ -1,0 +1,618 @@
+--- a/crates/nsh-core/src/core/mod.rs
++++ b/crates/nsh-core/src/core/mod.rs
+@@ -2464,7 +2464,8 @@
+         // is moved by the insert below, so only emit a remove when the new
+         // parent has no native view.
+         let parent_created = self.nodes[parent as usize].created;
+-        if self.nodes[child as usize].parent != NO_KEY {
++        let was_detached = self.nodes[child as usize].parent == NO_KEY;
++        if !was_detached {
+             self.unlink(child, !parent_created);
+         }
+ 
+@@ -2518,6 +2519,12 @@
+         if child_kind == Kind::HeaderItem {
+             self.mark(parent, dirty::SCREEN);
+         }
++        if was_detached {
++            // Only text views created before this insert are returning views.
++            // Fresh text keeps ensure_created's normal dirty/mount order. A
++            // fresh wrapper can still contain previously created descendants.
++            self.reset_subtree_text_layouts(child, true);
++        }
+         if let Some(child_layout) = self.nodes[child as usize].layout {
+             // List cells, screens, modals and header items stay independent
+             // layout roots.
+@@ -2547,6 +2554,29 @@
+     /// Detaches `key` from its parent (Remove op).
+     fn detach(&mut self, key: Key) {
+         self.unlink(key, true);
++        // The platform and any published batch keep their own immutable
++        // layouts for exit animations, selection and deferred reclamation.
++        // The detached shadow tree must not keep an additional raster cache.
++        self.reset_subtree_text_layouts(key, false);
++    }
++
++    fn reset_subtree_text_layouts(&mut self, key: Key, requeue: bool) {
++        let mut pending = vec![key];
++        while let Some(key) = pending.pop() {
++            let node = &self.nodes[key as usize];
++            pending.extend(node.children.iter().rev().copied());
++            if node.kind != Kind::Text || node.inline || !node.created {
++                continue;
++            }
++            if let Some(layout) = node.layout
++                && let Some(LeafContext::Text(ctx)) = self.layout.get_node_context_mut(layout)
++            {
++                ctx.laid_out = None;
++            }
++            if requeue {
++                self.queue_text(key);
++            }
++        }
+     }
+ 
+     /// Unlinks `key` from its parent's children, layout and (optionally)
+@@ -3997,10 +4027,18 @@
+         // Attachment views to place: (block, its final layout, content box).
+         let mut placements: Vec<(Key, TextLayout, Rect)> = Vec::new();
+         for &key in &pending {
+-            let Some(node) = self.nodes.get_mut(key as usize) else {
++            if !self.nodes.contains(key as usize) {
+                 continue;
+-            };
++            }
++            let attached = self.is_ancestor(self.root, key);
++            let node = &mut self.nodes[key as usize];
+             node.text_queued = false;
++            // Bindings may still update a retained, detached subtree. Prepare
++            // its current text normally, but allocate a final raster only when
++            // it is linked back into the surface (which explicitly queues it).
++            if !attached {
++                continue;
++            }
+             let align_vertical = node.text_style.align_vertical.unwrap_or(0.0);
+             let report_lines = node.events.contains(EventKind::TextLayout);
+             // Shrinking stops at a tenth: smaller is unreadable anyway.
+--- a/crates/nsh-core/src/core/tests.rs
++++ b/crates/nsh-core/src/core/tests.rs
+@@ -8404,3 +8404,310 @@
+         start.elapsed().as_nanos() / 1000
+     );
+ }
++
++fn retained_text_tree(c: &mut Core<FakeEngine>) {
++    apply(
++        c,
++        vec![
++            Op::Create {
++                id: 2,
++                tag: Tag::View,
++            },
++            Op::Create {
++                id: 3,
++                tag: Tag::Text,
++            },
++            Op::CreateText {
++                id: 4,
++                text: "retained 🐾 e\u{301}".into(),
++            },
++            Op::SetProp {
++                id: 3,
++                prop: Prop::Selectable(Some(true)),
++            },
++            Op::Insert {
++                parent: 3,
++                child: 4,
++                before: None,
++            },
++            Op::Insert {
++                parent: 2,
++                child: 3,
++                before: None,
++            },
++            Op::Insert {
++                parent: ROOT_ID,
++                child: 2,
++                before: None,
++            },
++        ],
++    );
++}
++
++fn mounted_text(batch: &MountBatch) -> (&Arc<AttributedText>, &TextLayout, Rect) {
++    batch
++        .items
++        .iter()
++        .find_map(|item| match item {
++            MountItem::Text {
++                id: 3,
++                text,
++                layout,
++                content,
++            } => Some((text, layout, *content)),
++            _ => None,
++        })
++        .expect("retained text was mounted")
++}
++
++#[test]
++fn detached_text_releases_shadow_cache_but_keeps_published_layout() {
++    let mut c = core();
++    retained_text_tree(&mut c);
++    let first = c.commit().unwrap();
++    let (text, layout, content) = mounted_text(&first);
++    let published = layout.clone();
++    let weak = Arc::downgrade(&published.0);
++    let original_text = text.clone();
++    drop(first);
++    c.apply(Op::Remove {
++        parent: ROOT_ID,
++        child: 2,
++    })
++    .unwrap();
++    let removed = c.commit().unwrap();
++    assert!(
++        removed
++            .items
++            .iter()
++            .any(|m| matches!(m, MountItem::Remove { id: 2 }))
++    );
++    let key = c.key(3).unwrap();
++    let layout = c.nodes[key as usize].layout.unwrap();
++    let Some(LeafContext::Text(ctx)) = c.layout.get_node_context(layout) else {
++        panic!("text context")
++    };
++    assert!(ctx.laid_out.is_none());
++    assert!(
++        weak.upgrade().is_some(),
++        "native/selection snapshot is still valid"
++    );
++    assert!(published.downcast::<Vec<Option<(f32, f32)>>>().is_some());
++    drop(published);
++    assert!(
++        weak.upgrade().is_none(),
++        "detached shadow cache must not pin the raster"
++    );
++
++    // Same text and exact same frame: an Insert must explicitly remount text.
++    c.apply(Op::Insert {
++        parent: ROOT_ID,
++        child: 2,
++        before: None,
++    })
++    .unwrap();
++    let relinked = c.commit().unwrap();
++    let (text, _, next_content) = mounted_text(&relinked);
++    assert_eq!(text.as_ref(), original_text.as_ref());
++    assert_eq!(next_content, content);
++    assert_eq!(c.text_engine.layouts.get(), 2);
++    assert!(
++        !relinked
++            .items
++            .iter()
++            .any(|m| matches!(m, MountItem::Create { .. }))
++    );
++}
++
++#[test]
++fn updates_in_a_detached_ancestor_do_not_allocate_hidden_rasters() {
++    let mut c = core();
++    retained_text_tree(&mut c);
++    drop(c.commit());
++    c.apply(Op::Remove {
++        parent: ROOT_ID,
++        child: 2,
++    })
++    .unwrap();
++    drop(c.commit());
++    // Text 3 still has parent 2; only the full ancestor chain proves it hidden.
++    c.apply(Op::SetText {
++        id: 4,
++        text: "latest full 🐾\r\nvalue".into(),
++    })
++    .unwrap();
++    let hidden = c.commit();
++    assert!(
++        !hidden
++            .into_iter()
++            .flat_map(|b| b.items)
++            .any(|m| matches!(m, MountItem::Text { .. }))
++    );
++    assert_eq!(c.text_engine.layouts.get(), 1);
++    c.apply(Op::Insert {
++        parent: ROOT_ID,
++        child: 2,
++        before: None,
++    })
++    .unwrap();
++    let relinked = c.commit().unwrap();
++    assert_eq!(mounted_text(&relinked).0.text, "latest full 🐾\r\nvalue");
++    assert_eq!(c.text_engine.layouts.get(), 2);
++}
++
++#[test]
++fn remove_and_relink_in_one_turn_republishes_retained_text() {
++    let mut c = core();
++    retained_text_tree(&mut c);
++    drop(c.commit());
++    c.apply(Op::Remove {
++        parent: ROOT_ID,
++        child: 2,
++    })
++    .unwrap();
++    c.apply(Op::Insert {
++        parent: ROOT_ID,
++        child: 2,
++        before: None,
++    })
++    .unwrap();
++    let batch = c.commit().unwrap();
++    assert_eq!(mounted_text(&batch).0.text, "retained 🐾 e\u{301}");
++    assert_eq!(c.text_engine.layouts.get(), 2);
++    assert_eq!(
++        batch
++            .items
++            .iter()
++            .filter(|m| matches!(m, MountItem::Remove { id: 2 }))
++            .count(),
++        1
++    );
++    assert_eq!(
++        batch
++            .items
++            .iter()
++            .filter(|m| matches!(m, MountItem::Insert { child: 2, .. }))
++            .count(),
++        1
++    );
++}
++
++#[test]
++fn detached_text_attachments_and_nested_blocks_relink_without_blank_text() {
++    let mut c = core();
++    retained_text_tree(&mut c);
++    apply(
++        &mut c,
++        vec![
++            Op::Create {
++                id: 5,
++                tag: Tag::View,
++            },
++            Op::Create {
++                id: 6,
++                tag: Tag::Text,
++            },
++            Op::CreateText {
++                id: 7,
++                text: "attachment body".into(),
++            },
++            Op::Insert {
++                parent: 6,
++                child: 7,
++                before: None,
++            },
++            Op::Insert {
++                parent: 5,
++                child: 6,
++                before: None,
++            },
++            Op::Insert {
++                parent: 3,
++                child: 5,
++                before: None,
++            },
++            style_op(
++                5,
++                &[
++                    ("width", StyleValue::Number(120.0)),
++                    ("height", StyleValue::Number(16.0)),
++                ],
++            ),
++        ],
++    );
++    let first = c.commit().unwrap();
++    let original = mounted_text(&first).0.clone();
++    assert_eq!(original.attachments.len(), 1);
++    drop(first);
++    c.apply(Op::Remove {
++        parent: ROOT_ID,
++        child: 2,
++    })
++    .unwrap();
++    drop(c.commit());
++    c.apply(Op::Insert {
++        parent: ROOT_ID,
++        child: 2,
++        before: None,
++    })
++    .unwrap();
++    let relinked = c.commit().unwrap();
++    assert_eq!(mounted_text(&relinked).0.as_ref(), original.as_ref());
++    assert!(relinked.items.iter().any(|item| matches!(item,
++        MountItem::Text { id: 6, text, .. } if text.text == "attachment body")));
++}
++
++#[test]
++fn detached_text_inside_a_fresh_wrapper_requeues_after_a_hidden_commit() {
++    let mut c = core();
++    retained_text_tree(&mut c);
++    drop(c.commit());
++    c.apply(Op::Remove {
++        parent: ROOT_ID,
++        child: 2,
++    })
++    .unwrap();
++    drop(c.commit());
++    c.apply(Op::Create {
++        id: 8,
++        tag: Tag::View,
++    })
++    .unwrap();
++    c.apply(Op::Insert {
++        parent: 8,
++        child: 2,
++        before: None,
++    })
++    .unwrap();
++    c.apply(Op::SetText {
++        id: 4,
++        text: "new wrapper, retained full 🐾 text".into(),
++    })
++    .unwrap();
++    let hidden = c.commit();
++    assert!(
++        !hidden
++            .into_iter()
++            .flat_map(|b| b.items)
++            .any(|m| matches!(m, MountItem::Text { .. }))
++    );
++    assert_eq!(c.text_engine.layouts.get(), 1);
++    c.apply(Op::Insert {
++        parent: ROOT_ID,
++        child: 8,
++        before: None,
++    })
++    .unwrap();
++    let relinked = c.commit().unwrap();
++    assert_eq!(
++        mounted_text(&relinked).0.text,
++        "new wrapper, retained full 🐾 text"
++    );
++    assert_eq!(c.text_engine.layouts.get(), 2);
++    assert!(
++        !relinked
++            .items
++            .iter()
++            .any(|m| matches!(m, MountItem::Create { id: 3, .. }))
++    );
++}
+--- a/crates/nsh-engine/src/lib.rs
++++ b/crates/nsh-engine/src/lib.rs
+@@ -1753,7 +1753,9 @@
+ /// that the frame already sets is updated to the later size (unless the
+ /// view scrolls in between): a row relaid over two commits must not send
+ /// the platform a transient size, which clamps the offset before the
+-/// content grows back (a list jumping when a row expands).
++/// content grows back (a list jumping when a row expands). Superseded text
++/// layouts in the same unpublished frame are released, except across an
++/// operation that can observe or snapshot the intermediate native state.
+ fn extend_frame(frame: &mut Vec<nsh_core::MountItem>, items: Vec<nsh_core::MountItem>) {
+     use nsh_core::MountItem;
+     let start = frame.len();
+@@ -1771,6 +1773,39 @@
+             *s = size;
+         }
+     }
++
++    // Bounded by this frame, not the surface's monotonically growing node ids.
++    let mut latest = FxHashMap::default();
++    let mut superseded = vec![false; frame.len()];
++    for (index, item) in frame.iter().enumerate() {
++        match item {
++            MountItem::Text { id, .. } => {
++                if let Some(previous) = latest.insert(*id, index) {
++                    superseded[previous] = true;
++                }
++            }
++            // Pure setters do not expose an intermediate text layout. Keep all
++            // of them in place; only a later Text for the same id supersedes it.
++            MountItem::Frame { .. }
++            | MountItem::Overflow { .. }
++            | MountItem::ViewStyle { .. }
++            | MountItem::TrackStates { .. }
++            | MountItem::Events { .. }
++            | MountItem::ViewProps { .. }
++            | MountItem::AccessibilityLabel { .. }
++            | MountItem::ScrollContent { .. } => {}
++            // Lifecycle, scrolling, commands, animation and native component
++            // calls may snapshot or otherwise observe earlier items. This is
++            // deliberately conservative, including changes on other node ids.
++            _ => latest.clear(),
++        }
++    }
++    let mut index = 0;
++    frame.retain(|_| {
++        let keep = !superseded[index];
++        index += 1;
++        keep
++    });
+ }
+ 
+ #[cfg(test)]
+@@ -1825,4 +1860,174 @@
+         super::extend_frame(&mut frame, vec![content(544.0)]);
+         assert_eq!(heights(&frame), [313.0, 544.0]);
+     }
+-}
++
++    fn frame_text(id: u32, value: &str, raster: Arc<dyn std::any::Any + Send + Sync>) -> MountItem {
++        MountItem::Text {
++            id,
++            text: Arc::new(nsh_core::AttributedText {
++                text: value.into(),
++                selectable: Some(true),
++                ..Default::default()
++            }),
++            layout: nsh_core::TextLayout(raster),
++            content: nsh_core::Rect {
++                x: 3.0,
++                y: 4.0,
++                width: 100.0,
++                height: 16.0,
++            },
++        }
++    }
++
++    use std::sync::{
++        Arc,
++        atomic::{AtomicUsize, Ordering},
++    };
++
++    struct FrameRaster(Arc<AtomicUsize>);
++
++    impl FrameRaster {
++        fn allocate(live: &Arc<AtomicUsize>) -> Arc<Self> {
++            // One published raster plus the previous and next unpublished
++            // versions must suffice even for all eight list-binding rounds.
++            assert!(live.fetch_add(1, Ordering::Relaxed) < 3);
++            Arc::new(Self(live.clone()))
++        }
++    }
++
++    impl Drop for FrameRaster {
++        fn drop(&mut self) {
++            self.0.fetch_sub(1, Ordering::Relaxed);
++        }
++    }
++
++    #[test]
++    fn unpublished_text_rounds_release_superseded_rasters() {
++        let live = Arc::new(AtomicUsize::new(0));
++        let published = FrameRaster::allocate(&live);
++        let mut frame = Vec::new();
++        for round in 0..8 {
++            let raster = FrameRaster::allocate(&live);
++            let weak = Arc::downgrade(&raster);
++            super::extend_frame(
++                &mut frame,
++                vec![frame_text(2, &format!("round {round}"), raster)],
++            );
++            assert_eq!(frame.len(), 1);
++            assert!(weak.upgrade().is_some());
++            assert_eq!(live.load(Ordering::Relaxed), 2);
++        }
++        assert!(matches!(&frame[0], MountItem::Text { text, content, .. }
++            if text.text == "round 7" && text.selectable == Some(true)
++                && content.x == 3.0 && content.y == 4.0));
++        // Compaction never owns or invalidates a native/selection snapshot
++        // already published by a previous frame.
++        assert_eq!(Arc::strong_count(&published), 1);
++        drop(frame);
++        assert_eq!(live.load(Ordering::Relaxed), 1);
++        drop(published);
++        assert_eq!(live.load(Ordering::Relaxed), 0);
++    }
++
++    #[test]
++    fn unpublished_text_keeps_other_nodes_and_final_setter_order() {
++        let old = Arc::new(10_u32);
++        let weak = Arc::downgrade(&old);
++        let mut frame = vec![
++            frame_text(2, "old", old),
++            frame_text(4, "other", Arc::new(20_u32)),
++        ];
++        let final_raster = Arc::new(30_u32);
++        super::extend_frame(
++            &mut frame,
++            vec![
++                MountItem::Frame {
++                    id: 2,
++                    frame: nsh_core::Rect::default(),
++                },
++                frame_text(2, "final 🐾", final_raster.clone()),
++            ],
++        );
++        assert!(weak.upgrade().is_none());
++        assert_eq!(frame.len(), 3);
++        assert!(matches!(&frame[0], MountItem::Text { id: 4, text, .. } if text.text == "other"));
++        assert!(matches!(&frame[1], MountItem::Frame { id: 2, .. }));
++        assert!(
++            matches!(&frame[2], MountItem::Text { id: 2, text, layout, .. }
++            if text.text == "final 🐾" && Arc::ptr_eq(&layout.0, &(final_raster as Arc<dyn std::any::Any + Send + Sync>)))
++        );
++    }
++
++    #[test]
++    fn text_compaction_preserves_observation_and_lifecycle_barriers() {
++        let barriers = vec![
++            MountItem::Command {
++                id: 8,
++                command: nsh_core::Command::Blur,
++            },
++            MountItem::LayoutAnimation(nsh_core::LayoutAnimation::EASE_IN_EASE_OUT),
++            MountItem::Animation(nsh_animation::AnimationOp::Set {
++                node: 10,
++                value: 1.0,
++            }),
++            MountItem::Create {
++                id: 8,
++                kind: nsh_core::ViewKind::Text,
++            },
++            MountItem::Insert {
++                parent: 1,
++                child: 8,
++                before: None,
++            },
++            MountItem::Remove { id: 8 },
++            MountItem::Delete { id: 8 },
++            MountItem::Component {
++                id: 8,
++                name: "test.component".into(),
++            },
++            MountItem::ComponentProps {
++                id: 8,
++                props: Vec::new(),
++            },
++            MountItem::NativeProps {
++                id: 8,
++                props: nsh_core::NativeProps::WebView(Default::default()),
++            },
++            MountItem::ModalConfig {
++                id: 8,
++                config: Default::default(),
++            },
++            MountItem::ScreenConfig {
++                id: 8,
++                config: Box::default(),
++            },
++            MountItem::InputValue {
++                id: 8,
++                text: "IME value".into(),
++                count: 3,
++            },
++            MountItem::ScrollBy {
++                id: 8,
++                dx: 0.0,
++                dy: 12.0,
++            },
++        ];
++        for barrier in barriers {
++            let old = Arc::new(10_u32);
++            let weak = Arc::downgrade(&old);
++            let mut frame = vec![frame_text(2, "before observer", old), barrier];
++            super::extend_frame(
++                &mut frame,
++                vec![frame_text(2, "after observer", Arc::new(20_u32))],
++            );
++            assert_eq!(frame.len(), 3, "barrier {:?}", frame[1]);
++            assert!(weak.upgrade().is_some());
++            assert!(
++                matches!(&frame[0], MountItem::Text { text, .. } if text.text == "before observer")
++            );
++            assert!(
++                matches!(&frame[2], MountItem::Text { text, .. } if text.text == "after observer")
++            );
++        }
++    }
++}

@@ -1,0 +1,22 @@
+--- a/crates/nsh-platform-ohos/src/navigation/modal.rs
++++ b/crates/nsh-platform-ohos/src/navigation/modal.rs
+@@ -67,11 +67,14 @@
+     }
+     fn theme(&self) -> Result<()> {
+         let config = self.config.get();
+-        // A transparent full-screen modal owns its backdrop and hit-test surface.
+-        // ArkUI's default modal mask would dim that backdrop a second time.
+-        // Sheets still need the native mask outside their smaller content bounds.
+-        self.dialog.borrow().modal_mode(
+-            !(config.transparent && config.presentation == ModalPresentation::FullScreen),
++        // Full-screen content supplies its own backdrop. Keep native modality
++        // for focus isolation, but do not stack ArkUI's default dimming mask.
++        self.dialog.borrow().mask_color(
++            if config.transparent && config.presentation == ModalPresentation::FullScreen {
++                0
++            } else {
++                0x33000000
++            },
+         )?;
+         let dark = self.owner.upgrade().is_some_and(|owner| {
+             owner
