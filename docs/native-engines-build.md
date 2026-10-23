@@ -164,10 +164,8 @@ Keep the build outputs and packaging inputs explicit. This also prevents
 
 ```sh
 export MIHOMO_CORE_OUTPUT="$PAWS_ROOT/entry/libs/arm64-v8a/libclash.so"
-export MIHOMO_WRAPPER_OUTPUT="$PAWS_ROOT/entry/libs/arm64-v8a/libcore.so"
 export SING_BOX_OUTPUT="$PAWS_ROOT/entry/libs/arm64-v8a/libsingbox.so"
 export MIHOMO_CORE_SRC="$MIHOMO_CORE_OUTPUT"
-export MIHOMO_WRAPPER_SRC="$MIHOMO_WRAPPER_OUTPUT"
 export MIHOMO_TUN_SRC="$PAWS_ROOT/vendor/mihomo-bridge/tun/tun.go"
 export SING_BOX_CORE_SRC="$SING_BOX_OUTPUT"
 
@@ -181,37 +179,44 @@ layers. The build scripts apply the engine patches automatically.
 | Owner | Patch / source | Purpose |
 | --- | --- | --- |
 | Mihomo checkout | [mihomo-openharmony.patch](../patches/mihomo-openharmony.patch) | OHOS build and DNS adaptation |
+| Mihomo checkout | [mihomo-paws-management.patch](../patches/mihomo-paws-management.patch) | Session-owned management, observations and public-service integration |
 | Mihomo staged bridge | [mihomo-ohos-tun-fd-ownership.patch](../patches/mihomo-ohos-tun-fd-ownership.patch) | Preserve HarmonyOS ownership of the TUN descriptor; applied if the copied bridge still closes it |
 | Mihomo staged gVisor | [gvisor-fstat.patch](../patches/gvisor-fstat.patch) | Adapt `IsSocketFD` for the pinned gVisor module |
 | sing-box checkout | [sing-box-http-obfs-handshake.patch](../patches/sing-box-http-obfs-handshake.patch) and [sing-box-http-obfs-first-flight.patch](../patches/sing-box-http-obfs-first-flight.patch) | HTTP-obfs handshake and first-flight behavior |
 | sing-box checkout | [sing-box-benchmark-probe.patch](../patches/sing-box-benchmark-probe.patch) | Local protocol probe support |
+| sing-box checkout | [sing-box-paws-management.patch](../patches/sing-box-paws-management.patch) | Managed runtime, providers, DNS and observation integration |
 | Both bridges | [vendor/mihomo-bridge](../vendor/mihomo-bridge/) and [vendor/sing-box-bridge](../vendor/sing-box-bridge/) | Paws entry points, platform integration and telemetry |
 
 Mihomo rebuilds `target/mihomo-ohos-build` on each invocation. It stages the
 bridge and `github.com/metacubex/gvisor@v0.0.0-20260922041103-e2cbcd6e7400`,
 then patches that copy with `patch -p1 -F 0`. It leaves the shared Go module
-cache unchanged. The Go build uses `-tags=with_gvisor -buildmode=c-shared`,
-and the SDK's `clang++` compiles the N-API wrapper against `libclash.so`.
-Treat `libclash.so` and `libcore.so` as a matching pair.
+cache unchanged. The Go build uses `-tags=with_gvisor -buildmode=c-shared`.
+Rust loads its C ABI directly; the old Mihomo N-API wrapper is not built or
+packaged by this path.
 
-sing-box copies the bridge into its checkout's `cmd/libtinypaws`, then builds
+sing-box archives its pinned source into an owned build stage, applies the
+declared patches and copies the bridge into staged `cmd/libtinypaws`, then builds
 with `-buildmode=c-shared` and
 `with_gvisor,with_quic,with_dhcp,with_utls,with_clash_api`.
 Both scripts supply the SDK compiler; Mihomo also passes the OHOS target and
-sysroot explicitly.
+sysroot explicitly. Source inventories are compared before publishing either
+library; neither script patches the selected source checkout or module cache.
 
 | Output under `entry/libs/arm64-v8a/` | Role |
 | --- | --- |
 | `libclash.so` | Mihomo Go engine |
-| `libcore.so` | Mihomo ArkTS/N-API wrapper |
-| `libsingbox.so`, `libsingbox.h` | sing-box Go engine and generated C declarations |
-| `libpaws_ui.so` | Rust UI, Meow and sing-box FFI; built by the HAP packager |
+| `libsingbox.so` | sing-box Go engine; generated C declarations remain build outputs |
+| `libpaws_ui.so` | Thin Rust N-API application/platform binding; links the application, Core and engine adapters |
+| `libnsh_platform_ohos.so` | NSH native view runtime; production views are authored in `ui/nsh` |
+| `libnative_ability.so`, `libc++_shared.so` | Matching native Ability and C++ runtime dependencies |
 
-The current sing-box bridge includes `traffic.go` and exports
-`TinyPawsSingTraffic` for TCP/UDP session totals and elapsed-time rates.
-Rebuild `libsingbox.so` together with `libpaws_ui.so` and the ArkTS layer for
-the traffic-chart fix. The packager regenerates and installs the N-API type
-declarations, including `updateSingBoxVpnTraffic`.
+The sing-box bridge exports `TinyPawsSingTraffic` for TCP/UDP session totals and
+elapsed-time rates. Rust engine adapters own C ABI loading and normalize traffic;
+the abilities consume the backend-neutral application binding. The obsolete
+Mihomo `libcore.so` N-API shim is not a production dependency. Rebuild native
+engines, the Rust application binding and the matching ArkTS declarations as a
+coherent candidate; packaging must verify the actual native libraries and NSH
+UI bundle rather than relying on their filenames.
 
 ## 5. Package the current libraries into a HAP
 
@@ -262,8 +267,8 @@ can differ even when the loaded image matches.
 These commands inspect the generated libraries without installing the app:
 
 ```sh
-file "$MIHOMO_CORE_OUTPUT" "$MIHOMO_WRAPPER_OUTPUT" "$SING_BOX_OUTPUT"
-shasum -a 256 "$MIHOMO_CORE_OUTPUT" "$MIHOMO_WRAPPER_OUTPUT" "$SING_BOX_OUTPUT"
+file "$MIHOMO_CORE_OUTPUT" "$SING_BOX_OUTPUT"
+shasum -a 256 "$MIHOMO_CORE_OUTPUT" "$SING_BOX_OUTPUT"
 GOTOOLCHAIN=local "$GO_OHOS_ROOT/bin/go" version -m "$MIHOMO_CORE_OUTPUT"
 GOTOOLCHAIN=local "$GO_OHOS_ROOT/bin/go" version -m "$SING_BOX_OUTPUT"
 "$OHOS_NDK_HOME/native/llvm/bin/llvm-nm" -D --defined-only "$SING_BOX_OUTPUT" | grep 'TinyPawsSingTraffic'
