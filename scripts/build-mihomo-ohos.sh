@@ -2,15 +2,21 @@
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT_DIR/scripts/ohos-env.sh"
 WORKSPACE_PARENT="$(cd "$ROOT_DIR/.." && pwd)"
 if [ -z "${CLASH_META_ROOT:-}" ]; then
   if [ -d "$WORKSPACE_PARENT/Clash.Meta" ]; then
     CLASH_META_ROOT="$WORKSPACE_PARENT/Clash.Meta"
+  elif [ -d "$ROOT_DIR/target/engine-sources/Clash.Meta" ]; then
+    CLASH_META_ROOT="$ROOT_DIR/target/engine-sources/Clash.Meta"
   else
     CLASH_META_ROOT="$WORKSPACE_PARENT/FlClash-ohos-upstream/core/Clash.Meta"
   fi
 fi
 GO_OHOS_ROOT="${GO_OHOS_ROOT:-$WORKSPACE_PARENT/go-ohos-1.24.7-compat}"
+if [ ! -d "$GO_OHOS_ROOT" ] && [ -d "$ROOT_DIR/target/toolchains/go1.24.7-ohos-darwin-arm64" ]; then
+  GO_OHOS_ROOT="$ROOT_DIR/target/toolchains/go1.24.7-ohos-darwin-arm64"
+fi
 OHOS_NDK_HOME="${OHOS_NDK_HOME:-/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony}"
 GO_COMPILER_ROOT="$(sh "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$GO_OHOS_ROOT")"
 GO_BIN="$GO_COMPILER_ROOT/bin/go"
@@ -18,7 +24,6 @@ CC_BIN="$OHOS_NDK_HOME/native/llvm/bin/clang"
 CXX_BIN="$OHOS_NDK_HOME/native/llvm/bin/clang++"
 SYSROOT="$OHOS_NDK_HOME/native/sysroot"
 CLASH_OUTPUT="${MIHOMO_CORE_OUTPUT:-$ROOT_DIR/entry/libs/arm64-v8a/libclash.so}"
-WRAPPER_OUTPUT="${MIHOMO_WRAPPER_OUTPUT:-$ROOT_DIR/entry/libs/arm64-v8a/libcore.so}"
 GVISOR_MOD="github.com/metacubex/gvisor@v0.0.0-20260922041103-e2cbcd6e7400"
 
 test -x "$GO_BIN" || { echo "OpenHarmony Go compiler not found: $GO_BIN" >&2; exit 1; }
@@ -31,16 +36,25 @@ test "$(git -C "$CLASH_META_ROOT" rev-parse HEAD)" = "8597778c7df410ebe88c57e59e
   exit 1
 }
 
-if [ ! -f "$CLASH_META_ROOT/dns/patch_openharmony.go" ]; then
-  git -C "$CLASH_META_ROOT" apply --check "$ROOT_DIR/patches/mihomo-openharmony.patch"
-  git -C "$CLASH_META_ROOT" apply "$ROOT_DIR/patches/mihomo-openharmony.patch"
-fi
-
-BUILD_STAGE="$ROOT_DIR/target/mihomo-ohos-build"
+# Build only the exact pinned tree plus declared patches. Never reuse marker-
+# based patches in a mutable checkout: their contents can change while HEAD
+# remains the same, silently selecting stale native code.
+BUILD_STAGE="${MIHOMO_BUILD_STAGE:-$ROOT_DIR/target/mihomo-ohos-build}"
+test "$BUILD_STAGE/core/Clash.Meta" != "$CLASH_META_ROOT" || { echo "Build stage cannot be the source checkout" >&2; exit 1; }
 rm -rf "$BUILD_STAGE"
-mkdir -p "$BUILD_STAGE/core" "$BUILD_STAGE/.dart_tool/ohos" "$(dirname "$CLASH_OUTPUT")" "$(dirname "$WRAPPER_OUTPUT")"
+mkdir -p "$BUILD_STAGE/core/Clash.Meta" "$BUILD_STAGE/.dart_tool/ohos" "$(dirname "$CLASH_OUTPUT")"
+python3 "$ROOT_DIR/scripts/mihomo-source-inventory.py" "$ROOT_DIR" > "$BUILD_STAGE/inputs-before.json"
+git -C "$CLASH_META_ROOT" archive 8597778c7df410ebe88c57e59eaab32d203156df -o "$BUILD_STAGE/source.tar"
+tar -xf "$BUILD_STAGE/source.tar" -C "$BUILD_STAGE/core/Clash.Meta"
+rm "$BUILD_STAGE/source.tar"
+patch --batch --dry-run -p1 -F 0 -d "$BUILD_STAGE/core/Clash.Meta" -i "$ROOT_DIR/patches/mihomo-openharmony.patch"
+patch --batch -p1 -F 0 -d "$BUILD_STAGE/core/Clash.Meta" -i "$ROOT_DIR/patches/mihomo-openharmony.patch"
+patch --batch --dry-run -p1 -F 0 -d "$BUILD_STAGE/core/Clash.Meta" -i "$ROOT_DIR/patches/mihomo-paws-management.patch"
+patch --batch -p1 -F 0 -d "$BUILD_STAGE/core/Clash.Meta" -i "$ROOT_DIR/patches/mihomo-paws-management.patch"
 cp -R "$ROOT_DIR/vendor/mihomo-bridge/." "$BUILD_STAGE/core/"
-ln -s "$CLASH_META_ROOT" "$BUILD_STAGE/core/Clash.Meta"
+for observation_source in journal.go wire.go public.go; do
+  cp "$ROOT_DIR/vendor/paws-engine-observation/$observation_source" "$BUILD_STAGE/core/paws_$observation_source"
+done
 
 if grep -Fq '_ = syscall.Close(fd)' "$BUILD_STAGE/core/tun/tun.go"; then
   patch --dry-run -p1 -F 0 -d "$BUILD_STAGE" -i "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch"
@@ -58,23 +72,16 @@ env GOTOOLCHAIN=local GOOS=openharmony GOARCH=arm64 CGO_ENABLED=1 \
   CC="$CC_BIN --target=aarch64-linux-ohos --sysroot=$SYSROOT" \
   CXX="$CXX_BIN --target=aarch64-linux-ohos --sysroot=$SYSROOT" \
   "$GO_BIN" build -mod=mod -tags=with_gvisor -buildmode=c-shared \
-  -trimpath -ldflags='-s -w' -o "$CLASH_OUTPUT" .
+  -trimpath -ldflags='-s -w' -o "$BUILD_STAGE/libclash.so" .
 
-HEADER_DIR="$BUILD_STAGE/includes"
-mkdir -p "$HEADER_DIR"
-cp "${CLASH_OUTPUT%.so}.h" "$HEADER_DIR/libclash.h"
-cp "$BUILD_STAGE/core/bride.h" "$HEADER_DIR/bride.h"
+python3 "$ROOT_DIR/scripts/mihomo-source-inventory.py" "$ROOT_DIR" > "$BUILD_STAGE/inputs-after.json"
+cmp -s "$BUILD_STAGE/inputs-before.json" "$BUILD_STAGE/inputs-after.json" || {
+  echo 'Native Mihomo inputs changed during compilation; refusing to publish mixed artifact' >&2
+  exit 1
+}
+cp "$BUILD_STAGE/libclash.so" "$CLASH_OUTPUT.tmp"
+mv "$CLASH_OUTPUT.tmp" "$CLASH_OUTPUT"
+
 rm -f "${CLASH_OUTPUT%.so}.h"
-
-"$CXX_BIN" --target=aarch64-linux-ohos --sysroot="$SYSROOT" \
-  -shared -fPIC -O3 -flto -g0 -fno-exceptions -fno-rtti \
-  -Wl,--gc-sections,--strip-all \
-  -DLIBCLASH \
-  -I"$HEADER_DIR" \
-  -L"$(dirname "$CLASH_OUTPUT")" \
-  "$ROOT_DIR/vendor/mihomo-bridge/ohos-napi/napi_init.cpp" \
-  -lace_napi.z -lclash \
-  -o "$WRAPPER_OUTPUT"
-
-file "$CLASH_OUTPUT" "$WRAPPER_OUTPUT"
-shasum -a 256 "$CLASH_OUTPUT" "$WRAPPER_OUTPUT"
+file "$CLASH_OUTPUT"
+shasum -a 256 "$CLASH_OUTPUT"

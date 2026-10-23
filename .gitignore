@@ -19,13 +19,24 @@
 
 **/dist
 *.so
+/entry/src/main/resources/rawfile/paws.bundle.js
+/entry/src/main/resources/rawfile/assets/
+/entry/src/main/cpp/types/libnsh_platform_ohos/Index.d.ts
 
 /entry/src/main/resources/rawfile/geodata/*
 !/entry/src/main/resources/rawfile/geodata/.gitkeep
 
 /smoke-logs
 /.ohos-sign/
+/sign-info/
+*.hap
+*.p12
+*.p7b
+*.cer
 **/__pycache__/
+**/.nsh/
+**/.paws/
+**/.hmeta/
 
 /local-protocol-tests/target/
 /local-protocol-tests/generated/*

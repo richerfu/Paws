@@ -2,6 +2,11 @@
 set -eu
 
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+. "$ROOT_DIR/scripts/ohos-env.sh"
+BUILD_TARGET_ROOT="${PAWS_NATIVE_TARGET_DIR:-$ROOT_DIR/target}"
+case "$BUILD_TARGET_ROOT" in /*) ;; *) BUILD_TARGET_ROOT="$ROOT_DIR/$BUILD_TARGET_ROOT" ;; esac
+export CARGO_TARGET_DIR="$BUILD_TARGET_ROOT"
+export PAWS_NSH_REVISION="${PAWS_NSH_REVISION:-$(python3 "$ROOT_DIR/scripts/nsh_build_inputs.py" --field nshRevision)}"
 if [ -z "${OHOS_NDK_HOME:-}" ] && [ -d /Applications/DevEco-Studio.app/Contents/sdk/default/openharmony ]; then
   export OHOS_NDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony
 fi
@@ -40,9 +45,9 @@ while [ "$attempt" -le 8 ]; do
   repaired=0
   while IFS= read -r missing_path; do
     case "$missing_path" in
-      "$ROOT_DIR"/target/*/build/boring-sys-*/out/build/lib | \
-      "$ROOT_DIR"/target/*/build/boring-sys-*/out/build/crypto | \
-      "$ROOT_DIR"/target/*/build/boring-sys-*/out/build/ssl)
+      "$BUILD_TARGET_ROOT"/*/build/boring-sys-*/out/build/lib | \
+      "$BUILD_TARGET_ROOT"/*/build/boring-sys-*/out/build/crypto | \
+      "$BUILD_TARGET_ROOT"/*/build/boring-sys-*/out/build/ssl)
         build_dir=${missing_path%/*}
         mkdir -p "$build_dir/lib" "$build_dir/crypto" "$build_dir/ssl"
         repaired=1

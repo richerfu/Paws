@@ -1,0 +1,92 @@
+import { Want } from '@kit.AbilityKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { UiRequest } from '../components/PawsCoreGateway';
+import { ENGINE_PARITY_NONCE, assertEngineParityDebug } from './EngineParityPaths';
+import { engineParityTraceActive, traceParityProbe } from './EngineParityTrace';
+
+// These two complete public messages are compiled by the stage builder. Want
+// can select a case, never supply error text, paths, URLs or configuration.
+const MULTILINE: string = __MULTILINE__;
+const UNBROKEN: string = __UNBROKEN__;
+const TTL_MS: number = 10000;
+interface ArmedError { mode: string; caseId: string; armedAt: number; }
+interface QueryPayload { domain?: string; }
+let armed: ArmedError | undefined;
+
+function parameter(want: Want, name: string): string {
+  const value = want.parameters?.[name];
+  return typeof value === 'string' ? value : '';
+}
+function frameworkMetadataKey(key: string): boolean {
+  return ['isCallBySCB', 'isShellCall', 'moduleName', 'ohos.dlp.params.sandbox',
+    'ohos.param.callerAppCloneIndex', 'ohos.params.gamePrelaunch'].includes(key) ||
+    /^ohos\.(aafwk|extra)\.param\.[a-zA-Z0-9_.:-]+$/.test(key);
+}
+function reportRejectedUiErrorKeys(keys: string[]): void {
+  const names: string[] = [];
+  let redacted: number = 0;
+  const shown = Math.min(keys.length, 8);
+  for (let index = 0; index < shown; index++) {
+    const key = keys[index];
+    if (/^[a-zA-Z0-9_.:-]{1,80}$/.test(key)) names.push(key);
+    else redacted++;
+  }
+  hilog.warn(0x0000, 'PawsParityUiError',
+    'reject=ui-error-keys count=%{public}s omitted=%{public}s redacted=%{public}s keys=%{public}s',
+    keys.length.toString(), (keys.length - shown).toString(), redacted.toString(), names.join(','));
+}
+function bytes(value: string): number {
+  let length: number = 0;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 128) length++;
+    else if (code < 2048) length += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < value.length &&
+      value.charCodeAt(i + 1) >= 0xdc00 && value.charCodeAt(i + 1) <= 0xdfff) { length += 4; i++; }
+    else length += 3;
+  }
+  return length;
+}
+function current(): ArmedError | undefined {
+  const now = Date.now();
+  if (armed && (now < armed.armedAt || now - armed.armedAt >= TTL_MS || !engineParityTraceActive())) armed = undefined;
+  return armed;
+}
+export function cancelEngineParityUiError(): void { armed = undefined; }
+
+/** Arm only. This function never queries Core or changes application state. */
+export async function runEngineParityUiError(want: Want, debug: boolean): Promise<void> {
+  assertEngineParityDebug(debug);
+  if (parameter(want, 'pawsEngineParityNonce') !== ENGINE_PARITY_NONCE) throw new Error('Engine parity nonce mismatch');
+  const mode = parameter(want, 'pawsEngineParityProbe');
+  const caseId = parameter(want, 'pawsEngineParityCase');
+  if (!['ui-error-multiline', 'ui-error-unbroken'].includes(mode) || !/^[a-zA-Z0-9_-]{1,48}$/.test(caseId)) throw new Error('Invalid public UI error probe action');
+  const parameters = want.parameters;
+  if (parameters !== undefined) {
+    const rejected = Object.keys(parameters).filter((key: string): boolean =>
+      !['pawsEngineParityNonce', 'pawsEngineParityProbe', 'pawsEngineParityCase'].includes(key) &&
+      !frameworkMetadataKey(key));
+    if (rejected.length > 0) {
+      if (engineParityTraceActive()) reportRejectedUiErrorKeys(rejected);
+      throw new Error('UI error probe accepts no extra parameters');
+    }
+  }
+  if (!engineParityTraceActive()) throw new Error('QA home/trace is not initialized');
+  if (current()) throw new Error('A public UI error probe is already armed');
+  armed = { mode, caseId, armedAt: Date.now() };
+  traceParityProbe('ui-error-armed', caseId, true, mode === 'ui-error-multiline' ? 1 : 2,
+    bytes(mode === 'ui-error-multiline' ? MULTILINE : UNBROKEN), 0);
+}
+
+/** Called inside the production Gateway request try/catch in this stage only. */
+export function throwEngineParityUiError(request: UiRequest): void {
+  const value = current();
+  if (!value || request.command !== 'state.query' || !request.payload) return;
+  const payload = request.payload as QueryPayload;
+  if (payload.domain !== 'proxies') return;
+  armed = undefined; // Consume before throwing. A retry is a real native query.
+  const text = value.mode === 'ui-error-multiline' ? MULTILINE : UNBROKEN;
+  traceParityProbe('ui-error-injected', value.caseId, true, value.mode === 'ui-error-multiline' ? 1 : 2,
+    bytes(text), Date.now() - value.armedAt);
+  throw new Error(text);
+}

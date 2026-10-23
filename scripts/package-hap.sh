@@ -2,6 +2,7 @@
 set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+. "$ROOT_DIR/scripts/ohos-env.sh"
 cd "$ROOT_DIR"
 
 SIGNED=0
@@ -29,6 +30,8 @@ OHRS="${OHRS:-ohrs}"
 ARCH="${ARCH:-aarch}"
 NATIVE_PROFILE="${NATIVE_PROFILE:-release}"
 HAP_BUILD_MODE="${HAP_BUILD_MODE:-release}"
+NATIVE_TARGET_DIR="${NATIVE_TARGET_DIR:-$ROOT_DIR/target}"
+case "$NATIVE_TARGET_DIR" in /*) ;; *) NATIVE_TARGET_DIR="$ROOT_DIR/$NATIVE_TARGET_DIR" ;; esac
 case "$ARCH" in
   aarch|arm64) ARCH=aarch ;;
   *)
@@ -38,10 +41,10 @@ case "$ARCH" in
 esac
 case "$NATIVE_PROFILE" in
   release)
-    SO_SRC="$ROOT_DIR/target/aarch64-unknown-linux-ohos/release/libpaws_ui.so"
+    SO_SRC="$NATIVE_TARGET_DIR/aarch64-unknown-linux-ohos/release/libpaws_ui.so"
     ;;
   debug)
-    SO_SRC="$ROOT_DIR/target/aarch64-unknown-linux-ohos/debug/libpaws_ui.so"
+    SO_SRC="$NATIVE_TARGET_DIR/aarch64-unknown-linux-ohos/debug/libpaws_ui.so"
     ;;
   *)
     echo "Unsupported NATIVE_PROFILE: $NATIVE_PROFILE (expected release or debug)" >&2
@@ -66,14 +69,11 @@ SO_DST="$NATIVE_LIB_DIR/libpaws_ui.so"
 CXX_SHARED_DST="$NATIVE_LIB_DIR/libc++_shared.so"
 WORKSPACE_PARENT="$(cd "$ROOT_DIR/.." && pwd)"
 MIHOMO_OHOS_ROOT="${MIHOMO_OHOS_ROOT:-$WORKSPACE_PARENT/FlClash-ohos-upstream}"
-MIHOMO_WRAPPER_DST="$NATIVE_LIB_DIR/libcore.so"
 MIHOMO_CORE_DST="$NATIVE_LIB_DIR/libclash.so"
 if [ -d "$MIHOMO_OHOS_ROOT" ]; then
-  MIHOMO_WRAPPER_SRC="${MIHOMO_WRAPPER_SRC:-$MIHOMO_OHOS_ROOT/ohos/core/build/default/intermediates/libs/default/arm64-v8a/libcore.so}"
   MIHOMO_CORE_SRC="${MIHOMO_CORE_SRC:-$MIHOMO_OHOS_ROOT/ohos/core/libs/arm64-v8a/libclash.so}"
   MIHOMO_TUN_SRC="${MIHOMO_TUN_SRC:-$MIHOMO_OHOS_ROOT/core/tun/tun.go}"
 else
-  MIHOMO_WRAPPER_SRC="${MIHOMO_WRAPPER_SRC:-$MIHOMO_WRAPPER_DST}"
   MIHOMO_CORE_SRC="${MIHOMO_CORE_SRC:-$MIHOMO_CORE_DST}"
   MIHOMO_TUN_SRC="${MIHOMO_TUN_SRC:-$ROOT_DIR/vendor/mihomo-bridge/tun/tun.go}"
 fi
@@ -145,21 +145,22 @@ if [ ! -f "${CXX_SHARED_SRC:-}" ]; then
   exit 1
 fi
 mihomo_stale=0
-if [ ! -f "$MIHOMO_WRAPPER_SRC" ] || [ ! -f "$MIHOMO_CORE_SRC" ]; then
+if [ ! -f "$MIHOMO_CORE_SRC" ]; then
   mihomo_stale=1
-elif [ "$MIHOMO_WRAPPER_SRC" = "$MIHOMO_WRAPPER_DST" ] && [ "$MIHOMO_CORE_SRC" = "$MIHOMO_CORE_DST" ]; then
+elif [ "$MIHOMO_CORE_SRC" = "$MIHOMO_CORE_DST" ]; then
   # Rebuild repository-owned outputs after any bridge/toolchain patch changes.
-  for mihomo_input in "$ROOT_DIR/scripts/build-mihomo-ohos.sh" "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$ROOT_DIR/patches/mihomo-openharmony.patch" "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch" "$ROOT_DIR/patches/gvisor-fstat.patch" "$ROOT_DIR/patches/go-ohos-1.24.7-compat.patch"; do
-    if [ "$mihomo_input" -nt "$MIHOMO_CORE_SRC" ] || [ "$mihomo_input" -nt "$MIHOMO_WRAPPER_SRC" ]; then mihomo_stale=1; fi
+  for mihomo_input in "$ROOT_DIR/scripts/build-mihomo-ohos.sh" "$ROOT_DIR/scripts/mihomo-source-inventory.py" "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$ROOT_DIR/patches/mihomo-openharmony.patch" "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch" "$ROOT_DIR/patches/mihomo-paws-management.patch" "$ROOT_DIR/patches/gvisor-fstat.patch" "$ROOT_DIR/patches/go-ohos-1.24.7-compat.patch"; do
+    if [ "$mihomo_input" -nt "$MIHOMO_CORE_SRC" ]; then mihomo_stale=1; fi
   done
-  if [ -n "$(find "$ROOT_DIR/vendor/mihomo-bridge" -type f \( -newer "$MIHOMO_CORE_SRC" -o -newer "$MIHOMO_WRAPPER_SRC" \) -print -quit)" ]; then mihomo_stale=1; fi
+  if [ -n "$(find "$ROOT_DIR/vendor/mihomo-bridge" -type f -newer "$MIHOMO_CORE_SRC" -print -quit)" ]; then mihomo_stale=1; fi
+  if [ -n "$(find "$ROOT_DIR/vendor/paws-engine-observation" -type f -newer "$MIHOMO_CORE_SRC" -print -quit)" ]; then mihomo_stale=1; fi
 fi
 if [ "$mihomo_stale" -eq 1 ]; then
   "$ROOT_DIR/scripts/build-mihomo-ohos.sh"
 fi
-if [ ! -f "$MIHOMO_WRAPPER_SRC" ] || [ ! -f "$MIHOMO_CORE_SRC" ]; then
-  echo "Paws mihomo engine libraries were not found ($MIHOMO_CORE_SRC, $MIHOMO_WRAPPER_SRC)" >&2
-  echo "Run scripts/build-mihomo-ohos.sh or set MIHOMO_WRAPPER_SRC and MIHOMO_CORE_SRC." >&2
+if [ ! -f "$MIHOMO_CORE_SRC" ]; then
+  echo "Paws mihomo engine libraries were not found ($MIHOMO_CORE_SRC)" >&2
+  echo "Run scripts/build-mihomo-ohos.sh or set MIHOMO_CORE_SRC." >&2
   exit 1
 fi
 if [ ! -f "$MIHOMO_TUN_SRC" ]; then
@@ -177,7 +178,7 @@ if [ "$MIHOMO_TUN_SRC" -nt "$MIHOMO_CORE_SRC" ]; then
 fi
 sing_box_stale=0
 if [ ! -f "$SING_BOX_CORE_SRC" ]; then sing_box_stale=1; fi
-for bridge_source in "$ROOT_DIR/scripts/build-sing-box-ohos.sh" "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$ROOT_DIR/patches/go-ohos-1.24.7-compat.patch" "$ROOT_DIR"/patches/sing-box-*.patch "$ROOT_DIR"/vendor/sing-box-bridge/*.go "$ROOT_DIR"/vendor/sing-box-bridge/httpobfs/*.go "$ROOT_DIR"/vendor/sing-box-bridge/tlsretry/*.go; do
+for bridge_source in "$ROOT_DIR/scripts/build-sing-box-ohos.sh" "$ROOT_DIR/scripts/sing-box-source-inventory.py" "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$ROOT_DIR/patches/go-ohos-1.24.7-compat.patch" "$ROOT_DIR"/patches/sing-box-*.patch "$ROOT_DIR"/vendor/sing-box-bridge/*.go "$ROOT_DIR"/vendor/sing-box-bridge/*.c "$ROOT_DIR"/vendor/sing-box-bridge/*.h "$ROOT_DIR"/vendor/sing-box-bridge/httpobfs/*.go "$ROOT_DIR"/vendor/sing-box-bridge/tlsretry/*.go "$ROOT_DIR"/vendor/paws-engine-observation/*.go; do
   if [ "$bridge_source" -nt "$SING_BOX_CORE_SRC" ]; then sing_box_stale=1; fi
 done
 if [ "$sing_box_stale" -eq 1 ]; then "$ROOT_DIR/scripts/build-sing-box-ohos.sh"; fi
@@ -191,32 +192,33 @@ if [ -n "${NODE_HOME:-}" ]; then
 fi
 
 cd "$ROOT_DIR"
-PAWS_ENGINE_BUILD_ID="$(python3 - "$ROOT_DIR" "$SING_BOX_CORE_SRC" "$MIHOMO_CORE_SRC" "$MIHOMO_WRAPPER_SRC" <<'PY_BUILD'
-import hashlib, sys, os
-from pathlib import Path
-root=Path(sys.argv[1]); digest=hashlib.sha256()
-files=[Path(p) for p in sys.argv[2:]]+[root/'Cargo.lock', root/'Cargo.toml']
-for key in ['PAWS_RAW_ENGINE_DIAGNOSTIC','PAWS_BENCH_PEER_IP','PAWS_BENCH_NODE_FINGERPRINT','PAWS_SOCKET_WIRE_CAPTURE']:
-    digest.update(key.encode()+b'\0'+os.environ.get(key,'').encode()+b'\0')
-for directory in ['vendor/meow-listener','vendor/meow-common','vendor/meow-proxy','vendor/meow-anytls','vendor/meow-tunnel','vendor/meow-transport','vendor/mihomo-bridge','vendor/sing-box-bridge','patches','crates/paws_core/src','crates/paws_vpn/src']:
-    files.extend(p for p in (root/directory).rglob('*') if p.is_file() and p.suffix in ['.rs','.go','.c','.cpp','.h','.toml','.patch'])
-for path in sorted(files):
-    digest.update(path.name.encode()+b'\0'); digest.update(path.read_bytes())
-print(digest.hexdigest())
-PY_BUILD
-)"
+# Share the prepared source root with SDK compilation, native version metadata,
+# HAR staging and the final provenance writer; subprocess exports do not flow up.
+NSH_ROOT=$(python3 "$ROOT_DIR/scripts/prepare-nsh-build-source.py")
+export NSH_ROOT
+NATIVE_PROFILE="$NATIVE_PROFILE" "$ROOT_DIR/scripts/build-nsh-ohos.sh"
+native_build_fingerprint() {
+  python3 "$ROOT_DIR/scripts/native-build-fingerprint.py" "$ROOT_DIR" "$SING_BOX_CORE_SRC" "$MIHOMO_CORE_SRC"
+}
+PAWS_ENGINE_BUILD_ID="$(native_build_fingerprint)"
 export PAWS_ENGINE_BUILD_ID
 if [ "$NATIVE_PROFILE" = "release" ]; then
-  OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH" --package paws_ui --dist "$ROOT_DIR/crates/paws_ui/dist" --release -- --locked
+  PAWS_NATIVE_TARGET_DIR="$NATIVE_TARGET_DIR" OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH" --package paws_ui --target-dir "$NATIVE_TARGET_DIR" --dist "$ROOT_DIR/crates/paws_ui/dist" --release -- --locked
 else
-  OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH" --package paws_ui --dist "$ROOT_DIR/crates/paws_ui/dist" -- --locked
+  PAWS_NATIVE_TARGET_DIR="$NATIVE_TARGET_DIR" OHRS="$OHRS" scripts/ohrs-build.sh --arch "$ARCH" --package paws_ui --target-dir "$NATIVE_TARGET_DIR" --dist "$ROOT_DIR/crates/paws_ui/dist" -- --locked
+fi
+if [ "$(native_build_fingerprint)" != "$PAWS_ENGINE_BUILD_ID" ]; then
+  echo "Native source inputs changed during compilation; rerun packaging after the source is frozen." >&2
+  exit 1
 fi
 # Hvigor can hard-link its native intermediates to the input library. Avoid
 # rewriting that inode; install a fresh file atomically instead. A buffered
 # copy also avoids macOS copyfile's slow sparse seeks on large debug ELFs.
 mkdir -p "$NATIVE_LIB_DIR"
+rm -f "$NATIVE_LIB_DIR/libcore.so"
 NATIVE_STAGE=""
-trap 'rm -f "$NATIVE_STAGE"' EXIT
+HAP_STAGE=""
+trap 'rm -f "$NATIVE_STAGE" "$HAP_STAGE"' EXIT
 trap 'exit 130' HUP INT TERM
 install_library() {
   NATIVE_STAGE="$(mktemp "$NATIVE_LIB_DIR/.native.XXXXXX")"
@@ -232,9 +234,6 @@ import sys
 from pathlib import Path
 Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text().rstrip() + "\n")
 PY_TYPES
-if [ "$MIHOMO_WRAPPER_SRC" != "$MIHOMO_WRAPPER_DST" ]; then
-  install_library "$MIHOMO_WRAPPER_SRC" "$MIHOMO_WRAPPER_DST"
-fi
 if [ "$MIHOMO_CORE_SRC" != "$MIHOMO_CORE_DST" ]; then
   install_library "$MIHOMO_CORE_SRC" "$MIHOMO_CORE_DST"
 fi
@@ -249,8 +248,14 @@ if [ "$SIGNED" -eq 1 ]; then
 fi
 # Reject a stale artifact if Hvigor exits successfully without producing a HAP.
 rm -f "$HAP_PATH"
-"$HVIGORW_BIN" "$TASK" --mode module -p module=entry@default \
-  -p buildMode="$HAP_BUILD_MODE" $HVIGOR_ARGS
+if [ "$SIGNED" -eq 1 ]; then
+  python3 "$ROOT_DIR/scripts/signing_profile.py" -- \
+    "$HVIGORW_BIN" "$TASK" --mode module -p module=entry@default \
+    -p buildMode="$HAP_BUILD_MODE" $HVIGOR_ARGS
+else
+  "$HVIGORW_BIN" "$TASK" --mode module -p module=entry@default \
+    -p buildMode="$HAP_BUILD_MODE" $HVIGOR_ARGS
+fi
 
 if [ ! -f "$HAP_PATH" ]; then
   echo "Expected HAP was not generated: $HAP_PATH" >&2
@@ -269,9 +274,23 @@ if [ "$SIGNED" -eq 1 ]; then
     exit 1
   fi
 fi
+if [ "$SIGNED" -eq 1 ]; then
+  UNSIGNED_HAP="$ROOT_DIR/entry/build/default/outputs/default/entry-default-unsigned.hap"
+  python3 "$ROOT_DIR/scripts/write-build-manifest.py" --hap-mode "$HAP_BUILD_MODE" \
+    --native-profile "$NATIVE_PROFILE" --hap-path "$UNSIGNED_HAP" --signed-hap-path "$HAP_PATH"
+  cp "$UNSIGNED_HAP" "$ROOT_DIR/dist/Paws-$HAP_BUILD_MODE-unsigned.hap"
+else
+  python3 "$ROOT_DIR/scripts/write-build-manifest.py" --hap-mode "$HAP_BUILD_MODE" \
+    --native-profile "$NATIVE_PROFILE" --hap-path "$HAP_PATH"
+fi
 if [ -n "${OUTPUT_HAP:-}" ] && [ "$OUTPUT_HAP" != "$HAP_PATH" ]; then
-  cp "$HAP_PATH" "$OUTPUT_HAP"
+  HAP_STAGE=$(mktemp "${OUTPUT_HAP}.XXXXXX")
+  cp "$HAP_PATH" "$HAP_STAGE"
+  mv -f "$HAP_STAGE" "$OUTPUT_HAP"
+  HAP_STAGE=""
   HAP_PATH="$OUTPUT_HAP"
 fi
-python3 "$ROOT_DIR/scripts/write-build-manifest.py" --hap-mode "$HAP_BUILD_MODE" --native-profile "$NATIVE_PROFILE" --hap-path "$HAP_PATH"
+HAP_SIGNING_KIND=unsigned
+if [ "$SIGNED" -eq 1 ]; then HAP_SIGNING_KIND=signed; fi
+cp "$HAP_PATH" "$ROOT_DIR/dist/Paws-$HAP_BUILD_MODE-$HAP_SIGNING_KIND.hap"
 echo "$HAP_PATH"
