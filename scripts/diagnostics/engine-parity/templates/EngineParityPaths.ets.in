@@ -1,0 +1,32 @@
+import { fileIo } from '@kit.CoreFileKit';
+
+// Stage-only, compile-time identity. No Want or preference can select a home.
+export const ENGINE_PARITY_NONCE: string = '__NONCE__';
+
+export function assertEngineParityDebug(debug: boolean): void {
+  if (!debug) { throw new Error('Engine parity stage requires a debug application'); }
+}
+
+export function engineParityBase(filesDir: string): string {
+  if (filesDir.length === 0 || !filesDir.startsWith('/') || filesDir.includes('/../')) {
+    throw new Error('Invalid application files directory');
+  }
+  const base = `${filesDir}/engine-parity/${ENGINE_PARITY_NONCE}`;
+  const home = `${base}/paws`;
+  // All journal/exit-recorder parent directories exist before either opens.
+  // OHOS recursive mkdir can still throw File exists for its final directory.
+  // Entry calls this twice and Extension can race the first creation. Accept
+  // a mkdir failure only with positive filesystem proof of the target directory.
+  try {
+    fileIo.mkdirSync(home, true);
+  } catch (error) {
+    let directory: boolean = false;
+    try { directory = fileIo.statSync(home).isDirectory(); } catch (_) {}
+    if (!directory) { throw (error as Error); }
+  }
+  return base;
+}
+
+export function engineParityHome(filesDir: string): string {
+  return `${engineParityBase(filesDir)}/paws`;
+}

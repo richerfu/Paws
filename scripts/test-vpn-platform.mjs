@@ -47,7 +47,6 @@ function loadArkts(relativePath, overrides = {}, cache = new Map()) {
     ...overrides.globals,
     require(name) {
       if (Object.hasOwn(overrides, name)) return overrides[name];
-      if (name === '@kit.LiveViewKit') return { liveViewManager: { async isLiveViewEnabled() { return false; } } };
       if (name === '@kit.FormKit') return { formBindingData: { createFormBindingData(v) { return v; } }, formProvider: { async updateForm() {} } };
       if (name === '@kit.CoreFileKit') return { fileIo: { statSync() { throw new Error('missing fixture journal'); }, openSync() { throw new Error('fixture filesystem unavailable'); } } };
       if (name === '@kit.BasicServicesKit') return { commonEventManager: {} };
@@ -74,9 +73,8 @@ test('URL capability forwards About links through the actual packaged plugin', a
   assert.equal(plugin.id, 'ohos.url');
   const opened = [];
   const context = { abilityContext: { async openLink(url) { opened.push(url); } }, isActive: () => true };
-  const about = readFileSync(resolve(root, 'crates/paws_ui/src/view/pages/tools.rs'), 'utf8')
-    .split('pub(crate) fn about_page')[1].split('pub(crate) fn privacy_page')[0];
-  const links = [...about.matchAll(/\b(?:source_url|license_url|url): "(https:\/\/[^\"]+)"/g)].map(match => match[1]);
+  const { ABOUT_LINKS } = loadArkts('ui/nsh/src/about.ts');
+  const links = ABOUT_LINKS.map(item => item.url);
   assert.equal(links.length, 10, 'exercise every production source, license and attribution link');
   assert.ok(links.some(url => url.includes('chen08209/Clash.Meta')));
   assert.ok(links.some(url => url.includes('SagerNet/sing-box')));
@@ -139,19 +137,6 @@ test('Want retains matching session identity and transferred descriptors', () =>
   const descriptors = api.readPlatformSharedMemoryFds(want);
   assert.equal(descriptors.ashmemFd, 21);
   assert.equal(descriptors.notificationFd, 22);
-});
-
-test('color mode acknowledgement preserves platform failures and rejects unsupported modes', async () => {
-  const { ColorModePlugin } = loadArkts('entry/src/main/ets/plugins/ColorModePlugin.ets', {
-    '@ohos-rs/ability': { AsyncPluginBase: class {} },
-    '@kit.AbilityKit': { ConfigurationConstant: { ColorMode: { COLOR_MODE_NOT_SET: -1, COLOR_MODE_DARK: 0, COLOR_MODE_LIGHT: 1 } } },
-    '@kit.PerformanceAnalysisKit': { hilog: { info() {}, error() {} } },
-  });
-  const plugin = new ColorModePlugin();
-  const context = { abilityContext: { async setColorMode() { throw new Error('platform refused color mode'); } } };
-  await assert.rejects(plugin.invokeAsync('set-color-mode', { typeName: 'paws.ColorModeRequest', value: { mode: 0 } }, context), /platform refused/);
-  await assert.rejects(plugin.invokeAsync('set-color-mode', { typeName: 'paws.ColorModeRequest', value: { mode: 9 } }, context), /unsupported mode/);
-  await assert.rejects(plugin.invokeAsync('set-color-mode', { typeName: 'paws.ColorModeRequest', value: null }, context), /expected/);
 });
 
 function deferred() {
@@ -262,30 +247,6 @@ test('first VPN authorization hands off descriptors while system start is pendin
   systemStart.resolve();
 });
 
-test('scan cancellation uses the SDK error code and never message substrings', async () => {
-  let failure;
-  const { ScanPlugin } = loadArkts('entry/src/main/ets/plugins/ScanPlugin.ets', {
-    '@ohos-rs/ability': { AsyncPluginBase: class {} },
-    '@kit.ScanKit': {
-      scanCore: { ScanType: { QR_CODE: 1 } },
-      scanBarcode: { async startScanForResult() {
-        if (failure) throw failure;
-        return { originalValue: ' https://example.test/subscription ' };
-      } },
-    },
-    '@kit.PerformanceAnalysisKit': { hilog: { info() {}, error() {} } },
-  });
-  const plugin = new ScanPlugin();
-  const request = { typeName: 'paws.ScanRequest', value: {} };
-  const context = { abilityContext: {} };
-  assert.equal((await plugin.invokeAsync('scan-qr', request, context)).value.content,
-    'https://example.test/subscription');
-  failure = { code: 1000500002, message: 'localized user dismissal' };
-  assert.equal((await plugin.invokeAsync('scan-qr', request, context)).value.content, '');
-  failure = { code: 1000500001, message: 'cancel token service failed' };
-  await assert.rejects(plugin.invokeAsync('scan-qr', request, context), /cancel token service failed/);
-});
-
 function automationFixture(native) {
   return loadArkts('entry/src/main/ets/automation/DebugAutomation.ets', {
     '@kit.AbilityKit': {},
@@ -298,6 +259,7 @@ function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({ne
   const automationCalls = [];
   const vpnCalls = [];
   const foregroundCalls = [];
+  const lifecycleCalls = [];
   class NativeAbility {
     context = {
       applicationInfo: { debug: applicationDebug, name: 'com.example.paws' },
@@ -311,6 +273,7 @@ function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({ne
     enqueueLifecycleOperation(label, operation) { this.lifecycleTail = this.lifecycleTail.then(operation); return this.lifecycleTail; }
     onNewWant() {}
     onForeground() {}
+    async onDestroy() { lifecycleCalls.push('base-destroy'); }
   }
   class LazyPlugin {
     constructor(factory) { this.factory = factory; }
@@ -331,9 +294,21 @@ function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({ne
       '@kit.LocalizationKit': { i18n: { System: { getSystemLanguage() { return 'en-US'; } } } },
       '@kit.PerformanceAnalysisKit': { hilog: { info() {}, error() {}, warn() {} } },
       '@ohos-rs/ability': { LazyPlugin, NativeAbility },
+      '@nsh/ohos': { nativeShellPlugins: () => [new LazyPlugin(() => ({ id: 'nsh.arkui' }))] },
       '@ohos-rs/ability-plugin-files': { FilesPlugin: EmptyPlugin },
       '@ohos-rs/ability-plugin-url': { UrlPlugin: EmptyPlugin },
-      '@ohos.window': {},
+      ...Object.fromEntries(['resource', 'accessibility', 'arkui', 'clipboard', 'window', 'webview', 'video'].map(name => [
+        '@ohos-rs/ability-plugin-' + name,
+        { [name === 'arkui' ? 'ArkuiPlugin' : name === 'webview' ? 'WebviewPlugin' : name[0].toUpperCase() + name.slice(1) + 'Plugin']: EmptyPlugin },
+      ])),
+      'libnsh_platform_ohos.so': { initLogging() {} },
+      '../components/PawsCoreGateway': {
+        installPawsHost() {
+          const vpn = new InstalledVpnPlugin();
+          return { vpn, dispose() {} };
+        },
+      },
+      '@ohos.window': { default: { AvoidAreaType: { TYPE_SYSTEM: 0, TYPE_CUTOUT: 1, TYPE_NAVIGATION_INDICATOR: 4 } } },
       'libpaws_ui.so': { default: {
         configureAppHome() {},
         setPhysicalNetwork() {},
@@ -341,7 +316,7 @@ function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({ne
         configureSystemColorMode() {},
         seedGeodataFromRawfiles() { return 0; },
       } },
-      '../common/Errors': { describeError(error) { return String(error); } },
+      '../common/Errors': loadArkts('entry/src/main/ets/common/Errors.ets', { globals: { Error } }),
       '../vpnability/VpnConfig': { setPawsBundleName() {} },
       '../vpnability/UnderlyingNetwork': { getPhysicalNetwork: physicalLookup },
       '../automation/DebugAutomation': {
@@ -350,43 +325,159 @@ function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({ne
           return Promise.resolve();
         },
       },
-      '../plugins/ClipboardPlugin': { ClipboardPlugin: EmptyPlugin },
-      '../plugins/ColorModePlugin': { ColorModePlugin: EmptyPlugin },
-      '../plugins/ExportPlugin': { ExportPlugin: EmptyPlugin },
-      '../plugins/SafeAreaPlugin': { SafeAreaPlugin: EmptyPlugin },
-      '../plugins/ScanPlugin': { ScanPlugin: EmptyPlugin },
       '../plugins/VpnPlugin': { VpnPlugin: InstalledVpnPlugin },
     },
   );
-  return { ability: new EntryAbility(), automationCalls, vpnCalls, foregroundCalls };
+  return { ability: new EntryAbility(), automationCalls, vpnCalls, foregroundCalls, lifecycleCalls };
 }
 
-test('cold-start debug VPN waits for plugin installation after factory creation', async () => {
-  const fixture = entryAbilityFixture(true);
-  const plugin = fixture.ability.bridgePlugins[2].factory();
-  const start = fixture.ability.requestStartVpn('{}');
-  await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(fixture.vpnCalls, []);
-  plugin.onInstall();
-  await start;
-  assert.deepEqual(fixture.vpnCalls, ['{}']);
+function frameMetricsFixture() {
+  const logs = [];
+  const noTimers = () => assert.fail('frame diagnostics must not schedule timers');
+  const { WindowFrameMetrics } = loadArkts('entry/src/main/ets/diagnostics/WindowFrameMetrics.ets', {
+    '@kit.PerformanceAnalysisKit': { hilog: {
+      info(...args) { logs.push({ level: 'info', args }); },
+      warn(...args) { logs.push({ level: 'warn', args }); },
+    } },
+    globals: { setTimeout: noTimers, setInterval: noTimers,
+      JSON: { stringify() { assert.fail('frame diagnostics must not serialize frame JSON'); } } },
+  });
+  return { metrics: new WindowFrameMetrics(), logs };
+}
+
+test('frame diagnostics count normal frames silently and log only first or threshold durations', () => {
+  const { metrics, logs } = frameMetricsFixture();
+  let callback;
+  const detached = [];
+  const win = {
+    on(event, cb) { assert.equal(event, 'frameMetricsMeasured'); callback = cb; },
+    off(event, cb) { detached.push({ event, cb }); },
+  };
+  metrics.start(win, false);
+  assert.equal(callback, undefined, 'release applications do not subscribe');
+  assert.equal(logs.length, 0);
+  metrics.start(win, true);
+  metrics.start(win, true);
+  callback({ firstDrawFrame: true, vsyncTimestamp: 123456789000, layoutMeasureDuration: 1_000_000, inputHandlingDuration: 2_000_000 });
+  assert.deepEqual(logs[0].args.slice(3), [1, 0, 1, '123456789000', '1.000', '2.000']);
+  for (let i = 0; i < 1000; i++) {
+    callback({ firstDrawFrame: false, vsyncTimestamp: 123456789000 + i * 10_000_000_000,
+      layoutMeasureDuration: 16_699_999, inputHandlingDuration: 16_699_999 });
+  }
+  assert.equal(logs.length, 1, 'neither normal durations nor large timestamp gaps are reported as jank');
+  callback({ firstDrawFrame: false, vsyncTimestamp: 9, layoutMeasureDuration: 16_700_000, inputHandlingDuration: 0 });
+  assert.deepEqual(logs[1].args.slice(3), [1002, 1, 0, '9', '16.700', '0.000']);
+  callback({ firstDrawFrame: false, vsyncTimestamp: 10, layoutMeasureDuration: 0, inputHandlingDuration: 20_000_000 });
+  assert.deepEqual(logs[2].args.slice(3), [1003, 2, 0, '10', '0.000', '20.000']);
+  metrics.dispose();
+  assert.equal(detached.length, 1);
+  assert.equal(detached[0].event, 'frameMetricsMeasured');
+  assert.equal(detached[0].cb, callback, 'unsubscribe only this owner\'s exact callback');
+  assert.deepEqual(logs[3].args.slice(3), [1003, 2]);
+  const count = logs.length;
+  callback({ firstDrawFrame: false, vsyncTimestamp: 11, layoutMeasureDuration: 100_000_000, inputHandlingDuration: 0 });
+  metrics.dispose();
+  metrics.start(win, true);
+  assert.equal(logs.length, count, 'queued callbacks are inert after disposal');
+  assert.equal(detached.length, 1);
 });
 
-test('foreground and new Want wakeups reach the current VPN plugin instance', async () => {
+test('frame diagnostic platform failures stay optional and never log exception content', () => {
+  const { metrics, logs } = frameMetricsFixture();
+  let failedCallback;
+  metrics.start({ on(_event, cb) { failedCallback = cb; throw { code: 801, message: 'PRIVATE_CONTENT' }; },
+    off() { assert.fail('a failed registration owns no subscription'); } }, true);
+  assert.equal(logs.length, 1);
+  assert.match(logs[0].args[2], /capability unavailable/);
+  assert.deepEqual(logs[0].args.slice(3), ['register', 801]);
+  failedCallback({ firstDrawFrame: true, vsyncTimestamp: 1, layoutMeasureDuration: 0, inputHandlingDuration: 0 });
+  assert.equal(logs.length, 1);
+  let activeCallback;
+  metrics.start({ on(_event, cb) { activeCallback = cb; },
+    off() { throw { code: 1300002, message: 'PRIVATE_CONTENT' }; } }, true);
+  assert.doesNotThrow(() => metrics.dispose());
+  const count = logs.length;
+  activeCallback({ firstDrawFrame: true, vsyncTimestamp: 1, layoutMeasureDuration: 0, inputHandlingDuration: 0 });
+  assert.equal(logs.length, count);
+  assert.ok(!JSON.stringify(logs).includes('PRIVATE_CONTENT'));
+});
+
+function frameWindowFixture(content, calls) {
+  return {
+    async setWindowLayoutFullScreen() {},
+    getWindowAvoidArea() { return {}; },
+    setUIContent() { calls.push('set-ui-content'); return content.promise; },
+    on(event, callback) { calls.push({ event, callback }); },
+    off(event, callback) { calls.push({ off: event, callback }); },
+  };
+}
+
+test('EntryAbility registers numeric frames only after successful content and stops before base destruction', async () => {
+  for (const debug of [false, true]) {
+    const fixture = entryAbilityFixture(debug);
+    const calls = fixture.lifecycleCalls;
+    const content = deferred();
+    const win = frameWindowFixture(content, calls);
+    const loading = fixture.ability.loadWindowStageContent({ async getMainWindow() { return win; } });
+    await until(() => calls.includes('set-ui-content'), 'content loading');
+    assert.equal(calls.length, 1, 'no subscription before successful setUIContent');
+    content.resolve();
+    await loading;
+    assert.equal(calls.length, debug ? 2 : 1);
+    const registered = calls.find(call => call.event === 'frameMetricsMeasured');
+    await fixture.ability.onDestroy();
+    assert.equal(calls.at(-1), 'base-destroy');
+    const removed = calls.find(call => call.off === 'frameMetricsMeasured');
+    assert.equal(!!registered, debug);
+    assert.equal(!!removed, debug);
+    if (debug) {
+      assert.equal(removed.callback, registered.callback);
+      assert.ok(calls.indexOf(removed) < calls.indexOf('base-destroy'));
+    }
+  }
+});
+
+test('failed or late content loading cannot leave a frame observer on a destroyed Ability', async () => {
+  const failed = entryAbilityFixture(true);
+  const failure = deferred();
+  const failedWindow = frameWindowFixture(failure, failed.lifecycleCalls);
+  const loadingFailure = failed.ability.loadWindowStageContent({ async getMainWindow() { return failedWindow; } });
+  await until(() => failed.lifecycleCalls.includes('set-ui-content'), 'failing content load');
+  failure.reject(new Error('content failed'));
+  await assert.rejects(loadingFailure, /content failed/);
+  assert.equal(failed.lifecycleCalls.length, 1);
+
+  const late = entryAbilityFixture(true);
+  const completion = deferred();
+  const lateWindow = frameWindowFixture(completion, late.lifecycleCalls);
+  const loadingLate = late.ability.loadWindowStageContent({ async getMainWindow() { return lateWindow; } });
+  await until(() => late.lifecycleCalls.includes('set-ui-content'), 'late content load');
+  await late.ability.onDestroy();
+  completion.resolve();
+  await loadingLate;
+  assert.deepEqual(late.lifecycleCalls, ['set-ui-content', 'base-destroy']);
+});
+
+test('cold-start debug VPN uses the Ability-owned host without bridge installation', async () => {
+  const fixture = entryAbilityFixture(true);
+  fixture.ability.onCreate({}, {});
+  await fixture.ability.requestStartVpn('{}');
+  assert.deepEqual(fixture.vpnCalls, ['{}']);
+  assert.equal(fixture.ability.moduleName, 'nsh_platform_ohos');
+  assert.ok(fixture.ability.bridgePlugins.some(plugin => plugin.factory().id === 'nsh.arkui'),
+    'register the matching NSH SDK editor/view plugin alongside NativeAbility');
+});
+
+test('foreground and new Want wakeups reach the Ability-owned VPN service', async () => {
   const fixture = entryAbilityFixture(false);
   fixture.ability.onForeground();
   assert.deepEqual(fixture.foregroundCalls, []);
-
-  const initial = fixture.ability.bridgePlugins[2].factory();
-  initial.onInstall();
+  fixture.ability.onCreate({}, {});
+  const initial = fixture.ability.vpnPlugin;
   fixture.ability.onForeground();
   fixture.ability.onNewWant({}, {});
   await fixture.ability.lifecycleTail;
-
-  const replacement = fixture.ability.bridgePlugins[2].factory();
-  replacement.onInstall();
-  fixture.ability.onForeground();
-  assert.deepEqual(fixture.foregroundCalls, [initial, initial, replacement]);
+  assert.deepEqual(fixture.foregroundCalls, [initial, initial]);
 });
 
 test('protocol negative acceptance cannot count an unexpected success as failure', async () => {
@@ -414,7 +505,7 @@ test('HTTP regression Want reaches native acceptance only in a debug application
 
 test('automation cannot replace an unreadable runtime configuration with VPN defaults', async () => {
   let starts = 0;
-  const api = automationFixture({ querySnapshot() { return 'corrupt'; } });
+  const api = automationFixture({ queryActiveVpnOptions() { return 'corrupt'; } });
   await assert.rejects(api.runDebugAutomation(
     { parameters: { pawsAutoStartVpn: true } },
     true,
@@ -427,7 +518,7 @@ test('release application ignores automation Wants while debug application accep
   const calls = [];
   const api = automationFixture({
     async importProfileFromContentAndActivate() { calls.push('import'); return 'profile-a'; },
-    querySnapshot() { calls.push('snapshot'); return JSON.stringify({ vpnOptions: { mtu: 1500 } }); },
+    queryActiveVpnOptions() { calls.push('options'); return JSON.stringify({ mtu: 1500 }); },
     async testProxyEcho(_proxy, _url, payload) { calls.push('echo'); return payload; },
   });
   const want = { parameters: {
@@ -443,7 +534,7 @@ test('release application ignores automation Wants while debug application accep
 
   await api.runDebugAutomation(want, true, async () => { calls.push('start'); });
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(calls, ['import', 'snapshot', 'start', 'echo']);
+  assert.deepEqual(calls, ['import', 'options', 'start', 'echo']);
 });
 
 test('EntryAbility gates both initial and subsequent Wants with the SDK application debug flag', async () => {
@@ -486,6 +577,30 @@ function extensionFixture({ clock, engine = 'meow' } = {}) {
     configureAppHome() {},
     setPhysicalNetwork(netId) { calls.push(["physical-network",netId]); },
     async persistEngineSession() {},
+    // Host effect port only: Core's real engine/renderer MTU contract is tested
+    // in paws_core::engine::tests, not replaced by this boundary fixture.
+    engineTunMtu(optionsJson) {
+      const requestedMtu = JSON.parse(optionsJson).mtu;
+      const platformMtu = requestedMtu;
+      calls.push(['engine-mtu', optionsJson, platformMtu]);
+      return platformMtu;
+    },
+    registerEngineProcessResolver() {},
+    clearEngineProcessResolver() {},
+    async prepareEngine(options, attempt) {
+      if (engine === 'mihomo') return this.prepareMihomoVpn(options, attempt);
+      await this.prepareVpn(attempt);
+      return '{}';
+    },
+    async startEngine(fd, _netId, options, attempt) {
+      if (engine === 'meow') return this.startVpn(fd, options, attempt);
+      this.startExternalVpn(options, attempt);
+    },
+    async stopEngine(attempt) { return this.stopVpn(attempt); },
+    async reloadEngine() { calls.push(['engine-reload']); },
+    async pollEngineTraffic() { calls.push(['engine-traffic']); },
+    async pollEngineObservations() { calls.push(['engine-observations']); },
+    trimEngineMemory() { calls.push(['force-gc']); },
     attachPlatformSharedMemory(ashmem, notification) { calls.push(['attach', ashmem, notification]); },
     validatePlatformVpnStartRequest(_ashmem, _notification, attempt) {
       calls.push(['validate', attempt]);
@@ -533,7 +648,6 @@ function extensionFixture({ clock, engine = 'meow' } = {}) {
     updateSingBoxVpnTraffic() { calls.push(['sing-box-traffic']); },
     updateExternalVpnTraffic(frame) { calls.push(['external-traffic', JSON.parse(frame)]); },
     queryVpnSpeed() { calls.push(['speed-only']); return JSON.stringify({ traffic: { uploadSpeed: 1024, downloadSpeed: 2048 } }); },
-    queryTrafficSpeed() { calls.push(['speed-snapshot']); return JSON.stringify({ uploadSpeed: 0, downloadSpeed: 0 }); },
     snapshot() { return JSON.stringify({ traffic: { uploadSpeed: 0, downloadSpeed: 0 }, vpnRunning: nativeRunning }); },
     snapshotJson() { return this.snapshot(); },
   };
@@ -569,14 +683,6 @@ function extensionFixture({ clock, engine = 'meow' } = {}) {
     },
     '@kit.PerformanceAnalysisKit': { hilog: logging },
     'libpaws_ui.so': { default: native },
-    'libcore.so': {
-      quickSetup(callback) { callback(''); },
-      startTUN() { return true; },
-      stopTun() {},
-      forceGC() { calls.push(['force-gc']); },
-      getTraffic() { return '{"up":0,"down":0}'; },
-      getTotalTraffic() { return '{"up":0,"down":0}'; },
-    },
     globals: { setInterval: () => 1, clearInterval() {}, setTimeout: () => 2, clearTimeout() {}, Date: class extends Date { static now() { return clock ? clock() : Date.now(); } } },
   };
   const Extension = loadArkts('entry/src/main/ets/vpnability/PawsVpnExtensionAbility.ets', overrides).default;
@@ -586,7 +692,6 @@ function extensionFixture({ clock, engine = 'meow' } = {}) {
   const want = (attempt, fd) => config.buildVpnWant(config.DEFAULT_OPTIONS_JSON, { ashmemFd: fd, notificationFd: fd + 1 }, attempt);
   return {
     extension, connections, calls, want, native,
-    mihomo: overrides['libcore.so'],
     emitPlatformEvent() { pendingEvents.resolve(true); },
     setLatestAttempt(attempt) { latestAttempt = attempt; },
     markTerminal(attempt) { terminalAttempts.add(attempt); },
@@ -594,43 +699,117 @@ function extensionFixture({ clock, engine = 'meow' } = {}) {
   };
 }
 
+for (const engine of ['meow', 'mihomo', 'sing-box']) {
+  test(`${engine} host boundary forwards the native-computed MTU to actual OS create(config)`, async () => {
+    const api = configModule();
+    for (const mtu of [1280, 1500, 2816, 9000]) {
+      const fixture = extensionFixture({ engine });
+      const optionsJson = JSON.stringify({ ...JSON.parse(api.DEFAULT_OPTIONS_JSON), engine, mtu });
+      const want = api.buildVpnWant(optionsJson, { ashmemFd: 21, notificationFd: 22 }, 'attempt-a');
+      fixture.extension.onCreate(want);
+      await until(() => fixture.calls.some(call => call[0] === 'create'), 'system VPN create with resolved MTU');
+      const nativeMtuCalls = fixture.calls.filter(call => call[0] === 'engine-mtu');
+      assert.equal(nativeMtuCalls.length, 1);
+      assert.equal(nativeMtuCalls[0][1], optionsJson, 'native MTU query must receive the same complete startup options');
+      const expectedMtu = mtu;
+      assert.equal(nativeMtuCalls[0][2], expectedMtu);
+      const createCalls = fixture.calls.filter(call => call[0] === 'create');
+      assert.equal(createCalls.length, 1);
+      assert.equal(createCalls[0][2].mtu, nativeMtuCalls[0][2], 'actual Extension must forward the native result to VpnConnection.create');
+      assert.equal(createCalls[0][2].mtu, expectedMtu, `${engine} requested MTU ${mtu}`);
+    }
+  });
+}
+
 test('VPN extension telemetry never publishes a second system notification', () => {
   const fixture = extensionFixture();
-  fixture.extension.persistTelemetry();
+  fixture.extension.activeAttemptId = 'telemetry-a';
+  fixture.extension.persistTelemetry(fixture.extension.telemetryGeneration, fixture.extension.activeAttemptId);
   assert.equal(fixture.calls.filter(c => c[0] === 'speed-only').length, 0);
   assert.equal(fixture.calls.filter(c => c[0] === 'notification').length, 0);
 });
 
-test('sing-box telemetry samples native counters on every tick', () => {
-  const fixture = extensionFixture({ engine: 'sing-box' });
-  fixture.extension.activeEngine = 'sing-box';
-  for (let i = 0; i < 3; i++) fixture.extension.persistTelemetry();
-  assert.equal(fixture.calls.filter(c => c[0] === 'sing-box-traffic').length, 3);
-  assert.equal(fixture.calls.filter(c => c[0] === 'external-traffic').length, 0);
-  fixture.native.updateSingBoxVpnTraffic = () => { throw new Error('counter unavailable'); };
-  fixture.extension.persistTelemetry();
-  assert.ok(fixture.calls.some(c => c[0] === 'warn' && c.some(value => String(value).includes('counter unavailable'))));
-});
-
-test('mihomo telemetry forwards native rates and totals, including idle samples', () => {
-  const fixture = extensionFixture({ engine: 'mihomo' });
-  fixture.extension.activeEngine = 'mihomo';
-  fixture.mihomo.getTraffic = () => '{"up":1024,"down":4096}';
-  fixture.mihomo.getTotalTraffic = () => '{"up":8192,"down":65536}';
-  fixture.extension.persistTelemetry();
-  fixture.mihomo.getTraffic = () => '{"up":0,"down":0}';
-  fixture.extension.persistTelemetry();
-  assert.deepEqual(fixture.calls.filter(c => c[0] === 'external-traffic').map(c => c[1]), [
-    { uploadSpeed: 1024, downloadSpeed: 4096, uploadTotal: 8192, downloadTotal: 65536 },
-    { uploadSpeed: 0, downloadSpeed: 0, uploadTotal: 8192, downloadTotal: 65536 },
-  ]);
-});
-
-test('repeated background telemetry cannot call notification services', () => {
+test('telemetry delegates to the common engine and reports failures', async () => {
   const fixture = extensionFixture();
-  for (let i = 0; i < 120; i++) fixture.extension.persistTelemetry();
-  assert.equal(fixture.calls.filter(c => c[0] === 'speed-only').length, 0);
+  fixture.extension.activeAttemptId = 'telemetry-a';
+  fixture.extension.persistTelemetry(fixture.extension.telemetryGeneration, fixture.extension.activeAttemptId);
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.extension.persistTelemetry(fixture.extension.telemetryGeneration, fixture.extension.activeAttemptId);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.calls.filter(c => c[0] === 'engine-traffic').length, 2);
+  fixture.native.pollEngineTraffic = async () => { throw new Error('counter unavailable'); };
+  fixture.extension.persistTelemetry(fixture.extension.telemetryGeneration, fixture.extension.activeAttemptId);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(fixture.calls.some(c => c[0] === 'warn' && String(c).includes('counter unavailable')));
+});
+
+test('pending background telemetry is coalesced and never invokes notifications', async () => {
+  const fixture = extensionFixture();
+  fixture.extension.activeAttemptId = 'telemetry-a';
+  const sample = deferred();
+  fixture.native.pollEngineTraffic = () => { fixture.calls.push(['engine-traffic']); return sample.promise; };
+  for (let i = 0; i < 120; i++) fixture.extension.persistTelemetry(fixture.extension.telemetryGeneration, fixture.extension.activeAttemptId);
+  assert.equal(fixture.calls.filter(c => c[0] === 'engine-traffic').length, 1);
   assert.equal(fixture.calls.filter(c => c[0] === 'notification').length, 0);
+  sample.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.extension.persistTelemetry(fixture.extension.telemetryGeneration, fixture.extension.activeAttemptId);
+  assert.equal(fixture.calls.filter(c => c[0] === 'engine-traffic').length, 2);
+});
+
+
+test('held observation work does not coalesce or delay the separate traffic lane', async () => {
+  const fixture = extensionFixture();
+  fixture.extension.activeAttemptId = 'telemetry-a';
+  const observation = deferred();
+  fixture.native.pollEngineObservations = () => { fixture.calls.push(['engine-observations']); return observation.promise; };
+  for (let i=0;i<120;i++) fixture.extension.persistObservations(0,'telemetry-a');
+  fixture.extension.persistTelemetry(0,'telemetry-a');
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.extension.persistTelemetry(0,'telemetry-a');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.calls.filter(c=>c[0]==='engine-traffic').length,2);
+  assert.equal(fixture.calls.filter(c=>c[0]==='engine-observations').length,1);
+  assert.equal(fixture.extension.observationsPending,true);
+  observation.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.extension.observationsPending,false);
+});
+
+test('held traffic and observation work each own one independent pending receipt', async () => {
+  const fixture=extensionFixture(); fixture.extension.activeAttemptId='telemetry-a';
+  const traffic=deferred();
+  fixture.native.pollEngineTraffic=()=>{fixture.calls.push(['engine-traffic']);return traffic.promise;};
+  for(let i=0;i<120;i++) fixture.extension.persistTelemetry(0,'telemetry-a');
+  fixture.extension.persistObservations(0,'telemetry-a');
+  await new Promise(resolve=>setImmediate(resolve));
+  fixture.extension.persistObservations(0,'telemetry-a');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(fixture.calls.filter(c=>c[0]==='engine-traffic').length,1);
+  assert.equal(fixture.calls.filter(c=>c[0]==='engine-observations').length,2);
+  traffic.resolve(); await new Promise(resolve=>setImmediate(resolve));
+});
+
+test('old attempt finally cannot clear the pending work of a restarted telemetry generation', async () => {
+  const fixture=extensionFixture(); fixture.extension.activeAttemptId='old-attempt';
+  const oldTraffic=deferred(),oldObservation=deferred();
+  fixture.native.pollEngineTraffic=()=>{fixture.calls.push(['old-traffic']);return oldTraffic.promise;};
+  fixture.native.pollEngineObservations=()=>{fixture.calls.push(['old-observations']);return oldObservation.promise;};
+  fixture.extension.persistTelemetry(0,'old-attempt'); fixture.extension.persistObservations(0,'old-attempt');
+  fixture.extension.stopTelemetry(); fixture.extension.activeAttemptId='new-attempt';
+  const generation=fixture.extension.telemetryGeneration;
+  const newTraffic=deferred(),newObservation=deferred();
+  fixture.native.pollEngineTraffic=()=>{fixture.calls.push(['new-traffic']);return newTraffic.promise;};
+  fixture.native.pollEngineObservations=()=>{fixture.calls.push(['new-observations']);return newObservation.promise;};
+  fixture.extension.persistTelemetry(generation,'new-attempt');fixture.extension.persistObservations(generation,'new-attempt');
+  oldTraffic.resolve();oldObservation.reject(new Error('stale observation error'));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(fixture.extension.telemetryPending,true);assert.equal(fixture.extension.observationsPending,true);
+  fixture.extension.persistTelemetry(0,'old-attempt');fixture.extension.persistObservations(0,'old-attempt');
+  assert.equal(fixture.calls.filter(c=>c[0]==='new-traffic').length,1);assert.equal(fixture.calls.filter(c=>c[0]==='new-observations').length,1);
+  assert.ok(!fixture.calls.some(c=>c[0]==='warn' && String(c).includes('stale observation error')));
+  newTraffic.resolve();newObservation.resolve();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(fixture.extension.telemetryPending,false);assert.equal(fixture.extension.observationsPending,false);
 });
 
 function pluginFixture({
@@ -1341,6 +1520,38 @@ test('VPN recorder drains historical events into a separate capped file and dedu
   assert.equal(records.length, 1); assert.equal(records[0].pid, '6632'); assert.equal(records[0].reason, 'Memory Pressure');
 });
 
+test('debug crash recorder keeps only error class and bounded source frames from object reasons', () => {
+  const files = new Map(); const logs = []; let watcher;
+  const io = {
+    OpenMode: { WRITE_ONLY: 1, CREATE: 2, TRUNC: 4 },
+    statSync() { throw Error('missing'); }, readTextSync() { throw Error('missing'); },
+    openSync(path) { return { fd: path }; }, writeSync(fd, value) { files.set(fd, value); }, fsyncSync() {}, closeSync() {},
+    renameSync(from, to) { files.set(to, files.get(from)); files.delete(from); },
+  };
+  const { SystemExitRecorder } = loadArkts('entry/src/main/ets/vpnability/SystemExitRecorder.ets', {
+    globals: { setTimeout() { return 0; } }, '@kit.AbilityKit': {}, '@kit.CoreFileKit': { fileIo: io },
+    '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error(...args) { logs.push(args); } },
+      hiAppEvent: { event: { APP_KILLED: 'APP_KILLED', APP_CRASH: 'APP_CRASH', APP_FREEZE: 'APP_FREEZE', RESOURCE_OVERLIMIT: 'RESOURCE_OVERLIMIT' },
+        addWatcher(w) { watcher = w; return { setSize() {}, takeNext() { return null; } }; } },
+    },
+  });
+  const reason = { name: 'TypeError', message: 'private-input-marker',
+    stack: 'TypeError: private-input-marker\n' + Array.from({ length: 30 }, (_, i) => `    at change (entry/NativeEditors.ets:${300 + i}:12)`).join('\n'),
+    arbitrary: 'private-payload-marker' };
+  const recorder = new SystemExitRecorder(); recorder.start('/files', undefined, false, true);
+  watcher.onReceive('OS', [{ appEventInfos: [{ name: 'APP_CRASH', params: { reason, time: 1, external_log: '/private/log' } }] }]);
+  const record = JSON.parse(files.get('/files/paws/system-exits.json')).at(-1);
+  assert.equal(record.errorName, 'TypeError'); assert.equal(record.stackFrames.length, 20);
+  assert.equal(record.stackFrames[0], 'at change (entry/NativeEditors.ets:300:12)');
+  assert.doesNotMatch(JSON.stringify({ record, logs }), /private-input-marker|private-payload-marker|external_log/);
+  assert.equal(logs.filter(args => args[2] === 'debug fault frame %{public}s').length, 20);
+  recorder.start('/files', undefined, false); // Normal packages do not collect fault objects.
+  logs.length = 0;
+  watcher.onReceive('OS', [{ appEventInfos: [{ name: 'APP_CRASH', params: { reason, time: 2 } }] }]);
+  const releaseRecord = JSON.parse(files.get('/files/paws/system-exits.json')).at(-1);
+  assert.equal(releaseRecord.errorName, undefined); assert.equal(releaseRecord.stackFrames, undefined); assert.equal(logs.length, 0);
+});
+
 
 test('failed candidate health rolls back exactly once after cleaning its session', async () => {
   const fixture = pluginFixture({healthSequence:[{success:false,actualEngine:'sing-box',rollbackToBaseline:true,stage:'https'}]});
@@ -1420,8 +1631,7 @@ for (const engine of ['mihomo', 'sing-box']) {
     fixture.extension.tunFd = 31;
     fixture.extension.platformSubscriptionActive = true;
     fixture.extension.platformSubscriptionGeneration = 1;
-    fixture.extension.reloadMihomoConfig = async () => { throw new Error('must not reload after Stop'); };
-    fixture.extension.reloadSingBoxConfig = async () => { throw new Error('must not reload after Stop'); };
+    fixture.extension.reloadActiveEngine = async () => { throw new Error('must not reload after Stop'); };
     const listening = fixture.extension.runPlatformSubscription(1);
     fixture.emitPlatformEvent();
     await listening;
@@ -1445,7 +1655,7 @@ test('a Go configuration error leaves the subscription available for the next St
   const stop = deferred();
   let waits = 0;
   fixture.native.waitForPlatformChangeEvent = () => ++waits === 1 ? update.promise : stop.promise;
-  fixture.extension.reloadMihomoConfig = async () => { throw new Error('configuration unavailable'); };
+  fixture.extension.reloadActiveEngine = async () => { throw new Error('configuration unavailable'); };
   const listening = fixture.extension.runPlatformSubscription(1);
   update.resolve(true);
   await until(() => waits === 2, 'subscription after config failure');
@@ -1472,13 +1682,13 @@ test('diagnostic mode is validated and committed before VPN start; release ignor
   const calls = [];
   const api = automationFixture({
     async setMode(mode) { calls.push(mode); },
-    querySnapshot() { calls.push('snapshot'); return JSON.stringify({vpnOptions:{}}); },
+    queryActiveVpnOptions() { calls.push('options'); return JSON.stringify({}); },
   });
   const want = {parameters:{pawsMode:'global',pawsAutoStartVpn:true,pawsWaitForVpnBeforeProbes:true}};
   await api.runDebugAutomation(want,false,async()=>calls.push('start'));
   assert.deepEqual(calls,[]);
   await api.runDebugAutomation(want,true,async()=>calls.push('start'));
-  assert.deepEqual(calls,['global','snapshot','start']);
+  assert.deepEqual(calls,['global','options','start']);
   await assert.rejects(api.runDebugAutomation({parameters:{pawsMode:'bad',pawsAutoStartVpn:true}},true,async()=>calls.push('bad-start')),/invalid diagnostic mode/);
   assert.equal(calls.includes('bad-start'),false);
 });
@@ -1495,7 +1705,7 @@ test('diagnostic proxy selection awaits the persistent native API before reading
       calls.push('select');
       await selection.promise;
     },
-    querySnapshot() { calls.push('snapshot'); return JSON.stringify({vpnOptions:{}}); },
+    queryActiveVpnOptions() { calls.push('options'); return JSON.stringify({}); },
   });
   const want = {parameters:{pawsProfileContent:'rules: [MATCH,DIRECT]', pawsMode:'global',
     pawsSelectGroup:'GLOBAL', pawsSelectProxy:'fixture-node', pawsAutoStartVpn:true,
@@ -1505,7 +1715,7 @@ test('diagnostic proxy selection awaits the persistent native API before reading
   assert.deepEqual(calls,['import','mode:global','select']);
   selection.resolve();
   await pending;
-  assert.deepEqual(calls,['import','mode:global','select','snapshot','start']);
+  assert.deepEqual(calls,['import','mode:global','select','options','start']);
   calls.length = 0;
   await api.runDebugAutomation({parameters:{pawsSelectGroup:'GLOBAL',pawsSelectProxy:'fixture-node'}},
     true,async()=>calls.push('unexpected-start'));
@@ -1516,7 +1726,7 @@ test('proxy selection Wants are inert in release and invalid or failed selection
   const calls = [];
   const api = automationFixture({
     async selectProxy() { calls.push('select'); throw new Error('fixture selection failed'); },
-    querySnapshot() { calls.push('snapshot'); return JSON.stringify({vpnOptions:{}}); },
+    queryActiveVpnOptions() { calls.push('options'); return JSON.stringify({}); },
     async setMode() { calls.push('mode'); },
   });
   const start = async()=>calls.push('start');
@@ -1559,3 +1769,630 @@ test('system wakeup claims pending auto-recovery and restarts VPN without droppi
 });
 
 
+
+function gatewayFixture({ dispatch, scan, selected = [], fileSize = 3, readError, packingError } = {}) {
+  const calls = [];
+  const events = [];
+  const waits = [];
+  const timers = [];
+  let disposed = false;
+  const modes = { COLOR_MODE_DARK: 0, COLOR_MODE_LIGHT: 1, COLOR_MODE_NOT_SET: -1 };
+  const receiptOwner = pluginFixture().plugin;
+  class Vpn {
+    attachHost(context) { calls.push(['attach-host', context]); }
+    detachHost() { calls.push(['detach-host']); }
+    async requestStartVpn(options) { calls.push(['start', options]); }
+    async requestStopVpn() { calls.push(['stop']); return true; }
+    async requestRestartVpn(...args) { calls.push(['restart', ...args]); return false; }
+    async requestStopVpnIfCurrent(...args) { calls.push(['stop-owned', ...args]); return false; }
+    submitHostOperation(...args) { return receiptOwner.submitHostOperation(...args); }
+    lookupHostOperation(...args) { return receiptOwner.lookupHostOperation(...args); }
+    finishHostOperation(...args) { return receiptOwner.finishHostOperation(...args); }
+  }
+  let generation = 0;
+  let domainVersions = [];
+  let dirty = [];
+  const native = {
+    revision: 7,
+    querySnapshot() { throw new Error('aggregate snapshots are not part of the UI protocol'); },
+    subscribeState(text) {
+      const request = JSON.parse(text);
+      if (request.generation < generation) throw new Error('superseded observation');
+      generation = request.generation;
+      domainVersions = [...request.domains];
+      for (const domain of ['config', 'status']) if (!domainVersions.some(key => key.domain === domain)) domainVersions.push({ domain });
+      domainVersions = domainVersions.map(key => ({ ...key, revision: this.revision }));
+      calls.push(['subscribe-state', request]);
+      return JSON.stringify({ generation, revision: this.revision, changes: domainVersions });
+    },
+    observeState(critical) {
+      calls.push(['observe-state', critical]);
+      const change = { generation, revision: this.revision, changes: dirty };
+      dirty = [];
+      return JSON.stringify({ change, barrier: { generation, required: domainVersions.filter(key => !critical || ['config','status'].includes(key.domain)) } });
+    },
+    async queryState(text) {
+      const request = JSON.parse(text);
+      calls.push(['query-state', request]);
+      if (request.generation !== generation || !domainVersions.some(key => key.domain === request.domain && key.groupKey === request.groupKey)) throw new Error('unsubscribed observation');
+      return JSON.stringify({ ...request, revision: this.revision, configRevision: 4, data: { [request.domain]: [] } });
+    },
+    notify(domain, revision) {
+      this.revision = revision;
+      for (const key of domainVersions) if (key.domain === domain) { key.revision = revision; dirty.push({ ...key }); }
+    },
+    isRuntimeConfigRevisionCurrent() { return true; },
+    queryUiPreferences() { return '{"language":"system","theme":"dark","advanced":false,"systemLocale":"en-US"}'; },
+    async dispatchCommand(request) {
+      const value = JSON.parse(request);
+      calls.push(['dispatch', value]);
+      return JSON.stringify(dispatch ? await dispatch(value) : { id: value.id, ok: true });
+    },
+    waitForUiRevision(revision) { const wait = deferred(); waits.push({ revision, wait }); return wait.promise; },
+    cancelUiRevisionWait() { for (const item of waits) item.wait.resolve('7'); calls.push(['cancel-wait']); },
+  };
+  const api = loadArkts('entry/src/main/ets/components/PawsCoreGateway.ets', {
+    '@kit.ArkUI': {},
+    '@kit.ImageKit': { image: { createImagePacker() { return {
+      async packing() { if (packingError) throw packingError; return Uint8Array.from([137,80,78,71]).buffer; },
+      async release() { calls.push(['packer-release']); },
+    }; } } },
+    '@kit.AbilityKit': { ConfigurationConstant: { ColorMode: modes } },
+    '@kit.CoreFileKit': {
+      picker: { DocumentSelectOptions: class {}, DocumentViewPicker: class { async select() { return selected; } } },
+      fileIo: {
+        OpenMode: { READ_ONLY: 0 },
+        async open() { calls.push(['file-open']); return { fd: 9 }; },
+        async stat() { return { size: fileSize }; },
+        async read(_fd, buffer) { if (readError) throw readError; new Uint8Array(buffer).set([97,98,99]); return buffer.byteLength; },
+        async close() { calls.push(['file-close']); },
+      },
+    },
+    '@kit.ArkTS': { util: {
+      TextDecoder: { create() { return { decodeToString(bytes) { return new TextDecoder().decode(bytes); } }; } },
+      Base64Helper: class { encodeToStringSync(bytes) { return Buffer.from(bytes).toString('base64'); } },
+    } },
+    '@kit.ScanKit': {
+      generateBarcode: { ErrorCorrectionLevel: { LEVEL_M: 1 }, async createBarcode(text) {
+        calls.push(['qr', text]); return { async release() { calls.push(['bitmap-release']); } };
+      } },
+      scanCore: { ScanType: { QR_CODE: 1 } }, scanBarcode: { startScanForResult: scan ?? (async () => ({ originalValue: '  https://example.test/profile  ' })) } },
+    'libpaws_ui.so': { default: native, UiCommandSession: class {
+      dispatch(request) { return native.dispatchCommand(request); }
+      subscribeState(text) { return native.subscribeState(text); }
+      observeState(critical) { return native.observeState(critical); }
+      queryState(text) { return native.queryState(text); }
+      close() { calls.push(['close-command-session']); }
+    } },
+    '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {} } },
+    '../plugins/VpnPlugin': { VpnPlugin: Vpn },
+    '../plugins/ExportPlugin': { ExportPlugin: class { async exportText(value) { calls.push(['export', value]); } } },
+    '../common/Errors': loadArkts('entry/src/main/ets/common/Errors.ets', { globals: { Error } }),
+    './PawsGatewayNode': { createGatewayNode() { return { isDisposed() { return disposed; }, dispose() { disposed = true; } }; } },
+    globals: { Error, setTimeout(fn) { timers.push(fn); return timers.length; },
+      clearTimeout(timer) { calls.push(['clear-timer', timer]); } },
+  });
+  const context = { setColorMode(mode) { calls.push(['color', mode]); }, async openLink(url) { calls.push(['url', url]); } };
+  const host = new api.PawsHostServices(context);
+  const surface = { isDisposed: false, setComponentSize(...args) { calls.push(['size', ...args]); }, emitComponentEvent(_id, name, value) { events.push([name, value]); } };
+  const gateway = new api.PawsCoreGateway({}, 17, surface, host);
+  return { api, host, gateway, native, calls, events, waits, timers, surface,
+    dispatch: request => host.dispatch(request, gateway.session) };
+}
+
+test('bridge user errors preserve causes without attaching diagnostic stack fields', () => {
+  const errors = loadArkts('entry/src/main/ets/common/Errors.ets', { globals: { Error } });
+  const error = new Error('native controller request failed');
+  error.name = 'NativeError';
+  error.code = 401;
+  error.stack = 'diagnostic-frame\n'.repeat(150);
+  assert.equal(errors.describeUserError(error), 'code=401 NativeError: native controller request failed');
+  assert.match(errors.describeError(error), /diagnostic-frame/,
+    'the diagnostic formatter must retain its original stack behavior');
+  assert.equal(errors.describeUserError({ name: 'PlatformError', code: 7, message: 'source unavailable', stack: error.stack }),
+    'code=7 PlatformError: source unavailable');
+  assert.equal(errors.describeUserError({ name: 'NativeError', reason: 'binding unavailable', stack: error.stack }),
+    '{"name":"NativeError","reason":"binding unavailable"}');
+  for (const value of ['original cause', 'full original message '.repeat(250), 0, false, null, undefined]) {
+    assert.equal(errors.describeUserError(value), errors.describeError(value));
+  }
+  assert.equal(errors.describeUserError(new Error('full original message '.repeat(250))),
+    'Error: ' + 'full original message '.repeat(250), 'message content is not truncated');
+});
+
+test('NSH query failures retain the real cause without a diagnostic stack in UiResult', async () => {
+  const fixture = gatewayFixture();
+  const error = new Error('native management configuration epoch was replaced');
+  error.stack = 'query-only-diagnostic-frame\n'.repeat(150);
+  fixture.native.queryState = async () => { throw error; };
+  await fixture.gateway.runRequest({ id:435,command:'state.query',payload:{generation:1,domain:'proxies'} });
+  const result = fixture.events.find(event => event[0] === 'result' && event[1].id === 435)[1];
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'Error: native management configuration epoch was replaced');
+  assert.equal(result.error.includes('diagnostic-frame'), false);
+  assert.equal(result.barrier, undefined);
+  fixture.gateway.dispose();
+});
+
+test('NSH committed mutations preserve success and a stack-free state refresh warning', async () => {
+  const fixture = gatewayFixture();
+  const error = new Error('native observer unavailable');
+  error.stack = 'post-commit-diagnostic-frame\n'.repeat(150);
+  fixture.native.observeState = () => { throw error; };
+  await fixture.gateway.runRequest({ id:5,command:'profiles.rename',payload:{} });
+  const result = fixture.events.find(event => event[0] === 'result' && event[1].id === 5)[1];
+  assert.equal(result.ok, true, 'a committed mutation is never presented as uncommitted');
+  assert.equal(result.stateRefreshError, 'Operation completed, but state refresh failed: Error: native observer unavailable');
+  assert.equal(result.error, undefined);
+  assert.equal(result.stateRefreshError.includes('diagnostic-frame'), false);
+  assert.equal(fixture.calls.filter(call => call[0] === 'dispatch').length, 1);
+  fixture.gateway.dispose();
+});
+
+test('NSH gateway observes only metadata and preferences, then cancels subscriptions on disposal', async () => {
+  const fixture = gatewayFixture();
+  fixture.timers[0]();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.events.map(e => e[0]), ['preferences']);
+  assert.equal(fixture.calls.filter(c => c[0] === 'query-state').length, 0);
+  assert.equal(fixture.calls.filter(c => c[0] === 'color').length, 0, 'NSH preferences cannot trigger an Ability configuration rebuild');
+  assert.equal(fixture.waits[0].revision, '7');
+  fixture.gateway.dispose();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.events.length, 1);
+  assert.equal(fixture.calls.filter(c => c[0] === 'cancel-wait').length, 1);
+});
+
+test('NSH configuration and idle wakeups never query business domains or re-emit preferences', async () => {
+  const fixture = gatewayFixture();
+  fixture.timers[0]();
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.waits[0].wait.resolve('7');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.calls.filter(call => call[0] === 'query-state').length, 0);
+  assert.deepEqual(fixture.events.map(event => event[0]), ['preferences']);
+  fixture.native.queryUiPreferences = () => '{"language":"system","theme":"light","advanced":false,"systemLocale":"en-US"}';
+  fixture.waits[1].wait.resolve('7');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.events.map(event => event[0]), ['preferences', 'preferences']);
+  assert.deepEqual(fixture.calls.filter(call => call[0] === 'color'), []);
+  fixture.gateway.dispose();
+});
+
+test('NSH registers subscription before explicit queries and changes contain only metadata', async () => {
+  const fixture = gatewayFixture();
+  await assert.rejects(fixture.dispatch({ id: 1, command: 'state.query', payload: {generation:1,domain:'rules'} }), /unsubscribed/);
+  await fixture.gateway.runRequest({ id:2,command:'state.subscribe',payload:{generation:1,domains:[{domain:'rules'}]} });
+  assert.deepEqual(fixture.events.map(e => e[0]), ['changed','result']);
+  assert.equal(fixture.events[0][1].changes.some(key => key.domain === 'rules'),true);
+  assert.equal(fixture.calls.filter(c => c[0] === 'query-state').length,1,'subscription cannot implicitly load business data');
+  await fixture.gateway.runRequest({ id:3,command:'state.query',payload:{generation:1,domain:'rules'} });
+  const result = fixture.events.at(-1)[1];
+  assert.equal(result.data.domain,'rules');
+  assert.equal(result.barrier,undefined,'queries cannot recursively wait on query barriers');
+  assert.equal(JSON.stringify(fixture.events[0][1]).includes('data'),false);
+  fixture.gateway.dispose();
+});
+
+test('NSH pending large domain query cannot delay Stop and dispose suppresses late delivery', async () => {
+  const fixture = gatewayFixture();
+  await fixture.gateway.runRequest({ id:1,command:'state.subscribe',payload:{generation:1,domains:[{domain:'rules'}]} });
+  const pending = deferred();
+  fixture.native.queryState = () => pending.promise;
+  const query = fixture.gateway.runRequest({ id:2,command:'state.query',payload:{generation:1,domain:'rules'} });
+  await fixture.gateway.runRequest({ id:3,command:'vpn.stop',payload:{} });
+  const stop = fixture.events.find(e => e[0] === 'result' && e[1].id === 3)[1];
+  assert.equal(stop.ok,true);
+  assert.deepEqual(Array.from(stop.barrier.required, key => key.domain).sort(),['config','status']);
+  const before = fixture.events.length;
+  fixture.gateway.dispose();
+  pending.resolve('{"generation":1,"domain":"rules","revision":7,"configRevision":4,"data":{"rules":[]}}');
+  await query;
+  assert.equal(fixture.events.length,before);
+});
+
+test('NSH failed change delivery is retried and committed success retains a state refresh warning', async () => {
+  const fixture = gatewayFixture();
+  const change = JSON.parse(fixture.native.subscribeState('{"generation":1,"domains":[]}'));
+  const original = fixture.surface.emitComponentEvent;
+  let fail = true;
+  fixture.surface.emitComponentEvent = (...args) => { if (args[1] === 'changed' && fail) { fail=false;throw new Error('delivery failed'); } original(...args); };
+  assert.throws(() => fixture.gateway.emitChanged(change),/delivery failed/);
+  fixture.gateway.publishChanges();
+  assert.equal(fixture.events[0][0],'changed');
+  assert.equal(fixture.events[0][1].changes.length,2);
+  fixture.native.observeState = () => { throw new Error('state unavailable'); };
+  await fixture.gateway.runRequest({ id:4,command:'profiles.rename',payload:{} });
+  const result = fixture.events.find(e => e[0] === 'result' && e[1].id === 4)[1];
+  assert.equal(result.ok,true,'a post-commit query error cannot pretend the write failed');
+  assert.match(result.stateRefreshError,/state unavailable/);
+  fixture.gateway.dispose();
+});
+
+test('NSH app theme never changes global Ability resources and the latest system bar write wins', async () => {
+  const fixture = gatewayFixture();
+  const backgrounds = [], bars = [];
+  const delayed = deferred();
+  fixture.host.attachMainWindow({
+    async setWindowBackgroundColor(color) { backgrounds.push(color); if (backgrounds.length === 1) await delayed.promise; },
+    async setWindowSystemBarProperties(properties) { bars.push(properties); },
+  });
+  const dark = { theme: 'dark', systemColorMode: 1 };
+  const light = { theme: 'light', systemColorMode: 0 };
+  fixture.host.context.setColorMode = () => { throw new Error('global Ability appearance must remain untouched'); };
+  fixture.host.applyPreferences(dark);
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.host.applyPreferences(light);
+  delayed.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.calls.filter(call => call[0] === 'color'), []);
+  assert.equal(bars.length, 1, 'stale dark update must not overwrite light');
+  assert.equal(bars[0].statusBarColor, '#00000000');
+  assert.equal(bars[0].navigationBarColor, '#00000000');
+  assert.equal(bars[0].statusBarContentColor, '#ff000000');
+  assert.equal(bars[0].navigationBarContentColor, '#ff000000');
+  fixture.gateway.dispose();
+  fixture.host.dispose();
+});
+
+test('NSH system bars follow system appearance only while the app uses system theme', async () => {
+  const fixture = gatewayFixture();
+  const bars = [];
+  fixture.host.attachMainWindow({ async setWindowBackgroundColor() {}, async setWindowSystemBarProperties(properties) { bars.push(properties); } });
+  fixture.host.applyPreferences({ theme: 'system', systemColorMode: 0 });
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.host.applyPreferences({ theme: 'system', systemColorMode: 0 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(bars.length, 1, 'unchanged system appearance must not repeat platform writes');
+  fixture.host.applyPreferences({ theme: 'system', systemColorMode: 1 });
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.host.applyPreferences({ theme: 'dark', systemColorMode: 1 });
+  await new Promise(resolve => setImmediate(resolve));
+  fixture.host.applyPreferences({ theme: 'dark', systemColorMode: 0 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(bars.length, 3, 'explicit dark remains dark across actual system changes');
+  fixture.host.applyPreferences({ theme: 'light', systemColorMode: 0 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.calls.filter(call => call[0] === 'color'), []);
+  assert.deepEqual(bars.map(value => value.statusBarContentColor), ['#ffffffff', '#ff000000', '#ffffffff', '#ff000000']);
+  assert.deepEqual(bars.map(value => value.navigationBarContentColor), ['#ffffffff', '#ff000000', '#ffffffff', '#ff000000']);
+  fixture.host.dispose();
+  fixture.gateway.dispose();
+});
+
+test('NSH immersive page lets one SafeAreaView consume native visual insets', () => {
+  const source = readFileSync(resolve(root, 'entry/src/main/ets/pages/Index.ets'), 'utf8');
+  assert.match(source, /\.expandSafeArea\(\[SafeAreaType.SYSTEM\], \[SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM\]\)/);
+  assert.match(source, /\.backgroundColor\(Color.Transparent\)/);
+  const rootModifiers = source.slice(source.lastIndexOf("    .height('100%')"));
+  assert.doesNotMatch(rootModifiers, /\.padding\(/, 'the host must not add another fixed or native-inset padding');
+});
+
+test('NSH gateway Stop reaches the owner while an earlier Start is awaiting completion', async () => {
+  const start = deferred();
+  const fixture = gatewayFixture({ dispatch: async value => {
+    if (value.command === 'vpn.start') await start.promise;
+    return { id: value.id, ok: true, effect: { kind: value.command === 'vpn.start' ? 'start' : 'stop', owner: '', configRevision: '4', optionsJson: '{}' } };
+  } });
+  fixture.gateway.updateProps([{ name: 'request', value: { id: 1, command: 'vpn.start', payload: {} } }]);
+  fixture.gateway.updateProps([{ name: 'request', value: { id: 2, command: 'vpn.stop', payload: {} } }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.calls.filter(c => c[0] === 'stop').length, 1, 'Stop cannot wait behind a pending Start');
+  assert.equal(fixture.calls.filter(c => c[0] === 'start').length, 0);
+  start.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.events.filter(e => e[0] === 'result').map(e => e[1].id), [2, 1]);
+  assert.equal(fixture.calls.filter(c => c[0] === 'start').length, 0, 'a late prepared Start cannot resurrect a stopped VPN');
+  assert.equal(fixture.events.find(e => e[0] === 'result' && e[1].id === 1)[1].ok, false);
+  fixture.gateway.dispose();
+});
+
+test('NSH configuration effects preserve session and revision fences and reject duplicate prop delivery', async () => {
+  const fixture = gatewayFixture({ dispatch: async value => ({ id: value.id, ok: true,
+    effect: { kind: 'restart', owner: 'old-owner', configRevision: '18446744073709551610', optionsJson: '{"mtu":1400}' } }) });
+  const change = { name: 'request', value: { id: 4, command: 'vpnOptions.set', payload: { mtu: 1400 } } };
+  fixture.gateway.updateProps([change]);
+  fixture.gateway.updateProps([change]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.calls.find(c => c[0] === 'restart'), ['restart', 'old-owner', '18446744073709551610', '{"mtu":1400}']);
+  assert.equal(fixture.calls.filter(c => c[0] === 'dispatch').length, 1);
+  const result = fixture.events.find(e => e[0] === 'result' && e[1].id === 4)[1];
+  assert.equal(result.ok, false);
+  assert.match(result.error, /saved.*session changed/);
+  fixture.gateway.dispose();
+});
+
+test('NSH system capabilities return picker and scan content without importing it', async () => {
+  const fixture = gatewayFixture({ selected: ['file:///profiles/My%20Profile.yaml'] });
+  const file = await fixture.dispatch({ id: 1, command: 'platform.importFile', payload: {} });
+  assert.equal(file.data.name, 'My Profile.yaml');
+  assert.equal(file.data.content, 'abc');
+  assert.equal(fixture.calls.filter(c => c[0] === 'file-close').length, 1);
+  const scan = await fixture.dispatch({ id: 2, command: 'platform.scan', payload: {} });
+  assert.equal(scan.data, 'https://example.test/profile');
+  assert.equal(fixture.calls.filter(c => c[0] === 'dispatch').length, 0);
+  await assert.rejects(fixture.dispatch({ id: 3, command: 'platform.openUrl', payload: { url: 'file:///private' } }), /absolute HTTP/);
+  fixture.gateway.dispose();
+});
+
+test('NSH scan cancellation uses the SDK code and never message substrings', async () => {
+  let failure;
+  const fixture = gatewayFixture({ scan: async () => {
+    if (failure) throw failure;
+    return { originalValue: ' https://example.test/subscription ' };
+  } });
+  try {
+    const request = { id: 1, command: 'platform.scan', payload: {} };
+    assert.equal((await fixture.dispatch(request)).data, 'https://example.test/subscription');
+    failure = { code: 1000500002, message: 'localized user dismissal' };
+    assert.equal((await fixture.dispatch({ ...request, id: 2 })).data, '');
+    failure = { code: 1000500001, message: 'cancel token service failed' };
+    await assert.rejects(fixture.dispatch({ ...request, id: 3 }), /cancel token service failed/);
+    assert.equal(fixture.calls.filter(call => call[0] === 'dispatch').length, 0);
+  } finally {
+    fixture.gateway.dispose();
+    fixture.host.dispose();
+  }
+});
+
+test('NSH file import bounds memory and closes the descriptor after errors', async () => {
+  for (const options of [{ fileSize: 16 * 1024 * 1024 + 1 }, { readError: new Error('read failed') }]) {
+    const fixture = gatewayFixture({ ...options, selected: ['file:///profile.yaml'] });
+    await assert.rejects(fixture.dispatch({ id: 1, command: 'platform.importFile', payload: {} }));
+    assert.equal(fixture.calls.filter(c => c[0] === 'file-close').length, 1);
+    fixture.gateway.dispose();
+  }
+});
+
+test('NSH QR generation returns a real image payload and releases native resources on both paths', async () => {
+  const fixture = gatewayFixture();
+  const response = await fixture.dispatch({ id: 9, command: 'platform.qr', payload: { text: 'https://example.test/subscription' } });
+  assert.equal(response.data.pngBase64, 'iVBORw==');
+  assert.equal(response.data.source, 'data:image/png;base64,iVBORw==');
+  assert.equal(fixture.calls.filter(c => c[0] === 'bitmap-release').length, 1);
+  assert.equal(fixture.calls.filter(c => c[0] === 'packer-release').length, 1);
+  fixture.gateway.dispose();
+  const failing = gatewayFixture({ packingError: new Error('image unavailable') });
+  await assert.rejects(failing.dispatch({ id: 10, command: 'platform.qr', payload: { text: 'text' } }), /image unavailable/);
+  assert.equal(failing.calls.filter(c => c[0] === 'bitmap-release').length, 1);
+  assert.equal(failing.calls.filter(c => c[0] === 'packer-release').length, 1);
+  failing.gateway.dispose();
+});
+
+test('NSH file picker cancellation is an empty result and never opens a descriptor', async () => {
+  const fixture = gatewayFixture();
+  const response = await fixture.dispatch({ id: 11, command: 'platform.importFile', payload: {} });
+  assert.equal(response.ok, true);
+  assert.equal(response.data, null);
+  assert.equal(fixture.calls.some(c => c[0] === 'file-open'), false);
+  fixture.gateway.dispose();
+});
+
+test('NSH prepared Start rejects a configuration revision committed before its receipt arrives', async () => {
+  const prepared = deferred();
+  const fixture = gatewayFixture({ dispatch: async request => {
+    await prepared.promise;
+    return { id: request.id, ok: true, effect: { kind: 'start', owner: '', configRevision: '4', optionsJson: '{"mtu":1400}' } };
+  } });
+  let currentRevision = '4';
+  fixture.native.isRuntimeConfigRevisionCurrent = revision => revision === currentRevision;
+  const start = fixture.dispatch({ id: 12, command: 'vpn.start', payload: {} });
+  currentRevision = '5';
+  prepared.resolve();
+  const result = await start;
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Configuration changed while preparing VPN/);
+  assert.equal(fixture.calls.some(c => c[0] === 'start'), false);
+  fixture.gateway.dispose();
+});
+
+test('NSH receive ACK precedes asynchronous completion and duplicate props never resubmit', async () => {
+  const pending = deferred();
+  const fixture = gatewayFixture({ dispatch: async request => { await pending.promise; return { id: request.id, ok: true }; } });
+  const change = { name: 'request', value: { id: 31, command: 'profiles.list', payload: {} } };
+  fixture.gateway.updateProps([change]);
+  fixture.gateway.updateProps([change]);
+  assert.equal(fixture.events.length, 0, 'ACK waits until native mount listeners can be installed');
+  fixture.timers[2]();
+  fixture.timers[3]();
+  assert.deepEqual(fixture.events.map(event => [event[0], event[1].id]), [['received', 31], ['received', 31]]);
+  assert.equal(fixture.calls.filter(call => call[0] === 'dispatch').length, 1);
+  pending.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.events.at(-1)[0], 'result');
+  fixture.gateway.dispose();
+});
+
+test('NSH prequeued ACK and late result have no effect after idempotent Gateway disposal', async () => {
+  const pending = deferred();
+  const fixture = gatewayFixture({ dispatch: async request => { await pending.promise; return { id: request.id, ok: true }; } });
+  const change = { name: 'request', value: { id: 31, command: 'profiles.list', payload: {} } };
+  fixture.gateway.updateProps([change]);
+  fixture.gateway.updateProps([change]);
+  fixture.gateway.dispose(); fixture.gateway.dispose();
+  assert.equal(fixture.calls.filter(call => call[0] === 'close-command-session').length, 1);
+  assert.deepEqual(fixture.calls.filter(call => call[0] === 'clear-timer'), [['clear-timer', 3], ['clear-timer', 4]]);
+  fixture.timers[2](); fixture.timers[3](); // An already delivered timer may still run after cancellation.
+  const timers = fixture.timers.length;
+  fixture.gateway.updateProps([{ name: 'request', value: { id: 32, command: 'vpn.stop', payload: {} } }]);
+  assert.equal(fixture.timers.length, timers);
+  pending.resolve(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.events.length, 0, 'No fake ACK or late result can revive a retired owner');
+  assert.equal(fixture.calls.filter(call => call[0] === 'dispatch').length, 1);
+  assert.equal(fixture.calls.some(call => call[0] === 'stop'), false, 'disposing the bridge is not VPN Stop');
+});
+
+test('NSH source-surface or native-node disposal gates a queued ACK before Gateway receives its own disposal', async () => {
+  for (const source of ['surface', 'node']) {
+    const pending = deferred();
+    const fixture = gatewayFixture({ dispatch: async request => { await pending.promise; return { id: request.id, ok: true }; } });
+    fixture.gateway.updateProps([{ name: 'request', value: { id: 31, command: 'profiles.list', payload: {} } }]);
+    if (source === 'surface') fixture.surface.isDisposed = true;
+    else fixture.gateway.node.isDisposed = () => true;
+    assert.equal(fixture.gateway.disposed, false);
+    fixture.timers[2]();
+    assert.equal(fixture.events.length, 0);
+    fixture.gateway.dispose(); pending.resolve(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(fixture.events.length, 0);
+  }
+});
+
+test('NSH exact retired native registry error closes only this Gateway while surface flags are still live', async () => {
+  const pending = deferred();
+  const fixture = gatewayFixture({ dispatch: async request => { await pending.promise; return { id: request.id, ok: true }; } });
+  const contexts = new Map([[17, { active: true }]]);
+  let lookups = 0;
+  // Effect port for Components.context(handle): registration retirement
+  // removes only the handle; NshSurface.isDisposed and ComponentContent remain live.
+  fixture.surface.emitComponentEvent = (handle) => {
+    lookups++;
+    if (!contexts.get(handle)?.active) {
+      const error = new Error('native component is disposed'); error.code = 'GenericFailure'; throw error;
+    }
+    assert.fail('This fixture must never deliver a fake receipt');
+  };
+  const change = { name: 'request', value: { id: 31, command: 'profiles.list', payload: {} } };
+  fixture.gateway.updateProps([change]); fixture.gateway.updateProps([change]);
+  contexts.delete(17);
+  assert.equal(fixture.surface.isDisposed, false);
+  assert.equal(fixture.gateway.node.isDisposed(), false);
+  assert.doesNotThrow(() => fixture.timers[2]());
+  assert.equal(fixture.gateway.disposed, true);
+  assert.equal(fixture.calls.filter(call => call[0] === 'close-command-session').length, 1);
+  assert.ok(fixture.calls.some(call => call[0] === 'clear-timer' && call[1] === 4));
+  fixture.timers[3]();
+  pending.resolve(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(lookups, 1, 'the remaining ACK/result cannot touch the retired registry again');
+  assert.equal(fixture.events.length, 0);
+  assert.equal(fixture.calls.some(call => call[0] === 'stop'), false);
+  fixture.gateway.dispose();
+  assert.equal(fixture.calls.filter(call => call[0] === 'close-command-session').length, 1);
+});
+
+test('NSH active emit failures and near-match disposal messages preserve exact thrown identity', () => {
+  for (const message of ['delivery failed', 'prefix native component is disposed',
+    'native component is disposed suffix', 'native component is disposed\nstack',
+    'surface is disposed']) {
+    const fixture = gatewayFixture();
+    const error = new Error(message); error.code = 'GenericFailure';
+    fixture.surface.emitComponentEvent = () => { throw error; };
+    assert.throws(() => fixture.gateway.emit('received', { id: 1 }), actual => actual === error);
+    assert.equal(fixture.gateway.disposed, false);
+    assert.equal(fixture.calls.filter(call => call[0] === 'close-command-session').length, 0);
+    fixture.gateway.dispose();
+  }
+});
+
+test('NSH confirms the original retained VPN operation without submitting it again', async () => {
+  const started = deferred();
+  const fixture = gatewayFixture({ dispatch: async request => ({ id: request.id, ok: true,
+    effect: { kind: 'start', owner: '', configRevision: '4', optionsJson: '{}' } }) });
+  fixture.host.vpn.requestStartVpn = async options => { fixture.calls.push(['start', options]); await started.promise; };
+  const start = fixture.dispatch({ id: 32, command: 'vpn.start', payload: {} });
+  await new Promise(resolve => setImmediate(resolve));
+  const pending = await fixture.dispatch({ id: 33, command: 'vpn.confirm', payload: { requestId: 32 } });
+  assert.equal(pending.data.status, 'pending');
+  assert.equal(pending.data.requestId, 32);
+  assert.equal(fixture.calls.filter(call => call[0] === 'start').length, 1);
+  started.resolve();
+  assert.equal((await start).ok, true);
+  const terminal = await fixture.dispatch({ id: 34, command: 'vpn.confirm', payload: { requestId: 32 } });
+  assert.equal(terminal.data.status, 'succeeded');
+  assert.equal(terminal.data.result, true);
+  assert.equal(fixture.calls.filter(call => call[0] === 'dispatch').length, 1);
+  const otherSession = new fixture.api.PawsCommandSession();
+  const unavailable = await fixture.host.dispatch({ id: 35, command: 'vpn.confirm', payload: { requestId: 32 } }, otherSession);
+  assert.equal(unavailable.data.status, 'unavailable', 'a new gateway cannot claim another session receipt');
+  otherSession.close();
+  fixture.gateway.dispose();
+});
+
+test('NSH recovery submits a new Stop intent and fences late prepared Start', async () => {
+  const prepared = deferred();
+  const fixture = gatewayFixture({ dispatch: async request => {
+    if (request.command === 'vpn.start') await prepared.promise;
+    return { id: request.id, ok: true, effect: { kind: request.command === 'vpn.start' ? 'start' : 'stop', owner: '', configRevision: '4', optionsJson: '{}' } };
+  } });
+  const start = fixture.dispatch({ id: 36, command: 'vpn.start', payload: {} });
+  const recover = await fixture.dispatch({ id: 37, command: 'vpn.recover', payload: { requestId: 36 } });
+  assert.equal(recover.ok, true);
+  assert.equal(recover.data.requestId, 36);
+  assert.equal(recover.data.status, 'succeeded');
+  assert.equal(fixture.calls.filter(call => call[0] === 'stop').length, 1);
+  prepared.resolve();
+  assert.equal((await start).ok, false);
+  assert.equal(fixture.calls.filter(call => call[0] === 'start').length, 0);
+  const terminal = await fixture.dispatch({ id: 38, command: 'vpn.confirm', payload: { requestId: 36 } });
+  assert.equal(terminal.data.status, 'failed');
+  assert.match(terminal.data.error, /superseded/);
+  fixture.gateway.dispose();
+});
+
+test('NSH saved configuration followup has a confirmable receipt without repeating the save', async () => {
+  const restarted = deferred();
+  const fixture = gatewayFixture({ dispatch: async request => ({ id: request.id, ok: true,
+    effect: { kind: 'restart', owner: '', configRevision: '4', optionsJson: '{}' } }) });
+  fixture.host.vpn.requestStartVpn = async options => { fixture.calls.push(['start', options]); await restarted.promise; };
+  const save = fixture.dispatch({ id: 40, command: 'vpnOptions.set', payload: { mtu: 1400 } });
+  await new Promise(resolve => setImmediate(resolve));
+  const operation = fixture.events.find(event => event[0] === 'operation');
+  assert.deepEqual(JSON.parse(JSON.stringify(operation[1])), { requestId: 40, action: 'restart' });
+  const pending = await fixture.dispatch({ id: 41, command: 'vpn.confirm', payload: { requestId: 40 } });
+  assert.equal(pending.data.status, 'pending');
+  assert.equal(fixture.calls.filter(call => call[0] === 'dispatch').length, 1, 'confirm does not save the configuration again');
+  restarted.resolve();
+  assert.equal((await save).ok, true);
+  const terminal = await fixture.dispatch({ id: 42, command: 'vpn.confirm', payload: { requestId: 40 } });
+  assert.equal(terminal.data.status, 'succeeded');
+  assert.equal(fixture.calls.filter(call => call[0] === 'start').length, 1);
+  fixture.gateway.dispose();
+});
+
+test('NSH recovery cannot claim success when its actual Stop was superseded', async () => {
+  const fixture = gatewayFixture({ dispatch: async request => ({ id: request.id, ok: true,
+    effect: { kind: 'stop', owner: '', configRevision: '4', optionsJson: '{}' } }) });
+  fixture.host.vpn.requestStopVpn = async () => false;
+  const recovered = await fixture.dispatch({ id: 43, command: 'vpn.recover', payload: { requestId: 32 } });
+  assert.equal(recovered.ok, false);
+  assert.equal(recovered.data.status, 'failed');
+  assert.match(recovered.error, /Stop was superseded/);
+  fixture.gateway.dispose();
+});
+
+test('NSH gateway close cancels preparation ownership but completes an acquired configuration effect', async () => {
+  const committed = deferred();
+  const fixture = gatewayFixture({ dispatch: async request => {
+    await committed.promise;
+    return { id: request.id, ok: true, effect: { kind: 'restart', owner: '', configRevision: '4', optionsJson: '{}' } };
+  } });
+  fixture.gateway.updateProps([{ name: 'request', value: { id: 39, command: 'vpnOptions.set', payload: {} } }]);
+  fixture.gateway.dispose();
+  committed.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fixture.calls.filter(call => call[0] === 'close-command-session').length, 1);
+  assert.equal(fixture.calls.filter(call => call[0] === 'start').length, 1, 'the committed response effect survives gateway disposal');
+  assert.equal(fixture.events.filter(event => event[0] !== 'operation').length, 0, 'the disposed view receives no late state or receipts');
+});
+
+test('NSH command receipt follows changed metadata and carries a state barrier', async () => {
+  const fixture = gatewayFixture();
+  fixture.native.subscribeState('{"generation":1,"domains":[{"domain":"profiles"}]}');
+  fixture.native.notify('profiles',8);
+  fixture.gateway.updateProps([{ name: 'request', value: { id: 13, command: 'profiles.rename', payload: { name: 'new' } } }]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(fixture.events.map(event => event[0]), ['preferences', 'changed', 'result']);
+  assert.equal(fixture.events[2][1].id, 13);
+  assert.equal(fixture.events[2][1].barrier.required.find(key => key.domain === 'profiles').revision,8);
+  fixture.gateway.dispose();
+});
+
+test('NSH bootstrap failures are visible instead of becoming successful initialization', async () => {
+  const fixture = gatewayFixture({ dispatch: async request => ({ id: request.id, ok: false, error: 'profile preparation failed' }) });
+  fixture.timers[1]();
+  await new Promise(resolve => setImmediate(resolve));
+  const failure = fixture.events.find(event => event[0] === 'result')[1];
+  assert.equal(failure.id, 0);
+  assert.equal(failure.ok, false);
+  assert.equal(failure.error, 'profile preparation failed');
+  fixture.gateway.dispose();
+});

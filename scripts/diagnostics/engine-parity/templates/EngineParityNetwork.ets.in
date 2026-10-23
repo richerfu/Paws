@@ -1,0 +1,267 @@
+import { Want } from '@kit.AbilityKit';
+import { http, socket } from '@kit.NetworkKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { ENGINE_PARITY_NONCE, assertEngineParityDebug } from './EngineParityPaths';
+import { engineParityTraceActive, traceParityProbe } from './EngineParityTrace';
+
+// Compiled endpoint allowlist, never a URL/address supplied by Want.
+const HOST: string = '__FIXTURE_HOST__';
+const HTTP_PORT: number = __HTTP_PORT__;
+const DNS_PORT: number = __DNS_PORT__;
+const UDP_PORT: number = __UDP_PORT__;
+const TIMEOUT_MS: number = 5000;
+let busy: boolean = false;
+let cancelCurrent: (() => void) | undefined;
+export function cancelEngineParityNetwork(): void {
+  try { cancelCurrent?.(); } catch (_) {}
+  cancelCurrent = undefined;
+}
+
+function parameter(want: Want, name: string): string {
+  const value = want.parameters?.[name];
+  return typeof value === 'string' ? value : '';
+}
+function frameworkMetadataKey(key: string): boolean {
+  return ['isCallBySCB', 'isShellCall', 'moduleName', 'ohos.dlp.params.sandbox',
+    'ohos.param.callerAppCloneIndex', 'ohos.params.gamePrelaunch'].includes(key) ||
+    /^ohos\.(aafwk|extra)\.param\.[a-zA-Z0-9_.:-]+$/.test(key);
+}
+function reportRejectedStreamKeys(keys: string[]): void {
+  const names: string[] = [];
+  let redacted: number = 0;
+  const shown = Math.min(keys.length, 8);
+  for (let index = 0; index < shown; index++) {
+    const key = keys[index];
+    if (/^[a-zA-Z0-9_.:-]{1,80}$/.test(key)) names.push(key);
+    else redacted++;
+  }
+  hilog.warn(0x0000, 'PawsParityNetwork',
+    'reject=http-stream-keys count=%{public}s omitted=%{public}s redacted=%{public}s keys=%{public}s',
+    keys.length.toString(), (keys.length - shown).toString(), redacted.toString(), names.join(','));
+}
+function dnsQuery(type: number): Uint8Array {
+  const values: number[] = [0x51, 0x41, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+  for (const label of [`probe`, ENGINE_PARITY_NONCE, 'qa', 'invalid']) {
+    values.push(label.length);
+    for (let i = 0; i < label.length; i++) values.push(label.charCodeAt(i));
+  }
+  values.push(0, 0, type, 0, 1);
+  return new Uint8Array(values);
+}
+interface DnsName { value: string; next: number; }
+interface DnsAnswer { code: number; answerCode: number; count: number; }
+function word(data: Uint8Array, at: number): number {
+  if (at + 2 > data.length) throw new Error('Truncated DNS field');
+  return data[at] * 256 + data[at + 1];
+}
+function dnsName(data: Uint8Array, start: number): DnsName {
+  let at = start, next = -1, jumps = 0, length = 0;
+  const seen = new Set<number>(), labels: string[] = [];
+  for (let step = 0; step < 128; step++) {
+    if (at >= data.length || seen.has(at)) throw new Error('Invalid DNS name pointer');
+    seen.add(at);
+    const size = data[at];
+    if ((size & 0xc0) === 0xc0) {
+      if (at + 1 >= data.length || ++jumps > 16) throw new Error('DNS pointer budget exceeded');
+      if (next < 0) next = at + 2;
+      at = (size & 63) * 256 + data[at + 1]; continue;
+    }
+    if ((size & 0xc0) !== 0 || size > 63 || at + 1 + size > data.length) throw new Error('Invalid DNS label');
+    if (size === 0) return { value: labels.join('.').toLowerCase(), next: next < 0 ? at + 1 : next };
+    length += size + 1;
+    if (length > 254) throw new Error('DNS name budget exceeded');
+    let label = '';
+    for (let i = 0; i < size; i++) label += String.fromCharCode(data[at + 1 + i]);
+    // This parser only accepts the diagnostic's public ASCII names.
+    if (!/^[a-zA-Z0-9_-]+$/.test(label)) throw new Error('Non-fixture DNS label');
+    labels.push(label); at += size + 1;
+  }
+  throw new Error('DNS name step budget exceeded');
+}
+function checkDns(data: Uint8Array, question: Uint8Array, type: number): DnsAnswer {
+  if (data.length < 12 || data.length > 4096 || word(data, 0) !== word(question, 0) ||
+    (data[2] & 0x80) === 0 || (data[2] & 0x78) !== 0 || word(data, 4) !== 1) throw new Error('Invalid synthetic DNS response');
+  const expectedName = `probe.${ENGINE_PARITY_NONCE}.qa.invalid`;
+  const query = dnsName(data, 12);
+  if (query.value !== expectedName || word(data, query.next) !== type || word(data, query.next + 2) !== 1) throw new Error('Synthetic DNS question mismatch');
+  const answers = word(data, 6), authority = word(data, 8), additional = word(data, 10);
+  if (answers > 32 || authority > 32 || additional > 32) throw new Error('DNS RR budget exceeded');
+  const code = data[3] & 15;
+  let at = query.next + 4, count = 0, answerCode = 0;
+  for (let i = 0; i < answers + authority + additional; i++) {
+    const name = dnsName(data, at), rr = name.next;
+    const rrType = word(data, rr), rrClass = word(data, rr + 2), size = word(data, rr + 8), body = rr + 10;
+    if (body + size > data.length) throw new Error('Truncated DNS RDATA');
+    if (i < answers && name.value === expectedName && rrType === type && rrClass === 1) {
+      const expected: number[] = type === 1 ? [203, 0, 113] : [0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+      if (size !== expected.length + 1) throw new Error('Unexpected DNS address length');
+      for (let n = 0; n < expected.length; n++) if (data[body + n] !== expected[n]) throw new Error('DNS answer outside fixture range');
+      const last = data[body + size - 1];
+      if (!(type === 1 ? [11, 12] : [0x11, 0x12]).includes(last)) throw new Error('DNS answer outside fixture revision');
+      count++; answerCode = last;
+    }
+    at = body + size;
+  }
+  if (at !== data.length) throw new Error('Unframed DNS trailing bytes');
+  return { code, answerCode, count };
+}
+
+function utf8Bytes(text: string): number {
+  let length: number = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 128) length++;
+    else if (code < 2048) length += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length &&
+      text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) { length += 4; i++; }
+    else length += 3;
+  }
+  return length;
+}
+
+async function probeHttp(caseId: string, stream: boolean = false): Promise<void> {
+  const started = Date.now(), request = http.createHttp();
+  const event = stream ? 'network-http-stream' : 'network-http';
+  const target = stream ? `http://${HOST}:${HTTP_PORT}/stream?nonce=${ENGINE_PARITY_NONCE}` :
+    `http://${HOST}:${HTTP_PORT}/echo?nonce=${ENGINE_PARITY_NONCE}&case=${caseId}`;
+  cancelCurrent = (): void => request.destroy();
+  let timer: number = -1;
+  try {
+    const result = await Promise.race([
+      request.request(target, {
+        method: http.RequestMethod.GET, expectDataType: http.HttpDataType.STRING, usingCache: false,
+        usingProxy: false, connectTimeout: 3000, readTimeout: TIMEOUT_MS, maxLimit: stream ? 1048576 : 4096,
+      }),
+      new Promise<http.HttpResponse>((_resolve, reject): void => {
+        timer = setTimeout((): void => reject(new Error('Bounded HTTP probe timeout')), TIMEOUT_MS);
+      }),
+    ]);
+    const expected = stream ? `paws-engine-parity:${ENGINE_PARITY_NONCE}\n`.repeat(32768).slice(0, 1048576) :
+      `paws-engine-parity:${ENGINE_PARITY_NONCE}\ncase=${caseId}\n`;
+    const matched = result.responseCode === 200 && typeof result.result === 'string' && result.result === expected;
+    traceParityProbe(event, caseId, matched, result.responseCode,
+      typeof result.result === 'string' ? utf8Bytes(result.result) : 0, Date.now() - started);
+  } catch (_) { traceParityProbe(event, caseId, false, 0, 0, Date.now() - started); }
+  finally { if (timer >= 0) clearTimeout(timer); cancelCurrent = undefined; request.destroy(); }
+}
+
+async function probeDns(caseId: string, tun: boolean, type: number): Promise<void> {
+  const started = Date.now(), udp = socket.constructUDPSocketInstance(), question = dnsQuery(type);
+  const target: socket.NetAddress = { address: tun ? '172.19.0.2' : HOST, family: 1, port: tun ? 53 : DNS_PORT };
+  let timer: number = -1;
+  let resolveMessage: ((value: Uint8Array) => void) | undefined;
+  let cancelled: boolean = false;
+  let receivedBytes: number = 0;
+  cancelCurrent = (): void => { cancelled = true; void udp.close().catch((): void => {}); };
+  const message = (value: socket.SocketMessageInfo): void => {
+    if (value.remoteInfo.address !== target.address || value.remoteInfo.port !== target.port) return;
+    const bytes = new Uint8Array(value.message);
+    resolveMessage?.(bytes);
+  };
+  const received = new Promise<Uint8Array>((resolve): void => { resolveMessage = resolve; });
+  // Attach the deadline before bind/send as those platform operations may fail or stall.
+  const operation = async (): Promise<Uint8Array> => {
+    udp.on('message', message);
+    await udp.bind({ address: '0.0.0.0', family: 1, port: 0 });
+    if (cancelled) throw new Error('Probe already cancelled');
+    await udp.send({ address: target, data: question.buffer as ArrayBuffer });
+    return received;
+  };
+  try {
+    const bytes = await Promise.race([operation(), new Promise<Uint8Array>((_resolve, reject): void => {
+      timer = setTimeout((): void => reject(new Error('Bounded DNS probe timeout')), TIMEOUT_MS);
+    })]);
+    receivedBytes = bytes.length;
+    const answer = checkDns(bytes, question, type);
+    const event = (tun ? 'network-dns-tun' : 'network-dns-upstream') + (answer.code === 0 && answer.count === 0 ? '-no-data' : '');
+    traceParityProbe(event, caseId, answer.code === 0 && answer.count > 0,
+      answer.code, bytes.length, Date.now() - started, type, answer.answerCode, answer.count);
+  } catch (_) { traceParityProbe((tun ? 'network-dns-tun' : 'network-dns-upstream') + (receivedBytes ? '-invalid' : '-transport'), caseId, false, 0, receivedBytes, Date.now() - started, type); }
+  finally {
+    cancelled = true;
+    cancelCurrent = undefined;
+    if (timer >= 0) clearTimeout(timer);
+    try { udp.off('message', message); } catch (_) {}
+    let closeTimer: number = -1;
+    try {
+      await Promise.race([udp.close(), new Promise<void>((resolve): void => { closeTimer = setTimeout(resolve, 1000); })]);
+    } catch (_) {}
+    finally { if (closeTimer >= 0) clearTimeout(closeTimer); }
+    resolveMessage = undefined;
+  }
+}
+
+async function probeUdpEcho(caseId: string): Promise<void> {
+  const started = Date.now(), udp = socket.constructUDPSocketInstance();
+  const target: socket.NetAddress = { address: HOST, family: 1, port: UDP_PORT };
+  const expected = `paws-engine-parity-udp:${ENGINE_PARITY_NONCE}\ncase=${caseId}\n`;
+  const payload = new Uint8Array(expected.length);
+  for (let i = 0; i < expected.length; i++) payload[i] = expected.charCodeAt(i);
+  let timer: number = -1, cancelled = false;
+  let resolveMessage: ((value: Uint8Array) => void) | undefined;
+  const received = new Promise<Uint8Array>((resolve): void => { resolveMessage = resolve; });
+  const message = (value: socket.SocketMessageInfo): void => {
+    if (value.remoteInfo.address !== target.address || value.remoteInfo.port !== target.port) return;
+    resolveMessage?.(new Uint8Array(value.message));
+  };
+  cancelCurrent = (): void => { cancelled = true; void udp.close().catch((): void => {}); };
+  const operation = async (): Promise<Uint8Array> => {
+    udp.on('message', message);
+    await udp.bind({ address: '0.0.0.0', family: 1, port: 0 });
+    if (cancelled) throw new Error('Probe already cancelled');
+    await udp.send({ address: target, data: payload.buffer as ArrayBuffer });
+    return received;
+  };
+  try {
+    const reply = await Promise.race([operation(), new Promise<Uint8Array>((_resolve, reject): void => {
+      timer = setTimeout((): void => reject(new Error('Bounded UDP echo timeout')), TIMEOUT_MS);
+    })]);
+    let matched = reply.length === payload.length;
+    for (let i = 0; matched && i < payload.length; i++) matched = reply[i] === payload[i];
+    traceParityProbe('network-udp-echo', caseId, matched, 0, reply.length, Date.now() - started);
+  } catch (_) { traceParityProbe('network-udp-echo', caseId, false, 0, 0, Date.now() - started); }
+  finally {
+    cancelled = true; cancelCurrent = undefined; resolveMessage = undefined;
+    if (timer >= 0) clearTimeout(timer);
+    try { udp.off('message', message); } catch (_) {}
+    let closeTimer: number = -1, closed = false;
+    try {
+      closed = await Promise.race([udp.close().then((): boolean => true), new Promise<boolean>((resolve): void => {
+        closeTimer = setTimeout((): void => resolve(false), 1000);
+      })]);
+    } catch (_) {}
+    finally { if (closeTimer >= 0) clearTimeout(closeTimer); }
+    traceParityProbe('network-udp-echo-close', caseId, closed, 0, 0, Date.now() - started);
+  }
+}
+
+/** Optional explicit Want action. Never imports, saves, selects a profile or starts VPN. */
+export async function runEngineParityNetwork(want: Want, debug: boolean): Promise<void> {
+  assertEngineParityDebug(debug);
+  if (parameter(want, 'pawsEngineParityNonce') !== ENGINE_PARITY_NONCE) throw new Error('Engine parity nonce mismatch');
+  const mode = parameter(want, 'pawsEngineParityProbe');
+  const caseId = parameter(want, 'pawsEngineParityCase');
+  if (!['http', 'http-stream', 'dns-upstream', 'dns-tun', 'udp-echo'].includes(mode) || !/^[a-zA-Z0-9_-]{1,48}$/.test(caseId)) throw new Error('Invalid bounded network probe action');
+  if (mode === 'http-stream') {
+    const parameters = want.parameters;
+    if (parameters !== undefined) {
+      const rejected = Object.keys(parameters).filter((key: string): boolean =>
+        !['pawsEngineParityNonce', 'pawsEngineParityProbe', 'pawsEngineParityCase', 'pawsEngineParityRecord'].includes(key) &&
+        !frameworkMetadataKey(key));
+      if (rejected.length > 0) {
+        if (engineParityTraceActive()) reportRejectedStreamKeys(rejected);
+        throw new Error('HTTP stream accepts no URL or size parameters');
+      }
+    }
+  }
+  const recordType = parameter(want, 'pawsEngineParityRecord') || 'A';
+  if (!['A', 'AAAA'].includes(recordType)) throw new Error('Only synthetic A/AAAA probes are allowed');
+  if (!engineParityTraceActive()) throw new Error('QA home/trace is not initialized');
+  if (busy) throw new Error('An engine parity network probe is already running');
+  busy = true;
+  try {
+    if (mode === 'http' || mode === 'http-stream') await probeHttp(caseId, mode === 'http-stream');
+    else if (mode === 'udp-echo') await probeUdpEcho(caseId);
+    else await probeDns(caseId, mode === 'dns-tun', recordType === 'A' ? 1 : 28);
+  } finally { busy = false; }
+}
