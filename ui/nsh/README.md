@@ -12,7 +12,14 @@ foreground interests. The `paws.core` component connects to the host Gateway,
 then `paws_app::Application` through the thin Rust N-API binding. Configuration,
 persistence, engine policy and VPN ownership remain outside the view layer.
 
-Shared controls and theme tokens live in `src/components.tsx` and `src/theme.ts`.
+Shared controls use `nsh/base` behavior in `src/components.tsx`. The theme
+(`theme.json`) and surface finishes follow the local NSH Gallery UI, with
+paper/graphite surfaces, citrus accents and 44 pt controls. `src/theme.ts`
+maps application roles to NSH tokens; there is no separate Zinc theme.
+Configuration editing is a retained navigation page in
+`src/pages/profile-editor.tsx`, using NSH's YAML `Editor` with native input,
+syntax highlighting, line numbers, wrapping, undo and find. Unsaved edits
+guard both app navigation and native Back; saving retains revision checks.
 Lucide icons use native Canvas paths; their license is `assets/LICENSE.lucide`.
 Do not pass SVG strings to the OHOS bitmap decoder.
 
@@ -35,9 +42,12 @@ Do not pass SVG strings to the OHOS bitmap decoder.
 
 ## Build and host checks
 
-Run from the repository root. Build the paired SDK with
+Run from the repository root. Build the local SDK with
 `scripts/build-nsh-ohos.sh`; the standard CLI is `dist/nsh-sdk/release/nsh`.
 A compatible alternate CLI can be selected with `NSH_BIN` or `--nsh-bin`.
+The SDK sources are staged read-only from `../nsh` (or `NSH_ROOT`), including
+local binding source fingerprints. The UIContext-based host uses current NSH
+input and dialogs directly; legacy Ability editor patches are not applied.
 Choose an owned, untracked output directory before running:
 
 ```sh

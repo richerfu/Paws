@@ -3,7 +3,6 @@ import {
   computed,
   context,
   effect,
-  Input,
   Scroll,
   signal,
   Text,
@@ -11,10 +10,24 @@ import {
   type JSX,
   type Signal,
   type YNode,
+  keyboardFrame as keyboard,
+  safeArea,
+  safeAreaInsets as useSafeAreaInsets,
+  Animated,
+  createAnimatedValue as createNativeValue,
+  Easing,
+  windowSize,
 } from "nsh";
-import { Animated, createNativeValue, Easing } from "nsh/animated";
-import { windowSize } from "nsh/device";
-import { keyboard, Modal, safeArea, useSafeAreaInsets } from "nsh/ui/mobile";
+import {
+  Dialog as NativeDialog,
+  Input,
+  Button,
+  Switch,
+  Tab,
+  Tabs as NativeTabs,
+  Radio,
+  RadioGroup as NativeRadioGroup,
+} from "nsh/base";
 import type { CoreClient } from "./client";
 import type { DomainInput } from "./model";
 import { isChinese } from "./locale";
@@ -25,6 +38,8 @@ import {
   spacing,
   typography,
   statusColors,
+  focusRing,
+  surfaceFinish,
   type StatusTone,
 } from "./theme";
 import { Icon, type IconName } from "./icons";
@@ -67,6 +82,7 @@ export type AppContext = {
   logRecordingIntent: Signal<number>;
   confirmation: Signal<{ title: string; resolve: (accepted: boolean) => void } | undefined>;
   editProfile: (id: string) => void;
+  beforeLeave?: (guard: () => boolean | Promise<boolean>) => () => void;
   t: (zh: string, en: string) => string;
 };
 export const App = context<AppContext | undefined>(undefined);
@@ -92,11 +108,11 @@ export function Card(props: { title?: string; subtitle?: string; children?: JSX.
         minWidth: 0,
         padding: spacing.lg,
         gap: spacing.md,
-        borderRadius: radius.lg,
+        borderRadius: radius.xl,
         backgroundColor: palette().panel,
         borderWidth: 1,
         borderColor: palette().border,
-        boxShadow: "0px 1px 2px #0000000d",
+        ...surfaceFinish("card"),
       }}
     >
       <If when={props.title}>
@@ -145,7 +161,6 @@ export function Action(props: {
   icon?: IconName;
   loading?: boolean;
 }) {
-  const hovering = signal(false);
   const disabled = () => !!props.disabled || !!props.loading;
   const variant = () =>
     props.danger ? "danger" : props.variant || (props.secondary ? "outline" : "primary");
@@ -154,35 +169,30 @@ export function Action(props: {
       ? palette().dangerText
       : variant() === "primary"
         ? palette().primaryText
-        : palette().text;
+        : variant() === "link" ? palette().accent : palette().text;
   const background = () =>
     variant() === "danger"
       ? palette().danger
       : variant() === "primary"
-        ? palette().accent
-        : variant() === "secondary" || props.selected || hovering()
-          ? palette().soft
+        ? palette().brandFill
+        : variant() === "secondary" || props.selected
+          ? palette().raised
           : variant() === "outline"
-            ? palette().background
+            ? palette().raised
             : "transparent";
   return (
-    <View
+    <Button
       testID={props.id}
-      class="focus-visible:ring-2 focus-visible:ring-[#71717a]"
-      accessibilityRole="button"
+      focusStyle={focusRing()}
+      hoverStyle={{ opacity: 0.88 }}
+      selected={props.selected}
+      selectedStyle={{ borderWidth: 1, borderColor: palette().accent }}
       accessibilityLabel={props.label}
-      accessibilityState={{
-        disabled: disabled(),
-        busy: !!props.loading,
-        selected: !!props.selected,
-      }}
       disabled={disabled()}
-      activeOpacity={0.65}
+      activeStyle={{ opacity: 0.65 }}
       onPress={() => {
         if (!disabled()) props.onPress();
       }}
-      onHoverIn={() => hovering.set(true)}
-      onHoverOut={() => hovering.set(false)}
       style={{
         minWidth: 0,
         maxWidth: "100%",
@@ -199,6 +209,8 @@ export function Action(props: {
         borderWidth: variant() === "outline" ? 1 : 0,
         borderColor: palette().border,
         backgroundColor: background(),
+        ...(variant() === "primary" ? surfaceFinish("accent")
+          : variant() === "outline" || variant() === "secondary" ? surfaceFinish("raised") : {}),
       }}
     >
       <If
@@ -223,7 +235,7 @@ export function Action(props: {
       >
         {props.label}
       </Text>
-    </View>
+    </Button>
   );
 }
 
@@ -237,36 +249,32 @@ export function IconButton(props: {
   size?: number;
   loading?: boolean;
 }) {
-  const hover = signal(false);
   const disabled = () => !!props.disabled || !!props.loading;
   return (
-    <View
+    <Button
       testID={props.id}
-      class="focus-visible:ring-2 focus-visible:ring-[#71717a]"
-      accessibilityRole="button"
+      focusStyle={focusRing()}
+      hoverStyle={{ backgroundColor: palette().soft }}
       accessibilityLabel={props.label}
-      accessibilityState={{ disabled: disabled(), busy: !!props.loading }}
       disabled={disabled()}
       onPress={() => {
         if (!disabled()) props.onPress();
       }}
-      onHoverIn={() => hover.set(true)}
-      onHoverOut={() => hover.set(false)}
-      activeOpacity={0.65}
+      activeStyle={{ opacity: 0.65 }}
       style={{
         width: props.size || (props.small ? control.small : control.icon),
         height: props.size || (props.small ? control.small : control.icon),
         borderRadius: radius.md,
         alignItems: "center",
         justifyContent: "center",
-        backgroundColor: hover() ? palette().soft : "transparent",
+        backgroundColor: "transparent",
         opacity: disabled() ? 0.5 : 1,
       }}
     >
       <If when={props.loading} else={<Icon name={props.icon} size={18} color={palette().text} />}>
         <Spinner size={18} />
       </If>
-    </View>
+    </Button>
   );
 }
 
@@ -291,10 +299,10 @@ export function Badge(props: {
         minWidth: 0,
         maxWidth: "100%",
         minHeight: 22,
-        borderRadius: radius.md,
+        borderRadius: radius.full,
         paddingHorizontal: spacing.sm,
         paddingVertical: 2,
-        borderWidth: 1,
+        borderWidth: 0,
         borderColor: colors().border,
         backgroundColor: colors().background,
       }}
@@ -321,37 +329,34 @@ export function Tabs(props: {
   disabled?: boolean;
 }) {
   return (
-    <View
-      accessibilityRole="tablist"
+    <NativeTabs
       style={{
-        height: 36,
+        minHeight: 44,
         padding: 3,
         flexDirection: "row",
         backgroundColor: palette().soft,
-        borderRadius: radius.lg,
+        borderRadius: radius.full,
+        ...surfaceFinish("track"),
       }}
     >
       <Each of={props.options} key={(option) => option.value}>
         {(option) => (
-          <View
-            class="focus-visible:ring-2 focus-visible:ring-[#71717a]"
+          <Tab
+            focusStyle={focusRing()}
             testID={props.idPrefix ? `${props.idPrefix}-${option().value}` : undefined}
-            accessibilityRole="tab"
+            selected={props.value === option().value}
             accessibilityLabel={option().label}
-            accessibilityState={{
-              selected: props.value === option().value,
-              disabled: !!props.disabled,
-            }}
             disabled={props.disabled}
             onPress={() => props.onChange(option().value)}
             style={{
               flex: 1,
-              height: 30,
+              minHeight: 38,
               alignItems: "center",
               justifyContent: "center",
-              borderRadius: radius.md,
+              borderRadius: radius.full,
               backgroundColor:
-                props.value === option().value ? palette().background : "transparent",
+                props.value === option().value ? palette().raised : "transparent",
+              ...(props.value === option().value ? surfaceFinish("pill") : {}),
               opacity: props.disabled ? 0.5 : 1,
             }}
           >
@@ -364,10 +369,10 @@ export function Tabs(props: {
             >
               {option().label}
             </Text>
-          </View>
+          </Tab>
         )}
       </Each>
-    </View>
+    </NativeTabs>
   );
 }
 
@@ -406,12 +411,12 @@ export function Field(props: {
           testID={props.id}
           accessibilityLabel={props.label}
           value={props.value}
-          onChangeText={props.onChange}
+          onChange={props.onChange}
           placeholder={props.placeholder}
-          placeholderTextColor={palette().muted}
           multiline={props.multiline}
-          secureTextEntry={props.password && !passwordVisible()}
-          editable={!props.disabled}
+          masked={props.password && !passwordVisible()}
+          disabled={props.disabled}
+          readonly={props.disabled}
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType={props.numeric ? "number-pad" : "default"}
@@ -423,14 +428,16 @@ export function Field(props: {
             fontSize: typography.sm,
             lineHeight: 20,
             color: palette().text,
+            placeholderColor: palette().muted,
             paddingLeft: spacing.md,
             paddingRight: props.password ? 40 : spacing.md,
             paddingVertical: props.multiline ? spacing.sm : spacing.xxs,
             opacity: props.disabled ? 0.5 : 1,
-            backgroundColor: palette().background,
+            backgroundColor: palette().field,
             borderWidth: 1,
-            borderColor: focused() ? palette().ring : palette().border,
+            borderColor: focused() ? palette().ring : palette().fieldBorder,
             borderRadius: radius.md,
+            ...surfaceFinish("field"),
           }}
         />
         <If when={props.password}>
@@ -466,33 +473,35 @@ export function Toggle(props: {
           <Hint text={props.description!} />
         </If>
       </View>
-      <View
-        class="focus-visible:ring-2 focus-visible:ring-[#71717a]"
-        accessibilityRole="switch"
+      <Switch
+        focusStyle={focusRing()}
         accessibilityLabel={props.label}
-        accessibilityState={{ checked: props.value, disabled: !!props.disabled }}
+        checked={props.value}
         disabled={props.disabled}
-        onPress={() => !props.disabled && props.onChange(!props.value)}
+        onChange={props.onChange}
         style={{
-          width: 32,
-          height: 18.4,
-          borderRadius: radius.full,
-          padding: 2,
-          alignItems: props.value ? "flex-end" : "flex-start",
+          minHeight: 44,
           justifyContent: "center",
           opacity: props.disabled ? 0.5 : 1,
-          backgroundColor: props.value ? palette().accent : palette().border,
         }}
-      >
-        <View
-          style={{
-            width: 14.4,
-            height: 14.4,
-            borderRadius: radius.full,
-            backgroundColor: palette().background,
-          }}
-        />
-      </View>
+        trackStyle={{
+          width: 44,
+          height: 26,
+          borderRadius: radius.full,
+          padding: 3,
+          alignItems: props.value ? "flex-end" : "flex-start",
+          justifyContent: "center",
+          backgroundColor: props.value ? palette().brandFill : palette().soft,
+          ...surfaceFinish("track"),
+        }}
+        thumbStyle={{
+          width: 20,
+          height: 20,
+          borderRadius: radius.full,
+          backgroundColor: props.value ? palette().primaryText : palette().muted,
+          ...surfaceFinish("knob"),
+        }}
+      />
     </View>
   );
 }
@@ -639,11 +648,14 @@ export function Code(props: { text: string; lines?: number }) {
   );
 }
 
-export async function confirm(ui: AppContext, title: string, action: () => void): Promise<void> {
+export async function askConfirmation(ui: AppContext, title: string): Promise<boolean> {
   const route = ui.route();
   ui.confirmation()?.resolve(false);
   const accepted = await new Promise<boolean>((resolve) => ui.confirmation.set({ title, resolve }));
-  if (accepted && ui.alive() && ui.route() === route) action();
+  return accepted && ui.alive() && ui.route() === route;
+}
+export async function confirm(ui: AppContext, title: string, action: () => void): Promise<void> {
+  if (await askConfirmation(ui, title)) action();
 }
 
 export function Dialog(props: {
@@ -678,8 +690,8 @@ export function Dialog(props: {
           backgroundColor: palette().panel,
           borderColor: palette().border,
           borderWidth: 1,
-          borderRadius: radius.lg,
-          boxShadow: "0px 10px 15px #0000001a",
+          borderRadius: radius.xxl,
+          ...surfaceFinish("card"),
         }}
       >
         <View style={{ flexDirection: "row", gap: spacing.md, alignItems: "center" }}>
@@ -708,9 +720,17 @@ export function Dialog(props: {
     </View>
   );
   return (
-    <Modal visible transparent onRequestClose={props.onClose} animationType="fade">
+    <NativeDialog
+      open
+      closeOnEscape={false}
+      closeOnBackdropPress={false}
+      closeOnSwipe={false}
+      onCancel={props.onClose}
+      animation="fade"
+      style={{ flex: 1 }}
+    >
       {content}
-    </Modal>
+    </NativeDialog>
   );
 }
 
@@ -761,7 +781,14 @@ export function Select(props: {
   const show = async () => {
     const measured = await trigger.measure();
     if (!alive() || !measured || props.disabled) return;
-    frame.set(measured);
+    frame.set({
+      x: measured.bounds.origin.x,
+      y: measured.bounds.origin.y,
+      width: measured.bounds.size.width,
+      height: measured.bounds.size.height,
+      pageX: measured.pagePosition.x,
+      pageY: measured.pagePosition.y,
+    });
     open.set(true);
   };
   const panel = computed(() =>
@@ -784,9 +811,9 @@ export function Select(props: {
       <Each of={props.options} key={(option) => option.value}>
         {(option) => (
           <View
-            class="focus-visible:ring-2 focus-visible:ring-[#71717a]"
+            class="focus-visible:ring-2 focus-visible:ring-ring"
             testID={`select-option-${option().value}`}
-            accessibilityRole="radio"
+            role="radio"
             accessibilityLabel={option().label}
             accessibilityState={{ checked: option().value === props.value }}
             onPress={() => {
@@ -870,9 +897,17 @@ export function Select(props: {
       </View>
     );
     return (
-      <Modal transparent visible onRequestClose={() => open.set(false)} animationType="none">
+      <NativeDialog
+        open
+        closeOnEscape={false}
+        closeOnBackdropPress={false}
+        closeOnSwipe={false}
+        onCancel={() => open.set(false)}
+        animation="none"
+        style={{ flex: 1 }}
+      >
         {content}
-      </Modal>
+      </NativeDialog>
     );
   };
   return (
@@ -889,9 +924,9 @@ export function Select(props: {
       </If>
       <View
         testID={props.id}
-        class="focus-visible:ring-2 focus-visible:ring-[#71717a]"
+        class="focus-visible:ring-2 focus-visible:ring-ring"
         ref={trigger}
-        accessibilityRole="button"
+        role="button"
         accessibilityLabel={props.label}
         accessibilityState={{ expanded: open(), disabled: !!props.disabled, busy: !!props.loading }}
         disabled={props.disabled}
@@ -932,25 +967,22 @@ export function RadioGroup(props: {
   onChange: (value: string) => void;
 }) {
   return (
-    <View
-      accessibilityRole="radiogroup"
-      accessibilityLabel={props.label}
+    <NativeRadioGroup
       style={{ gap: spacing.md }}
     >
       <Each of={props.options} key={(option) => option.value}>
         {(option) => (
-          <View
-            class="focus-visible:ring-2 focus-visible:ring-[#71717a]"
-            accessibilityRole="radio"
+          <Radio
+            focusStyle={focusRing()}
             accessibilityLabel={option().label}
-            accessibilityState={{ checked: props.value === option().value }}
-            onPress={() => props.onChange(option().value)}
-            style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: 24 }}
+            checked={props.value === option().value}
+            onChange={() => props.onChange(option().value)}
+            style={{ flexDirection: "row", alignItems: "center", gap: spacing.md, minHeight: 44 }}
           >
             <View
               style={{
-                width: 16,
-                height: 16,
+                width: 20,
+                height: 20,
                 borderRadius: radius.full,
                 borderWidth: 1,
                 borderColor: palette().accent,
@@ -970,10 +1002,10 @@ export function RadioGroup(props: {
               </If>
             </View>
             <Text style={{ fontSize: typography.sm, color: palette().text }}>{option().label}</Text>
-          </View>
+          </Radio>
         )}
       </Each>
-    </View>
+    </NativeRadioGroup>
   );
 }
 export function useLifetime(): () => boolean {
@@ -1000,7 +1032,7 @@ export function Spinner(props: { size?: number; color?: string }) {
   cleanup(() => animation.stop());
   return (
     <View
-      accessibilityRole="progressbar"
+      role="progressbar"
       accessibilityLabel="Loading"
       pointerEvents="none"
       style={{ width: props.size || 16, height: props.size || 16, transform: [{ rotate: angle }] }}
@@ -1018,7 +1050,7 @@ export function Alert(props: {
 }) {
   return (
     <View
-      accessibilityRole="alert"
+      role="alert"
       style={{
         borderWidth: 1,
         borderColor: props.danger

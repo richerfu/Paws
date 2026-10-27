@@ -5,8 +5,8 @@ ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 NSH_ROOT=${NSH_ROOT:-$ROOT_DIR/../nsh}
 NSH_ROOT=$(CDPATH= cd -- "$NSH_ROOT" && pwd)
 export NSH_ROOT
-# Stage the pinned binding wrapper and its NSH caller without modifying the
-# local SDK checkout or Cargo's immutable dependency cache.
+# Stage the local SDK without modifying the checkout or Cargo's dependency
+# cache. The current UIContext host uses NSH's own native editor and dialogs.
 NSH_ROOT=$(python3 "$ROOT_DIR/scripts/prepare-nsh-build-source.py")
 export NSH_ROOT
 NSH_PROFILE=${NSH_PROFILE:-${NATIVE_PROFILE:-release}}

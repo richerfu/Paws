@@ -1,7 +1,14 @@
-import { computed, signal, Text, View, type JSX } from "nsh";
-import { Clipboard } from "nsh/clipboard";
-import { fontScale, windowSize } from "nsh/device";
-import { List } from "nsh/list";
+import {
+  computed,
+  signal,
+  Text,
+  View,
+  type JSX,
+  Clipboard,
+  fontScale,
+  windowSize,
+  List,
+} from "nsh";
 import { Action, Actions, Dialog, palette, useApp } from "./components";
 import { statusColors } from "./theme";
 
@@ -162,7 +169,7 @@ export function PageError(props: {
               label={danger()
                 ? ui.t("复制完整错误", "Copy full error")
                 : ui.t("复制完整信息", "Copy full information")}
-              onPress={() => Clipboard.setString(detail() || "")}
+              onPress={() => Clipboard.writeText(detail() || "")}
             />
           </Actions>
         </Dialog>

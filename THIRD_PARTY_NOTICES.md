@@ -1,5 +1,12 @@
 # Third-party components
 
+The native interface uses [Native Shell](https://github.com/longbridge/nsh).
+`ui/nsh/theme.json` and `ui/nsh/src/finishes.json` are adapted from its
+`examples/nsh-gallery-ui` at local revision `e10ae2c47b3d711c67485ed49f6b76633ebebd93`.
+The upstream Apache License 2.0 text is included at
+[LICENSES/nsh/LICENSE-APACHE](LICENSES/nsh/LICENSE-APACHE). The build records
+also fingerprint local SDK and native-binding changes.
+
 Paws packages Mihomo, sing-box, and meow-rs as independent proxy engines for
 HarmonyOS. The About page lists their packaged versions, source revisions, and
 license links; these are not claims about the latest upstream releases.

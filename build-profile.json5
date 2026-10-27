@@ -47,14 +47,6 @@
       "srcPath": "./target/ohos/arkts-deps/ability"
     },
     {
-      "name": "plugin_arkui",
-      "srcPath": "./target/ohos/arkts-deps/arkui"
-    },
-    {
-      "name": "plugin_video",
-      "srcPath": "./target/ohos/arkts-deps/video"
-    },
-    {
       "name": "plugin_resource",
       "srcPath": "./target/ohos/arkts-deps/resource"
     },

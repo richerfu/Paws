@@ -1,0 +1,5 @@
+{
+  "name": "Paws synthetic tests",
+  "theme": "../theme.json",
+  "capabilities": { "host": ["paws.test.*"], "clipboard": true, "statusBar": true }
+}

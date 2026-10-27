@@ -1,41 +1,43 @@
 --- a/crates/nsh-platform-ohos/src/render/mount.rs
 +++ b/crates/nsh-platform-ohos/src/render/mount.rs
-@@ -513,6 +513,7 @@
-                 modal.close(true)?;
+@@ -556,6 +556,7 @@
+                 }
              }
          }
 +        let mut presentations = super::presentation::Presentations::default();
          for item in batch.items {
-             match item {
-                 MountItem::Component { id, name } => {
-@@ -581,7 +582,11 @@
-                         parent.children.borrow().len()
-                     };
-                     if let Some(modal) = node.modal.borrow().as_ref() {
--                        modal.present()?;
-+                        if modal.is_visible() {
-+                            modal.present()?;
-+                        } else {
-+                            presentations.insert(child);
-+                        }
-                     } else {
-                         parent
-                             .child_container()
-@@ -603,11 +608,13 @@
-                     node.inserted(layout.as_ref())?;
-                 }
-                 MountItem::Remove { id } => {
-+                    presentations.remove(id);
-                     if !self.node(id)?.removing(layout.as_ref())? {
-                         self.detach(id)?;
+             let result = (|| -> Result<()> {
+                 match item {
+@@ -625,7 +626,11 @@
+                             parent.children.borrow().len()
+                         };
+                         if let Some(modal) = node.modal.borrow().as_ref() {
+-                            modal.present()?;
++                            if modal.is_visible() {
++                                modal.present()?;
++                            } else {
++                                presentations.insert(child);
++                            }
+                         } else {
+                             parent
+                                 .child_container()
+@@ -647,13 +652,15 @@
+                         node.inserted(layout.as_ref())?;
                      }
-                 }
-                 MountItem::Delete { id } => {
-+                    presentations.remove(id);
-                     self.node(id)?.removing(layout.as_ref())?;
-                     self.delete(id)?;
-                 }
-@@ -871,7 +878,21 @@
+                     MountItem::Remove { id } => {
++                        presentations.remove(id);
+                         if !self.leaving(id) && !self.node(id)?.removing(layout.as_ref())? {
+                             self.detach(id)?;
+                         }
+                     }
+                     MountItem::Delete { id } => {
++                        presentations.remove(id);
+                         if !self.leaving(id) {
+                             self.node(id)?.removing(layout.as_ref())?;
+                         }
+                         self.delete(id)?;
+                     }
+@@ -988,7 +995,21 @@
              }
          }
          self.reconcile_navigation()?;
@@ -166,10 +168,10 @@
 +}
 --- a/crates/nsh-platform-ohos/tests/ohos/main.rs
 +++ b/crates/nsh-platform-ohos/tests/ohos/main.rs
-@@ -29,3 +29,6 @@
+@@ -40,3 +40,6 @@
  
- #[path = "../../src/app/dev/presentation.rs"]
- mod dev_presentation;
+ #[path = "../../src/media/video/controls.rs"]
+ mod video_controls;
 +
 +#[path = "../../src/render/presentation.rs"]
 +mod modal_presentation;

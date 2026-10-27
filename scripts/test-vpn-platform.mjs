@@ -260,7 +260,7 @@ function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({ne
   const vpnCalls = [];
   const foregroundCalls = [];
   const lifecycleCalls = [];
-  class NativeAbility {
+  class UIAbility {
     context = {
       applicationInfo: { debug: applicationDebug, name: 'com.example.paws' },
       config: {},
@@ -268,20 +268,8 @@ function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({ne
       resourceManager: {},
     };
 
-    lifecycleTail = Promise.resolve();
-    async onCreate() {}
-    enqueueLifecycleOperation(label, operation) { this.lifecycleTail = this.lifecycleTail.then(operation); return this.lifecycleTail; }
-    onNewWant() {}
-    onForeground() {}
-    async onDestroy() { lifecycleCalls.push('base-destroy'); }
   }
-  class LazyPlugin {
-    constructor(factory) { this.factory = factory; }
-  }
-  class EmptyPlugin {}
   class InstalledVpnPlugin {
-    constructor(installed) { this.installed = installed; }
-    onInstall() { this.installed(); }
     onAbilityForeground() { foregroundCalls.push(this); }
     async requestStartVpn(options) { vpnCalls.push(options); }
   }
@@ -289,23 +277,16 @@ function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({ne
     'entry/src/main/ets/entryability/EntryAbility.ets',
     {
       '@kit.AbilityKit': {
+        UIAbility,
         ConfigurationConstant: { ColorMode: { COLOR_MODE_NOT_SET: -1 } },
       },
       '@kit.LocalizationKit': { i18n: { System: { getSystemLanguage() { return 'en-US'; } } } },
       '@kit.PerformanceAnalysisKit': { hilog: { info() {}, error() {}, warn() {} } },
-      '@ohos-rs/ability': { LazyPlugin, NativeAbility },
-      '@nsh/ohos': { nativeShellPlugins: () => [new LazyPlugin(() => ({ id: 'nsh.arkui' }))] },
-      '@ohos-rs/ability-plugin-files': { FilesPlugin: EmptyPlugin },
-      '@ohos-rs/ability-plugin-url': { UrlPlugin: EmptyPlugin },
-      ...Object.fromEntries(['resource', 'accessibility', 'arkui', 'clipboard', 'window', 'webview', 'video'].map(name => [
-        '@ohos-rs/ability-plugin-' + name,
-        { [name === 'arkui' ? 'ArkuiPlugin' : name === 'webview' ? 'WebviewPlugin' : name[0].toUpperCase() + name.slice(1) + 'Plugin']: EmptyPlugin },
-      ])),
-      'libnsh_platform_ohos.so': { initLogging() {} },
+      '@nsh/ohos': { initLogging() {} },
       '../components/PawsCoreGateway': {
         installPawsHost() {
           const vpn = new InstalledVpnPlugin();
-          return { vpn, dispose() {} };
+          return { vpn, attachMainWindow() {}, dispose() {} };
         },
       },
       '@ohos.window': { default: { AvoidAreaType: { TYPE_SYSTEM: 0, TYPE_CUTOUT: 1, TYPE_NAVIGATION_INDICATOR: 4 } } },
@@ -412,7 +393,7 @@ function frameWindowFixture(content, calls) {
   };
 }
 
-test('EntryAbility registers numeric frames only after successful content and stops before base destruction', async () => {
+test('EntryAbility registers numeric frames only after successful content and disposes the observer', async () => {
   for (const debug of [false, true]) {
     const fixture = entryAbilityFixture(debug);
     const calls = fixture.lifecycleCalls;
@@ -426,13 +407,12 @@ test('EntryAbility registers numeric frames only after successful content and st
     assert.equal(calls.length, debug ? 2 : 1);
     const registered = calls.find(call => call.event === 'frameMetricsMeasured');
     await fixture.ability.onDestroy();
-    assert.equal(calls.at(-1), 'base-destroy');
     const removed = calls.find(call => call.off === 'frameMetricsMeasured');
     assert.equal(!!registered, debug);
     assert.equal(!!removed, debug);
     if (debug) {
       assert.equal(removed.callback, registered.callback);
-      assert.ok(calls.indexOf(removed) < calls.indexOf('base-destroy'));
+      assert.equal(calls.at(-1), removed);
     }
   }
 });
@@ -455,7 +435,7 @@ test('failed or late content loading cannot leave a frame observer on a destroye
   await late.ability.onDestroy();
   completion.resolve();
   await loadingLate;
-  assert.deepEqual(late.lifecycleCalls, ['set-ui-content', 'base-destroy']);
+  assert.deepEqual(late.lifecycleCalls, ['set-ui-content']);
 });
 
 test('cold-start debug VPN uses the Ability-owned host without bridge installation', async () => {
@@ -463,9 +443,7 @@ test('cold-start debug VPN uses the Ability-owned host without bridge installati
   fixture.ability.onCreate({}, {});
   await fixture.ability.requestStartVpn('{}');
   assert.deepEqual(fixture.vpnCalls, ['{}']);
-  assert.equal(fixture.ability.moduleName, 'nsh_platform_ohos');
-  assert.ok(fixture.ability.bridgePlugins.some(plugin => plugin.factory().id === 'nsh.arkui'),
-    'register the matching NSH SDK editor/view plugin alongside NativeAbility');
+  assert.equal(fixture.ability.hostServices.vpn, fixture.ability.vpnPlugin);
 });
 
 test('foreground and new Want wakeups reach the Ability-owned VPN service', async () => {
@@ -476,7 +454,7 @@ test('foreground and new Want wakeups reach the Ability-owned VPN service', asyn
   const initial = fixture.ability.vpnPlugin;
   fixture.ability.onForeground();
   fixture.ability.onNewWant({}, {});
-  await fixture.ability.lifecycleTail;
+  await fixture.ability.lifecycleQueue;
   assert.deepEqual(fixture.foregroundCalls, [initial, initial]);
 });
 

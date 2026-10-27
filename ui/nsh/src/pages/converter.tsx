@@ -1,5 +1,4 @@
-import { cleanup, Scroll, signal, View } from "nsh";
-import { Clipboard } from "nsh/clipboard";
+import { cleanup, Scroll, signal, View, Clipboard } from "nsh";
 import {
   Action,
   Actions,
@@ -44,7 +43,7 @@ export function Converter() {
   const change = (patch: Partial<ConverterDraft>) => state.change(patch);
   const busy = () => operation() !== "";
   const copy = (text: string, notice: string) => {
-    Clipboard.setString(text);
+    Clipboard.writeText(text);
     ui.client.notice.set(notice);
   };
   const run = async (name: string, action: () => Promise<void>) => {

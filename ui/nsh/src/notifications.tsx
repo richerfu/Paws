@@ -1,13 +1,24 @@
-import { batch, cleanup, computed, context, effect, signal, Text, untracked, View } from "nsh";
-import { createNativeValue } from "nsh/animated";
-import { colorScheme } from "nsh/device";
-import { safeArea, useSafeAreaInsets } from "nsh/ui/mobile";
+import {
+  batch,
+  cleanup,
+  computed,
+  context,
+  effect,
+  signal,
+  Text,
+  untracked,
+  View,
+  createAnimatedValue as createNativeValue,
+  safeArea,
+  safeAreaInsets as useSafeAreaInsets,
+} from "nsh";
 import { Icon } from "./icons";
+import { palette, radius, surfaceFinish } from "./theme";
 
 export type Notification = { id: number; message: string; created: number; leaving: boolean };
 
-// f7f5df6 notification.rs + arkit_shadcn surfaces.rs: TopCenter, rich Info,
-// 2200 ms, 32 queued entries, three collapsed cards, 14 vp peeks / 5% width.
+// Bounded feedback shared by pages and modal layers; each message expires
+// independently, including entries hidden behind the three-card viewport.
 export class NotificationCenter {
   readonly items = signal<Notification[]>([]);
   readonly expanded = signal(false);
@@ -93,7 +104,7 @@ export function NotificationViewport(props: { owner?: number; modal?: boolean })
     ];
   });
   // Absolute children are positioned from the parent's padding box, so the
-  // surrounding SafeAreaView does not inset this viewport for us.
+  // root safe-area padding does not inset this viewport for us.
   return (
     <If when={active() && entries().length > 0}>
       <View
@@ -160,26 +171,10 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
   });
   const vertical = y.add(entrance).add(stackY);
   const front = () => props.index === 0 || props.center.expanded();
-  const colors = () =>
-    colorScheme() === "dark"
-      ? {
-          background: "#172554",
-          foreground: "#bfdbfe",
-          border: "#1e40af",
-          icon: "#60a5fa",
-          description: "#93c5fd",
-        }
-      : {
-          background: "#eff6ff",
-          foreground: "#1e40af",
-          border: "#bfdbfe",
-          icon: "#2563eb",
-          description: "#1d4ed8",
-        };
   return (
     <View
       testID={`toast-${props.item.id}`}
-      accessibilityRole="alert"
+      role="alert"
       accessibilityLabel={props.item.message}
       pointerEvents={front() && !props.item.leaving ? "auto" : "none"}
       pan={{ x, y }}
@@ -209,10 +204,10 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
         paddingLeft: 12,
         paddingRight: 8,
         borderWidth: 1,
-        borderColor: colors().border,
-        borderRadius: 8,
-        backgroundColor: colors().background,
-        boxShadow: "0px 4px 12px #0000001a",
+        borderColor: palette().border,
+        borderRadius: radius.xl,
+        backgroundColor: palette().panel,
+        ...surfaceFinish("card"),
         flexDirection: "row",
         alignItems: "center",
         zIndex: props.item.leaving ? 200 : 100 - props.index,
@@ -222,7 +217,7 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
     >
       <If when={front()}>
         <View style={{ width: 28, height: 32, justifyContent: "center" }}>
-          <Icon name="info" size={16} color={colors().icon} />
+          <Icon name="info" size={16} color={palette().accent} />
         </View>
         <Text
           numberOfLines={2}
@@ -231,15 +226,15 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
             fontSize: 14,
             lineHeight: 20,
             fontWeight: "600",
-            color: colors().foreground,
+            color: palette().text,
           }}
         >
           {props.item.message}
         </Text>
         <View
           testID={`dismiss-toast-${props.item.id}`}
-          class="focus-visible:ring-2 focus-visible:ring-[#71717a]"
-          accessibilityRole="button"
+          class="focus-visible:ring-2 focus-visible:ring-ring"
+          role="button"
           accessibilityLabel="Dismiss notification"
           onPress={() => props.center.dismiss(props.item.id)}
           style={{
@@ -250,7 +245,7 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
             borderRadius: 6,
           }}
         >
-          <Icon name="x" size={16} color={colors().description} />
+          <Icon name="x" size={16} color={palette().muted} />
         </View>
       </If>
     </View>

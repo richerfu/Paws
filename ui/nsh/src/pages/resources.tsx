@@ -1,8 +1,15 @@
-import { computed, effect, signal, Text, untracked, View } from "nsh";
-import { windowSize } from "nsh/device";
-import { Clipboard } from "nsh/clipboard";
-import { Scroll } from "nsh";
-import { List } from "nsh/list";
+import {
+  computed,
+  effect,
+  signal,
+  Text,
+  untracked,
+  View,
+  windowSize,
+  Clipboard,
+  Scroll,
+  List,
+} from "nsh";
 import {
   Action,
   Actions,
@@ -169,12 +176,13 @@ export function Resources() {
         />
       </View>
       <List
+        testID="resources-list"
         bounces={false}
         each={rows()}
         keyExtractor={(row) => row.key}
         estimatedItemSize={112}
         style={{ flex: 1 }}
-        contentContainerStyle={{ gap: 8, paddingBottom: 16 }}
+        contentStyle={{ gap: 8, paddingBottom: 16 }}
       >
         {(row) => (
           <>
@@ -251,7 +259,7 @@ export function Resources() {
             </If>
             <If when={row().kind === "file"}>
               <View
-                accessibilityRole="button"
+                role="button"
                 accessibilityLabel={row().file!.name}
                 onPress={() => geodata.set(row().file)}
                 style={{
@@ -392,7 +400,7 @@ export function Resources() {
                     text={[rule().ruleType, rule().payload, rule().target]
                       .filter(Boolean)
                       .join(",")}
-                  /></View><Action variant="ghost" small label={ui.t("复制", "Copy")} onPress={() => Clipboard.setString([rule().ruleType, rule().payload, rule().target].filter(Boolean).join(","))} />
+                  /></View><Action variant="ghost" small label={ui.t("复制", "Copy")} onPress={() => Clipboard.writeText([rule().ruleType, rule().payload, rule().target].filter(Boolean).join(","))} />
                 </View>
               )}
             </List>
@@ -429,7 +437,7 @@ export function Resources() {
             />
             <Action
               label={ui.t("复制完整规则", "Copy full rule")}
-              onPress={() => Clipboard.setString(selectedRule()!.line)}
+              onPress={() => Clipboard.writeText(selectedRule()!.line)}
             />
           </Actions>
         </Dialog>
@@ -718,7 +726,7 @@ function RuleRow(props: {
       </View>
       <View
         testID={`rule-details-${rule().id}`}
-        accessibilityRole="button"
+        role="button"
         accessibilityLabel={ui.t("查看完整规则", "View complete rule")}
         onPress={props.onDetails}
         style={{ minWidth: 0 }}

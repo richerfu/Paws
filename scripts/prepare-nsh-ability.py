@@ -15,7 +15,11 @@ destination = ROOT / 'target/ohos/arkts-deps'
 packages = {'ability': source / 'native_ability',
             'nsh': Path(inputs['nshRoot']) / 'crates/nsh-platform-ohos/arkts'}
 packages.update({name: source / 'plugins' / name for name in (
-    'resource', 'clipboard', 'window', 'url', 'files', 'accessibility', 'arkui', 'webview', 'video')})
+    'resource', 'clipboard', 'window', 'url', 'files', 'accessibility', 'webview')})
+if destination.exists():
+    for stale in destination.iterdir():
+        if stale.name not in packages:
+            shutil.rmtree(stale) if stale.is_dir() else stale.unlink()
 har_inputs = []
 for name, path in packages.items():
     if not (path / 'oh-package.json5').is_file():
@@ -26,8 +30,14 @@ for name, path in packages.items():
     shutil.copytree(path, target, ignore=shutil.ignore_patterns(
         'build', '.hvigor', '.cxx', 'oh_modules', 'oh-package-lock.json5', 'BuildProfile.ets'))
     manifest = target / 'oh-package.json5'
-    manifest.write_text(manifest.read_text().replace(
-        '"@ohos-rs/ability": "workspace:*"', '"@ohos-rs/ability": "file:../ability"'))
+    manifest.write_text(
+        manifest.read_text()
+        .replace('"@ohos-rs/ability": "workspace:*"', '"@ohos-rs/ability": "file:../ability"')
+        .replace(
+            '"libnsh_platform_ohos.so": "file:./src/main/cpp/types/libnsh_platform_ohos"',
+            '"libnsh_platform_ohos.so": "file:../../../../entry/src/main/cpp/types/libnsh_platform_ohos"',
+        )
+    )
     if name in ('ability', 'nsh'):
         original_hash, staged_hash = hashlib.sha256(), hashlib.sha256()
         files = {}

@@ -3,6 +3,7 @@ import { PawsApp } from "../src/app";
 import { CoreClient } from "../src/client";
 import { DomainHost } from "./DomainHost";
 import { fixture } from "./fixture";
+import { testControl } from "./test-controls";
 
 mount(() => {
   const client = new CoreClient();
@@ -62,13 +63,14 @@ mount(() => {
       );
     }, 10);
   };
+  const metadataTick = testControl("interest-tick", tick);
   return (
     <>
       <PawsApp client={client} embeddedGateway={false} />
       <View
         testID="interest-tick"
-        accessibilityRole="button"
-        onPress={tick}
+        role="button"
+        onPress={metadataTick}
         style={{ position: "absolute", width: 1, height: 1, top: 0, left: 0, opacity: 0 }}
       >
         <Text>Metadata tick</Text>

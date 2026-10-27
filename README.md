@@ -66,7 +66,9 @@ ownership, configuration revisions, disposal and acceptance requirements.
 - **Native UI**: phone, tablet, and 2-in-1 device targets built with the locally
   adapted NSH OpenHarmony backend. Narrow windows use bottom navigation;
   wider windows use a sidebar and bounded content. Configuration drafts stay
-  separate from live traffic, resource and session updates.
+  separate from live traffic, resource and session updates. The interface uses
+  NSH Gallery's theme and base controls; YAML editing opens a dedicated page
+  with NSH's code editor, highlighting, find, undo and revision-checked saving.
 - **Localization**: English and Simplified Chinese.
 - **Automation**: workspace tests, local protocol mocks, HAP export checks,
   device/QEMU smoke tests, and a 14-mode positive/negative protocol matrix.
@@ -87,9 +89,12 @@ If DevEco Studio is installed outside `/Applications/DevEco-Studio.app`, set
 
 This branch uses the locally adapted NSH checkout at `../nsh`. Set `NSH_ROOT`
 to select another compatible checkout. `scripts/build-nsh-ohos.sh` builds its
-native library and CLI, bundles `ui/nsh`, and stages the matching local Ability
-packages under this project's `target/ohos`. Generated outputs stay in Paws.
-Set `NSH_ABILITY_ROOT` when the matching Ability source is elsewhere. Run that
+native library and CLI, bundles `ui/nsh`, and stages its ArkTS host plus the
+application's capability helpers under this project's `target/ohos`. The
+current NSH host attaches through `NshSurface(UIContext)` and uses its native
+editor and dialogs without the legacy Ability patch set. Source fingerprints
+cover NSH and local binding overrides. Generated outputs stay in Paws.
+Set `NSH_ABILITY_ROOT` when the application capability helpers live elsewhere. Run that
 script before a standalone `ohpm install --all`; `scripts/package-hap.sh` runs
 it automatically.
 

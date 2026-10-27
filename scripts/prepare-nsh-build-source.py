@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage the local NSH sources with the small, pinned dialog-mask binding fix.
+"""Stage the local NSH sources without modifying the SDK checkout.
 
 The user's NSH checkout and Cargo's immutable Git cache remain untouched.
 The resulting workspace, including its patched binding, is covered by the
@@ -19,6 +19,53 @@ from nsh_build_inputs import ROOT, ability_metadata, resolve_inputs
 
 
 class BuildSource:
+    UPSTREAM_ABILITY = 'b65502500b820a570496f3798c931d12d3b71d39'
+    UPSTREAM_BINDING = '43aec6c125503a47f7e875c793aaf2462e91ad19'
+    UPSTREAM_SDK = '4f5bd5542fe94396a2e26bd3feb282235b356bf0ce0e1527a17298cef58cf112'
+    UPSTREAM_WORKTREE = '746ee6d3eff519df0b1bc8d4a2ee80f69dc8deec4c4fa745d74ffc4fd419706a'
+    BINDING_STAGED = ('arkui-custom-event-receiver.patch', 'arkui-dialog-lifecycle.patch',
+                      'arkui-editor-viewport.patch', 'modal-parent-layout.patch',
+                      'modal-presentation-order.patch')
+    BINDING_DIRECT = ('arkui-dialog-operation.patch', 'arkui-host-fixtures.patch', 'arkui-dialog-mask.patch')
+    UPSTREAM_OMITTED = {
+        'editor-host-timing.patch': 'Legacy editor instrumentation; not carried into the revised upstream editor.',
+        'editor-phase-tracing.patch': 'Legacy editor instrumentation; not carried into the revised upstream editor.',
+        'editor-queued-event-delivery.patch': 'Legacy editor callback patch; current upstream ownership/callback implementation is used unchanged.',
+        'editor-viewport-measure.patch': 'Legacy editor viewport patch; current upstream standard editor is used unchanged.',
+        'fixed-input-viewport.patch': 'Legacy Core viewport patch for the Paws document backend, which is not ported by this upgrade.',
+        'native-editor-line-height.patch': 'Legacy editor styling overlay; current upstream standard editor is used unchanged.',
+        'native-editor-update-domains.patch': 'Legacy editor state/update overlay; incompatible old contexts are not replayed.',
+        'native-editor-value-caret.patch': 'Legacy editor value/caret overlay; incompatible old contexts are not replayed.',
+        'transparent-modal-mask.patch': 'Upstream modal.rs in 26e18e01 already sets modal_mode(!full) and background_color(0) for full-screen dialogs.',
+        'zz-document-editor.patch': 'Paws-specific document/secure architecture is absent upstream and is intentionally not ported in this upgrade.',
+        'zzz-text-raster-budget-diagnostics.patch': 'Legacy 4MP/12-byte raster diagnostics do not describe the revised upstream raster model.',
+        'zzzz-text-raster-lifetimes.patch': 'Legacy Core/Engine text lifetime overlay is not assumed equivalent to revised upstream behaviour.',
+        'zzzzz-text-raster-budget-wait.patch': 'Paws-specific 100ms raster wait is not present upstream and is intentionally not ported in this upgrade.',
+    }
+
+    @classmethod
+    def patch_plan(cls, inputs, names, binding_revision):
+        names = sorted(names)
+        if inputs.get('hostModel') == 'native-ui-context':
+            return {'name': 'local-native-ui-context', 'stagedPatches': [],
+                    'omittedPatches': {name: 'The current local SDK owns native input and dialogs; legacy Ability overlays do not apply.'
+                                       for name in names}}
+        if inputs['ability']['revision'] != cls.UPSTREAM_ABILITY:
+            return {'name': 'legacy-paws-editor',
+                    'stagedPatches': [name for name in names if name not in cls.BINDING_DIRECT],
+                    'omittedPatches': {}}
+        if (inputs['nsh'].get('sdkSourceSha256') != cls.UPSTREAM_SDK
+                or inputs['nsh']['worktreeSha256'] != cls.UPSTREAM_WORKTREE
+                or binding_revision != cls.UPSTREAM_BINDING):
+            raise ValueError('Rebase the reviewed upstream-native recipe for the changed NSH/Ability/binding source')
+        expected = {*cls.BINDING_DIRECT, *cls.BINDING_STAGED, *cls.UPSTREAM_OMITTED}
+        if set(names) != expected or len(names) != len(expected):
+            raise ValueError('Review the explicit upstream-native patch inventory before staging')
+        return {'name': 'upstream-native-ability-b6550250',
+                'bindingPatches': [*cls.BINDING_DIRECT, *cls.BINDING_STAGED],
+                'stagedPatches': list(cls.BINDING_STAGED),
+                'omittedPatches': dict(cls.UPSTREAM_OMITTED)}
+
     @staticmethod
     def binding_preparation(revision):
         # 43aec6c keeps the same native ownership APIs, but removed the Dialog
@@ -38,6 +85,9 @@ class BuildSource:
         self.inputs = resolve_inputs()
         self.source = Path(self.inputs['nshRoot'])
         self.patches = ROOT / 'patches/nsh'
+        manifest = tomllib.loads((self.source / 'Cargo.toml').read_text())
+        binding_revision = manifest['workspace']['dependencies'].get('ohos-arkui-binding', {}).get('rev')
+        patch_names = [path.name for path in self.patches.glob('*.patch')]
         recipe = hashlib.sha256(Path(__file__).read_bytes())
         recipe.update((ROOT / 'scripts/nsh_build_inputs.py').read_bytes())
         for path in sorted(self.patches.glob('*.patch')):
@@ -51,11 +101,15 @@ class BuildSource:
             if not self.record.is_file():
                 raise ValueError('Incomplete NSH stage; select the original NSH_ROOT')
             expected = json.loads(self.record.read_text())
+            self.plan = self.patch_plan(expected['originalInputs'], patch_names, binding_revision)
             if expected.get('recipeSha256') != self.recipe:
                 raise ValueError('NSH patch recipe changed; select the original NSH_ROOT')
             if expected['patchedInputs'] != self.inputs:
                 raise ValueError('Staged NSH sources changed; select the original NSH_ROOT')
+            if expected.get('patchPlan') != self.plan:
+                raise ValueError('NSH patch plan changed; select the original NSH_ROOT')
             return
+        self.plan = self.patch_plan(self.inputs, patch_names, binding_revision)
         digest = hashlib.sha256(json.dumps(self.inputs, sort_keys=True).encode())
         digest.update(self.recipe.encode())
         self.stage = ROOT / 'target/nsh-build-source' / digest.hexdigest()[:24]
@@ -155,14 +209,16 @@ class BuildSource:
     def prepare(self):
         if self.record.exists():
             expected = json.loads(self.record.read_text())
-            if expected.get('recipeSha256') != self.recipe or self.identity(self.stage) != expected['patchedInputs']:
+            if (expected.get('recipeSha256') != self.recipe
+                    or expected.get('patchPlan') != self.plan
+                    or self.identity(self.stage) != expected['patchedInputs']):
                 raise ValueError('Staged NSH sources changed; remove this generated stage and rebuild')
             return self.stage
         if self.stage.exists():
             # Only an incomplete, content-addressed build directory is removed.
             shutil.rmtree(self.stage)
         excluded = {'target', 'dist', 'build', 'node_modules', 'oh_modules', '.hvigor',
-                    '.cxx', '.nsh', '__pycache__', '.DS_Store'}
+                    '.cxx', '.nsh', '.DS_Store'}
         if not (self.source / '.git').is_dir() or (self.source / '.git').is_symlink():
             raise ValueError('NSH source needs an independent .git directory for read-only staging')
 
@@ -183,11 +239,10 @@ class BuildSource:
         copied = self.identity(self.stage)
         if copied['nsh'] != self.inputs['nsh'] or self.identity(self.source) != self.inputs:
             raise ValueError('Local NSH changed during staging; retry with a stable source tree')
-        self.binding()
-        for patch in sorted(self.patches.glob('*.patch')):
-            if patch.name not in {'arkui-dialog-mask.patch', 'arkui-dialog-operation.patch',
-                                   'arkui-host-fixtures.patch'}:
-                self.apply(self.stage, patch.name)
+        if self.plan['name'] != 'local-native-ui-context':
+            self.binding()
+        for filename in self.plan['stagedPatches']:
+            self.apply(self.stage, filename)
         result = subprocess.run(['cargo', 'metadata', '--offline', '--format-version', '1',
                                  '--filter-platform', 'aarch64-unknown-linux-ohos'],
                                 cwd=self.stage, capture_output=True, text=True, timeout=180)
@@ -195,9 +250,10 @@ class BuildSource:
             raise ValueError(result.stderr[-4000:])
         packages = json.loads(result.stdout)['packages']
         arkui = [p for p in packages if p['name'] == 'ohos-arkui-binding']
-        if len(arkui) != 1 or arkui[0]['source'] is not None:
+        if len(arkui) != 1 or (self.plan['name'] != 'local-native-ui-context' and arkui[0]['source'] is not None):
             raise ValueError('The patched graph must contain one ArkUI binding')
         self.record.write_text(json.dumps({'originalInputs': self.inputs, 'recipeSha256': self.recipe,
+                                          'patchPlan': self.plan,
                                           'patchedInputs': self.identity(self.stage)}, indent=2) + '\n')
         return self.stage
 

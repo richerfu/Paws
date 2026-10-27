@@ -5,10 +5,12 @@ NSH OpenHarmony backend. The migration must preserve VPN ownership,
 configuration conflict detection, protected networking, profile persistence,
 and observable failures.
 
-The presentation migration must also preserve the original Zinc shadcn design,
-navigation hierarchy and interaction contracts. The framework change does not
-authorize a product redesign. Production UI ownership, lifecycle invariants and
-test commands are described in [the UI guide](../ui/nsh/README.md).
+The presentation uses the local NSH Gallery theme and `nsh/base` controls,
+including a full-page YAML `Editor` opened through the navigation stack.
+The former Zinc shadcn appearance is removed. Navigation hierarchy, command
+contracts and conflict detection still belong to the application. Production
+UI ownership, lifecycle invariants and test commands are described in
+[the UI guide](../ui/nsh/README.md).
 
 ```mermaid
 flowchart TB

@@ -15,9 +15,7 @@
     "@ohos-rs/ability-plugin-clipboard": "file:../target/ohos/arkts-deps/clipboard",
     "@ohos-rs/ability-plugin-window": "file:../target/ohos/arkts-deps/window",
     "@ohos-rs/ability-plugin-accessibility": "file:../target/ohos/arkts-deps/accessibility",
-    "@ohos-rs/ability-plugin-arkui": "file:../target/ohos/arkts-deps/arkui",
     "@ohos-rs/ability-plugin-webview": "file:../target/ohos/arkts-deps/webview",
-    "@ohos-rs/ability-plugin-video": "file:../target/ohos/arkts-deps/video",
     "libnsh_platform_ohos.so": "file:./src/main/cpp/types/libnsh_platform_ohos"
   }
 }

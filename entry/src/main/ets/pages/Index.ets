@@ -1,12 +1,11 @@
-import { DefaultXComponent } from '@ohos-rs/ability';
-import { NshSurface, onBackPressIntercept } from 'libnsh_platform_ohos.so';
+import { NshSurface } from '@nsh/ohos';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { PawsCoreGateway, pawsHost } from '../components/PawsCoreGateway';
 
 @Entry
 @Component
 struct Index {
-  private surface: NshSurface = new NshSurface();
+  private surface: NshSurface = new NshSurface(this.getUIContext());
   @State loadError: string = '';
 
   aboutToAppear(): void {
@@ -24,11 +23,10 @@ struct Index {
 
   aboutToDisappear(): void { this.surface.dispose(); }
 
-  onBackPress(): boolean { return onBackPressIntercept(); }
+  onBackPress(): boolean { return this.surface.onBackPress(); }
 
   build() {
     Stack() {
-      DefaultXComponent({ moduleName: 'nsh_platform_ohos' }).width('100%').height('100%')
       ContentSlot(this.surface.content)
       if (this.loadError.length > 0) {
         Text(this.loadError).padding(20).fontColor('#b42318').backgroundColor('#fff4ed')

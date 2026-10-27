@@ -1,7 +1,15 @@
-import { computed, effect, signal, Scroll, Text, untracked, View } from "nsh";
-import { Clipboard } from "nsh/clipboard";
-import { windowSize } from "nsh/device";
-import { List } from "nsh/list";
+import {
+  computed,
+  effect,
+  signal,
+  Scroll,
+  Text,
+  untracked,
+  View,
+  Clipboard,
+  windowSize,
+  List,
+} from "nsh";
 import {
   Action,
   Actions,
@@ -168,8 +176,8 @@ export function Logs() {
               each={rows()}
               estimatedItemSize={96}
               style={{ flex: 1 }}
-              contentContainerStyle={{ paddingBottom: 16 }}
-              ListEmptyComponent={
+              contentStyle={{ paddingBottom: 16 }}
+              empty={
                 <Empty
                   icon="scroll-text"
                   title={ui.t("暂无日志", "No logs")}
@@ -189,7 +197,7 @@ export function Logs() {
               {(row) => (
                 <View
                   testID={`log-${row().timestamp}`}
-                  accessibilityRole="button"
+                  role="button"
                   accessibilityLabel={meta(row())}
                   onPress={() => selected.set(row())}
                   style={{
@@ -239,8 +247,8 @@ export function Logs() {
           keyExtractor={(row) => row.fileName}
           estimatedItemSize={80}
           style={{ flex: 1 }}
-          contentContainerStyle={{ paddingBottom: 16 }}
-          ListEmptyComponent={
+          contentStyle={{ paddingBottom: 16 }}
+          empty={
             <Empty
               icon="history"
               title={ui.t("暂无历史日志", "No log archives")}
@@ -342,7 +350,7 @@ export function Logs() {
             />
             <Action
               label={ui.t("复制完整内容", "Copy full message")}
-              onPress={() => Clipboard.setString(selected()!.message)}
+              onPress={() => Clipboard.writeText(selected()!.message)}
             />
           </Actions>
         </Dialog>

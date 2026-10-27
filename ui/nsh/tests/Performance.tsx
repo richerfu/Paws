@@ -41,7 +41,7 @@ mount(() => {
       <PawsApp client={client} embeddedGateway={false} />
       <View
         testID="perf-telemetry"
-        accessibilityRole="button"
+        role="button"
         accessibilityLabel="Apply telemetry state"
         onPress={telemetry}
         style={{ position: "absolute", width: 1, height: 1, top: 0, left: 0, opacity: 0 }}

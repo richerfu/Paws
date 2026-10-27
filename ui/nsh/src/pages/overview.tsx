@@ -1,5 +1,4 @@
-import { computed, Scroll, Text, View } from "nsh";
-import { windowSize } from "nsh/device";
+import { computed, Scroll, Text, View, windowSize } from "nsh";
 import {
   Action,
   Actions,
@@ -34,9 +33,9 @@ export function VpnPowerButton(props: { size: number }) {
   const stop = () => current().vpnRunning || starting();
   return (
     <View
-      class="hover:bg-[#f4f4f5] dark:hover:bg-[#27272a] focus-visible:ring-2 focus-visible:ring-[#71717a]"
+      class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
       testID="vpn-toggle"
-      accessibilityRole="button"
+      role="button"
       accessibilityLabel={stop() ? ui.t("停止 VPN", "Stop VPN") : ui.t("启动 VPN", "Start VPN")}
       accessibilityState={{ disabled: stopping() }}
       disabled={
@@ -45,12 +44,12 @@ export function VpnPowerButton(props: { size: number }) {
         (!stop() && (!current().activeProfile || ui.client.pending() > 0))
       }
       onPress={() => void ui.client.run(stop() ? "vpn.stop" : "vpn.start")}
-      activeOpacity={0.8}
+      activeStyle={{ opacity: 0.8 }}
       style={{
         width: props.size,
         height: props.size,
         borderRadius: props.size / 2,
-        backgroundColor: current().vpnRunning ? palette().danger : palette().accent,
+        backgroundColor: current().vpnRunning ? palette().danger : palette().brandFill,
         alignItems: "center",
         justifyContent: "center",
         opacity: stopping() ? 0.6 : 1,
@@ -140,9 +139,9 @@ export function Dashboard() {
     >
       <View style={{ flexDirection: "row", alignItems: "center", gap: 16, height: 52 }}>
         <View
-          class="hover:bg-[#f4f4f5] dark:hover:bg-[#27272a] focus-visible:ring-2 focus-visible:ring-[#71717a]"
+          class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
           testID="connection-row"
-          accessibilityRole="button"
+          role="button"
           accessibilityLabel={label()}
           disabled={!!ui.client.vpnUnconfirmed() || ui.client.vpnOperation() === "stop"}
           onPress={toggle}
