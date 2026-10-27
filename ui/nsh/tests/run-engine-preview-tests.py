@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from nsh_runner import run_nsh
 
 ROOT = Path(__file__).resolve().parents[3]
 ENTRY = 'ui/nsh/tests/EnginePreview.tsx'
@@ -22,7 +23,7 @@ FALLBACK_REASON = 'Requested engine cannot compile this public synthetic rule'
 def snapshots(output):
     tree, result, current = reader.NativeTree(), {}, 0
     for line in output.splitlines():
-        header = re.search(r'── (?:after )?tap #(\d+)\b', line)
+        header = re.search(r'PAWS TAP #(\d+)\b', line)
         if header and int(header[1]) != current:
             result[current] = copy.deepcopy(tree)
             current = int(header[1])
@@ -90,15 +91,15 @@ def run(binary, output_dir, name, taps, checks, markers=(), width=390):
     args = [str(binary), 'trace', ENTRY, '--wait', '40', '--width', str(width), '--height', '844']
     for tap in taps:
         args += ['--tap', tap]
-    process = subprocess.run(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    process = run_nsh(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, timeout=75)
     output = process.stdout
     path = output_dir / (name + '.log')
     path.write_text(output)
     assert process.returncode == 0, f'{name}: CLI failed; inspect {path}'
     assert not re.search(r'(?im)^(?:error(?:\s|:)|fatal(?:\s|:)|uncaught exception(?:\s|:))', output)
-    presses = len(re.findall(r'perf event Press on view\b', output))
-    assert presses == len(taps), f'{name}: missing actual native Press'
+    presses = len(re.findall(r'PAWS PRESS #\b', output))
+    assert presses == len(taps), f'{name}: missing completed test step'
     for marker in markers:
         assert marker in output, f'{name}: missing {marker}'
     states = snapshots(output)
@@ -129,7 +130,7 @@ def run(binary, output_dir, name, taps, checks, markers=(), width=390):
     if name == 'metadata-hidden-actual-error-retry':
         assert mounted(states[5], 'page-error-summary') and mounted(states[5], 'page-data-retry')
         assert not mounted(states[8], 'page-error-summary')
-    print(f'PASS engine preview: {name} ({presses} actual Press)')
+    print(f'PASS engine preview: {name} ({presses} completed step)')
     return {'case': name, 'actualPresses': presses, 'width': width, 'stableSettingsGeometry': geometry, 'log': str(path)}
 
 

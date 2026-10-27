@@ -318,6 +318,10 @@ def build_manifest(root, hap_mode, native_profile, environment=None):
             manifest['uiRuntime'] = {**identities, 'cli': cli, 'bundle': {
                 'hapPath': 'resources/rawfile/paws.bundle.js',
                 'bytes': bundle_path.stat().st_size, 'sha256': sha(bundle_path, 64 << 20)}}
+            if 'hostModel' in sources:
+                manifest['uiRuntime']['hostModel'] = sources['hostModel']
+            if 'pathDependencies' in sources:
+                manifest['uiRuntime']['pathDependencies'] = sources['pathDependencies']
             arkts_path = root / 'target/ohos/arkts-source-inputs.json'
             if arkts_path.is_file():
                 arkts = json.loads(arkts_path.read_text())

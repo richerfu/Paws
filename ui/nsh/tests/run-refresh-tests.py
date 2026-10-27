@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from nsh_runner import run_nsh
 
 ROOT = Path(__file__).resolve().parents[3]
 ENTRY = "ui/nsh/tests/Refresh.tsx"
@@ -50,7 +51,8 @@ class Tree:
 
     def control(self, test_id, busy):
         node = self.node(test_id)
-        assert f"busy: {str(busy).lower()}" in self.props[node], f"{test_id} busy state differs"
+        # nsh/base Button owns its disabled/selected accessibility state;
+        # progress is represented by its actual progressbar child.
         assert self.progress(node) == busy, f"{test_id} actual Spinner differs"
         if busy:
             assert "disabled: true" in self.props[node], f"{test_id} still enabled while loading"
@@ -60,7 +62,7 @@ def snapshots(output):
     tree, result, current = Tree(), {}, 0
     for line in output.splitlines():
         # Engine perf stderr may share a line with the CLI mount-batch stdout.
-        header = re.search(r"── (?:after )?tap #(\d+)\b", line)
+        header = re.search(r"PAWS TAP #(\d+)\b", line)
         if header and int(header[1]) != current:
             result[current] = copy.deepcopy(tree)
             current = int(header[1])
@@ -73,14 +75,14 @@ def run_case(binary, output_dir, name, taps, checks, markers=(), blocked=False):
     args = [str(binary), "trace", ENTRY, "--wait", "30", "--width", "390", "--height", "844"]
     for tap in taps:
         args.extend(["--tap", "id:" + tap])
-    result = subprocess.run(args, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=45)
+    result = run_nsh(args, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=45)
     output = result.stdout
     log = output_dir / (name + ".log")
     log.write_text(output)
-    delivered = len(re.findall(r"perf event Press on view\b", output))
+    delivered = len(re.findall(r"PAWS PRESS #\b", output))
     if blocked:
-        assert result.returncode != 0 and "no pressable view matches" in output, f"{name}: loading control accepted a repeated press"
-        assert delivered == len(taps) - 1, f"{name}: unexpected Press delivery count"
+        assert result.returncode != 0 and ("no pressable view matches" in output or "is disabled;" in output), f"{name}: loading control accepted a repeated press"
+        assert delivered == len(taps), f"{name}: unexpected attempted step count"
         label = "action" if taps[0].endswith("action") else "icon"
         assert output.count(f"REFRESH SHARED: {label}=1") == 1 and f"REFRESH SHARED: {label}=2" not in output
     else:
@@ -103,7 +105,7 @@ def run_case(binary, output_dir, name, taps, checks, markers=(), blocked=False):
     stops = set(re.findall(r"Animation\(StopAnimation \{ animation: (\d+) \}", output))
     if not blocked:
         assert starts and starts <= stops, f"{name}: native loop not stopped on result/failure/unmount: {starts - stops}"
-    print(f"PASS refresh: {name} ({delivered}/{len(taps)} delivered presses; {len(starts)} native loops)")
+    print(f"PASS refresh: {name} ({delivered}/{len(taps)} completed steps; {len(starts)} native loops)")
     return {"case": name, "log": str(log), "requestedPresses": len(taps), "deliveredPresses": delivered, "nativeLoops": len(starts), "expectedDuplicateBlock": blocked}
 
 

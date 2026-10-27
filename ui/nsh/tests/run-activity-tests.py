@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from nsh_runner import run_nsh
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -40,11 +41,11 @@ def validate(tree, mode, width, height, language):
     for row_id, host, active in ROWS:
         suffix = f'{mode}-{row_id}'
         row, header, title, actions, meta = [tree.one(f'activity-{part}-{suffix}') for part in ('row', 'header', 'title', 'actions', 'meta')]
-        near(row['frame'][3], 104, 'Row height')
-        near(header['frame'][3], 32, 'Header height')
-        near(title['frame'][3], 32, 'Title height')
-        near(actions['frame'][2], 72, 'Action group width')
-        near(actions['frame'][3], 32, 'Action group height')
+        near(row['frame'][3], 108, 'Row height')
+        near(header['frame'][3], 36, 'Header height')
+        near(title['frame'][3], 36, 'Title height')
+        near(actions['frame'][2], 80, 'Action group width')
+        near(actions['frame'][3], 36, 'Action group height')
         near(meta['frame'][3], 22, 'Metadata row height')
         for node in (header, meta):
             about.contains(tree.rect(row), tree.rect(node), 'Row direct content')
@@ -65,8 +66,8 @@ def validate(tree, mode, width, height, language):
         plus = tree.one(f'rule-for-{row_id}')
         about.contains(tree.rect(actions), tree.rect(plus), 'Add-rule button')
         assert plus.get('events', 0) != 0
-        near(plus['frame'][2], 32, 'Plus width')
-        near(plus['frame'][3], 32, 'Plus height')
+        near(plus['frame'][2], 36, 'Plus width')
+        near(plus['frame'][3], 36, 'Plus height')
         near(center(tree.rect(plus))[1], center(tree.rect(header))[1], 'Plus main-row center')
         if mode == 'request' and not active:
             close = tree.one(f'activity-close-slot-request-{row_id}')
@@ -76,8 +77,8 @@ def validate(tree, mode, width, height, language):
         else:
             close = tree.one(f'activity-close-{suffix}')
             assert close.get('events', 0) != 0 and 'role: Button' in close.get('props', '')
-        near(close['frame'][2], 32, 'Close slot width')
-        near(close['frame'][3], 32, 'Close slot height')
+        near(close['frame'][2], 36, 'Close slot width')
+        near(close['frame'][3], 36, 'Close slot height')
         near(tree.rect(plus)[2] + 8, tree.rect(close)[0], 'Plus/close gap')
         about.no_overlap(tree.rect(plus), tree.rect(close), 'Main-row icon buttons')
         metadata = next(n for n in children(tree, meta) if n['kind'] == 'Text')
@@ -140,12 +141,12 @@ def main():
         command = [str(args.nsh_bin.resolve()), 'trace', ENTRY, '--width', str(width), '--height', str(height), '--wait', '30']
         for tap in taps:
             command.extend(['--tap', 'id:' + tap])
-        run = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=45)
+        run = run_nsh(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=45)
         path = args.output_dir / f'{width}-{mode}-{language}-{theme}.log'
         path.write_text(run.stdout)
         assert run.returncode == 0, f'CLI failed: {path}'
         assert not re.search(r'(?im)^(?:error(?:\s|:)|uncaught exception(?:\s|:))', run.stdout), str(path)
-        assert len(re.findall(r'perf event Press on view\b', run.stdout)) == len(taps), f'Missing actual Press: {path}'
+        assert len(re.findall(r'PAWS PRESS #\b', run.stdout)) == len(taps), f'Missing completed step: {path}'
         tree = about.AboutTree()
         for line in run.stdout.splitlines():
             tree.apply(line)

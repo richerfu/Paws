@@ -4,6 +4,7 @@ import { CoreClient } from "../src/client";
 import type { CoreRequest, DomainName, DomainQueryResult } from "../src/model";
 import { DomainHost } from "./DomainHost";
 import { fixture } from "./fixture";
+import { testControl } from "./test-controls";
 
 /** Exercises the actual header, import Dialog and command gates. Held reads
  * represent a cached page revalidating; no profile is persisted or imported. */
@@ -65,23 +66,28 @@ mount(() => {
     tick.set(tick() + 1);
     console.log("PASS: import Dialog close and reopen preserve its page owner and pending reads");
   };
+  const assertBlocked = testControl("assert-import-blocked", blocked);
+  const holdProfiles = testControl("hold-profiles", () => dirty("profiles"));
+  const holdConfig = testControl("hold-config", () => dirty("config"));
+  const releaseReads = testControl("release-import-reads", release);
+  const assertReady = testControl("assert-import-ready", ready);
   return (
     <>
       <PawsApp client={client} embeddedGateway={false} />
       <View style={{ position: "absolute", width: 1, height: 1, left: 0, top: 0 }}>
-        <View testID="hold-profiles" onPress={() => dirty("profiles")}>
+        <View testID="hold-profiles" onPress={holdProfiles}>
           <Text>{tick()}</Text>
         </View>
-        <View testID="hold-config" onPress={() => dirty("config")}>
+        <View testID="hold-config" onPress={holdConfig}>
           <Text>Hold config</Text>
         </View>
-        <View testID="assert-import-blocked" onPress={blocked}>
+        <View testID="assert-import-blocked" onPress={assertBlocked}>
           <Text>Assert write gate</Text>
         </View>
-        <View testID="release-import-reads" onPress={release}>
+        <View testID="release-import-reads" onPress={releaseReads}>
           <Text>Release reads</Text>
         </View>
-        <View testID="assert-import-ready" onPress={ready}>
+        <View testID="assert-import-ready" onPress={assertReady}>
           <Text>Assert read completion</Text>
         </View>
       </View>

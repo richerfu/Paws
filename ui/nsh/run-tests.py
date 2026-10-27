@@ -11,11 +11,13 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "tests"))
+from nsh_runner import run_nsh
 
 ROOT = Path(__file__).resolve().parents[2]
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 RUNTIME_ERROR = re.compile(r"(?im)^(?:error(?:\s|:)|fatal(?:\s|:)|uncaught exception(?:\s|:))")
-PRESS = re.compile(r"(?m)^perf event Press on view\b")
+PRESS = re.compile(r"(?m)^PAWS PRESS #\b")
 
 
 def cases(log_dir):
@@ -33,11 +35,11 @@ def cases(log_dir):
         "id:nav-back", "id:tool-logs", "id:log-2026-10-21T00:00:00Z", "id:dialog-close", "id:logs-tab-history",
         "id:nav-back", "id:tool-about", "label:隐私说明", "id:nav-back", "id:nav-back",
         "id:tool-converter", "id:converter-build",
-        "id:nav-back", "id:nav-profiles", "id:profile-menu-test-profile", "id:edit-yaml-test-profile", "id:validate-profile", "id:dialog-close", "id:add-profile", "id:dialog-close", "id:add-profile", "id:dialog-close",
+        "id:nav-back", "id:nav-profiles", "id:profile-menu-test-profile", "id:edit-yaml-test-profile", "id:validate-profile", "id:nav-back", "id:add-profile", "id:dialog-close", "id:add-profile", "id:dialog-close",
     ]
     desktop_taps = [
         "id:nav-tools", "id:tool-resources", "id:rule-down-rule-1",
-        "label:详情", "label:测速", "id:dialog-close",
+        "label:详情", "label:测速 >> nth=0", "id:dialog-close",
         "label:GeoIP", "id:dialog-close", "id:nav-back",
         "id:tool-appearance", "label:深色", "label:浅色",
         "id:nav-back", "id:tool-resources", "id:lookup-rule", "id:dialog-close", "id:add-rule", "id:dialog-close", "id:lookup-rule", "id:dialog-close",
@@ -60,6 +62,7 @@ def cases(log_dir):
         ("gateway-queue", ["trace", "ui/nsh/tests/GatewayQueue.tsx", "--wait", "120", "--tap", "id:queue-start-stop", "--tap", "id:queue-import-cancel"], ("PASS: native gateway ACK delivers synchronous start/stop and import/cancel independently of completion",), 2),
         ("check", ["check", "ui/nsh"], (), None),
         ("production-entry", ["build", "ui/nsh", "-o", str(log_dir / "production-entry")], (), None),
+        ("profile-editor", ["test", "ui/nsh/tests/profile-editor.test.ts"], ("6 tests: 6 passed, 0 failed",), None),
         (
             "state", ["trace", "ui/nsh/tests/State.tsx", "--wait", "120", "--taps", "0"],
             (
@@ -119,7 +122,7 @@ def validate_output(name, output, markers, expected_taps):
     if expected_taps is not None:
         taps = len(PRESS.findall(output))
         if taps != expected_taps:
-            raise ValueError(f"{name}: expected {expected_taps} delivered presses, observed {taps}")
+            raise ValueError(f"{name}: expected {expected_taps} completed steps, observed {taps}")
     if name == "import-lifetime":
         modals = re.findall(r"Create \{[^\n]*kind: Modal", output)
         if len(modals) != 12:
@@ -131,11 +134,11 @@ def validate_output(name, output, markers, expected_taps):
         if output.count('"intentId": Number(1)') != 2:
             raise ValueError("gateway-queue: import and cancellation did not share the native intent token")
     if name == "widgets":
-        presses = re.split(r"(?m)^perf event Press on view\b", output)[1:]
+        presses = re.split(r"(?m)^PAWS PRESS #\b", output)[1:]
         if "kind: Scroll" in presses[0] or presses[2].count("kind: Scroll") != 1:
             raise ValueError("widgets: short Select scrolled or long Select lost its scroll viewport")
-        if 'placeholder: "https://example.com/profile"' not in output or "line_height: 20.0" not in output:
-            raise ValueError("widgets: native input lost its placeholder or original text metrics")
+        if 'placeholder: "https://example.com/profile"' not in output or "line_height: 20pt" not in output:
+            raise ValueError("widgets: native input lost its placeholder or text metrics")
         if 'test_id: Some("sonner-viewport")' not in output or "Feedback above the dialog" not in output:
             raise ValueError("widgets: notification did not reach the mounted Sonner/dialog layer")
         if 'bounces: true' in output:
@@ -157,7 +160,7 @@ def validate_output(name, output, markers, expected_taps):
         validate_resource_dialogs(output)
         # Actual native mounts for the dark/light presses: only the selected
         # radio dot changes identity. Translated option rows must stay mounted.
-        presses = re.split(r"(?m)^perf event Press on view\b", output)[1:]
+        presses = re.split(r"(?m)^PAWS PRESS #\b", output)[1:]
         for index in (10, 11):
             if presses[index].count("Create {") > 1 or presses[index].count("Delete {") > 1:
                 raise ValueError("desktop-wire: theme change recreated translated control rows")
@@ -166,7 +169,7 @@ def validate_output(name, output, markers, expected_taps):
         for command, count in (("profiles.read", 2), ("converter.loadDraft", 1), ("logs.recordingStatus", 2)):
             if output.count(f"PASS WIRE: {command}") != count:
                 raise ValueError(f"phone-wire: native wrapper duplicated {command} page initialization")
-        latency = output.split("PASS WIRE: proxies.testGroup", 1)[-1].split("perf event Press", 1)[0]
+        latency = output.split("PASS WIRE: proxies.testGroup", 1)[-1].split("PAWS PRESS #", 1)[0]
         if "role: Progressbar" not in latency:
             raise ValueError("phone-wire: latency test did not mount its pending Spinner")
         if "data:image/svg+xml" in output:
@@ -253,7 +256,7 @@ def main():
         print(f"Running NSH {name}...", flush=True)
         log = options.log_dir / f"{name}.log"
         try:
-            result = subprocess.run(
+            result = run_nsh(
                 [str(binary), *arguments], cwd=ROOT, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
                 timeout=options.timeout, check=False,

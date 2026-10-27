@@ -1,4 +1,4 @@
-import { Canvas, Path2D } from "nsh/canvas";
+import { Canvas, Path2D, token } from "nsh";
 
 // Exact Lucide SVG assets used by the original Paws UI. See assets/LICENSE.lucide.
 const icons = {
@@ -148,8 +148,8 @@ export function Icon(props: { name: IconName; size?: number; color?: string }) {
       draw={(ctx, { width, height }) => {
         ctx.save();
         ctx.scale(width / 24, height / 24);
-        ctx.strokeStyle = props.color || "#09090b";
-        ctx.fillStyle = props.color || "#09090b";
+        ctx.strokeStyle = props.color || token("foreground");
+        ctx.fillStyle = props.color || token("foreground");
         ctx.lineWidth = 2;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";

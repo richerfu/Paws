@@ -1,5 +1,4 @@
-import { batch, cleanup, signal, type Signal } from "nsh";
-import { nativeComponent } from "nsh/native";
+import { batch, cleanup, signal, type Signal, nativeComponent } from "nsh";
 import type {
   CoreRequest,
   CoreResult,

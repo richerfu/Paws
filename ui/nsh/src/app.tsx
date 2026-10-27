@@ -1,7 +1,17 @@
-import { cleanup, computed, effect, signal, Text, untracked, View, type JSX } from "nsh";
-import { BackHandler } from "nsh/android";
-import { setColorScheme, windowSize } from "nsh/device";
-import { createNavigator, SafeAreaView, Screen, Stack } from "nsh/ui/mobile";
+import {
+  cleanup,
+  computed,
+  effect,
+  signal,
+  Text,
+  untracked,
+  View,
+  type JSX,
+  setColorScheme,
+  windowSize,
+} from "nsh";
+import { BackHandler } from "nsh/mobile";
+import { createNavStack, NavPage, NavStack } from "nsh/base";
 import { CoreGateway, type CoreClient } from "./client";
 import {
   App,
@@ -25,7 +35,8 @@ import {
   RouteOwner,
 } from "./components";
 import { Dashboard, Traffic, VpnPowerButton } from "./pages/overview";
-import { Profiles, ProfileEditor } from "./pages/profiles";
+import { Profiles } from "./pages/profiles";
+import { ProfileEditor } from "./pages/profile-editor";
 import { Proxies } from "./pages/proxies";
 import { Activity } from "./pages/activity";
 import { Resources } from "./pages/resources";
@@ -96,12 +107,13 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
       if (message) untracked(() => notifications.publish(message));
     });
   cleanup(() => notifications.dispose());
-  const nav = createNavigator<{ name: Page; query?: string }>({ name: "dashboard" });
+  const nav = createNavStack<{ name: Page; query?: string }>([{ name: "dashboard" }]);
   const alive = useLifetime(),
     importIntent = signal(0),
     resourceIntent: AppContext["resourceIntent"] = signal(undefined),
-    editor = signal(""),
     proxyDelayLoading = signal(false);
+  const leaveGuard = signal<{ route: unknown; check: () => boolean | Promise<boolean> } | undefined>();
+  let leaving = false;
   let importConsumed = 0,
     resourceConsumed = 0,
     resourceSequence = 0;
@@ -110,17 +122,28 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
   const confirmation: AppContext["confirmation"] = signal(undefined);
   const route = () => nav.routes()[nav.routes().length - 1],
     page = () => route().name;
-  const navigate = (next: Page, query?: string) => {
-    if (primary.some((item) => item.page === next)) nav.reset([{ name: next, query }]);
-    else nav.push({ name: next, query });
+  const requestNavigation = (action: () => void) => {
+    const guard = leaveGuard();
+    if (!guard || guard.route !== route()) { action(); return; }
+    if (leaving) return;
+    const current = route(), result = guard.check();
+    if (typeof result === "boolean") { if (result) action(); return; }
+    leaving = true;
+    void result.then((accepted) => {
+      if (accepted && alive() && route() === current) action();
+    }).finally(() => { leaving = false; });
   };
-  const back = () => {
+  const navigate = (next: Page, query?: string) => requestNavigation(() => {
+    if (primary.some((item) => item.page === next)) nav.setRoutes([{ name: next, query }]);
+    else nav.push({ name: next, query });
+  });
+  const back = () => requestNavigation(() => {
     if (nav.routes().length > 1) nav.pop();
     else {
       const parent = parentPage(page());
-      if (parent) navigate(parent);
+      if (parent) nav.setRoutes([{ name: parent }]);
     }
-  };
+  });
   const ui: AppContext = {
     client: props.client,
     page,
@@ -145,11 +168,16 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
     logRecordingIntent,
     confirmation,
     t: translator(props.client),
-    editProfile: (id) => editor.set(id),
+    editProfile: (id) => navigate("editor", id),
+    beforeLeave: (check) => {
+      const guard = { route: route(), check };
+      leaveGuard.set(guard);
+      return () => { if (leaveGuard() === guard) leaveGuard.set(undefined); };
+    },
   };
   const wide = () => windowSize().width >= 840;
   const group = () =>
-    page() === "proxies"
+    page() === "proxies" || page() === "editor"
       ? "profiles"
       : primary.some((tab) => tab.page === page())
         ? page()
@@ -169,13 +197,13 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
       confirmation.set(undefined);
     });
   });
-  const hardware = BackHandler.addEventListener("hardwareBackPress", () => {
+  const stopHardwareBack = BackHandler.onBackPress(() => {
     if (!parentPage(page()) && nav.routes().length < 2) return false;
     back();
     return true;
   });
   cleanup(() => {
-    hardware.remove();
+    stopHardwareBack();
     confirmation()?.resolve(false);
   });
   const confirmAnswer = (answer: boolean) => {
@@ -245,7 +273,7 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                     alignItems: "center",
                     justifyContent: "center",
                     borderRadius: radius.lg,
-                    backgroundColor: palette().accent,
+                    backgroundColor: palette().brandFill,
                   }}
                 >
                   <Icon name="paw-print" size={18} color={palette().primaryText} />
@@ -269,13 +297,13 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
               <Each of={primary}>
                 {(tab) => (
                   <View
-                    class="hover:bg-[#f4f4f5] dark:hover:bg-[#27272a] focus-visible:ring-2 focus-visible:ring-[#71717a]"
+                    class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
                     testID={`nav-${tab().page}`}
-                    accessibilityRole="button"
+                    role="button"
                     accessibilityLabel={ui.t(tab().zh, tab().en)}
                     accessibilityState={{ selected: group() === tab().page }}
                     onPress={() => navigate(tab().page)}
-                    activeOpacity={0.65}
+                    activeStyle={{ opacity: 0.65 }}
                     style={{
                       height: 40,
                       paddingHorizontal: spacing.md,
@@ -530,88 +558,99 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
               </View>
             </If>
             <If when={props.client.state()}>
-              <Stack navigator={nav} style={{ flex: 1 }}>
+              <NavStack state={nav} style={{ flex: 1 }}>
                 {(current) => {
                   const content = (
-                    <View
-                      style={{
-                        flex: 1,
-                        width: "100%",
-                        maxWidth: pageMeasure(current.name, wide()),
-                        alignSelf: "center",
-                      }}
-                    >
-                      <RouteOwner.Provider value={current}>
-                        <PageData domains={pageDomains(current.name)}>
-                          <If when={current.name === "dashboard"}>
-                            <Dashboard />
-                          </If>
-                          <If when={current.name === "profiles"}>
-                            <Profiles />
-                          </If>
-                          <If when={current.name === "proxies"}>
-                            <Proxies />
-                          </If>
-                          <If when={current.name === "traffic"}>
-                            <Traffic />
-                          </If>
-                          <If when={current.name === "connections"}>
-                            <Activity />
-                          </If>
-                          <If when={current.name === "requests"}>
-                            <Activity history />
-                          </If>
-                          <If when={current.name === "resources"}>
-                            <Resources />
-                          </If>
-                          <If when={current.name === "tools"}>
-                            <Tools />
-                          </If>
-                          <If when={current.name === "settings"}>
-                            <Settings />
-                          </If>
-                          <If when={current.name === "appearance"}>
-                            <Appearance />
-                          </If>
-                          <If when={current.name === "logs"}>
-                            <Logs />
-                          </If>
-                          <If when={current.name === "diagnostics"}>
-                            <Diagnostics />
-                          </If>
-                          <If when={current.name === "advanced-diagnostics"}>
-                            <AdvancedDiagnostics />
-                          </If>
-                          <If when={current.name === "backups"}>
-                            <Backups />
-                          </If>
-                          <If when={current.name === "about"}>
-                            <About />
-                          </If>
-                          <If when={current.name === "privacy"}>
-                            <Privacy />
-                          </If>
-                          <If when={current.name === "converter"}>
-                            <Converter />
-                          </If>
-                        </PageData>
-                      </RouteOwner.Provider>
+                    <View style={{ flex: 1, backgroundColor: palette().background }}>
+                      <View
+                        style={{
+                          flex: 1,
+                          width: "100%",
+                          maxWidth: current.name === "editor" ? undefined : pageMeasure(current.name, wide()),
+                          alignSelf: "center",
+                        }}
+                      >
+                        <RouteOwner.Provider value={current}>
+                          <PageData domains={pageDomains(current.name)}>
+                            <If when={current.name === "dashboard"}>
+                              <Dashboard />
+                            </If>
+                            <If when={current.name === "profiles"}>
+                              <Profiles />
+                            </If>
+                            <If when={current.name === "editor"}>
+                              <ProfileEditor profileId={current.query || ""} />
+                            </If>
+                            <If when={current.name === "proxies"}>
+                              <Proxies />
+                            </If>
+                            <If when={current.name === "traffic"}>
+                              <Traffic />
+                            </If>
+                            <If when={current.name === "connections"}>
+                              <Activity />
+                            </If>
+                            <If when={current.name === "requests"}>
+                              <Activity history />
+                            </If>
+                            <If when={current.name === "resources"}>
+                              <Resources />
+                            </If>
+                            <If when={current.name === "tools"}>
+                              <Tools />
+                            </If>
+                            <If when={current.name === "settings"}>
+                              <Settings />
+                            </If>
+                            <If when={current.name === "appearance"}>
+                              <Appearance />
+                            </If>
+                            <If when={current.name === "logs"}>
+                              <Logs />
+                            </If>
+                            <If when={current.name === "diagnostics"}>
+                              <Diagnostics />
+                            </If>
+                            <If when={current.name === "advanced-diagnostics"}>
+                              <AdvancedDiagnostics />
+                            </If>
+                            <If when={current.name === "backups"}>
+                              <Backups />
+                            </If>
+                            <If when={current.name === "about"}>
+                              <About />
+                            </If>
+                            <If when={current.name === "privacy"}>
+                              <Privacy />
+                            </If>
+                            <If when={current.name === "converter"}>
+                              <Converter />
+                            </If>
+                          </PageData>
+                        </RouteOwner.Provider>
+                      </View>
                     </View>
                   );
                   return (
-                    <Screen headerShown={false} animation="none">
+                    <NavPage
+                      style={{ backgroundColor: palette().background }}
+                      headerVisible={false}
+                      animation="none"
+                      popOnBack={current.name !== "editor"}
+                      onBackPress={() => { if (current.name === "editor") back(); }}
+                    >
                       {content}
-                    </Screen>
+                    </NavPage>
                   );
                 }}
-              </Stack>
+              </NavStack>
             </If>
           </View>
         </View>
         <If when={!wide() && !parentPage(page())}>
           <View
             testID="bottom-navigation"
-            accessibilityRole="tablist"
+            role="tablist"
             style={{
               height: 64,
               flexDirection: "row",
@@ -623,9 +662,9 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
             <Each of={primary}>
               {(tab) => (
                 <View
-                  class="hover:bg-[#f4f4f5] dark:hover:bg-[#27272a] focus-visible:ring-2 focus-visible:ring-[#71717a]"
+                  class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
                   testID={`nav-${tab().page}`}
-                  accessibilityRole="tab"
+                  role="tab"
                   accessibilityLabel={ui.t(tab().zh, tab().en)}
                   accessibilityState={{ selected: group() === tab().page }}
                   onPress={() => navigate(tab().page)}
@@ -656,18 +695,16 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
             <VpnPowerButton size={56} />
           </View>
         </If>
-        <If when={editor()}>
-          <ProfileEditor profileId={editor()} onClose={() => editor.set("")} />
-        </If>
         <If when={confirmation()}>
           <Dialog title={confirmation()!.title} onClose={() => confirmAnswer(false)}>
             <Actions>
               <Action
+                id="cancel-confirmation"
                 secondary
                 label={ui.t("取消", "Cancel")}
                 onPress={() => confirmAnswer(false)}
               />
-              <Action danger label={ui.t("确认", "Confirm")} onPress={() => confirmAnswer(true)} />
+              <Action id="confirm-action" danger label={ui.t("确认", "Confirm")} onPress={() => confirmAnswer(true)} />
             </Actions>
           </Dialog>
         </If>
@@ -675,9 +712,11 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
       </>
     );
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: palette().background }}>
+      <View style={{ flex: 1, backgroundColor: palette().background,
+        paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)",
+        paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)" }}>
         {content}
-      </SafeAreaView>
+      </View>
     );
   };
   return (

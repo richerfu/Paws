@@ -216,7 +216,7 @@ mount(() => {
       <If when={controls()}>
         <View
           testID="visual-hide-controls"
-          accessibilityRole="button"
+          role="button"
           accessibilityLabel="Hide synthetic preview controls"
           onPress={() => controls.set(false)}
           style={{ height: 32, justifyContent: "center", backgroundColor: "#e4e4e7" }}

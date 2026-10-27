@@ -1,4 +1,4 @@
-"""Resolve the local NSH/Ability pair and record the source identities used to build."""
+"""Record the local NSH SDK, native bindings and application capability sources."""
 import argparse
 import hashlib
 import json
@@ -54,12 +54,24 @@ def linked_git_ability(nsh, dependency, explicit):
 def resolve_inputs():
     nsh = Path(os.environ.get('NSH_ROOT', ROOT.parent / 'nsh')).resolve(strict=True)
     manifest = tomllib.loads((nsh / 'Cargo.toml').read_text())
-    dependency = manifest['workspace']['dependencies']['openharmony-ability']
-    ability_path = dependency.get('path')
+    dependency = manifest.get('workspace', {}).get('dependencies', {}).get('openharmony-ability')
+    ability_path = dependency.get('path') if dependency else None
     explicit = os.environ.get('NSH_ABILITY_ROOT')
     linked_ability = (nsh / ability_path).resolve(strict=True).parents[1] if ability_path else None
     git_source = None
-    if not ability_path:
+    if dependency is None:
+        if explicit:
+            ability = Path(explicit).resolve(strict=True)
+        else:
+            ability = Path.home().joinpath(
+                '.cargo/git/checkouts/openharmony-ability-7e6401132ac36172/b655025'
+            ).resolve(strict=True)
+            git_source = (
+                'git+https://github.com/harmony-contrib/openharmony-ability'
+                '?rev=b65502500b820a570496f3798c931d12d3b71d39'
+                '#b65502500b820a570496f3798c931d12d3b71d39'
+            )
+    elif not ability_path:
         ability, git_source = linked_git_ability(nsh, dependency, explicit)
     elif explicit:
         ability = Path(explicit).resolve(strict=True)
@@ -127,6 +139,25 @@ def resolve_inputs():
     nsh_identity, ability_identity = identity(nsh, sdk_inputs=True), identity(ability, cargo_checkout=bool(git_source))
     result = {'nshRoot': str(nsh), 'abilityRoot': str(ability), 'nsh': nsh_identity, 'ability': ability_identity,
               'nshRevision': nsh_identity['revision'] + ('+dirty' if nsh_identity['dirty'] else '')}
+    if dependency is None:
+        result['hostModel'] = 'native-ui-context'
+    # Development SDKs may override released bindings with local sources. Their
+    # contents are build inputs too, even when NSH's own HEAD has not changed.
+    path_dependencies = {}
+    for packages in manifest.get('patch', {}).values():
+        for name, options in packages.items():
+            if not isinstance(options, dict) or 'path' not in options:
+                continue
+            package = (nsh / options['path']).resolve(strict=True)
+            root = Path(subprocess.check_output(
+                ['git', '-c', 'core.fsmonitor=false', '-C', str(package), 'rev-parse', '--show-toplevel'],
+                text=True, timeout=30).strip()).resolve(strict=True)
+            key = str(root)
+            if key not in path_dependencies:
+                path_dependencies[key] = {'root': key, 'identity': identity(root), 'packages': {}}
+            path_dependencies[key]['packages'][name] = str(package)
+    if path_dependencies:
+        result['pathDependencies'] = [path_dependencies[key] for key in sorted(path_dependencies)]
     if git_source:
         result['abilityDependencySource'] = git_source
     return result

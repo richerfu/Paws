@@ -5,6 +5,7 @@ import { CoreClient } from "../src/client";
 import type { CoreRequest, DomainName, DomainQueryResult } from "../src/model";
 import { DomainHost } from "./DomainHost";
 import { fixture } from "./fixture";
+import { testControl } from "./test-controls";
 
 /** Actual production controls/pages, synthetic server receipts only. No network,
  * Core, profile persistence or platform services are initialized by this entry. */
@@ -142,6 +143,24 @@ mount(() => {
     tick.set(tick() + 1);
     console.log(`PASS REFRESH: ${name} latest=${latestKey} calls=${calls.get(latestKey) || 0}`);
   };
+  for (const [id, name] of Object.entries({
+    shared: "shared-one", one: "one", barrier: "barrier", idle: "idle",
+    error: "error", warning: "warning", "config-held": "config-held",
+    "health-initial": "health-initial", "health-refreshed": "health-refreshed",
+  })) testControl(`refresh-assert-${id}`, () => checkpoint(name));
+  const releaseWarning = testControl("refresh-release-warning", () => {
+    assert(pending.length === 1, "No refresh receipt for warning");
+    const request = pending.shift()!;
+    host.result({ id: request.id, ok: true, data: ["test-profile"],
+      stateRefreshError: "Controlled refresh synchronization warning" });
+  });
+  const holdConfigRead = testControl("refresh-hold-config", () => {
+    holdConfig = true;
+    state = { ...state, revision: state.revision + 1 };
+    host.change(["config"]);
+    tick.set(tick() + 1);
+  });
+  const hideApp = testControl("refresh-hide-app", () => shown.set(false));
   return (
     <View style={{ flex: 1 }}>
       <View style={{ flex: 1 }}>
@@ -242,16 +261,7 @@ mount(() => {
         </View>
         <View
           testID="refresh-release-warning"
-          onPress={() => {
-            assert(pending.length === 1, "No refresh receipt for warning");
-            const request = pending.shift()!;
-            host.result({
-              id: request.id,
-              ok: true,
-              data: ["test-profile"],
-              stateRefreshError: "Controlled refresh synchronization warning",
-            });
-          }}
+          onPress={releaseWarning}
         >
           <Text>Committed warning</Text>
         </View>
@@ -260,12 +270,7 @@ mount(() => {
         </View>
         <View
           testID="refresh-hold-config"
-          onPress={() => {
-            holdConfig = true;
-            state = { ...state, revision: state.revision + 1 };
-            host.change(["config"]);
-            tick.set(tick() + 1);
-          }}
+          onPress={holdConfigRead}
         >
           <Text>Hold config freshness</Text>
         </View>
@@ -281,7 +286,7 @@ mount(() => {
         >
           <Text>Manual refresh feedback</Text>
         </View>
-        <View testID="refresh-hide-app" onPress={() => shown.set(false)}>
+        <View testID="refresh-hide-app" onPress={hideApp}>
           <Text>Unmount pending page</Text>
         </View>
       </View>

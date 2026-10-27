@@ -143,6 +143,20 @@ class SourceIdentityTests(unittest.TestCase):
         generated.write_text('generated dependency\n')
         verify_source_identity(after, resolve_inputs())
 
+    def test_native_sdk_fingerprints_local_binding_overrides(self):
+        (self.nsh / 'Cargo.toml').write_text('[workspace]\n[patch.crates-io]\n'
+            'ohos-arkui-binding={path="../ability/crates/ability"}\n')
+        before = resolve_inputs()
+        self.assertEqual(before['hostModel'], 'native-ui-context')
+        bindings = before['pathDependencies']
+        self.assertEqual(len(bindings), 1)
+        self.assertEqual(bindings[0]['root'], str(self.ability.resolve()))
+        (self.ability / 'source.rs').write_text('native binding edit\n')
+        after = resolve_inputs()
+        self.assertNotEqual(bindings[0]['identity'], after['pathDependencies'][0]['identity'])
+        with self.assertRaises(ValueError):
+            verify_source_identity(before, after)
+
 
 if __name__ == '__main__':
     unittest.main()

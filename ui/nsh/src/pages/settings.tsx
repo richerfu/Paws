@@ -1,5 +1,4 @@
-import { batch, effect, Scroll, signal, Text, untracked, View } from "nsh";
-import { Clipboard } from "nsh/clipboard";
+import { batch, effect, Scroll, signal, Text, untracked, View, Clipboard } from "nsh";
 import {
   Action,
   Actions,
@@ -534,7 +533,7 @@ export function Settings() {
                 small
                 label={ui.t("复制", "Copy")}
                 disabled={!controller().secret}
-                onPress={() => Clipboard.setString(controller().secret || "")}
+                onPress={() => Clipboard.writeText(controller().secret || "")}
               />
             </If>
             <Action

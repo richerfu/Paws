@@ -1,12 +1,10 @@
-import { computed, signal, Text, View } from "nsh";
-import { Clipboard } from "nsh/clipboard";
-import { windowSize } from "nsh/device";
-import { List } from "nsh/list";
+import { computed, signal, Text, View, Clipboard, windowSize, List } from "nsh";
 import {
   Action,
   Actions,
   Badge,
   confirm,
+  control,
   Detail,
   Dialog,
   Empty,
@@ -83,10 +81,10 @@ export function Activity(props: { history?: boolean }) {
         bounces={false}
         each={rows()}
         keyExtractor={(row) => row.id}
-        estimatedItemSize={112}
+        estimatedItemSize={116}
         style={{ flex: 1 }}
-        contentContainerStyle={{ gap: 8, paddingBottom: 16 }}
-        ListEmptyComponent={
+        contentStyle={{ gap: 8, paddingBottom: 16 }}
+        empty={
           <Empty
             icon="activity"
             title={ui.t("暂无记录", "No records")}
@@ -98,7 +96,7 @@ export function Activity(props: { history?: boolean }) {
           <View
             testID={`activity-row-${props.history ? "request" : "connection"}-${row().id}`}
             style={{
-              height: 104,
+              height: 108,
               paddingHorizontal: 14,
               paddingVertical: 12,
               borderWidth: 1,
@@ -110,11 +108,11 @@ export function Activity(props: { history?: boolean }) {
           >
             <View
               testID={`activity-header-${props.history ? "request" : "connection"}-${row().id}`}
-              style={{ height: 32, flexDirection: "row", alignItems: "center", gap: 8 }}
+              style={{ height: control.small, flexDirection: "row", alignItems: "center", gap: 8 }}
             >
               <View
                 testID={`activity-title-${props.history ? "request" : "connection"}-${row().id}`}
-                accessibilityRole={props.history ? "button" : undefined}
+                role={props.history ? "button" : undefined}
                 accessibilityLabel={row().domain || row().host || row().destinationIp}
                 onPress={
                   props.history
@@ -125,7 +123,7 @@ export function Activity(props: { history?: boolean }) {
                         )
                     : undefined
                 }
-                style={{ height: 32, justifyContent: "center", flex: 1, minWidth: 0 }}
+                style={{ height: control.small, justifyContent: "center", flex: 1, minWidth: 0 }}
               >
                 <Text
                   numberOfLines={1}
@@ -137,8 +135,8 @@ export function Activity(props: { history?: boolean }) {
               <View
                 testID={`activity-actions-${props.history ? "request" : "connection"}-${row().id}`}
                 style={{
-                  width: 72,
-                  height: 32,
+                  width: control.small * 2 + 8,
+                  height: control.small,
                   flexShrink: 0,
                   flexDirection: "row",
                   alignItems: "center",
@@ -159,7 +157,7 @@ export function Activity(props: { history?: boolean }) {
                       testID={`activity-close-slot-request-${row().id}`}
                       accessible={false}
                       pointerEvents="none"
-                      style={{ width: 32, height: 32 }}
+                      style={{ width: control.small, height: control.small }}
                     />
                   }
                 >

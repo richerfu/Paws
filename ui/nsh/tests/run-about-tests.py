@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from nsh_runner import run_nsh
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -27,15 +28,15 @@ NSH_VERSION = ('c8779bac2365a790efd9c7aa91d3fb635815c66e+dirty.worktree-sha256-'
 class AboutTree(visual.NativeTree):
     def apply(self, line):
         super().apply(line)
-        scroll = re.search(r'ScrollContent \{ id: (\d+), size: Size \{ width: ([\deE.+-]+), height: ([\deE.+-]+) \}', line)
+        scroll = re.search(r'ScrollContent \{ id: (\d+), size: Size \{ width: ([\deE.+-]+)pt, height: ([\deE.+-]+)pt \}', line)
         if scroll and scroll[1] in self.nodes:
             self.nodes[scroll[1]]['scrollContent'] = tuple(map(float, scroll.groups()[1:]))
         text = re.search(r'Text \{ id: (\d+), text: "(?:[^"\\]|\\.)*", content: ([\deE.+-]+)x([\deE.+-]+) @ ([\deE.+-]+),([\deE.+-]+)', line)
         if text and text[1] in self.nodes:
             self.nodes[text[1]]['textContent'] = tuple(map(float, text.groups()[1:]))
-        events = re.search(r'Events \{ id: (\d+), events: EventMask\((\d+)\)', line)
+        events = re.search(r'Events \{ id: (\d+), events: EventMask\(\[(\d+), (\d+)\]\)', line)
         if events and events[1] in self.nodes:
-            self.nodes[events[1]]['events'] = int(events[2])
+            self.nodes[events[1]]['events'] = int(events[2]) | (int(events[3]) << 64)
 
     def one(self, test_id):
         found = [n for n in self.nodes.values() if n.get('testId') == test_id and self.visible(n)]
@@ -145,11 +146,11 @@ def trace(binary, output, width, height, taps):
     command = [str(binary.resolve()), 'trace', ENTRY, '--width', str(width), '--height', str(height), '--wait', '30']
     for tap in taps:
         command.extend(['--tap', 'id:' + tap])
-    run = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=45)
+    run = run_nsh(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=45)
     output.write_text(run.stdout)
     assert run.returncode == 0, f'CLI failed: {output}'
     assert not re.search(r'(?im)^(?:error(?:\s|:)|uncaught exception(?:\s|:))', run.stdout), str(output)
-    assert len(re.findall(r'perf event Press on view\b', run.stdout)) == len(taps), f'Missing actual Press: {output}'
+    assert len(re.findall(r'PAWS PRESS #\b', run.stdout)) == len(taps), f'Missing completed step: {output}'
     tree = AboutTree()
     for line in run.stdout.splitlines():
         tree.apply(line)

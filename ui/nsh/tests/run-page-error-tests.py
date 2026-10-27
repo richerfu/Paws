@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+from nsh_runner import run_nsh
 
 ROOT = Path(__file__).resolve().parents[3]
 UI = ROOT / "ui/nsh"
@@ -44,7 +45,7 @@ def snapshots(output):
         # geometry reader decodes JSON string escapes.
         line = re.sub(r"\\u\{([0-9a-fA-F]+)\}",
                       lambda match: json.dumps(chr(int(match[1], 16)))[1:-1], line)
-        header = re.search(r"── (?:after )?tap #(\d+)\b", line)
+        header = re.search(r"PAWS TAP #(\d+)\b", line)
         if header and int(header[1]) != current:
             states[current] = copy.deepcopy(tree)
             current = int(header[1])
@@ -95,14 +96,14 @@ def run(binary, stage, out, name, width, taps, summary_index, detail_index=None,
     cmd = [str(binary), "trace", str(stage / ENTRY), "--wait", "50", "--width", str(width), "--height", "844"]
     for tap in taps:
         cmd.extend(["--tap", tap])
-    process = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    process = run_nsh(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, timeout=75)
     output = process.stdout
     log = out / f"{name}-{width}.log"
     log.write_text(output)
     assert process.returncode == 0, f"CLI failed: {log}"
     assert not re.search(r"(?im)^(?:error(?:\s|:)|fatal(?:\s|:)|uncaught exception(?:\s|:))", output)
-    assert len(re.findall(r"perf event Press on view\b", output)) == len(taps)
+    assert len(re.findall(r"PAWS PRESS #\b", output)) == len(taps)
     assert "PASS PAGE ERROR: exact raw reconstruction and Unicode/hard-break bounds" in output
     assert "PASS PAGE ERROR: readonly Retry recovered without replaying select" in output
     if name != "initial-query-error":
@@ -114,7 +115,7 @@ def run(binary, stage, out, name, width, taps, summary_index, detail_index=None,
         verify_detail(states[tail_index], width, "END-UNICODE-ERROR" if name == "long-unicode-error" else "END-SYNTHETIC-STACK")
     final = states[len(taps)]
     assert not any(n.get("testId") == "page-error-summary" and final.visible(n) for n in final.nodes.values())
-    print(f"PASS page error: {name} width={width} ({len(taps)} actual Press)")
+    print(f"PASS page error: {name} width={width} ({len(taps)} completed step)")
     return {"case": name, "width": width, "actualPresses": len(taps), "mountedChunksAtOpen": mounted, "log": str(log)}
 
 
@@ -125,14 +126,14 @@ def run_nested(binary, stage, out):
     cmd = [str(binary), "trace", str(stage / ENTRY), "--wait", "50", "--width", "390", "--height", "844"]
     for tap in taps:
         cmd.extend(["--tap", "id:" + tap])
-    process = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    process = run_nsh(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, timeout=75)
     output = process.stdout
     log = out / "nested-dialog-readonly-close-390.log"
     log.write_text(output)
     assert process.returncode == 0, f"Nested CLI failed: {log}"
     assert not re.search(r"(?im)^(?:error(?:\s|:)|fatal(?:\s|:)|uncaught exception(?:\s|:))", output)
-    assert len(re.findall(r"perf event Press on view\b", output)) == len(taps)
+    assert len(re.findall(r"PAWS PRESS #\b", output)) == len(taps)
     assert output.count("PASS PAGE ERROR: nested details close does not retry or mutate") == 2
     states = snapshots(output)
     verify_summary(states[4], "manual-rule-read-error")
@@ -143,7 +144,7 @@ def run_nested(binary, stage, out):
     one(states[7], "dialog-close")
     assert not any(n.get("testId") == "manual-rule-read-error-summary" and states[9].visible(n)
                    for n in states[9].nodes.values())
-    print("PASS page error: nested details close leaves parent, then parent closes (9 actual Press)")
+    print("PASS page error: nested details close leaves parent, then parent closes (9 completed step)")
     return {"case": "nested-dialog-readonly-close", "width": 390, "actualPresses": len(taps),
             "mountedChunksAtOpen": chunks, "log": str(log)}
 
@@ -164,14 +165,14 @@ def run_window(binary, stage, out, width, scale, dynamic=False):
     cmd = [str(binary), "trace", str(stage / ENTRY), "--wait", "50", "--width", str(width), "--height", "844"]
     for tap in taps:
         cmd.extend(["--tap", "id:" + tap])
-    process = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    process = run_nsh(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, timeout=90)
     log = out / f"retained-window-{width}-scale-{scale}{'-dynamic' if dynamic else ''}.log"
     log.write_text(process.stdout)
     assert process.returncode == 0, log
     output = process.stdout
     assert not re.search(r"(?im)^(?:error(?:\s|:)|fatal(?:\s|:)|uncaught exception(?:\s|:))", output)
-    assert len(re.findall(r"perf event Press on view\b", output)) == len(taps)
+    assert len(re.findall(r"PAWS PRESS #\b", output)) == len(taps)
     assert "PASS PAGE ERROR: readonly Retry recovered without replaying select" in output
     states = snapshots(output)
     peak_count = peak_height = peak_reservation = 0
@@ -251,8 +252,9 @@ def main():
     scaled_page = scaled_stage / "src/page-error.tsx"
     scaled_source = scaled_page.read_text()
     replacements = [
-        ('import { fontScale, windowSize } from "nsh/device";',
-         '''import { windowSize } from "nsh/device";
+        ('  fontScale,\n', '  fontScale as nativeFontScale,\n'),
+        ('const SUMMARY_SCALARS = 160;',
+         '''const SUMMARY_SCALARS = 160;
 // Owned test copy only: emulate native font multiplication at fontScale=1.
 const fontScale = signal(1);
 (globalThis as typeof globalThis & { __pawsPageErrorSetScale?: (scale: number) => void })

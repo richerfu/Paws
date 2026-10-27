@@ -1,6 +1,4 @@
-import { computed, signal, Text, View } from "nsh";
-import { windowSize } from "nsh/device";
-import { List } from "nsh/list";
+import { computed, signal, Text, View, windowSize, List } from "nsh";
 import {
   Action,
   Empty,
@@ -116,8 +114,8 @@ export function ProxyGroupList(props: { query?: string; section?: boolean; summa
       keyExtractor={(row) => row.key}
       estimatedItemSize={74}
       style={{ flex: 1 }}
-      contentContainerStyle={{ paddingBottom: 16 }}
-      ListHeaderComponent={
+      contentStyle={{ paddingBottom: 16 }}
+      header={
         props.section ? (
           <View style={{ paddingTop: 8, paddingBottom: 8, gap: 2 }}>
             <Hint text={ui.t("订阅节点与策略组", "Subscription nodes and policy groups")} />
@@ -130,7 +128,7 @@ export function ProxyGroupList(props: { query?: string; section?: boolean; summa
           </View>
         ) : undefined
       }
-      ListEmptyComponent={
+      empty={
         <Empty
           icon="git-branch"
           title={ui.t("暂无代理节点", "No proxy nodes")}
@@ -149,9 +147,9 @@ export function ProxyGroupList(props: { query?: string; section?: boolean; summa
               when={!item().proxy}
               else={
                 <View
-                  class="hover:bg-[#f4f4f5] dark:hover:bg-[#27272a] focus-visible:ring-2 focus-visible:ring-[#71717a]"
+                  class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
                   testID={`${props.summary ? "summary-" : ""}select-proxy-${item().proxy!.name}`}
-                  accessibilityRole="button"
+                  role="button"
                   accessibilityLabel={
                     item().group.fixed === item().proxy!.name
                       ? ui.t("恢复自动选择", "Use automatic selection")
@@ -169,7 +167,7 @@ export function ProxyGroupList(props: { query?: string; section?: boolean; summa
                     !fresh(item().group)
                   }
                   onPress={() => select(item())}
-                  activeOpacity={0.65}
+                  activeStyle={{ opacity: 0.65 }}
                   style={{
                     height: 66,
                     paddingLeft: 22,
@@ -251,15 +249,15 @@ export function ProxyGroupList(props: { query?: string; section?: boolean; summa
               }
             >
               <View
-                class="hover:bg-[#f4f4f5] dark:hover:bg-[#27272a] focus-visible:ring-2 focus-visible:ring-[#71717a]"
+                class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
                 testID={`${props.summary ? "summary-" : ""}group-${item().group.name}`}
-                accessibilityRole="button"
+                role="button"
                 accessibilityLabel={item().group.name}
                 accessibilityState={{ expanded: expanded() === item().group.name }}
                 onPress={() =>
                   expanded.set(expanded() === item().group.name ? "" : item().group.name)
                 }
-                activeOpacity={0.65}
+                activeStyle={{ opacity: 0.65 }}
                 style={{
                   height: 86,
                   paddingHorizontal: spacing.md,

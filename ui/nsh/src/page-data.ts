@@ -8,6 +8,7 @@ export function pageDomains(page: Page): DomainInput[] {
     case "dashboard":
       return ["summary"];
     case "profiles":
+    case "editor":
       return ["profiles"];
     case "proxies":
       return ["proxies"];

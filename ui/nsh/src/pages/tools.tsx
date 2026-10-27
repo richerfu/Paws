@@ -1,5 +1,4 @@
-import { Scroll, signal, Text, View } from "nsh";
-import { Clipboard } from "nsh/clipboard";
+import { Scroll, signal, Text, View, Clipboard } from "nsh";
 import {
   Action,
   Actions,
@@ -183,12 +182,12 @@ export function Tools() {
                   {(tool, index) => (
                     <>
                       <View
-                        class="hover:bg-[#f4f4f5] dark:hover:bg-[#27272a] focus-visible:ring-2 focus-visible:ring-[#71717a]"
+                        class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
                         testID={`tool-${tool().page}`}
-                        accessibilityRole="button"
+                        role="button"
                         accessibilityLabel={ui.t(tool().zh, tool().en)}
                         onPress={() => ui.navigate(tool().page)}
-                        activeOpacity={0.65}
+                        activeStyle={{ opacity: 0.65 }}
                         style={{
                           minHeight: 64,
                           padding: 12,

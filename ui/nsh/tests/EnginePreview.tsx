@@ -1,3 +1,4 @@
+import { testControl } from "./test-controls";
 import { mount, signal, Text, View } from "nsh";
 import { PawsApp } from "../src/app";
 import { CoreClient } from "../src/client";
@@ -105,17 +106,10 @@ mount(() => {
         "Readonly Retry did not recover actual query failure");
     console.log(`PASS PREVIEW: ${name}`);
   };
-  const port = (id: string, action: () => void) => (
-    <View
-      testID={`preview-${id}`}
-      onPress={() => {
-        action();
-        tick.set(tick() + 1);
-      }}
-    >
-      <Text>{id}</Text>
-    </View>
-  );
+  const port = (id: string, action: () => void) => {
+    const press = testControl(`preview-${id}`, () => { action(); tick.set(tick() + 1); });
+    return <View testID={`preview-${id}`} onPress={press}><Text>{id}</Text></View>;
+  };
   return (
     <View style={{ flex: 1 }}>
       <If when={shown()}>

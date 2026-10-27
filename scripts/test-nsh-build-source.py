@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise source staging with real Git trees, patches and an offline Cargo graph."""
 import importlib.util
+import copy
 import os
 from pathlib import Path
 import shutil
@@ -12,6 +13,58 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('build_source', Path(__file__).with_name('prepare-nsh-build-source.py'))
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+
+
+class BuildSourceRecipeTests(unittest.TestCase):
+    def setUp(self):
+        self.builder = module.BuildSource
+        self.inputs = {'ability': {'revision': self.builder.UPSTREAM_ABILITY},
+                       'nsh': {'sdkSourceSha256': self.builder.UPSTREAM_SDK,
+                               'worktreeSha256': self.builder.UPSTREAM_WORKTREE}}
+        self.names = [path.name for path in Path(__file__).resolve().parents[1].joinpath('patches/nsh').glob('*.patch')]
+
+    def plan(self, inputs=None, names=None, binding=None):
+        return self.builder.patch_plan(inputs or self.inputs, self.names if names is None else names,
+                                       binding or self.builder.UPSTREAM_BINDING)
+
+    def test_reviewed_ability_sdk_uses_only_eight_explicit_binding_fixes(self):
+        plan = self.plan()
+        self.assertEqual(plan['name'], 'upstream-native-ability-b6550250')
+        self.assertEqual(plan['stagedPatches'], list(self.builder.BINDING_STAGED))
+        self.assertEqual(len(plan['bindingPatches']), 8)
+        self.assertEqual(set(plan['bindingPatches']) | set(plan['omittedPatches']), set(self.names))
+        self.assertFalse(set(plan['bindingPatches']) & set(plan['omittedPatches']))
+        self.assertTrue(all(plan['omittedPatches'].values()))
+        self.assertIn('not ported', plan['omittedPatches']['zz-document-editor.patch'])
+        self.assertIn('not ported', plan['omittedPatches']['zzzzz-text-raster-budget-wait.patch'])
+
+    def test_changed_upstream_source_or_binding_fails_before_any_patch_can_be_selected(self):
+        for field in ('sdkSourceSha256', 'worktreeSha256'):
+            changed = copy.deepcopy(self.inputs)
+            changed['nsh'][field] = '0' * 64
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'Rebase'):
+                self.plan(changed)
+        with self.assertRaisesRegex(ValueError, 'Rebase'):
+            self.plan(binding='unreviewed')
+
+    def test_current_local_ui_context_sdk_never_receives_legacy_editor_or_ability_patches(self):
+        inputs = {**self.inputs, 'hostModel': 'native-ui-context'}
+        plan = self.plan(inputs, binding='local-released-bindings')
+        self.assertEqual(plan['name'], 'local-native-ui-context')
+        self.assertEqual(plan['stagedPatches'], [])
+        self.assertEqual(set(plan['omittedPatches']), set(self.names))
+
+    def test_added_removed_or_duplicate_patch_cannot_be_silently_ignored(self):
+        for names in (self.names + ['new.patch'], self.names[1:], self.names + self.names[:1]):
+            with self.subTest(names=names), self.assertRaisesRegex(ValueError, 'inventory'):
+                self.plan(names=names)
+
+    def test_legacy_sources_still_apply_all_patches_in_original_sorted_order(self):
+        changed = copy.deepcopy(self.inputs)
+        changed['ability']['revision'] = '3f2dcce14d8bf268b198e1b1115c4322c6783e0d'
+        plan = self.plan(changed)
+        self.assertEqual(plan['stagedPatches'], sorted(set(self.names) - set(self.builder.BINDING_DIRECT)))
+        self.assertEqual(plan['omittedPatches'], {})
 
 
 class BuildSourceTests(unittest.TestCase):

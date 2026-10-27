@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+from nsh_runner import run_nsh
 
 ROOT = Path(__file__).resolve().parents[3]
 UI = ROOT / "ui/nsh"
@@ -52,7 +53,7 @@ def hashes():
 def snapshots(output):
     tree, result, current = reader.NativeTree(), {}, 0
     for line in output.splitlines():
-        header = re.search(r"── (?:after )?tap #(\d+)\b", line)
+        header = re.search(r"PAWS TAP #(\d+)\b", line)
         if header and int(header[1]) != current:
             result[current] = copy.deepcopy(tree)
             current = int(header[1])
@@ -91,22 +92,22 @@ def run(binary, stage, output_dir, name, taps, checks, markers, expected_writes)
     cmd = [str(binary), "trace", str(stage / ENTRY), "--wait", "40", "--width", "390", "--height", "844"]
     for tap in taps:
         cmd.extend(["--tap", "id:" + tap])
-    process = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    process = run_nsh(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, timeout=60)
     output = process.stdout
     log = output_dir / f"{name}.log"
     log.write_text(output)
     assert process.returncode == 0, f"{name}: CLI failed, inspect {log}"
     assert not re.search(r"(?im)^(?:error(?:\s|:)|fatal(?:\s|:)|uncaught exception(?:\s|:))", output)
-    presses = len(re.findall(r"perf event Press on view\b", output))
-    assert presses == len(taps), f"{name}: missing actual native Press"
+    presses = len(re.findall(r"PAWS PRESS #\b", output))
+    assert presses == len(taps), f"{name}: missing completed test step"
     for marker in markers:
         assert marker in output, f"{name}: missing {marker}"
     assert output.count("PASS MTU: actual settings.vpn payload mtu=2816 profile/revision preserved") == expected_writes
     states = snapshots(output)
     for index, value, enabled, editable in checks:
         state(states[index], value, enabled, editable)
-    print(f"PASS Settings MTU: {name} ({presses} actual Press; {expected_writes} settings.vpn request)")
+    print(f"PASS Settings MTU: {name} ({presses} completed step; {expected_writes} settings.vpn request)")
     return {"case": name, "presses": presses, "settingsVpnRequests": expected_writes, "log": str(log)}
 
 
@@ -123,8 +124,8 @@ def main():
     shutil.copytree(UI, stage, ignore=shutil.ignore_patterns(".nsh", "__pycache__"))
     components = stage / "src/components.tsx"
     source = components.read_text()
-    old = "          onChangeText={props.onChange}\n"
-    new = '''          onChangeText={props.id === "vpn-mtu"
+    old = "          onChange={props.onChange}\n"
+    new = '''          onChange={props.id === "vpn-mtu"
             ? registerSettingsMtuInput(props.onChange, () => !props.disabled)
             : props.onChange}
 '''
@@ -156,7 +157,7 @@ def main():
         "ownedCopy": str(stage), "instrumentedFile": str(components),
         "componentsOriginalSha256": original_components_sha,
         "componentsInstrumentedSha256": digest(components),
-        "limits": ["Real Field Input.onChangeText handler, Settings, DraftEdits and CoreClient; controlled DomainHost receipts",
+        "limits": ["Real Field Input.onChange handler, Settings, DraftEdits and CoreClient; controlled DomainHost receipts",
                    "Only the owned copy registers its exact native Input handler; original components and SDK are unchanged",
                    "Actual native mount configuration/Press and request payload; not native text input, IME, device MTU or traffic proof"]
     }, indent=2) + "\n")

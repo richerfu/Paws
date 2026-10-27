@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from nsh_runner import run_nsh
 
 
 class NativeTree:
@@ -107,6 +108,7 @@ CASES = {
     'profile-error-details': ['nav-profiles', 'profile-menu-visual-error', 'profile-refresh-error',
                               'profile-refresh-failure-details', 'profile-refresh-failure-copy'],
     'resources': ['nav-tools', 'tool-resources'],
+    'resources-end': ['nav-tools', 'tool-resources'],
     'rule-detail': ['nav-tools', 'tool-resources', 'rule-details-rule-1'],
     'history': ['nav-tools', 'tool-requests'],
     'logs-detail': ['nav-tools', 'tool-logs', 'log-2026-10-22T00:00:00Z'],
@@ -116,7 +118,8 @@ CASES = {
 }
 LABELS = {
     'profiles': ['当前', '刷新失败'], 'profile-error': ['刷新失败'], 'profile-error-details': ['刷新失败'],
-    'resources': ['已加载', '规则', '缓存已加载', '刷新失败', '等待缓存'],
+    'resources': ['已加载', '规则', '缓存已加载', '刷新失败'],
+    'resources-end': ['等待缓存'],
     'rule-detail': ['启用'], 'history': ['活跃', '已结束'],
     'logs-detail': ['日志记录已关闭', 'ERROR', 'WARN'], 'traffic': ['保护未确认'],
     'diagnostics': ['通过', '失败', '不适用', '未测试'], 'stale-health': ['通过', '失败', '未测试'],
@@ -183,7 +186,7 @@ def validate_page_error(tree, mounted, name, width, height, fixture):
             'fullSourceCopyCommandExact': True}
 
 
-def validate(tree, name, width, height, fixture):
+def validate(tree, name, width, height, fixture=None):
     mounted = [n for n in tree.nodes.values() if tree.visible(n) and 'frame' in n]
     assert len(mounted) > 20, 'Actual Paws page did not mount'
     for node in mounted:
@@ -261,13 +264,17 @@ def main():
         for name, taps in CASES.items():
             command = [str(args.nsh_bin.resolve()), 'trace', ENTRY, '--width', str(width), '--height', str(height), '--wait', '30']
             for selector in ['visual-hide-controls', *taps]:
+                if name == 'rule-detail' and selector == 'rule-details-rule-1':
+                    command.extend(['--scroll', 'id:resources-list', '100000'])
                 command.extend(['--tap', 'id:' + selector])
-            run = subprocess.run(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=40)
+            if name == 'resources-end':
+                command.extend(['--scroll', 'id:resources-list', '100000'])
+            run = run_nsh(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=40)
             path = args.output_dir / f'{width}-{name}.log'
             path.write_text(run.stdout)
             assert run.returncode == 0, f'{width}/{name}: CLI failed, see {path}'
             assert not re.search(r'(?im)^(?:error(?:\s|:)|uncaught exception(?:\s|:))', run.stdout), str(path)
-            assert len(re.findall(r'perf event Press on view\b', run.stdout)) == len(taps) + 1, f'{width}/{name}: missing actual Press'
+            assert len(re.findall(r'PAWS PRESS #\b', run.stdout)) == len(taps) + 1, f'{width}/{name}: missing completed step'
             tree = NativeTree()
             for line in run.stdout.splitlines():
                 tree.apply(line)

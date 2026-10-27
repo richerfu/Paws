@@ -1,18 +1,7 @@
-import { AbilityConstant, Configuration, ConfigurationConstant, Want } from '@kit.AbilityKit';
+import { AbilityConstant, Configuration, ConfigurationConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { i18n } from '@kit.LocalizationKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import { LazyPlugin, NativeAbility } from '@ohos-rs/ability';
-import { nativeShellPlugins } from '@nsh/ohos';
-import { FilesPlugin } from '@ohos-rs/ability-plugin-files';
-import { UrlPlugin } from '@ohos-rs/ability-plugin-url';
-import { ResourcePlugin } from '@ohos-rs/ability-plugin-resource';
-import { AccessibilityPlugin } from '@ohos-rs/ability-plugin-accessibility';
-import { ArkuiPlugin } from '@ohos-rs/ability-plugin-arkui';
-import { ClipboardPlugin } from '@ohos-rs/ability-plugin-clipboard';
-import { WindowPlugin } from '@ohos-rs/ability-plugin-window';
-import { WebviewPlugin } from '@ohos-rs/ability-plugin-webview';
-import { VideoPlugin } from '@ohos-rs/ability-plugin-video';
-import { initLogging } from 'libnsh_platform_ohos.so';
+import { initLogging } from '@nsh/ohos';
 import window from '@ohos.window';
 import pawsUi from 'libpaws_ui.so';
 import { describeError } from '../common/Errors';
@@ -34,10 +23,8 @@ const LOG_TAG: string = 'PawsEntry';
  * `paws.*` plugins, and forwards lifecycle events. All platform logic lives
  * in the plugins; debug automation lives in `DebugAutomation`.
  */
-export default class EntryAbility extends NativeAbility {
-  public moduleName: string = 'nsh_platform_ohos';
-  public defaultPage: boolean = false;
-
+export default class EntryAbility extends UIAbility {
+  private lifecycleQueue: Promise<void> = Promise.resolve();
   private resolveVpnPluginReady?: (plugin: VpnPlugin) => void;
   private vpnPluginReady: Promise<VpnPlugin> = new Promise((resolve): void => {
     this.resolveVpnPluginReady = resolve;
@@ -47,18 +34,11 @@ export default class EntryAbility extends NativeAbility {
   private systemExitRecorder: SystemExitRecorder = new SystemExitRecorder();
   private windowFrameMetrics: WindowFrameMetrics = new WindowFrameMetrics();
 
-  public bridgePlugins = [
-    new LazyPlugin(() => new ResourcePlugin()),
-    new LazyPlugin(() => new AccessibilityPlugin()),
-    ...nativeShellPlugins(),
-    new LazyPlugin(() => new ArkuiPlugin()),
-    new LazyPlugin(() => new ClipboardPlugin({ metadataMimeType: 'application/x-paws-clipboard' })),
-    new LazyPlugin(() => new WindowPlugin()),
-    new LazyPlugin(() => new WebviewPlugin()),
-    new LazyPlugin(() => new VideoPlugin()),
-    new LazyPlugin(() => new FilesPlugin()),
-    new LazyPlugin(() => new UrlPlugin()),
-  ];
+  private enqueueLifecycleOperation(_name: string, operation: () => Promise<void>): Promise<void> {
+    const next = this.lifecycleQueue.then(operation, operation);
+    this.lifecycleQueue = next.catch((): void => {});
+    return next;
+  }
 
   private async requestStartVpn(optionsJson: string): Promise<void> {
     let timer: number = -1;
@@ -147,9 +127,6 @@ export default class EntryAbility extends NativeAbility {
     this.configureNativeLocale();
     this.configureNativeAppearance();
     this.seedGeodataFromRawfiles();
-    super.onCreate(want, launchParam);
-    // NativeAbility attaches lazy plugins on its lifecycle queue. Never await
-    // before super.onCreate, or race debug automation against that attachment.
     void this.enqueueLifecycleOperation('paws-network-ready', async (): Promise<void> => {
       // Network discovery must never hold up the WindowStage queue.
       getPhysicalNetwork().then((physical): void => {
@@ -161,8 +138,7 @@ export default class EntryAbility extends NativeAbility {
     });
   }
 
-  public onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    super.onNewWant(want, launchParam);
+  public onNewWant(want: Want, _launchParam: AbilityConstant.LaunchParam): void {
     this.systemExitRecorder.drain();
     this.vpnPlugin?.onAbilityForeground();
     void this.enqueueLifecycleOperation('paws-debug-new-want', async (): Promise<void> => {
@@ -171,21 +147,24 @@ export default class EntryAbility extends NativeAbility {
   }
 
   public onForeground(): void {
-    super.onForeground();
     this.systemExitRecorder.drain();
     this.vpnPlugin?.onAbilityForeground();
+  }
+
+  public onWindowStageCreate(windowStage: window.WindowStage): void {
+    void this.enqueueLifecycleOperation('paws-window-stage', (): Promise<void> => {
+      return this.loadWindowStageContent(windowStage);
+    });
   }
 
   public async onDestroy(): Promise<void> {
     this.windowFrameMetrics.dispose();
     this.hostServices?.dispose();
-    await super.onDestroy();
   }
 
   public onConfigurationUpdate(newConfig: Configuration): void {
     this.configureNativeLocale(newConfig.language);
     this.configureNativeAppearance(newConfig.colorMode);
-    super.onConfigurationUpdate(newConfig);
   }
 
   protected async loadWindowStageContent(windowStage: window.WindowStage): Promise<void> {

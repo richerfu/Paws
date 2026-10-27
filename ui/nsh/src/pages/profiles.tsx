@@ -1,8 +1,17 @@
-import { cleanup, computed, effect, Scroll, signal, Text, untracked, View } from "nsh";
-import { Image } from "nsh/image";
-import { Clipboard } from "nsh/clipboard";
-import { windowSize } from "nsh/device";
-import { List } from "nsh/list";
+import {
+  cleanup,
+  computed,
+  effect,
+  Scroll,
+  signal,
+  Text,
+  untracked,
+  View,
+  Image,
+  Clipboard,
+  windowSize,
+  List,
+} from "nsh";
 import {
   Action,
   Actions,
@@ -29,7 +38,6 @@ import {
 import { bytes, timestamp } from "../locale";
 import { DraftEdits } from "../draft";
 import { matchesProfile } from "../query";
-import { summarizeYaml } from "../yaml-summary";
 import { PageError } from "../page-error";
 import type { Profile } from "../model";
 
@@ -205,8 +213,8 @@ export function Profiles() {
         keyExtractor={(profile) => profile.id}
         estimatedItemSize={120}
         style={{ flex: 1 }}
-        contentContainerStyle={{ padding: windowSize().width >= 840 ? 24 : 16, gap: 12 }}
-        ListHeaderComponent={
+        contentStyle={{ padding: windowSize().width >= 840 ? 24 : 16, gap: 12 }}
+        header={
           ui.client.state()!.profiles.length ? (
             <View style={{ marginBottom: 12 }}>
               <Field
@@ -221,7 +229,7 @@ export function Profiles() {
             </View>
           ) : undefined
         }
-        ListEmptyComponent={
+        empty={
           <View style={{ gap: 16, alignItems: "center" }}>
             <View
               style={{
@@ -271,9 +279,9 @@ export function Profiles() {
             }}
           >
             <View
-              class="hover:bg-[#f4f4f5] dark:hover:bg-[#27272a] focus-visible:ring-2 focus-visible:ring-[#71717a]"
+              class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
               testID={`activate-profile-${profile().id}`}
-              accessibilityRole="button"
+              role="button"
               accessibilityLabel={profile().name}
               disabled={ui.client.pending() > 0 || !ui.client.domains.fresh(["config", "profiles"])}
               onPress={() => {
@@ -596,7 +604,7 @@ export function Profiles() {
             <Action secondary label={ui.t("关闭", "Close")} onPress={() => refreshError.set("")} />
             <Action
               label={ui.t("复制错误信息", "Copy error")}
-              onPress={() => Clipboard.setString(refreshError())}
+              onPress={() => Clipboard.writeText(refreshError())}
             />
           </Actions>
         </Dialog>
@@ -734,16 +742,16 @@ function MenuRow(props: {
   return (
     <>
       <View
-        class="hover:bg-[#f4f4f5] dark:hover:bg-[#27272a] focus-visible:ring-2 focus-visible:ring-[#71717a]"
+        class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
         testID={props.id}
-        accessibilityRole="button"
+        role="button"
         accessibilityLabel={props.label}
         accessibilityState={{ disabled: disabled(), busy: !!props.loading }}
         disabled={disabled()}
         onPress={() => {
           if (!disabled()) props.onPress();
         }}
-        activeOpacity={0.65}
+        activeStyle={{ opacity: 0.65 }}
         style={{
           height: 48,
           paddingHorizontal: 14,
@@ -778,166 +786,5 @@ function MenuRow(props: {
       </View>
       <Separator />
     </>
-  );
-}
-
-export function ProfileEditor(props: { profileId: string; onClose: () => void }) {
-  const ui = useApp(),
-    text = signal(""),
-    original = signal(""),
-    baseline = signal(ui.client.state()!.configRevision),
-    loaded = signal(false),
-    dirty = signal(false),
-    operation = signal("");
-  const alive = useLifetime(),
-    edits = new DraftEdits();
-  const busy = () => operation() !== "";
-  const load = async () => {
-    loaded.set(false);
-    const started = performance.now(),
-      revision = ui.client.state()!.configRevision;
-    const value = await ui.client.run<string>("profiles.read", { profileId: props.profileId });
-    if (alive() && value !== undefined) {
-      const received = performance.now(),
-        large = value.length >= 65536;
-      if (large)
-        console.info(
-          `[PawsYamlPerf] receive chars=${value.length} elapsedMs=${received - started}`,
-        );
-      text.set(value);
-      if (large)
-        console.info(
-          `[PawsYamlPerf] text-set chars=${value.length} elapsedMs=${performance.now() - received}`,
-        );
-      original.set(value);
-      loaded.set(true);
-      dirty.set(false);
-      baseline.set(revision);
-      if (large)
-        console.info(
-          `[PawsYamlPerf] loaded-set chars=${value.length} elapsedMs=${performance.now() - received}`,
-        );
-    }
-  };
-  void load();
-  const conflict = () => loaded() && baseline() !== ui.client.state()!.configRevision;
-  const save = async () => {
-    if (busy()) return;
-    operation.set("save");
-    const ticket = edits.ticket();
-    const result = await ui.client.run(
-      "profiles.save",
-      { profileId: props.profileId, content: text(), expectedRevision: baseline() },
-      ui.t("配置已保存", "Profile saved"),
-    );
-    if (!alive()) return;
-    operation.set("");
-    if (result !== undefined && edits.unchangedSince(ticket)) {
-      dirty.set(false);
-      props.onClose();
-    }
-  };
-  const validate = async () => {
-    if (busy()) return;
-    operation.set("validate");
-    await ui.client.run(
-      "profiles.validate",
-      { content: text() },
-      ui.t("配置校验通过", "Configuration is valid"),
-    );
-    if (alive()) operation.set("");
-  };
-  const close = () => {
-    if (!busy()) props.onClose();
-  };
-  const statistics = computed(() => summarizeYaml(text()));
-  const summary = () =>
-    `${statistics().lines} ${ui.t("行", "lines")} · ${statistics().characters} ${ui.t("字符", "characters")} · ${dirty() ? ui.t("有未保存修改", "Unsaved changes") : ui.t("未修改", "Unchanged")}`;
-  return (
-    <Dialog
-      title={ui.t("编辑 YAML", "Edit YAML")}
-      description={
-        ui.client.state()!.profiles.find((profile) => profile.id === props.profileId)?.name
-      }
-      onClose={close}
-    >
-      <If when={conflict()}>
-        <Hint
-          danger
-          text={ui.t(
-            "配置已在其他操作中变更，请重新载入后编辑。",
-            "Configuration changed. Reload before editing further.",
-          )}
-        />
-        <Action
-          secondary
-          small
-          label={ui.t("重新载入当前配置", "Reload current configuration")}
-          disabled={busy()}
-          onPress={() =>
-            void confirm(
-              ui,
-              ui.t("重新载入会丢弃当前编辑，继续？", "Discard edits and reload?"),
-              () => void load(),
-            )
-          }
-        />
-      </If>
-      <Hint text={summary()} />
-      <Field
-        label=""
-        value={text()}
-        onChange={(value) => {
-          text.set(value);
-          edits.edit();
-          dirty.set(value !== original());
-          ui.client.error.set("");
-        }}
-        multiline
-        height={260}
-        disabled={!loaded() || busy()}
-        placeholder={ui.t("配置内容", "Configuration content")}
-      />
-      <If when={ui.client.error()}>
-        <PageError id={`profile-editor-error-${props.profileId}`} text={ui.client.error()} />
-      </If>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Action
-          variant="ghost"
-          small
-          label={ui.t("回滚", "Reset")}
-          disabled={busy() || !loaded()}
-          onPress={() => {
-            text.set(original());
-            edits.edit();
-            dirty.set(false);
-            ui.client.error.set("");
-          }}
-        />
-        <View style={{ flex: 1 }} />
-        <Action
-          id="validate-profile"
-          secondary
-          small
-          icon="check"
-          label={operation() === "validate" ? ui.t("测试中", "Testing") : ui.t("测试", "Test")}
-          loading={operation() === "validate"}
-          disabled={!loaded() || busy() || !text().trim()}
-          onPress={() => void validate()}
-        />
-        <Action
-          id="save-profile"
-          small
-          icon="save"
-          label={operation() === "save" ? ui.t("保存中", "Saving") : ui.t("保存", "Save")}
-          loading={operation() === "save"}
-          disabled={!loaded() || busy() || conflict() || !text().trim()}
-          onPress={() => void save()}
-        />
-      </View>
-      <If when={!loaded()}>
-        <Hint text={ui.t("正在读取配置…", "Reading profile…")} />
-      </If>
-    </Dialog>
   );
 }
