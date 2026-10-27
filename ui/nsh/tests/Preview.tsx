@@ -1,4 +1,4 @@
-import { mount } from "nsh";
+import { host as channel, mount } from "nsh";
 import { PawsApp } from "../src/app";
 import { CoreClient } from "../src/client";
 import { DomainHost } from "./DomainHost";
@@ -62,6 +62,7 @@ mount(() => {
     if (request.command === "providers.testProxy" && (!p.provider || !p.name))
       throw new Error("Provider member identity missing");
     console.log(`PASS WIRE: ${request.command}`);
+    channel.post("paws.test.report", { command: request.command });
     let data: unknown = null;
     if (request.command === "engines.decision")
       data = { selected: "meow", reasons: ["Fixture engine"] };

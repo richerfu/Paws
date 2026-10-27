@@ -34,7 +34,8 @@ import {
   useApp,
   RouteOwner,
 } from "./components";
-import { Dashboard, Traffic, VpnPowerButton } from "./pages/overview";
+import { Dashboard, Traffic } from "./pages/overview";
+import { FloatingVpnPowerButton } from "./floating-vpn";
 import { Profiles } from "./pages/profiles";
 import { ProfileEditor } from "./pages/profile-editor";
 import { Proxies } from "./pages/proxies";
@@ -690,11 +691,7 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
             </Each>
           </View>
         </If>
-        <If when={!wide() && page() === "dashboard" && props.client.state()}>
-          <View pointerEvents="box-none" style={{ position: "absolute", bottom: 92, right: 24 }}>
-            <VpnPowerButton size={56} />
-          </View>
-        </If>
+        <FloatingVpnPowerButton visible={!wide() && page() === "dashboard" && !!props.client.state()} />
         <If when={confirmation()}>
           <Dialog title={confirmation()!.title} onClose={() => confirmAnswer(false)}>
             <Actions>

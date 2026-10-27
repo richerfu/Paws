@@ -1,4 +1,4 @@
-import { computed, Scroll, Text, View, windowSize } from "nsh";
+import { computed, Scroll, Text, View, windowSize, type ViewProps } from "nsh";
 import {
   Action,
   Actions,
@@ -22,7 +22,9 @@ import { connectionState } from "../connection-state";
 import { PageError } from "../page-error";
 import { ProxyGroupList } from "./proxies";
 
-export function VpnPowerButton(props: { size: number }) {
+export function VpnPowerButton(
+  props: { size: number } & Pick<ViewProps, "pan" | "onPanEnd" | "style" | "accessibilityHint">,
+) {
   const ui = useApp(),
     current = () => ui.client.state()!;
   const starting = () =>
@@ -37,7 +39,10 @@ export function VpnPowerButton(props: { size: number }) {
       testID="vpn-toggle"
       role="button"
       accessibilityLabel={stop() ? ui.t("停止 VPN", "Stop VPN") : ui.t("启动 VPN", "Start VPN")}
+      accessibilityHint={props.accessibilityHint}
       accessibilityState={{ disabled: stopping() }}
+      pan={props.pan}
+      onPanEnd={props.onPanEnd}
       disabled={
         !!ui.client.vpnUnconfirmed() ||
         stopping() ||
@@ -45,15 +50,18 @@ export function VpnPowerButton(props: { size: number }) {
       }
       onPress={() => void ui.client.run(stop() ? "vpn.stop" : "vpn.start")}
       activeStyle={{ opacity: 0.8 }}
-      style={{
-        width: props.size,
-        height: props.size,
-        borderRadius: props.size / 2,
-        backgroundColor: current().vpnRunning ? palette().danger : palette().brandFill,
-        alignItems: "center",
-        justifyContent: "center",
-        opacity: stopping() ? 0.6 : 1,
-      }}
+      style={[
+        {
+          width: props.size,
+          height: props.size,
+          borderRadius: props.size / 2,
+          backgroundColor: current().vpnRunning ? palette().danger : palette().brandFill,
+          alignItems: "center",
+          justifyContent: "center",
+          opacity: stopping() ? 0.6 : 1,
+        },
+        props.style,
+      ]}
     >
       <If
         when={starting() || stopping()}

@@ -63,6 +63,7 @@ def cases(log_dir):
         ("check", ["check", "ui/nsh"], (), None),
         ("production-entry", ["build", "ui/nsh", "-o", str(log_dir / "production-entry")], (), None),
         ("profile-editor", ["test", "ui/nsh/tests/profile-editor.test.ts"], ("6 tests: 6 passed, 0 failed",), None),
+        ("floating-vpn", ["test", "--trace", "ui/nsh/tests/floating-vpn.test.ts"], ("3 tests: 3 passed, 0 failed",), None),
         (
             "state", ["trace", "ui/nsh/tests/State.tsx", "--wait", "120", "--taps", "0"],
             (
@@ -123,6 +124,25 @@ def validate_output(name, output, markers, expected_taps):
         taps = len(PRESS.findall(output))
         if taps != expected_taps:
             raise ValueError(f"{name}: expected {expected_taps} completed steps, observed {taps}")
+    if name == "floating-vpn":
+        # Inspect real native animation commands after the public drag steps:
+        # release x/y, then the edge the spring settles at. These assertions
+        # fail when pan is missing, even if a cancelled press still looks safe.
+        values, docks = [], []
+        for line in output.splitlines():
+            value = re.search(r'Animation\(Set \{ node: (\d+), value: ([\deE.+-]+) \}', line)
+            spring = re.search(r'Animation\(Start \{ node: (\d+), .*driver: Spring \{ to: ([\deE.+-]+)', line)
+            if value:
+                values.append((value[1], float(value[2])))
+            if spring and len(values) >= 2 and spring[1] == values[-2][0]:
+                docks.append((values[-2][1], values[-1][1], float(spring[2])))
+        expected = [(206, 415, 286), (46, 265, 0), (260, 445, 286),
+                    (0, 0, 0), (636, 101, 636), (36, 335, 0)]
+        if len(docks) != len(expected) or any(
+            abs(actual - target) > 0.1
+            for dock, wanted in zip(docks, expected) for actual, target in zip(dock, wanted)
+        ):
+            raise ValueError(f"floating-vpn: wrong native releases or snap targets: {docks}")
     if name == "import-lifetime":
         modals = re.findall(r"Create \{[^\n]*kind: Modal", output)
         if len(modals) != 12:
