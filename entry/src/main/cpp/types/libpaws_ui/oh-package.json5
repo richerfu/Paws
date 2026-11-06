@@ -1,6 +1,6 @@
 {
   "name": "libpaws_ui.so",
   "types": "./Index.d.ts",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "paws arkit native UI and N-API bindings"
 }

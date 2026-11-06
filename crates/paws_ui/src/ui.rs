@@ -102,23 +102,6 @@ impl UiServices {
         }
     }
 
-    pub(crate) fn set_advanced(&self, advanced: bool) {
-        let current = self.stores.preferences.peek().clone();
-        let preferences = UiPreferences {
-            advanced,
-            language: current.language,
-            theme: current.theme,
-        };
-        if let Err(e) = preferences.save() {
-            self.notify(e);
-            return;
-        }
-        self.stores.set_preferences(PreferencesProjection {
-            advanced,
-            ..current
-        });
-    }
-
     pub(crate) fn set_language(&self, language: LanguagePreference) {
         let current = self.stores.preferences.peek().clone();
         let preferences = UiPreferences {

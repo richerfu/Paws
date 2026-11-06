@@ -6,6 +6,65 @@ static TEST_LOG_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 const PLATFORM_RECOVERY_OWNER_CHILD_MARKER: &str = "PAWS_PLATFORM_RECOVERY_OWNER_CHILD_MARKER";
 
 #[test]
+fn active_engine_projection_uses_session_ownership_instead_of_next_connection_preference() {
+    let root = std::env::temp_dir().join(format!("paws-active-engine-{}", now_unix_nanos()));
+    let core = CoreHandle::new_with_profile_root(&root);
+    {
+        let mut state = core.lock_state().unwrap();
+        state.vpn_options.engine = VpnEngine::Auto;
+        state.platform_start_attempt_id = "active".to_owned();
+        state.platform_start_outcome = PlatformStartOutcome::Connected;
+        state.platform_extension_attached = true;
+        state.platform_vpn_running = true;
+        state.platform_vpn_engine = Some(VpnEngine::SingBox);
+    }
+    assert_eq!(
+        core.runtime_status_projection().unwrap().active_engine,
+        Some(VpnEngine::SingBox)
+    );
+    {
+        let mut state = core.lock_state().unwrap();
+        state.vpn_options.engine = VpnEngine::Mihomo;
+    }
+    assert_eq!(
+        core.runtime_status_projection().unwrap().active_engine,
+        Some(VpnEngine::SingBox)
+    );
+    {
+        let mut state = core.lock_state().unwrap();
+        let revision = state.status_revision;
+        core.apply_platform_envelope_locked(
+            &mut state,
+            true,
+            None,
+            Some(PlatformVpnState {
+                start_attempt_id: "active".to_owned(),
+                start_outcome: PlatformStartOutcome::Connected,
+                extension_attached: true,
+                running: true,
+                engine: Some(VpnEngine::Meow),
+                updated_at: 1,
+                ..PlatformVpnState::default()
+            }),
+        );
+        assert!(
+            state.status_revision > revision,
+            "engine ownership changes must notify the UI"
+        );
+    }
+    assert_eq!(
+        core.runtime_status_projection().unwrap().active_engine,
+        Some(VpnEngine::Meow)
+    );
+    core.lock_state().unwrap().platform_vpn_running = false;
+    assert_eq!(
+        core.runtime_status_projection().unwrap().active_engine,
+        None
+    );
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn mihomo_geodata_refresh_preserves_the_inode_seen_by_live_readers() {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -101,6 +160,12 @@ fn core_snapshot_is_json() {
         .any(|file| file.path.ends_with("geosite.dat")));
     assert_eq!(snapshot.about.app_version, APP_VERSION);
     assert_eq!(snapshot.about.meow_rs_version, MEOW_RS_VERSION);
+    assert_eq!(snapshot.about.mihomo_version, MIHOMO_VERSION);
+    assert_eq!(snapshot.about.sing_box_version, SING_BOX_VERSION);
+    assert_eq!(
+        from_json::<RuntimeSnapshot>(&json).unwrap().about,
+        snapshot.about
+    );
     assert_eq!(snapshot.about.arkit_version, ARKIT_VERSION);
     assert!(!snapshot.about.privacy_summary.is_empty());
     assert!(snapshot.about.privacy_summary.iter().any(|note| {
@@ -242,6 +307,141 @@ fn traffic_history_is_bounded_and_exposed_in_snapshot() {
     let latest = snapshot.traffic_history.last().unwrap();
     assert_eq!(latest.download_speed, 39);
     assert_eq!(latest.upload_speed, 78);
+}
+
+#[test]
+fn external_traffic_updates_publish_history_and_survive_background_sampling() {
+    for engine in [VpnEngine::Mihomo, VpnEngine::SingBox] {
+        let root = std::env::temp_dir().join(format!(
+            "paws-external-traffic-{}-{}",
+            engine.as_str(),
+            now_unix_nanos()
+        ));
+        let core = CoreHandle::new_with_profile_root(&root);
+        {
+            let mut state = core.lock_state().unwrap();
+            state.platform_vpn_running = true;
+            state.platform_vpn_engine = Some(engine);
+        }
+        let mut revisions = core.subscribe_runtime_revisions();
+        let before = *revisions.borrow_and_update();
+        for index in 1..=40 {
+            core.update_external_vpn_traffic(index * 10, index * 20, index * 100, index * 200)
+                .unwrap();
+            assert!(revisions.has_changed().unwrap());
+            let updated = core.telemetry_projection().unwrap();
+            assert!(updated.revisions.telemetry_revision > before.telemetry_revision);
+            assert_eq!(
+                updated.traffic_history.last().unwrap(),
+                &TrafficHistoryPoint {
+                    upload_speed: index * 10,
+                    download_speed: index * 20,
+                }
+            );
+            // The UI and IPC both consume the same sampled history.
+            let remote = platform_vpn_telemetry_projection(&core.lock_state().unwrap());
+            assert_eq!(remote.traffic, updated.traffic);
+            assert_eq!(remote.traffic_history, updated.traffic_history);
+            core.refresh_telemetry().unwrap();
+            let refreshed = core.telemetry_projection().unwrap();
+            assert_eq!(refreshed.traffic, updated.traffic);
+            assert_eq!(refreshed.traffic_history, updated.traffic_history);
+            revisions.borrow_and_update();
+        }
+        assert_eq!(
+            core.snapshot().unwrap().traffic_history.len(),
+            MAX_TRAFFIC_HISTORY
+        );
+        core.update_external_vpn_traffic(0, 0, 4000, 8000).unwrap();
+        let idle = core.snapshot().unwrap();
+        assert_eq!(idle.traffic.upload_speed, 0);
+        assert_eq!(idle.traffic.download_speed, 0);
+        assert_eq!(idle.traffic.download_bytes, 8000);
+        assert_eq!(idle.traffic_history.last().unwrap().download_speed, 0);
+
+        core.update_external_vpn_traffic(10, 20, 4010, 8020)
+            .unwrap();
+        core.lock_state().unwrap().platform_vpn_running = false;
+        core.refresh_telemetry().unwrap();
+        let stopped = core.snapshot().unwrap();
+        assert_eq!(stopped.traffic.upload_speed, 0);
+        assert_eq!(stopped.traffic.download_speed, 0);
+        assert_eq!(stopped.traffic_history.last().unwrap().download_speed, 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[tokio::test]
+async fn external_traffic_is_not_replaced_by_a_loaded_meow_tunnel() {
+    for engine in [VpnEngine::Mihomo, VpnEngine::SingBox] {
+        let root = std::env::temp_dir().join(format!(
+            "paws-external-meow-traffic-{}-{}",
+            engine.as_str(),
+            now_unix_nanos()
+        ));
+        let core = CoreHandle::new_with_profile_root(&root);
+        let profile_id = core
+            .import_profile_from_content(
+                "Direct",
+                "test",
+                &paws_profile::default_runtime_yaml(),
+                None,
+            )
+            .await
+            .unwrap();
+        core.reload_config(&profile_id).await.unwrap();
+        {
+            let mut state = core.lock_state().unwrap();
+            state.platform_vpn_running = true;
+            state.platform_vpn_engine = Some(engine);
+            let tunnel = state.tunnel.as_ref().unwrap();
+            tunnel.statistics().add_upload(111);
+            tunnel.statistics().add_download(222);
+        }
+        core.update_external_vpn_traffic(100, 200, 1000, 2000)
+            .unwrap();
+        core.refresh_telemetry().unwrap();
+        let snapshot = core.snapshot().unwrap();
+        assert_eq!(snapshot.traffic.upload_speed, 100);
+        assert_eq!(snapshot.traffic.download_speed, 200);
+        assert_eq!(snapshot.traffic.upload_bytes, 1000);
+        assert_eq!(snapshot.traffic.download_bytes, 2000);
+        assert_eq!(snapshot.traffic.meow_upload_bytes, 111);
+        assert_eq!(snapshot.traffic.meow_download_bytes, 222);
+        assert_eq!(snapshot.traffic_history.len(), 1);
+        let usage = core
+            .telemetry_projection()
+            .unwrap()
+            .active_profile_usage
+            .unwrap();
+        assert_eq!(usage.upload_bytes, 1000);
+        assert_eq!(usage.download_bytes, 2000);
+
+        // A replacement native session starts its totals at zero. The first
+        // sample must count immediately, even below the previous session's total.
+        {
+            let mut state = core.lock_state().unwrap();
+            state.platform_start_attempt_id = "external-restart".to_owned();
+            state.platform_extension_attached = true;
+            state.platform_start_outcome = PlatformStartOutcome::Pending;
+        }
+        let options = VpnOptions {
+            engine,
+            ..VpnOptions::default()
+        };
+        core.start_external_platform_vpn(&to_json(&options).unwrap(), "external-restart")
+            .unwrap();
+        assert_eq!(core.snapshot().unwrap().traffic, TrafficSnapshot::default());
+        core.update_external_vpn_traffic(7, 9, 7, 9).unwrap();
+        let usage = core
+            .telemetry_projection()
+            .unwrap()
+            .active_profile_usage
+            .unwrap();
+        assert_eq!(usage.upload_bytes, 1007);
+        assert_eq!(usage.download_bytes, 2009);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[test]

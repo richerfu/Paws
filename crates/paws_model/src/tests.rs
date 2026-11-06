@@ -1,6 +1,16 @@
 use super::*;
 
 #[test]
+fn about_snapshot_accepts_cached_data_without_new_engine_versions() {
+    let mut cached = serde_json::to_value(AboutSnapshot::default()).unwrap();
+    cached.as_object_mut().unwrap().remove("mihomoVersion");
+    cached.as_object_mut().unwrap().remove("singBoxVersion");
+    let about: AboutSnapshot = serde_json::from_value(cached).unwrap();
+    assert!(about.mihomo_version.is_empty());
+    assert!(about.sing_box_version.is_empty());
+}
+
+#[test]
 fn vpn_stack_parses_only_runnable_backends() {
     assert_eq!(
         VpnStack::try_from("netstack-smoltcp").unwrap(),

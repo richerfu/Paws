@@ -9,9 +9,10 @@ use arkit::router::{
     use_back_handler, use_navigator, use_route, AnimatedOutlet, RouteProvider, Router,
 };
 use arkit::shadcn::components::{
-    BottomNavigation, BottomNavigationItem, Button, ButtonSize, ButtonVariant, Card,
-    CardDescription, CardTitle, Dialog, DialogFooter, DialogHeader, Field, FieldContent,
-    FieldDescription, FieldGroup, FieldLabel, FieldOrientation, FieldTitle, Input, RadioGroup,
+    Alert, AlertDescription, AlertTitle, AlertVariant, Badge, BadgeVariant, BottomNavigation,
+    BottomNavigationItem, Button, ButtonSize, ButtonVariant, Card, CardDescription, CardTitle,
+    Dialog, DialogFooter, DialogHeader, Field, FieldContent, FieldDescription, FieldError,
+    FieldGroup, FieldLabel, FieldOrientation, FieldSeparator, FieldTitle, Input, RadioGroup,
     Select, Separator, Spinner, Switch, TabsList, TabsTrigger, Textarea,
 };
 use arkit::shadcn::theme::{
@@ -30,9 +31,10 @@ mod press;
 mod route;
 
 use pages::{
-    about_page, appearance_page, connections_page, dashboard_page, diagnostics_page, logs_page,
-    privacy_page, profiles_page, proxies_page, requests_page, resources_page, settings_page,
-    subscription_converter_page, tools_page, traffic_page, ManualRuleDialog,
+    about_page, advanced_diagnostics_page, appearance_page, backups_page, connections_page,
+    dashboard_page, diagnostics_page, logs_page, privacy_page, profiles_page, proxies_page,
+    requests_page, resources_page, settings_page, subscription_converter_page, tools_page,
+    traffic_page, ManualRuleDialog,
 };
 use press::PressState;
 use route::Route;
@@ -284,6 +286,157 @@ fn FlatSegmented(props: FlatSegmentedProps) -> Element {
                     },
                 }
             }
+        }
+    }
+}
+
+fn engine_choice_label(engine: paws_model::VpnEngine, locale: UiLocale) -> String {
+    match engine {
+        paws_model::VpnEngine::Auto => translate_ui(locale, tr::engine_auto()),
+        _ => engine.as_str().to_owned(),
+    }
+}
+
+fn engine_status_label(
+    session: &SessionProjection,
+    preferred: paws_model::VpnEngine,
+    locale: UiLocale,
+) -> String {
+    match session.active_engine.filter(|_| session.vpn_running) {
+        Some(engine) => translate_ui(locale, tr::engine_active(engine.as_str())),
+        None if session.vpn_running => translate_ui(locale, tr::engine_active_unknown()),
+        None => translate_ui(
+            locale,
+            tr::engine_preferred(engine_choice_label(preferred, locale)),
+        ),
+    }
+}
+
+#[component]
+fn ConnectionChecks(
+    session: SessionProjection,
+    health: Option<paws_core::StartupHealth>,
+    locale: UiLocale,
+) -> Element {
+    use paws_core::StartupCheck;
+    let health = health.filter(|health| {
+        session.vpn_running
+            && session.vpn_session_id.as_deref() == Some(health.session.as_str())
+            && session.active_engine == Some(health.engine)
+    });
+    let ready = |passed| {
+        if passed {
+            StartupCheck::Passed
+        } else {
+            StartupCheck::NotTested
+        }
+    };
+    let stages = [
+        (
+            translate_ui(locale, tr::connection_config()),
+            ready(session.engine_loaded),
+        ),
+        (
+            translate_ui(locale, tr::connection_protect()),
+            if session.network_protect_error.is_some() {
+                StartupCheck::Failed
+            } else {
+                ready(session.network_protected)
+            },
+        ),
+        (
+            translate_ui(locale, tr::connection_dns()),
+            health.as_ref().map_or(StartupCheck::NotTested, |h| h.dns),
+        ),
+        (
+            translate_ui(locale, tr::connection_tcp()),
+            health
+                .as_ref()
+                .map_or(StartupCheck::NotTested, |h| h.node_tcp),
+        ),
+        (
+            translate_ui(locale, tr::connection_https()),
+            health.as_ref().map_or(StartupCheck::NotTested, |h| h.https),
+        ),
+    ];
+    rsx! {
+        FieldGroup {
+            for (label, state) in stages {
+                Field {
+                    orientation: FieldOrientation::Horizontal,
+                    FieldContent {
+                        FieldTitle { content: label }
+                    }
+                    Badge {
+                        content: translate_ui(locale, match state { StartupCheck::Passed => tr::connection_passed(), StartupCheck::Failed => tr::connection_failed(), StartupCheck::NotTested => tr::connection_pending(), StartupCheck::NotApplicable => tr::connection_skipped() }),
+                        variant: match state { StartupCheck::Passed => BadgeVariant::Secondary, StartupCheck::Failed => BadgeVariant::Destructive, _ => BadgeVariant::Outline },
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Only composes the upstream Button and Spinner; focus, keyboard, pointer,
+/// disabled styling and sizing stay owned by the shadcn primitive.
+#[component]
+fn OperationButton(
+    label: String,
+    icon: &'static str,
+    #[props(default)] variant: ButtonVariant,
+    #[props(default)] loading: bool,
+    #[props(default)] disabled: bool,
+    onclick: EventHandler<()>,
+) -> Element {
+    let color = match variant {
+        ButtonVariant::Default => primary_text(),
+        ButtonVariant::Destructive => destructive_text(),
+        _ => text_color(),
+    };
+    rsx! {
+        column {
+            width: "100%",
+            margin_bottom: spacing::MD,
+            Button {
+                variant,
+                width: Some("100%".into()),
+                accessibility_label: Some(label.clone()),
+                disabled: Some(disabled || loading),
+                onclick: move |_| onclick.call(()),
+                if loading {
+                    Spinner { size: spacing::LG, color: Some(color) }
+                } else {
+                    {arkit::icon(icon, spacing::LG, color)}
+                }
+                text { content: label, margin_left: spacing::SM, font_size: typography::SM, font_weight: 500, font_color: color }
+            }
+        }
+    }
+}
+
+#[component]
+fn OperationNotice(result: Option<Result<String, String>>, locale: UiLocale) -> Element {
+    let Some(result) = result else { return rsx! {} };
+    let (message, variant, title, icon) = match result {
+        Ok(message) => (
+            message,
+            AlertVariant::Default,
+            tr::operation_done(),
+            "check",
+        ),
+        Err(error) => (
+            error,
+            AlertVariant::Destructive,
+            tr::operation_failed(),
+            "circle-alert",
+        ),
+    };
+    rsx! {
+        Alert {
+            icon: icon.to_owned(),
+            variant,
+            AlertTitle { content: translate_ui(locale, title), variant }
+            AlertDescription { content: message, variant }
         }
     }
 }

@@ -20,6 +20,7 @@ pub(crate) struct PreferencesProjection {
 pub(crate) struct SessionProjection {
     pub lifecycle: VpnLifecycle,
     pub engine_loaded: bool,
+    pub active_engine: Option<paws_model::VpnEngine>,
     pub running: bool,
     pub vpn_running: bool,
     pub vpn_session_id: Option<String>,
@@ -53,6 +54,7 @@ pub(crate) struct TelemetryProjection {
     pub history: Vec<TrafficHistoryPoint>,
     pub active_profile_usage: Option<paws_core::ActiveProfileUsage>,
     pub dns: paws_model::DnsSnapshot,
+    pub startup_health: Option<paws_core::StartupHealth>,
     pub exit_location: paws_model::ExitLocationSnapshot,
 }
 
@@ -386,6 +388,7 @@ fn load_initial_ui_state(notifications: NotificationCenter) -> InitialUiState {
             .as_ref()
             .map_or(VpnLifecycle::Stopped, |status| status.vpn_lifecycle),
         engine_loaded: status.as_ref().is_ok_and(|status| status.engine_loaded),
+        active_engine: status.as_ref().ok().and_then(|status| status.active_engine),
         running: status.as_ref().is_ok_and(|status| status.engine_loaded),
         vpn_running: status.as_ref().is_ok_and(|status| status.vpn_running),
         vpn_session_id: status
@@ -447,6 +450,10 @@ fn load_initial_ui_state(notifications: NotificationCenter) -> InitialUiState {
         dns: telemetry_state
             .as_ref()
             .map_or_else(|_| Default::default(), |telemetry| telemetry.dns.clone()),
+        startup_health: telemetry_state
+            .as_ref()
+            .ok()
+            .and_then(|telemetry| telemetry.startup_health.clone()),
         exit_location: status.as_ref().map_or_else(
             |_| Default::default(),
             |status| status.exit_location.clone(),
@@ -641,6 +648,7 @@ impl UiStores {
                 || current.history != projection.traffic_history
                 || current.active_profile_usage != projection.active_profile_usage
                 || current.dns != projection.dns
+                || current.startup_health != projection.startup_health
         };
         if telemetry_changed {
             let mut current = self.telemetry.write();
@@ -648,6 +656,7 @@ impl UiStores {
             current.history = projection.traffic_history;
             current.active_profile_usage = projection.active_profile_usage;
             current.dns = projection.dns;
+            current.startup_health = projection.startup_health;
         }
         let logs_changed = {
             let current = self.logs.peek();
@@ -687,6 +696,7 @@ impl UiStores {
             SessionProjection {
                 lifecycle: projection.vpn_lifecycle,
                 engine_loaded: projection.engine_loaded,
+                active_engine: projection.active_engine,
                 running: projection.engine_loaded,
                 vpn_running: projection.vpn_running,
                 vpn_session_id: projection.vpn_session_id,

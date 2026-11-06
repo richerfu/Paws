@@ -30,6 +30,9 @@ or this focused regression:
 cargo test --locked -p paws_core --test http_obfs
 ```
 
-The independent Go bridge and the four patches under `patches/` are retained
-from `tinyko:feat/harmony-vpn-resilience-and-ui` unchanged. Native engine
-packaging and device acceptance are separate from these host regressions.
+The Mihomo and sing-box bridges are maintained under `vendor/mihomo-bridge`
+and `vendor/sing-box-bridge`. Their Go toolchain, engine and gVisor patches
+are maintained under `patches/`; see the
+[native engine build guide](../docs/native-engines-build.md) for the pinned
+revisions, patch application and HAP packaging steps. Device acceptance is
+separate from these host regressions.

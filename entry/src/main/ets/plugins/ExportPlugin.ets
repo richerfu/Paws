@@ -117,7 +117,7 @@ export class ExportPlugin extends AsyncPluginBase {
       suffixChoices = ['YAML|.yaml,.yml'];
       label = 'profile YAML';
     } else if (payload.exportKind === 'backup' || payload.exportKind === 'diagnostic') {
-      fallbackName = 'TinyPaws';
+      fallbackName = 'Paws';
       extension = '.json';
       acceptedExtensions = ['.json'];
       suffixChoices = ['JSON|.json'];

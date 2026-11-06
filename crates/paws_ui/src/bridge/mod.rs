@@ -605,7 +605,7 @@ pub(crate) async fn pick_profile_text() -> std::result::Result<Option<(String, S
         .allow_many(false)
         .filters(vec![
             FileDialogFilter::new()
-                .name("YAML / TinyPaws backup")
+                .name("YAML / Paws backup")
                 .pattern(".yaml,.yml,.json"),
             FileDialogFilter::new().name("Text").pattern(".txt"),
             FileDialogFilter::new().name("All").pattern("*"),

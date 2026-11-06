@@ -12,7 +12,7 @@ export class TinyPawsLiveView {
     return {
       id: 17042, event: 'PROGRESS', isMute: true,
       liveViewData: { primary: {
-        title: 'TinyPaws · VPN', content: [{ text }], keepTime: 0, clickAction: agent,
+        title: 'Paws · VPN', content: [{ text }], keepTime: 0, clickAction: agent,
         layoutData: { layoutType: liveViewManager.LayoutType.LAYOUT_TYPE_DEFAULT, progress: 0 },
       } },
     };

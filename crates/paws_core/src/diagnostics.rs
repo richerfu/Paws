@@ -109,7 +109,7 @@ impl CoreHandle {
             )
         };
         serde_json::to_string_pretty(&json!({
-            "product":"TinyPaws", "version":APP_VERSION, "observedAtUnixNanos":snapshot.observed_at_unix_nanos.to_string(),
+            "product":"Paws", "version":APP_VERSION, "observedAtUnixNanos":snapshot.observed_at_unix_nanos.to_string(),
             "session":snapshot.vpn_session_id, "vpnLifecycle":snapshot.vpn_lifecycle,
             "vpnEstablished":snapshot.vpn_running, "networkProtected":snapshot.network_protected,
             "mode":snapshot.mode,

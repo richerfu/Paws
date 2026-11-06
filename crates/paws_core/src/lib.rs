@@ -40,6 +40,7 @@ mod app_http;
 mod controller;
 mod diagnostics;
 mod engine_health;
+pub use engine_health::{StartupCheck, StartupHealth};
 mod engine_policy;
 mod sing_box_proxy;
 pub use engine_policy::EngineQualification;
@@ -109,8 +110,11 @@ const MIXED_LISTENER_READY_TIMEOUT: Duration = Duration::from_secs(2);
 const MIXED_LISTENER_READY_RETRY: Duration = Duration::from_millis(25);
 const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
-const APP_VERSION: &str = "1.2.9-tiny";
+const APP_VERSION: &str = "1.3.0";
 const MEOW_RS_VERSION: &str = "0.22.0";
+// Versions of the source revisions pinned by scripts/build-*-ohos.sh.
+const MIHOMO_VERSION: &str = "1.10.0";
+const SING_BOX_VERSION: &str = "1.13.21";
 const ARKIT_VERSION: &str = env!("PAWS_ARKIT_VERSION");
 const RUST_VERSION: &str = env!("CARGO_PKG_RUST_VERSION");
 const MIHOMO_OHOS_SDK_VERSION: u32 = 24;
@@ -728,6 +732,7 @@ pub struct TelemetryProjection {
     pub active_profile_usage: Option<ActiveProfileUsage>,
     pub controller_diagnostics: ControllerDiagnostics,
     pub dns: DnsSnapshot,
+    pub startup_health: Option<StartupHealth>,
     pub logs: Vec<LogEntry>,
     pub log_recording_error: Option<String>,
     pub connections: Vec<ConnectionSummary>,
@@ -746,6 +751,7 @@ pub struct RuntimeStatusProjection {
     pub revisions: RuntimeRevisions,
     pub vpn_lifecycle: VpnLifecycle,
     pub engine_loaded: bool,
+    pub active_engine: Option<VpnEngine>,
     pub vpn_running: bool,
     pub vpn_session_id: Option<String>,
     pub network_protected: bool,
@@ -1084,18 +1090,29 @@ impl CoreHandle {
                         })
                 })
         });
-        Ok(TelemetryProjection {
+        let root = state.profiles.root().to_path_buf();
+        let session = platform_vpn_session_id(&state);
+        let engine = state.platform_vpn_engine;
+        let running = state.platform_vpn_running || self.vpn.is_running();
+        let mut projection = TelemetryProjection {
             revisions: runtime_revisions(&state),
             traffic: state.traffic.clone(),
             traffic_history: state.traffic_history.iter().cloned().collect(),
             active_profile_usage,
             controller_diagnostics: state.controller_diagnostics.clone(),
             dns: state.dns.clone(),
+            startup_health: None,
             logs: projected_logs(&state),
             log_recording_error: log_recording_error(&state),
             connections: state.connections.clone(),
             request_history: state.request_history.iter().cloned().rev().collect(),
-        })
+        };
+        drop(state);
+        if running {
+            projection.startup_health =
+                StartupHealth::read_current(&root, session.as_deref(), engine);
+        }
+        Ok(projection)
     }
 
     pub fn runtime_status_projection(&self) -> Result<RuntimeStatusProjection, PawsError> {
@@ -1112,6 +1129,13 @@ impl CoreHandle {
                 state.platform_network_protect_error.as_deref(),
             ),
             engine_loaded: state.engine_loaded,
+            active_engine: if native_vpn_running {
+                Some(VpnEngine::Meow)
+            } else if state.platform_vpn_running {
+                state.platform_vpn_engine
+            } else {
+                None
+            },
             vpn_running: native_vpn_running || state.platform_vpn_running,
             vpn_session_id: platform_vpn_session_id(&state),
             network_protected: state.platform_network_protected,
@@ -2885,6 +2909,7 @@ impl CoreHandle {
         state.platform_vpn_running = true;
         state.platform_vpn_engine = Some(resolved_engine);
         state.platform_start_outcome = PlatformStartOutcome::Connected;
+        state.traffic = TrafficSnapshot::default();
         state.last_traffic_sample = None;
         state.logs.push(info_log(format!(
             "{} VPN data plane started",
@@ -2916,6 +2941,8 @@ impl CoreHandle {
         state.traffic.tun_download_speed = download_speed;
         state.traffic.tun_upload_bytes = upload_total;
         state.traffic.tun_download_bytes = download_total;
+        record_traffic_history(&mut state);
+        self.publish_runtime_change_locked(&mut state, false, true);
         drop(state);
         self.persist_vpn_telemetry()
     }
@@ -7461,9 +7488,17 @@ impl CoreHandle {
         } else {
             state.platform_logs = None;
             state.platform_profile_traffic = None;
+            // External engines own their counters and history cadence. They
+            // have no Rust TUN, and a loaded Meow tunnel is not their data plane.
+            let external_traffic = tun_stats.is_none()
+                && state.platform_vpn_running
+                && matches!(
+                    state.platform_vpn_engine,
+                    Some(VpnEngine::Mihomo | VpnEngine::SingBox)
+                );
             if let Some(stats) = &tun_stats {
                 apply_traffic_sample(&mut state, stats)?;
-            } else {
+            } else if !external_traffic {
                 state.traffic.upload_speed = 0;
                 state.traffic.download_speed = 0;
                 state.traffic.tun_upload_speed = 0;
@@ -7471,7 +7506,11 @@ impl CoreHandle {
                 state.last_traffic_sample = None;
             }
             let connections = if let Some(tunnel) = state.tunnel.clone() {
-                apply_meow_traffic_sample(&mut state, &tunnel, tun_stats.is_none())?;
+                apply_meow_traffic_sample(
+                    &mut state,
+                    &tunnel,
+                    tun_stats.is_none() && !external_traffic,
+                )?;
                 active_connections_from_tunnel(&tunnel)
             } else {
                 state.traffic.meow_upload_speed = 0;
@@ -7480,7 +7519,9 @@ impl CoreHandle {
                 Vec::new()
             };
             record_request_history(&mut state, &connections);
-            record_traffic_history(&mut state);
+            if !external_traffic {
+                record_traffic_history(&mut state);
+            }
             state.connections = connections;
             state.dns = dns_snapshot(&state.vpn_options, tun_stats.as_ref());
         }
@@ -8558,6 +8599,7 @@ fn platform_session_projection(
     bool,
     bool,
     Option<String>,
+    Option<VpnEngine>,
 ) {
     (
         state.platform_start_attempt_id.clone(),
@@ -8571,6 +8613,7 @@ fn platform_session_projection(
         state.platform_vpn_running,
         state.platform_network_protected,
         state.platform_network_protect_error.clone(),
+        state.platform_vpn_engine,
     )
 }
 

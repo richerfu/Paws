@@ -1,5 +1,14 @@
+#[derive(Default)]
+pub(crate) struct TrafficSample {
+    pub upload_speed: u64,
+    pub download_speed: u64,
+    pub upload_total: u64,
+    pub download_total: u64,
+}
+
 #[cfg(target_env = "ohos")]
 mod platform {
+    use super::TrafficSample;
     use std::ffi::{c_char, c_int, c_void, CString};
     use std::sync::OnceLock;
 
@@ -7,6 +16,7 @@ mod platform {
     type StopFn = unsafe extern "C" fn() -> c_int;
     type ErrorFn = unsafe extern "C" fn(*mut c_char, usize) -> usize;
     type VersionFn = unsafe extern "C" fn() -> *const c_char;
+    type TrafficFn = unsafe extern "C" fn(*mut u64, *mut u64, *mut u64, *mut u64) -> c_int;
 
     struct Api {
         _handle: *mut c_void,
@@ -15,6 +25,7 @@ mod platform {
         copy_error: ErrorFn,
         copy_log: ErrorFn,
         version: VersionFn,
+        traffic: TrafficFn,
     }
 
     unsafe impl Send for Api {}
@@ -47,6 +58,7 @@ mod platform {
                 copy_error: symbol(handle, b"TinyPawsSingCopyLastError\0")?,
                 copy_log: symbol(handle, b"TinyPawsSingCopyLog\0")?,
                 version: symbol(handle, b"TinyPawsSingVersion\0")?,
+                traffic: symbol(handle, b"TinyPawsSingTraffic\0")?,
             })
         })
         .as_ref()
@@ -90,6 +102,23 @@ mod platform {
         }
     }
 
+    pub fn traffic() -> Result<TrafficSample, String> {
+        let api = api()?;
+        let mut sample = TrafficSample::default();
+        let result = unsafe {
+            (api.traffic)(
+                &mut sample.upload_speed,
+                &mut sample.download_speed,
+                &mut sample.upload_total,
+                &mut sample.download_total,
+            )
+        };
+        if result != 0 {
+            return Err("sing-box bridge could not read traffic counters".to_owned());
+        }
+        Ok(sample)
+    }
+
     pub fn version() -> Result<String, String> {
         let api = api()?;
         let pointer = unsafe { (api.version)() };
@@ -118,6 +147,8 @@ mod platform {
 
 #[cfg(not(target_env = "ohos"))]
 mod platform {
+    use super::TrafficSample;
+
     pub fn start(
         _fd: i32,
         _net_id: i32,
@@ -127,6 +158,9 @@ mod platform {
         Err("sing-box bridge is only available in the OpenHarmony build".to_owned())
     }
     pub fn stop() -> Result<(), String> {
+        Err("sing-box bridge is only available in the OpenHarmony build".to_owned())
+    }
+    pub fn traffic() -> Result<TrafficSample, String> {
         Err("sing-box bridge is only available in the OpenHarmony build".to_owned())
     }
     pub fn version() -> Result<String, String> {
@@ -148,4 +182,8 @@ pub fn version() -> Result<String, String> {
 }
 pub fn runtime_log() -> Result<String, String> {
     platform::runtime_log()
+}
+
+pub(crate) fn traffic() -> Result<TrafficSample, String> {
+    platform::traffic()
 }

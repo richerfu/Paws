@@ -40,20 +40,19 @@ pub(crate) fn settings_page() -> Element {
     let controller_enabled_value = draft.values.network.controller_enabled;
     let mixed_port_value = draft.values.network.mixed_port.clone();
     let controller_port_value = draft.values.network.controller_port.clone();
-    let vpn_engine_label_value =
-        match paws_model::VpnEngine::try_from(draft.values.vpn.engine.as_str()) {
-            Ok(paws_model::VpnEngine::Auto) => "自动（推荐 · 默认 mihomo 兼容内核）".to_owned(),
-            Ok(paws_model::VpnEngine::Mihomo) => "兼容内核（mihomo · 完整 Clash 能力）".to_owned(),
-            Ok(paws_model::VpnEngine::SingBox) => "前沿内核（sing-box · 现代协议栈）".to_owned(),
-            Ok(paws_model::VpnEngine::Meow) => "Rust 内核（meow-rs · 轻量原生）".to_owned(),
-            Err(_) => draft.values.vpn.engine.clone(),
-        };
-    let engine_options = vec![
-        "自动（推荐 · 默认 mihomo 兼容内核）".to_owned(),
-        "兼容内核（mihomo · 完整 Clash 能力）".to_owned(),
-        "前沿内核（sing-box · 现代协议栈）".to_owned(),
-        "Rust 内核（meow-rs · 轻量原生）".to_owned(),
+    let engine_choices = [
+        paws_model::VpnEngine::Auto,
+        paws_model::VpnEngine::Mihomo,
+        paws_model::VpnEngine::SingBox,
+        paws_model::VpnEngine::Meow,
     ];
+    let vpn_engine_label_value = engine_choice_label(
+        paws_model::VpnEngine::try_from(draft.values.vpn.engine.as_str()).unwrap_or_default(),
+        current.locale,
+    );
+    let engine_options = engine_choices
+        .map(|engine| engine_choice_label(engine, current.locale))
+        .to_vec();
     let engine_selected_label = vpn_engine_label_value.clone();
     let vpn_stack_label_value =
         match paws_model::VpnStack::try_from(draft.values.vpn.stack.as_str()) {
@@ -93,27 +92,59 @@ pub(crate) fn settings_page() -> Element {
         .map(mask_controller_secret)
         .unwrap_or_else(|| translate_ui(current.locale, tr::hard_zh_027()));
 
-    let mut engine_probe_options = paws_model::VpnOptions::default();
-    engine_probe_options.engine =
-        paws_model::VpnEngine::try_from(draft.values.vpn.engine.as_str()).unwrap_or_default();
-    let engine_summary = paws_core::shared_core()
-        .engine_decision(&serde_json::to_string(&engine_probe_options).unwrap_or_default())
-        .ok()
-        .map(|decision| {
-            let selected = decision["selected"].as_str().unwrap_or("mihomo");
-            let reasons = decision["reasons"]
-                .as_array()
-                .map(|v| {
-                    v.iter()
-                        .take(3)
-                        .filter_map(serde_json::Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join("；")
-                })
-                .unwrap_or_default();
-            format!("本次连接将使用 {selected} 内核。{reasons}")
-        })
-        .unwrap_or_else(|| "配置兼容性将在连接前自动校验，默认使用 mihomo 兼容内核。".into());
+    let engine_tasks = use_page_tasks();
+    let mut engine_preview = use_signal(|| None::<Result<(String, String), String>>);
+    let engine_request = use_memo(move || {
+        (
+            form.read().values.vpn.engine.clone(),
+            stores.settings.read().config_revision,
+        )
+    });
+    use_effect(move || {
+        let (selected_engine, revision) = engine_request.read().clone();
+        let mut options = stores.settings.peek().vpn.clone();
+        options.engine =
+            paws_model::VpnEngine::try_from(selected_engine.as_str()).unwrap_or_default();
+        engine_preview.set(None);
+        engine_tasks.query(
+            async move {
+                let decision = paws_core::shared_core()
+                    .engine_decision(&serde_json::to_string(&options).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+                let selected = decision["selected"].as_str().unwrap_or("mihomo").to_owned();
+                let reasons = decision["reasons"]
+                    .as_array()
+                    .map(|reasons| {
+                        reasons
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    })
+                    .unwrap_or_default();
+                Ok((selected, reasons))
+            },
+            move |result| {
+                if form.peek().values.vpn.engine == selected_engine
+                    && stores.settings.peek().config_revision == revision
+                {
+                    engine_preview.set(Some(result));
+                }
+            },
+        );
+    });
+    let preview = match engine_preview() {
+        None => translate_ui(current.locale, tr::engine_preview_loading()),
+        Some(Ok((engine, reasons))) => {
+            translate_ui(current.locale, tr::engine_preview(engine, reasons))
+        }
+        Some(Err(error)) => error,
+    };
+    let engine_summary = format!(
+        "{} {preview}",
+        translate_ui(current.locale, tr::engine_next())
+    );
     let theme = use_theme();
     let settings_form = rsx! {
         column {
@@ -211,38 +242,31 @@ pub(crate) fn settings_page() -> Element {
                                 text { content: translate_ui(current.locale, tr::settings_remove_unsupported_bypass()), font_size: typography::XS }
                             }
                         }
-                        Separator {}
+                        FieldSeparator {}
                         Field {
-                            FieldLabel { content: match current.locale { UiLocale::ZhCn => "VPN 数据面内核", UiLocale::En => "VPN Data-Plane Engine" } }
-                            FieldDescription { content: engine_summary.clone(), inset: true }
+                            FieldLabel { content: translate_ui(current.locale, tr::vpn_engine_label()) }
                             Select {
                                 options: engine_options,
+                                accessibility_label: Some(translate_ui(current.locale, tr::vpn_engine_label())),
+                                disabled: busy,
                                 selected: Some(vpn_engine_label_value.clone()),
                                 default_selected: engine_selected_label.clone(),
                                 default_open: false,
                                 on_select: move |label: String| {
                                     if !busy {
-                                        form.write().values.vpn.engine = match label.as_str() {
-                                            "Rust 内核（meow-rs · 轻量原生）" | "Rust 内核（meow-rs）" => "meow",
-                                            "兼容内核（mihomo · 完整 Clash 能力）" | "兼容内核（mihomo）" => "mihomo",
-                                            "前沿内核（sing-box · 现代协议栈）" | "前沿内核（sing-box）" => "sing-box",
-                                            _ => "auto",
-                                        }.to_owned();
+                                        if let Some(engine) = engine_choices.into_iter().find(|engine| engine_choice_label(*engine, current.locale) == label) {
+                                            form.write().values.vpn.engine = engine.as_str().to_owned();
+                                        }
                                     }
                                 },
                             }
+                            FieldDescription { content: engine_summary.clone(), inset: true }
                         }
                         Field {
                             FieldLabel { content: translate_ui(current.locale, tr::page_tr_231()) }
-                            FieldDescription {
-                                content: match current.locale {
-                                    UiLocale::ZhCn => "仅对 meow-rs 内核生效；mihomo 与 sing-box 使用内置混合系统栈（MTU 9000）。",
-                                    UiLocale::En => "Applies to meow-rs only; mihomo and sing-box use their built-in system/mixed TUN stack (MTU 9000).",
-                                },
-                                inset: true,
-                            }
                             Select {
                                 options: stack_options,
+                                disabled: busy,
                                 selected: Some(vpn_stack_label_value.clone()),
                                 default_selected: stack_selected_label.clone(),
                                 default_open: false,
@@ -254,67 +278,73 @@ pub(crate) fn settings_page() -> Element {
                                     }
                                 },
                             }
-                        }
-                        Separator {}
-                        Field {
-                            FieldLabel { content: "仅这些应用走 VPN（包名，逗号分隔）" }
                             FieldDescription {
-                                content: "留空代表全局应用走 VPN。填写出境易（com.easy.hmos.abroad）或其系统容器时，会自动启用全设备兼容路由以确保容器内应用正常联网。",
+                                content: translate_ui(current.locale, tr::vpn_stack_hint()),
                                 inset: true,
                             }
+                        }
+                        FieldSeparator {}
+                        Field {
+                            invalid: per_app_conflict,
+                            FieldLabel { content: translate_ui(current.locale, tr::vpn_apps_trusted()) }
                             Input {
+                                click_to_focus: true,
+                                accessibility_label: Some(translate_ui(current.locale, tr::vpn_apps_trusted())),
+                                invalid: per_app_conflict,
                                 value: Some(draft.values.vpn.trusted.clone()),
-                                placeholder: Some("例如：com.easy.hmos.abroad".to_owned()),
+                                placeholder: Some("com.easy.hmos.abroad".to_owned()),
                                 disabled: busy,
                                 width: Some("100%".into()),
                                 on_change: move |v| form.write().values.vpn.trusted = v,
                             }
+                            FieldDescription {
+                                content: translate_ui(current.locale, tr::vpn_apps_trusted_hint()),
+                                inset: true,
+                            }
                         }
                         Field {
-                            FieldLabel { content: "这些应用绕过 VPN（黑名单，与白名单二选一）" }
+                            invalid: per_app_conflict,
+                            FieldLabel { content: translate_ui(current.locale, tr::vpn_apps_blocked()) }
                             Input {
+                                click_to_focus: true,
+                                accessibility_label: Some(translate_ui(current.locale, tr::vpn_apps_blocked())),
+                                invalid: per_app_conflict,
                                 value: Some(draft.values.vpn.blocked.clone()),
-                                placeholder: Some("例如：com.huawei.hmos.browser".to_owned()),
+                                placeholder: Some("com.huawei.hmos.browser".to_owned()),
                                 disabled: busy,
                                 width: Some("100%".into()),
                                 on_change: move |v| form.write().values.vpn.blocked = v,
                             }
+                            FieldDescription { content: translate_ui(current.locale, tr::vpn_apps_blocked_hint()), inset: true }
                         }
-                        row {
-                            width: "100%",
-                            align_items: "center",
-                            FlatButton {
-                                variant: FlatButtonVariant::Outline,
-                                size: ButtonSize::Sm,
-                                width: Some("58%".into()),
-                                disabled: Some(busy),
+                        Field {
+                            FieldDescription { content: translate_ui(current.locale, tr::vpn_apps_draft_hint()), inset: false }
+                            row { height: spacing::MD }
+                            OperationButton {
+                                label: translate_ui(current.locale, tr::vpn_apps_preset()),
+                                icon: "list-filter",
+                                variant: ButtonVariant::Outline,
+                                disabled: busy,
                                 onclick: move |_| {
                                     let mut guard = form.write();
                                     guard.values.vpn.trusted = "com.easy.hmos.abroad".to_owned();
                                     guard.values.vpn.blocked.clear();
                                 },
-                                text { content: "一键仅代理出境易容器", font_size: typography::XS, font_weight: 500, font_color: text_color() }
                             }
-                            row { width: spacing::SM }
-                            FlatButton {
-                                variant: FlatButtonVariant::Outline,
-                                size: ButtonSize::Sm,
-                                width: Some("39%".into()),
-                                disabled: Some(busy || (draft.values.vpn.trusted.is_empty() && draft.values.vpn.blocked.is_empty())),
+                            OperationButton {
+                                label: translate_ui(current.locale, tr::vpn_apps_all()),
+                                icon: "rotate-ccw",
+                                variant: ButtonVariant::Outline,
+                                disabled: busy || (draft.values.vpn.trusted.is_empty() && draft.values.vpn.blocked.is_empty()),
                                 onclick: move |_| {
                                     let mut guard = form.write();
                                     guard.values.vpn.trusted.clear();
                                     guard.values.vpn.blocked.clear();
                                 },
-                                text { content: "恢复全设备代理", font_size: typography::XS, font_weight: 500, font_color: text_color() }
                             }
                         }
                         if per_app_conflict {
-                            text {
-                                content: "白名单与黑名单不能同时填写，请清空其中一项后再保存。",
-                                font_size: typography::XS,
-                                font_color: danger(),
-                            }
+                            FieldError { errors: vec![translate_ui(current.locale, tr::vpn_apps_conflict())] }
                         }
                         row { height: 12.0 }
                         FlatButton {

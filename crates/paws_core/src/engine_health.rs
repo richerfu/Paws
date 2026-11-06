@@ -1,5 +1,97 @@
 //! One bounded startup probe through the actual engine-owned ingress.
 use super::*;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupCheck {
+    Passed,
+    Failed,
+    NotTested,
+    NotApplicable,
+}
+
+/// Evidence for one actual VPN session. A cached result from another session
+/// or engine must never turn the current connection's indicators green.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartupHealth {
+    pub session: String,
+    pub engine: VpnEngine,
+    pub dns: StartupCheck,
+    pub node_tcp: StartupCheck,
+    pub https: StartupCheck,
+    pub elapsed_ms: u64,
+}
+
+impl StartupHealth {
+    pub(crate) fn read_current(
+        root: &Path,
+        session: Option<&str>,
+        engine: Option<VpnEngine>,
+    ) -> Option<Self> {
+        let session = session?;
+        let engine = engine?;
+        let text = process_evidence::read_bounded(&root.join("engine-startup-health.json"), 8192)?;
+        let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+        Self::from_evidence(&value, session, engine)
+    }
+
+    fn from_evidence(value: &serde_json::Value, session: &str, engine: VpnEngine) -> Option<Self> {
+        if value["session"].as_str()? != session
+            || value["actualEngine"].as_str()? != engine.as_str()
+        {
+            return None;
+        }
+        let dns = match value["dns"]["status"].as_str() {
+            Some("physical-bootstrap-available") => StartupCheck::Passed,
+            Some("physical-bootstrap-failed-or-timed-out") => StartupCheck::Failed,
+            Some("literal-no-dns-required") => StartupCheck::NotApplicable,
+            _ => StartupCheck::NotTested,
+        };
+        let node_tcp = match value["nodeTcp"]["status"].as_str() {
+            Some("reachable") => StartupCheck::Passed,
+            Some("failed-or-timed-out") => StartupCheck::Failed,
+            Some("not-applicable-udp-protocol") => StartupCheck::NotApplicable,
+            _ => StartupCheck::NotTested,
+        };
+        Some(Self {
+            session: session.to_owned(),
+            engine,
+            dns,
+            node_tcp,
+            https: if value["success"].as_bool()? {
+                StartupCheck::Passed
+            } else {
+                StartupCheck::Failed
+            },
+            elapsed_ms: value["elapsedMs"].as_u64().unwrap_or_default(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod presentation_tests {
+    use super::*;
+
+    #[test]
+    fn cached_health_requires_the_current_session_and_actual_engine() {
+        let value = serde_json::json!({"session":"old", "actualEngine":"sing-box", "success":true});
+        assert!(StartupHealth::from_evidence(&value, "new", VpnEngine::SingBox).is_none());
+        assert!(StartupHealth::from_evidence(&value, "old", VpnEngine::Mihomo).is_none());
+        assert!(
+            StartupHealth::from_evidence(&serde_json::json!({}), "old", VpnEngine::SingBox)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn udp_or_literal_addresses_are_skipped_without_claiming_probe_success() {
+        let value = serde_json::json!({"session":"current", "actualEngine":"meow", "success":false,
+            "dns":{"status":"literal-no-dns-required"}, "nodeTcp":{"status":"not-applicable-udp-protocol"}});
+        let health = StartupHealth::from_evidence(&value, "current", VpnEngine::Meow).unwrap();
+        assert_eq!(health.dns, StartupCheck::NotApplicable);
+        assert_eq!(health.node_tcp, StartupCheck::NotApplicable);
+        assert_eq!(health.https, StartupCheck::Failed);
+    }
+}
 impl CoreHandle {
     pub async fn validate_engine_startup(
         &self,

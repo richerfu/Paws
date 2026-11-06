@@ -37,6 +37,7 @@ cp "$ROOT_DIR/vendor/sing-box-bridge/physical_dns.go" "$SING_BOX_ROOT/cmd/libtin
 cp "$ROOT_DIR/vendor/sing-box-bridge/physical_network.go" "$SING_BOX_ROOT/cmd/libtinypaws/physical_network.go"
 cp "$ROOT_DIR/vendor/sing-box-bridge/tlsretry/conn.go" "$SING_BOX_ROOT/cmd/libtinypaws/tlsretry/conn.go"
 cp "$ROOT_DIR/vendor/sing-box-bridge/trace.go" "$SING_BOX_ROOT/cmd/libtinypaws/trace.go"
+cp "$ROOT_DIR/vendor/sing-box-bridge/traffic.go" "$SING_BOX_ROOT/cmd/libtinypaws/traffic.go"
 cp "$ROOT_DIR/vendor/sing-box-bridge/httpobfs/conn.go" "$SING_BOX_ROOT/cmd/libtinypaws/httpobfs/conn.go"
 
 cd "$SING_BOX_ROOT"

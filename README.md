@@ -1,12 +1,8 @@
-# TinyPaws
+# Paws
 
-Current device release: **1.2.7-tiny** (versionCode **1002007**). See the
-[changelog](CHANGELOG.md) for release notes and the
-[delivery record](docs/TinyPaws-1.2.7-delivery.md) for physical-device evidence.
-
-TinyPaws is a Clash/mihomo HarmonyOS client with a native ArkUI interface,
-powered by [meow-rs 0.22.0](https://github.com/meow-rs/meow-rs), a Rust userspace TUN
-stack, and optional mihomo and sing-box compatibility engines.
+Paws is a native HarmonyOS proxy client with an ArkUI interface and three
+integrated proxy engines: Mihomo, sing-box, and
+[meow-rs 0.22.0](https://github.com/meow-rs/meow-rs).
 Profiles that use plugin transports are resolved through the route-validated
 mihomo engine even when a candidate engine is selected, so a compatibility
 preference cannot produce a false Connected state.
@@ -25,7 +21,7 @@ HarmonyOS abilities (ArkTS)
     |  EntryAbility + VpnExtensionAbility
     |  VpnConnection TUN + protectProcessNet()
     v
-TinyPaws Rust runtime
+Paws Rust runtime
     |  paws_core + paws_profile
     |  paws_vpn + netstack-smoltcp/lwIP
     v
@@ -109,8 +105,11 @@ local protocol profile generation, and an OpenHarmony `aarch` build.
 ### Build an unsigned release HAP
 
 Prepare the Go engines from the vendored bridges and pinned upstream sources;
-see [Native engine builds](docs/native-engines-build.md) for the OHOS Go
-toolchain and patch setup. A separate FlClash checkout is no longer required.
+follow [Building Mihomo and sing-box with patched OpenHarmony Go](docs/native-engines-build.md)
+for first-time compiler preparation, reusing patched Go 1.24.7, engine patches,
+explicit library paths, and release/debug packaging. Keep that guide's exported
+environment when running the commands below. A separate FlClash checkout is
+no longer required.
 
 Provision the GeoData files required by GEOIP, GEOSITE, and ASN rules, then
 package the app:
@@ -191,7 +190,6 @@ The benchmark fails if it cannot observe the selected proxy in the controller
 chain (or independently prove a changed public exit), if the VPN process
 restarts, or if the declared success-rate threshold is missed. Public IP values
 are stored only as hashes, and the request URL is recorded for reproducibility.
-See [the 2026-10-14 engine evaluation](docs/engine-evaluation-2026-10-14.md).
 
 ## OpenHarmony QEMU
 
@@ -270,9 +268,18 @@ crates/
   paws_model/                 Shared data model
 local-protocol-tests/          Echo servers, mock proxies, and generated profiles
 scripts/                       Build, package, smoke, and regression automation
-docs/                          GeoData provisioning notes
+docs/                          Native engine build and GeoData provisioning guides
 ```
 
 ## License
 
-[MIT](LICENSE).
+Paws-authored source code uses the [MIT license](LICENSE). Bundled components
+retain their own upstream licenses:
+
+- **Mihomo**: [GPL-3.0, full license text](LICENSES/mihomo/LICENSE).
+- **sing-box**: [GPL-3.0-or-later and upstream notices](LICENSES/sing-box/LICENSE),
+  with the [full GNU GPL v3 text](LICENSES/sing-box/COPYING).
+
+See [third-party notices](THIRD_PARTY_NOTICES.md) and the
+[license index](LICENSES/README.md) for pinned source revisions and adaptations.
+The Paws MIT grant does not relicense these components or every library in a HAP.

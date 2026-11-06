@@ -26,12 +26,68 @@ fn common_controls_delegate_to_upstream_shadcn() {
 }
 
 #[test]
+fn new_features_use_settings_routes_and_upstream_controls() {
+    let tools = include_str!("../src/view/pages/tools.rs");
+    let routes = include_str!("../src/view/route.rs");
+    let view = include_str!("../src/view.rs");
+    // Keep the 1.2.0 section order and direct access to existing destinations.
+    let positions = [
+        "tr::page_tr_022()",
+        "tr::page_tr_024()",
+        "tr::page_tr_272()",
+        "tr::page_tr_026()",
+        "tr::page_tr_031()",
+    ]
+    .map(|title| tools.find(title).expect("1.2.0 settings section"));
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(!tools.contains("if advanced"));
+    for destination in [
+        "Diagnostics",
+        "Backups",
+        "AdvancedDiagnostics",
+        "Requests",
+        "Connections",
+        "Resources",
+        "Logs",
+    ] {
+        assert!(tools.contains(&format!("Route::{destination}")));
+        assert!(routes.contains(&format!("Self::{destination}")));
+    }
+    for (page, route) in [
+        ("diagnostics", "Diagnostics"),
+        ("backups", "Backups"),
+        ("advanced_diagnostics", "AdvancedDiagnostics"),
+    ] {
+        let source = fs::read_to_string(format!("src/view/pages/{page}.rs")).unwrap();
+        assert!(source.contains(&format!("scaffold(Route::{route}")));
+        assert!(source.contains("FieldGroup {"));
+        assert!(source.contains("OperationButton {"));
+        assert!(!source.contains("FlatSegmented {"));
+        assert!(!source.contains("button {"));
+        assert!(!source.contains("background_color:"));
+        assert!(!source.contains("border_radius:"));
+    }
+    for primitive in [
+        "Badge {",
+        "Alert {",
+        "AlertTitle {",
+        "AlertDescription {",
+        "Spinner {",
+    ] {
+        assert!(view.contains(primitive));
+    }
+}
+
+#[test]
 fn pages_use_the_shared_type_scale_and_radius_tokens() {
-    for file in fs::read_dir("src/view/pages").unwrap() {
-        let path = file.unwrap().path();
-        if path.extension().is_none_or(|ext| ext != "rs") {
-            continue;
-        }
+    let mut paths = fs::read_dir("src/view/pages")
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+        .collect::<Vec<_>>();
+    paths.push("src/view.rs".into());
+    paths.sort();
+    for path in paths {
         let source = fs::read_to_string(&path).unwrap();
         for line in source.lines() {
             if let Some((_, value)) = line.split_once("font_size:") {
