@@ -1,14 +1,13 @@
-import { Scroll, signal, Text, View, Clipboard } from "nsh";
+import { Scroll, signal, Text, View} from "nsh";
 import {
   Action,
   Actions,
-  Badge,
   Body,
   Card,
-  Code,
   confirm,
   Detail,
   Field,
+  ExternalLink,
   Hint,
   Icon,
   palette,
@@ -18,10 +17,11 @@ import {
   Toggle,
   type Page,
   useApp,
-  useLifetime,
-} from "../components";
-import { bytes } from "../locale";
-import { renderObject } from "./resources";
+  useLifetime} from "../components";
+import { feedbackStyle } from "../motion";
+import { control, focusRing } from "../theme";
+
+
 import { ABOUT_LINKS } from "../about";
 import { COPY } from "../product-copy";
 import { PageError } from "../page-error";
@@ -174,7 +174,6 @@ export function Tools() {
                   borderColor: palette().border,
                   borderRadius: radius.lg,
                   overflow: "hidden",
-                  boxShadow: "0px 1px 2px #0000000d",
                   backgroundColor: palette().panel,
                 }}
               >
@@ -187,9 +186,11 @@ export function Tools() {
                         role="button"
                         accessibilityLabel={ui.t(tool().zh, tool().en)}
                         onPress={() => ui.navigate(tool().page)}
-                        activeStyle={{ opacity: 0.65 }}
+                        focusStyle={focusRing()} hoverStyle={{ backgroundColor: palette().soft }}
+                        activeStyle={{ opacity: 0.85 }}
                         style={{
-                          minHeight: 64,
+                          minHeight: control.height >= 44 ? 76 : 64,
+                          ...feedbackStyle(),
                           padding: 12,
                           flexDirection: "row",
                           alignItems: "center",
@@ -220,7 +221,6 @@ export function Tools() {
                             {ui.t(tool().zh, tool().en)}
                           </Text>
                           <Text
-                            numberOfLines={1}
                             style={{ fontSize: 12, lineHeight: 18, color: palette().muted }}
                           >
                             {ui.t(tool().descriptionZh, tool().descriptionEn)}
@@ -484,7 +484,7 @@ export function Diagnostics() {
             />
           </If>
           <Action
-            id="diagnostics-probe"
+            primary id="diagnostics-probe"
             loading={ui.client.isPending("diagnostics.probe")}
             label={
               current().vpnRunning
@@ -599,6 +599,7 @@ export function AdvancedDiagnostics() {
             )}
           />
           <Action
+            primary loading={ui.client.isPending("diagnostics.serviceDns")}
             label={ui.t("应用 DoH 策略", "Apply DoH policy")}
             disabled={busy() || !group() || !domains().trim()}
             onPress={() =>
@@ -635,7 +636,7 @@ export function AdvancedDiagnostics() {
               value={report()}
               onChange={() => {}}
               multiline
-              disabled
+              readonly
             />
             <Action
               secondary
@@ -686,13 +687,14 @@ export function Backups() {
     if (alive() && file)
       void confirm(
         ui,
-        ui.t("从所选文件恢复配置？", "Restore profiles from the selected backup?"),
+        ui.t(`从“${file.name}”恢复配置？`, `Restore profiles from “${file.name}”?`),
         () =>
           void ui.client.run(
             "backups.restore",
             { content: file.content },
             ui.t("备份已恢复", "Backup restored"),
           ),
+        { actionLabel: ui.t("恢复配置副本", "Restore profile copies"), destructive: false },
       );
   };
   const webdav = (command: string) =>
@@ -722,7 +724,7 @@ export function Backups() {
             secondary
             icon="download"
             loading={ui.client.isPending("backups.export")}
-            label={ui.t("导出备份文件", "Export backup file")}
+            label={ui.t("导出备份文件…", "Export backup file…")}
             disabled={ui.client.pending() > 0}
             onPress={() => void exportBackup()}
           />
@@ -738,7 +740,7 @@ export function Backups() {
             secondary
             icon="file-up"
             loading={ui.client.isPending("backups.restore")}
-            label={ui.t("选择备份文件", "Choose a backup file")}
+            label={ui.t("选择备份文件…", "Choose a backup file…")}
             disabled={ui.client.pending() > 0}
             onPress={() => void restore()}
           />
@@ -784,19 +786,22 @@ export function Backups() {
           />
           <Actions>
             <Action
+              loading={ui.client.isPending("backups.webdavUpload")}
               label={ui.t("上传备份", "Upload backup")}
               disabled={!validUrl() || ui.client.pending() > 0}
               onPress={() => webdav("backups.webdavUpload")}
             />
             <Action
               secondary
-              label={ui.t("下载并恢复", "Download and restore")}
+              loading={ui.client.isPending("backups.webdavRestore")}
+              label={ui.t("下载并恢复…", "Download and restore…")}
               disabled={!validUrl() || ui.client.pending() > 0}
               onPress={() =>
                 void confirm(
                   ui,
                   ui.t("下载远程备份并恢复？", "Download and restore the remote backup?"),
                   () => webdav("backups.webdavRestore"),
+                  { actionLabel: ui.t("下载并恢复", "Download and restore"), description: url(), destructive: false },
                 )
               }
             />
@@ -826,8 +831,8 @@ export function About() {
       </Text>
       <Text
         testID={`about-version-${index}`}
-        selectable
         style={{
+          userSelect: "text",
           minWidth: 0,
           maxWidth: "100%",
           fontSize: 13,
@@ -839,22 +844,8 @@ export function About() {
       </Text>
       <View testID={`about-actions-${index}`}>
         <Actions>
-          <Action
-            id={`about-source-${index}`}
-            variant="link"
-            small
-            label={ui.t("源代码", "Source code")}
-            onPress={() => void ui.client.run("platform.openUrl", { url: ABOUT_LINKS[index].url })}
-          />
-          <Action
-            id={`about-license-${index}`}
-            variant="link"
-            small
-            label={license}
-            onPress={() =>
-              void ui.client.run("platform.openUrl", { url: ABOUT_LINKS[index + 1].url })
-            }
-          />
+          <ExternalLink id={`about-source-${index}`} small label={ui.t("源代码", "Source code")} href={ABOUT_LINKS[index].url} />
+          <ExternalLink id={`about-license-${index}`} small label={license} href={ABOUT_LINKS[index + 1].url} />
         </Actions>
       </View>
     </View>
@@ -938,24 +929,8 @@ export function About() {
                 )}
               />
               <Actions>
-                <Action
-                  id="about-source-8"
-                  variant="link"
-                  small
-                  label={ui.t("源代码", "Source code")}
-                  onPress={() =>
-                    void ui.client.run("platform.openUrl", { url: ABOUT_LINKS[8].url })
-                  }
-                />
-                <Action
-                  id="about-adaptations"
-                  variant="link"
-                  small
-                  label={ui.t("第三方组件与适配说明", "Third-party components and adaptations")}
-                  onPress={() =>
-                    void ui.client.run("platform.openUrl", { url: ABOUT_LINKS[9].url })
-                  }
-                />
+                <ExternalLink id="about-source-8" small label={ui.t("源代码", "Source code")} href={ABOUT_LINKS[8].url} />
+                <ExternalLink id="about-adaptations" small label={ui.t("第三方组件与适配说明", "Third-party components and adaptations")} href={ABOUT_LINKS[9].url} />
               </Actions>
             </View>
           </Card>
@@ -991,8 +966,8 @@ export function Privacy() {
           <Each of={about().privacySummary}>
             {(line) => (
               <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-                <Icon name="shield-check" size={16} color={palette().success} />
-                <Text style={{ flex: 1, fontSize: 14, lineHeight: 21, color: palette().text }}>
+
+                <Text style={{ userSelect: "text", flex: 1, fontSize: 14, lineHeight: 24, color: palette().text }}>
                   {line()}
                 </Text>
               </View>
@@ -1008,13 +983,7 @@ export function Privacy() {
         >
           <Each of={about().exitIpServices}>
             {(service) => (
-              <Action
-                variant="link"
-                label={service().name}
-                onPress={() =>
-                  void ui.client.run("platform.openUrl", { url: service().documentationUrl })
-                }
-              />
+              <ExternalLink label={service().name} href={service().documentationUrl} />
             )}
           </Each>
         </Card>

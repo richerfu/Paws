@@ -143,8 +143,7 @@ function iconPaths(name: IconName): IconShape[] {
 export function Icon(props: { name: IconName; size?: number; color?: string }) {
   return (
     <Canvas
-      style={{ width: props.size || 20, height: props.size || 20 }}
-      pointerEvents="none"
+      style={{ pointerEvents: "none", width: props.size || 20, height: props.size || 20 }}
       draw={(ctx, { width, height }) => {
         ctx.save();
         ctx.scale(width / 24, height / 24);

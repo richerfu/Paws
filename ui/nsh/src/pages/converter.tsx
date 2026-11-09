@@ -1,4 +1,4 @@
-import { cleanup, Scroll, signal, View, Clipboard } from "nsh";
+import { cleanup, Scroll, signal, Clipboard } from "nsh";
 import {
   Action,
   Actions,
@@ -8,12 +8,13 @@ import {
   Hint,
   Select,
   Tabs,
-  Toggle,
+  Check,
   useApp,
   useLifetime,
 } from "../components";
 import { ConverterDraftState, type ConverterDraft } from "../converter-draft";
 import { CLIENT_TYPES, REMOTE_CONFIGS } from "../converter-options";
+import { animateDisclosure } from "../motion";
 import { PageError } from "../page-error";
 
 export function Converter() {
@@ -166,10 +167,10 @@ export function Converter() {
                   { value: "basic", label: ui.t("基础模式", "Basic") },
                   { value: "advanced", label: ui.t("进阶模式", "Advanced") },
                 ]}
-                onChange={(value) => change({ advanced: value === "advanced" })}
+                onChange={(value) => { animateDisclosure(); change({ advanced: value === "advanced" }); }}
               />
               <Field
-                label={ui.t("订阅或节点链接 *", "Subscription or node links *")}
+                label={ui.t("订阅或节点链接", "Subscription or node links")}
                 value={draft()!.source_sub_url}
                 placeholder={ui.t(
                   "每行一个订阅或节点链接",
@@ -181,7 +182,7 @@ export function Converter() {
                 onChange={(source_sub_url) => change({ source_sub_url })}
               />
               <Select
-                label={ui.t("目标客户端 *", "Target client *")}
+                label={ui.t("目标客户端", "Target client")}
                 value={draft()!.client_type}
                 options={CLIENT_TYPES}
                 disabled={busy()}
@@ -244,7 +245,7 @@ export function Converter() {
                     onChange={(remote_config) => change({ remote_config })}
                   />
                   <Field
-                    label="Include"
+                    label={ui.t("包含节点", "Include nodes")}
                     value={draft()!.include_remarks}
                     placeholder={ui.t(
                       "节点名必须包含，支持正则",
@@ -254,7 +255,7 @@ export function Converter() {
                     onChange={(include_remarks) => change({ include_remarks })}
                   />
                   <Field
-                    label="Exclude"
+                    label={ui.t("排除节点", "Exclude nodes")}
                     value={draft()!.exclude_remarks}
                     placeholder={ui.t(
                       "排除匹配的节点名，支持正则",
@@ -264,7 +265,7 @@ export function Converter() {
                     onChange={(exclude_remarks) => change({ exclude_remarks })}
                   />
                   <Field
-                    label="FileName"
+                    label={ui.t("输出文件名", "Output filename")}
                     value={draft()!.filename}
                     placeholder={ui.t("返回的订阅文件名", "Output subscription filename")}
                     disabled={busy()}
@@ -335,7 +336,7 @@ export function Converter() {
                     ]}
                   >
                     {(option) => (
-                      <Toggle
+                      <Check
                         label={ui.t(option()[1], option()[2])}
                         description={ui.t(option()[3], option()[4])}
                         disabled={busy()}
@@ -360,7 +361,7 @@ export function Converter() {
               )}
             >
               <Action
-                id="converter-build"
+                primary id="converter-build"
                 icon="refresh-cw"
                 label={ui.t("生成订阅链接", "Generate subscription URL")}
                 loading={operation() === "build"}
@@ -402,12 +403,11 @@ export function Converter() {
                 value={shortUrl()}
                 placeholder={ui.t("生成后显示短链接", "Generated short URL")}
                 onChange={() => {}}
-                disabled
+                readonly
               />
               <If when={shortUrl()}>
                 <Action
-                  variant="link"
-                  label={ui.t("复制短链接", "Copy short URL")}
+                  secondary label={ui.t("复制短链接", "Copy short URL")}
                   onPress={() => copy(shortUrl(), ui.t("短链接已复制", "Short URL copied"))}
                 />
               </If>
@@ -431,7 +431,7 @@ export function Converter() {
               )}
             >
               <Field
-                label=""
+                label={ui.t("转换地址", "Conversion URL")}
                 value={parseUrl()}
                 placeholder="https://…/sub?target=clash&url=…"
                 multiline

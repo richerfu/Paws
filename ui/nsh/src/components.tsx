@@ -9,20 +9,21 @@ import {
   View,
   type JSX,
   type Signal,
-  type YNode,
-  keyboardFrame as keyboard,
-  safeArea,
-  safeAreaInsets as useSafeAreaInsets,
   Animated,
   createAnimatedValue as createNativeValue,
   Easing,
   windowSize,
-} from "nsh";
+  fontScale} from "nsh";
 import {
   Dialog as NativeDialog,
   Input,
   Button,
   Switch,
+  Checkbox,
+  Menu,
+  MenuItem,
+  Link,
+  AlertDialog,
   Tab,
   Tabs as NativeTabs,
   Radio,
@@ -40,10 +41,12 @@ import {
   statusColors,
   focusRing,
   surfaceFinish,
+  popupSurface,
   type StatusTone,
 } from "./theme";
 import { Icon, type IconName } from "./icons";
 import { NotificationViewport, useNotificationLayer } from "./notifications";
+import { feedbackStyle, follow, motion, useGlyphTransition, usePressFeedback } from "./motion";
 export { palette, control, radius, spacing, typography, Icon };
 export type { StatusTone };
 
@@ -80,7 +83,6 @@ export type AppContext = {
   consumeResourceIntent: (id: number) => boolean;
   logRecording: Signal<boolean>;
   logRecordingIntent: Signal<number>;
-  confirmation: Signal<{ title: string; resolve: (accepted: boolean) => void } | undefined>;
   editProfile: (id: string) => void;
   beforeLeave?: (guard: () => boolean | Promise<boolean>) => () => void;
   t: (zh: string, en: string) => string;
@@ -101,49 +103,27 @@ export function useDomainInterests(inputs: () => DomainInput[]): void {
     if (required.length) cleanup(ui.client.domains.acquire(required));
   });
 }
-export function Card(props: { title?: string; subtitle?: string; children?: JSX.Element }) {
+export function Card(props: { title?: string; subtitle?: string; children?: JSX.Element; flush?: boolean; right?: JSX.Element }) {
   return (
-    <View
-      style={{
-        minWidth: 0,
-        padding: spacing.lg,
-        gap: spacing.md,
-        borderRadius: radius.xl,
-        backgroundColor: palette().panel,
-        borderWidth: 1,
-        borderColor: palette().border,
-        ...surfaceFinish("card"),
-      }}
-    >
-      <If when={props.title}>
-        <Text
-          style={{
-            minWidth: 0,
-            maxWidth: "100%",
-            color: palette().text,
-            fontSize: typography.md,
-            lineHeight: 22,
-            fontWeight: "600",
-            letterSpacing: -0.35,
-          }}
-        >
-          {props.title}
-        </Text>
+    <View style={{ minWidth: 0, gap: spacing.sm }}>
+      <If when={props.title || props.subtitle || props.right}>
+        <View style={{ flexDirection: "row", alignItems: "flex-end", gap: spacing.sm, paddingHorizontal: spacing.xxs }}>
+          <View style={{ flex: 1, minWidth: 0, gap: spacing.xxs }}>
+            <If when={props.title}>
+              <Text role="header" style={{ color: palette().text, fontSize: 15, lineHeight: 22, fontWeight: "600" }}>
+                {props.title}
+              </Text>
+            </If>
+            <If when={props.subtitle}><Hint text={props.subtitle!} /></If>
+          </View>
+          {props.right}
+        </View>
       </If>
-      <If when={props.subtitle}>
-        <Text
-          style={{
-            minWidth: 0,
-            maxWidth: "100%",
-            color: palette().muted,
-            fontSize: typography.sm,
-            lineHeight: 20,
-          }}
-        >
-          {props.subtitle}
-        </Text>
-      </If>
-      {props.children}
+      <View style={{ minWidth: 0, padding: props.flush ? 0 : spacing.lg, gap: spacing.md,
+        borderRadius: radius.xl, borderCurve: "continuous", backgroundColor: palette().panel,
+        borderWidth: 1, borderColor: palette().border }}>
+        {props.children}
+      </View>
     </View>
   );
 }
@@ -156,26 +136,29 @@ export function Action(props: {
   danger?: boolean;
   disabled?: boolean;
   selected?: boolean;
-  variant?: "primary" | "outline" | "secondary" | "ghost" | "link";
+  primary?: boolean;
+  variant?: "primary" | "default" | "outline" | "secondary" | "ghost" | "link";
   small?: boolean;
   icon?: IconName;
   loading?: boolean;
 }) {
   const disabled = () => !!props.disabled || !!props.loading;
+  const press = usePressFeedback(disabled);
+  const glyph = useGlyphTransition(() => props.loading ? "busy" : props.icon);
   const variant = () =>
-    props.danger ? "danger" : props.variant || (props.secondary ? "outline" : "primary");
+    props.danger ? "danger" : props.primary ? "primary" : props.variant || (props.secondary ? "outline" : "default");
   const foreground = () =>
     variant() === "danger"
-      ? palette().dangerText
+      ? props.primary ? palette().dangerText : palette().danger
       : variant() === "primary"
         ? palette().primaryText
         : variant() === "link" ? palette().accent : palette().text;
   const background = () =>
     variant() === "danger"
-      ? palette().danger
+      ? props.primary ? palette().danger : palette().dangerFill
       : variant() === "primary"
         ? palette().brandFill
-        : variant() === "secondary" || props.selected
+        : variant() === "secondary" || variant() === "default" || props.selected
           ? palette().raised
           : variant() === "outline"
             ? palette().raised
@@ -183,13 +166,16 @@ export function Action(props: {
   return (
     <Button
       testID={props.id}
+      hitSlop={control.hitSlop(props.small ? control.small : control.height)}
       focusStyle={focusRing()}
-      hoverStyle={{ opacity: 0.88 }}
+      hoverStyle={disabled() ? undefined : { opacity: 0.9 }}
       selected={props.selected}
       selectedStyle={{ borderWidth: 1, borderColor: palette().accent }}
       accessibilityLabel={props.label}
       disabled={disabled()}
-      activeStyle={{ opacity: 0.65 }}
+      onPressDown={press.down}
+      onPressUp={press.up}
+      activeStyle={disabled() ? undefined : { opacity: 0.86 }}
       onPress={() => {
         if (!disabled()) props.onPress();
       }}
@@ -198,37 +184,43 @@ export function Action(props: {
         maxWidth: "100%",
         flexShrink: 1,
         minHeight: props.small ? control.small : control.height,
-        paddingVertical: props.small ? 4 : 6,
-        paddingHorizontal: props.small ? spacing.md : spacing.lg,
+        paddingVertical: control.compact ? 4 : props.small ? 4 : 6,
+        paddingHorizontal: control.compact ? props.small ? 8 : 12 : props.small ? spacing.md : spacing.lg,
         borderRadius: radius.md,
         flexDirection: "row",
-        gap: spacing.sm,
+        gap: control.compact ? 6 : spacing.sm,
         alignItems: "center",
         justifyContent: "center",
-        opacity: disabled() ? 0.5 : 1,
-        borderWidth: variant() === "outline" ? 1 : 0,
-        borderColor: palette().border,
+        opacity: props.loading ? 1 : props.disabled ? 0.4 : 1,
+        borderWidth: 1,
+        borderColor: variant() === "ghost" || variant() === "link" || variant() === "primary" ? "transparent" : palette().border,
         backgroundColor: background(),
         ...(variant() === "primary" ? surfaceFinish("accent")
-          : variant() === "outline" || variant() === "secondary" ? surfaceFinish("raised") : {}),
+          : variant() === "outline" || variant() === "secondary" || variant() === "default" ? surfaceFinish("raised") : {}),
+        ...feedbackStyle(),
+        transform: [{ scale: press.scale }],
       }}
     >
+      <If when={props.loading || props.icon}>
+        <View style={{ opacity: glyph, transform: [{ scale: glyph }] }}>
       <If
         when={props.loading}
         else={
           <If when={props.icon}>
-            <Icon name={props.icon!} size={16} color={foreground()} />
+            <Icon name={props.icon!} size={control.compact ? 14 : 16} color={foreground()} />
           </If>
         }
       >
-        <Spinner size={16} color={foreground()} />
+        <Spinner size={control.compact ? 14 : 16} color={foreground()} />
+      </If>
+        </View>
       </If>
       <Text
         style={{
           minWidth: 0,
           flexShrink: 1,
-          lineHeight: 20,
-          fontSize: props.small ? typography.xs : typography.sm,
+          lineHeight: control.compact ? 18 : 20,
+          fontSize: props.small ? typography.xs : control.compact ? 13 : typography.sm,
           fontWeight: "500",
           color: foreground(),
         }}
@@ -250,32 +242,58 @@ export function IconButton(props: {
   loading?: boolean;
 }) {
   const disabled = () => !!props.disabled || !!props.loading;
+  const press = usePressFeedback(disabled);
+  const glyph = useGlyphTransition(() => props.loading ? "busy" : props.icon);
+  const size = () => Math.max(control.icon, props.size || (props.small ? control.small : control.icon));
   return (
     <Button
       testID={props.id}
+      hitSlop={control.hitSlop(size())}
       focusStyle={focusRing()}
-      hoverStyle={{ backgroundColor: palette().soft }}
+      hoverStyle={disabled() ? undefined : { backgroundColor: palette().soft }}
       accessibilityLabel={props.label}
       disabled={disabled()}
+      onPressDown={press.down}
+      onPressUp={press.up}
       onPress={() => {
         if (!disabled()) props.onPress();
       }}
-      activeStyle={{ opacity: 0.65 }}
+      activeStyle={disabled() ? undefined : { opacity: 0.8 }}
       style={{
-        width: props.size || (props.small ? control.small : control.icon),
-        height: props.size || (props.small ? control.small : control.icon),
+        width: size(),
+        height: size(),
         borderRadius: radius.md,
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: "transparent",
-        opacity: disabled() ? 0.5 : 1,
+        opacity: props.loading ? 1 : props.disabled ? 0.4 : 1,
+        transform: [{ scale: press.scale }],
+        ...feedbackStyle(),
       }}
     >
-      <If when={props.loading} else={<Icon name={props.icon} size={18} color={palette().text} />}>
-        <Spinner size={18} />
+      <View style={{ opacity: glyph, transform: [{ scale: glyph }] }}>
+      <If when={props.loading} else={<Icon name={props.icon} size={control.compact ? 16 : 18} color={palette().text} />}>
+        <Spinner size={control.compact ? 16 : 18} />
       </If>
+      </View>
     </Button>
   );
+}
+
+export function ExternalLink(props: { label: string; href: string; id?: string; small?: boolean }) {
+  const ui = useApp();
+  return <Link testID={props.id} href={props.href} openWith="app"
+    hitSlop={control.hitSlop(props.small ? control.small : control.height)}
+    onOpen={(event) => { void ui.client.run("platform.openUrl", { url: event.href }); }}
+    accessibilityLabel={props.label} focusStyle={focusRing()}
+    hoverStyle={{ backgroundColor: palette().soft }} activeStyle={{ opacity: 0.8 }}
+    style={{ minHeight: props.small ? control.small : control.height, maxWidth: "100%", minWidth: 0,
+      paddingVertical: 6, paddingHorizontal: spacing.sm, flexDirection: "row", alignItems: "center",
+      gap: spacing.sm, borderRadius: radius.md, cursor: "pointer", ...feedbackStyle() }}>
+    <Text style={{ flexShrink: 1, fontSize: props.small ? 12 : 14, lineHeight: 20,
+      color: palette().accent }}>{props.label}</Text>
+    <Icon name="external-link" size={14} color={palette().muted} />
+  </Link>;
 }
 
 export function Separator() {
@@ -331,13 +349,15 @@ export function Tabs(props: {
   return (
     <NativeTabs
       style={{
-        minHeight: 44,
-        padding: 3,
+        minHeight: control.height + 4,
+        padding: 2,
         flexDirection: "row",
         backgroundColor: palette().soft,
-        borderRadius: radius.full,
+        borderRadius: radius.lg,
         ...surfaceFinish("track"),
       }}
+      indicatorStyle={{ top: 2, bottom: 2, borderRadius: radius.md, borderWidth: 1,
+        borderColor: palette().border, ...surfaceFinish("raised") }}
     >
       <Each of={props.options} key={(option) => option.value}>
         {(option) => (
@@ -350,14 +370,14 @@ export function Tabs(props: {
             onPress={() => props.onChange(option().value)}
             style={{
               flex: 1,
-              minHeight: 38,
+              minHeight: control.height,
               alignItems: "center",
               justifyContent: "center",
-              borderRadius: radius.full,
-              backgroundColor:
-                props.value === option().value ? palette().raised : "transparent",
-              ...(props.value === option().value ? surfaceFinish("pill") : {}),
+              paddingHorizontal: spacing.sm,
+              borderRadius: radius.md,
+              backgroundColor: "transparent",
               opacity: props.disabled ? 0.5 : 1,
+              ...feedbackStyle(),
             }}
           >
             <Text
@@ -376,9 +396,10 @@ export function Tabs(props: {
   );
 }
 
-export function Actions(props: { children?: JSX.Element }) {
+export function Actions(props: { children?: JSX.Element; align?: "start" | "end" }) {
   return (
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, alignItems: "center",
+      justifyContent: props.align === "start" ? "flex-start" : "flex-end" }}>
       {props.children}
     </View>
   );
@@ -388,11 +409,16 @@ export function Field(props: {
   label: string;
   value: string;
   onChange: (value: string) => void;
+  onSubmit?: () => void;
+  autoFocus?: boolean;
   placeholder?: string;
   multiline?: boolean;
   password?: boolean;
   numeric?: boolean;
   disabled?: boolean;
+  readonly?: boolean;
+  description?: string;
+  error?: string;
   height?: number;
   id?: string;
 }) {
@@ -409,14 +435,16 @@ export function Field(props: {
       <View style={{ position: "relative" }}>
         <Input
           testID={props.id}
-          accessibilityLabel={props.label}
+          accessibilityLabel={props.label || props.placeholder || "Text input"}
           value={props.value}
-          onChange={props.onChange}
+          onChange={(event) => props.onChange(event.value)}
+          onSubmit={props.multiline ? undefined : props.onSubmit}
+          autoFocus={props.autoFocus}
           placeholder={props.placeholder}
           multiline={props.multiline}
           masked={props.password && !passwordVisible()}
           disabled={props.disabled}
-          readonly={props.disabled}
+          readonly={props.readonly || props.disabled}
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType={props.numeric ? "number-pad" : "default"}
@@ -424,24 +452,25 @@ export function Field(props: {
           onBlur={() => focused.set(false)}
           style={{
             width: "100%",
-            height: props.height || (props.multiline ? 120 : control.height),
+            height: props.height || (props.multiline ? 120 : Math.max(control.height, 20 * Math.max(1, fontScale()) + 16)),
             fontSize: typography.sm,
             lineHeight: 20,
             color: palette().text,
             placeholderColor: palette().muted,
             paddingLeft: spacing.md,
-            paddingRight: props.password ? 40 : spacing.md,
+            paddingRight: props.password ? control.icon + 4 : spacing.md,
             paddingVertical: props.multiline ? spacing.sm : spacing.xxs,
             opacity: props.disabled ? 0.5 : 1,
             backgroundColor: palette().field,
             borderWidth: 1,
-            borderColor: focused() ? palette().ring : palette().fieldBorder,
+            borderColor: props.error ? palette().danger : focused() ? palette().ring : palette().fieldBorder,
             borderRadius: radius.md,
             ...surfaceFinish("field"),
+            ...feedbackStyle(),
           }}
         />
         <If when={props.password}>
-          <View style={{ position: "absolute", right: 2, top: 2 }}>
+          <View style={{ position: "absolute", right: 1, top: 0, bottom: 0, justifyContent: "center" }}>
             <IconButton
               icon={passwordVisible() ? "eye-off" : "eye"}
               size={32}
@@ -452,6 +481,9 @@ export function Field(props: {
           </View>
         </If>
       </View>
+      <If when={props.error || props.description}>
+        <Hint danger={!!props.error} text={props.error || props.description!} />
+      </If>
     </View>
   );
 }
@@ -463,8 +495,24 @@ export function Toggle(props: {
   onChange: (value: boolean) => void;
   disabled?: boolean;
 }) {
+  const position = follow(() => props.value ? 1 : 0, motion.move);
   return (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.md, minHeight: 40 }}>
+    <Switch
+      focusStyle={focusRing()}
+      accessibilityLabel={props.label}
+      checked={props.value}
+      disabled={props.disabled}
+      onChange={(event) => props.onChange(event.checked)}
+      style={{ flexDirection: "row-reverse", alignItems: "center", gap: spacing.md,
+        minHeight: control.row, opacity: props.disabled ? 0.4 : 1 }}
+      trackStyle={{ width: 44, height: 26, borderRadius: radius.full,
+        padding: 2, borderWidth: 1, borderColor: palette().border,
+        backgroundColor: position.interpolate({ inputRange: [0, 1], outputRange: [palette().soft, palette().brandFill] }),
+        ...surfaceFinish("track") }}
+      thumbStyle={{ width: 20, height: 20, borderRadius: radius.full,
+        backgroundColor: palette().panel, ...surfaceFinish("knob"),
+        transform: [{ translateX: position.interpolate({ inputRange: [0, 1], outputRange: [0, 18] }) }] }}
+    >
       <View style={{ flex: 1, gap: spacing.xs }}>
         <Text style={{ color: palette().text, fontSize: typography.sm, fontWeight: "500" }}>
           {props.label}
@@ -473,37 +521,43 @@ export function Toggle(props: {
           <Hint text={props.description!} />
         </If>
       </View>
-      <Switch
-        focusStyle={focusRing()}
-        accessibilityLabel={props.label}
-        checked={props.value}
-        disabled={props.disabled}
-        onChange={props.onChange}
-        style={{
-          minHeight: 44,
-          justifyContent: "center",
-          opacity: props.disabled ? 0.5 : 1,
-        }}
-        trackStyle={{
-          width: 44,
-          height: 26,
-          borderRadius: radius.full,
-          padding: 3,
-          alignItems: props.value ? "flex-end" : "flex-start",
-          justifyContent: "center",
-          backgroundColor: props.value ? palette().brandFill : palette().soft,
-          ...surfaceFinish("track"),
-        }}
-        thumbStyle={{
-          width: 20,
-          height: 20,
-          borderRadius: radius.full,
-          backgroundColor: props.value ? palette().primaryText : palette().muted,
-          ...surfaceFinish("knob"),
-        }}
-      />
-    </View>
+    </Switch>
   );
+}
+
+/** A draft choice committed by its form's Save action, unlike an immediate Switch. */
+export function Check(props: {
+  label: string; description?: string; value: boolean;
+  onChange: (value: boolean) => void; disabled?: boolean;
+}) {
+  const selected = follow(() => props.value ? 1 : 0);
+  return (
+    <Checkbox checked={props.value} disabled={props.disabled}
+      accessibilityLabel={props.label} focusStyle={focusRing()}
+      onChange={(event) => props.onChange(event.checked)}
+      style={{ flexDirection: "row", alignItems: "center", gap: spacing.md,
+        minHeight: control.row, opacity: props.disabled ? 0.4 : 1 }}
+      indicatorStyle={{ width: 20, height: 20, borderRadius: radius.sm,
+        borderWidth: 1, borderColor: props.value ? palette().accent : palette().fieldBorder,
+        backgroundColor: props.value ? palette().brandFill : palette().field,
+        alignItems: "center", justifyContent: "center", ...feedbackStyle() }}
+      indicator={<View style={{ opacity: selected, transform: [{ scale: selected }] }}>
+        <Icon name="check" size={14} color={palette().primaryText} />
+      </View>}
+    >
+      <View style={{ flex: 1, minWidth: 0, gap: spacing.xxs }}>
+        <Text style={{ color: palette().text, fontSize: typography.sm, lineHeight: 20 }}>{props.label}</Text>
+        <If when={props.description}><Hint text={props.description!} /></If>
+      </View>
+    </Checkbox>
+  );
+}
+
+export function Chevron(props: { expanded: boolean; size?: number }) {
+  const angle = follow(() => props.expanded ? 180 : 0);
+  return <View style={{ pointerEvents: "none", transform: [{ rotate: angle }] }}>
+    <Icon name="chevron-down" size={props.size || 16} color={palette().muted} />
+  </View>;
 }
 
 export function Detail(props: {
@@ -513,7 +567,7 @@ export function Detail(props: {
   stacked?: boolean;
   id?: string;
 }) {
-  const stacked = () => !!props.stacked;
+  const stacked = () => !!props.stacked || fontScale() > 1.3 || windowSize().width < 360;
   return (
     <View
       testID={props.id}
@@ -547,27 +601,20 @@ export function Detail(props: {
           alignItems: "flex-start",
         }}
       >
-        <If
-          when={props.tone}
-          else={
             <Text
-              selectable
               style={{
+                userSelect: "text",
                 width: "100%",
                 minWidth: 0,
                 fontSize: 14,
                 lineHeight: 20,
                 fontWeight: "500",
-                color: palette().text,
+                color: props.tone ? statusColors(props.tone).text : palette().text,
                 textAlign: stacked() ? "left" : "right",
               }}
             >
               {props.value}
             </Text>
-          }
-        >
-          <Badge label={props.value} tone={props.tone} />
-        </If>
       </View>
     </View>
   );
@@ -605,7 +652,7 @@ export function Body(props: { children?: JSX.Element }) {
     <View
       style={{
         padding: windowSize().width >= 840 ? spacing.xxl : spacing.lg,
-        gap: spacing.md,
+        gap: spacing.section,
         width: "100%",
       }}
     >
@@ -613,11 +660,20 @@ export function Body(props: { children?: JSX.Element }) {
     </View>
   );
 }
+
+export function Loading(props: { text: string }) {
+  return <View accessible role="progressbar" accessibilityLabel={props.text}
+    style={{ flex: 1, minHeight: 160, padding: spacing.region, gap: spacing.md,
+      alignItems: "center", justifyContent: "center" }}>
+    <Spinner size={20} color={palette().muted} />
+    <Hint text={props.text} />
+  </View>;
+}
 export function Hint(props: { text: string; danger?: boolean }) {
   return (
     <Text
-      selectable
       style={{
+        userSelect: "text",
         minWidth: 0,
         maxWidth: "100%",
         fontSize: 13,
@@ -632,9 +688,9 @@ export function Hint(props: { text: string; danger?: boolean }) {
 export function Code(props: { text: string; lines?: number }) {
   return (
     <Text
-      selectable
-      numberOfLines={props.lines}
       style={{
+        userSelect: "text",
+        numberOfLines: props.lines,
         minWidth: 0,
         maxWidth: "100%",
         fontSize: 12,
@@ -648,14 +704,20 @@ export function Code(props: { text: string; lines?: number }) {
   );
 }
 
-export async function askConfirmation(ui: AppContext, title: string): Promise<boolean> {
+type ConfirmationOptions = { actionLabel: string; description?: string; destructive?: boolean };
+export async function askConfirmation(ui: AppContext, title: string, options?: ConfirmationOptions): Promise<boolean> {
   const route = ui.route();
-  ui.confirmation()?.resolve(false);
-  const accepted = await new Promise<boolean>((resolve) => ui.confirmation.set({ title, resolve }));
-  return accepted && ui.alive() && ui.route() === route;
+  const result = await AlertDialog.show({ title, description: options?.description, closeOnEscape: true,
+    actions: [
+      { id: "cancel", label: ui.t("取消", "Cancel"), role: "cancel" },
+      { id: "commit", label: options?.actionLabel || ui.t("继续", "Continue"),
+        role: options?.destructive === false ? "default" : "destructive" },
+    ],
+  });
+  return result.action === "commit" && ui.alive() && ui.route() === route;
 }
-export async function confirm(ui: AppContext, title: string, action: () => void): Promise<void> {
-  if (await askConfirmation(ui, title)) action();
+export async function confirm(ui: AppContext, title: string, action: () => void, options?: ConfirmationOptions): Promise<void> {
+  if (await askConfirmation(ui, title, options)) action();
 }
 
 export function Dialog(props: {
@@ -663,104 +725,44 @@ export function Dialog(props: {
   description?: string;
   onClose: () => void;
   children?: JSX.Element;
+  footer?: JSX.Element;
   width?: number;
 }) {
   const notificationLayer = useNotificationLayer();
-  const content = (
-    <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.sm }}>
-      <View
-        onPress={props.onClose}
-        style={{
-          position: "absolute",
-          top: 0,
-          right: 0,
-          bottom: 0,
-          left: 0,
-          backgroundColor: "#00000080",
-        }}
-      />
-      <View
-        accessibilityLabel={props.title}
-        style={{
-          width: "100%",
-          maxWidth: props.width || 512,
-          maxHeight: "90%",
-          padding: spacing.xxl,
-          gap: spacing.lg,
-          backgroundColor: palette().panel,
-          borderColor: palette().border,
-          borderWidth: 1,
-          borderRadius: radius.xxl,
-          ...surfaceFinish("card"),
-        }}
-      >
-        <View style={{ flexDirection: "row", gap: spacing.md, alignItems: "center" }}>
-          <Text
-            style={{ flex: 1, fontSize: typography.lg, fontWeight: "600", color: palette().text }}
-          >
-            {props.title}
-          </Text>
-          <View style={{ width: 34 }} />
-        </View>
-        <If when={props.description}>
-          <Hint text={props.description!} />
-        </If>
-        {props.children}
-        <View style={{ position: "absolute", top: 14, right: 14 }}>
-          <IconButton
-            icon="x"
-            label="Close dialog"
-            id="dialog-close"
-            onPress={props.onClose}
-            size={28}
-          />
-        </View>
-      </View>
-      <NotificationViewport owner={notificationLayer} modal />
-    </View>
-  );
   return (
-    <NativeDialog
-      open
-      closeOnEscape={false}
-      closeOnBackdropPress={false}
-      closeOnSwipe={false}
-      onCancel={props.onClose}
-      animation="fade"
-      style={{ flex: 1 }}
-    >
-      {content}
+    <NativeDialog open closeOnEscape closeOnBackdropPress={false} closeOnSwipe={false}
+      onCancel={props.onClose} animation="fade" style={{ flex: 1 }}>
+      <View style={{ flex: 1, paddingBottom: "env(keyboard-inset-height)" }}>
+        <View onPress={props.onClose} style={{ position: "absolute", top: 0, right: 0,
+          bottom: 0, left: 0, backgroundColor: palette().scrim }} />
+        <View style={{ flex: 1, minHeight: 0, alignItems: "center", justifyContent: "center",
+          paddingHorizontal: spacing.lg, paddingVertical: spacing.xxl }}>
+          <View accessibilityLabel={props.title} style={{ width: "100%", maxWidth: props.width || 480,
+            maxHeight: "100%", minHeight: 0, borderRadius: radius.xxl, borderCurve: "continuous",
+            backgroundColor: palette().popover, borderWidth: 1, borderColor: palette().border,
+            ...surfaceFinish("overlay") }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm,
+              paddingLeft: spacing.lg, paddingRight: spacing.xxs, paddingTop: spacing.xxs }}>
+              <Text role="header" accessibilityLabel={props.title} style={{ flex: 1, minWidth: 0, numberOfLines: 2, fontSize: typography.lg,
+                lineHeight: 24, fontWeight: "600", color: palette().text }}>{props.title}</Text>
+              <IconButton icon="x" label="Close dialog" id="dialog-close" onPress={props.onClose} />
+            </View>
+            <Scroll bounces={false} style={{ flexShrink: 1, minHeight: 0 }}
+              contentStyle={{ padding: spacing.lg, gap: spacing.lg }}>
+              <If when={props.description}><Hint text={props.description!} /></If>
+              {props.children}
+            </Scroll>
+            <If when={props.footer}>
+              <View style={{ padding: spacing.lg, borderTopWidth: 1, borderTopColor: palette().line }}>
+                {props.footer}
+              </View>
+            </If>
+          </View>
+        </View>
+        <NotificationViewport owner={notificationLayer} modal />
+      </View>
     </NativeDialog>
   );
-}
-
-export function selectPanelLayout(
-  trigger: { pageX: number; pageY: number; width: number; height: number },
-  viewport: { width: number; height: number },
-  insets: { top: number; right: number; bottom: number; left: number },
-  keyboardHeight: number,
-  count: number,
-  labelled: boolean,
-) {
-  const left = insets.left + 8,
-    right = viewport.width - insets.right - 8,
-    top = insets.top + 8;
-  const bottom = Math.max(top, viewport.height - Math.max(insets.bottom, keyboardHeight) - 8);
-  const width = Math.max(1, Math.min(trigger.width, right - left));
-  const height = Math.max(
-    1,
-    Math.min(Math.min(192, count * 32) + (labelled ? 28 : 0) + 10, bottom - top),
-  );
-  const below = trigger.pageY + trigger.height + 4;
-  return {
-    x: Math.max(left, Math.min(trigger.pageX, right - width)),
-    y: Math.max(
-      top,
-      Math.min(below + height <= bottom ? below : trigger.pageY - height - 4, bottom - height),
-    ),
-    width,
-    height,
-  };
 }
 
 export function Select(props: {
@@ -773,240 +775,97 @@ export function Select(props: {
   labelAccessory?: JSX.Element;
   id?: string;
 }) {
-  const open = signal(false),
-    frame = signal({ x: 0, y: 0, width: 180, height: 36, pageX: 0, pageY: 0 });
-  const alive = useLifetime(),
-    insets = useSafeAreaInsets();
-  let trigger!: YNode;
-  const show = async () => {
-    const measured = await trigger.measure();
-    if (!alive() || !measured || props.disabled) return;
-    frame.set({
-      x: measured.bounds.origin.x,
-      y: measured.bounds.origin.y,
-      width: measured.bounds.size.width,
-      height: measured.bounds.size.height,
-      pageX: measured.pagePosition.x,
-      pageY: measured.pagePosition.y,
-    });
-    open.set(true);
-  };
-  const panel = computed(() =>
-    selectPanelLayout(
-      frame(),
-      windowSize(),
-      {
-        top: Math.max(insets().top, safeArea().top),
-        bottom: Math.max(insets().bottom, safeArea().bottom),
-        left: Math.max(insets().left, safeArea().left),
-        right: Math.max(insets().right, safeArea().right),
-      },
-      keyboard().height,
-      props.options.length,
-      !!props.label,
-    ),
-  );
-  const Options = () => (
-    <View>
-      <Each of={props.options} key={(option) => option.value}>
-        {(option) => (
-          <View
-            class="focus-visible:ring-2 focus-visible:ring-ring"
-            testID={`select-option-${option().value}`}
-            role="radio"
-            accessibilityLabel={option().label}
-            accessibilityState={{ checked: option().value === props.value }}
-            onPress={() => {
-              const value = option().value;
-              open.set(false);
-              if (value !== props.value) props.onChange(value);
-            }}
-            style={{
-              height: 32,
-              paddingHorizontal: spacing.sm,
-              borderRadius: radius.sm,
-              flexDirection: "row",
-              alignItems: "center",
-              gap: spacing.sm,
-              backgroundColor: option().value === props.value ? palette().soft : "transparent",
-            }}
-          >
-            <Text
-              numberOfLines={1}
-              style={{ flex: 1, color: palette().text, fontSize: typography.sm }}
-            >
-              {option().label}
-            </Text>
-            <If when={option().value === props.value}>
-              <Icon name="check" size={16} color={palette().text} />
-            </If>
-          </View>
-        )}
-      </Each>
-    </View>
-  );
-  const Popover = () => {
-    const notificationLayer = useNotificationLayer();
-    const content = (
-      <View style={{ flex: 1 }}>
-        <View
-          testID="select-dismiss"
-          onPress={() => open.set(false)}
-          style={{
-            position: "absolute",
-            top: 0,
-            bottom: 0,
-            left: 0,
-            right: 0,
-            backgroundColor: "#00000001",
-          }}
-        />
-        <View
-          testID="select-popover"
-          style={{
-            position: "absolute",
-            left: panel().x,
-            top: panel().y,
-            width: panel().width,
-            height: panel().height,
-            padding: 4,
-            borderWidth: 1,
-            borderColor: palette().border,
-            borderRadius: radius.md,
-            backgroundColor: palette().panel,
-            boxShadow: "0px 4px 12px #0000001a",
-          }}
-        >
-          <If when={props.label}>
-            <View style={{ height: 28, paddingHorizontal: 8, justifyContent: "center" }}>
-              <Text numberOfLines={1} style={{ color: palette().muted, fontSize: 12 }}>
-                {props.label}
-              </Text>
-            </View>
-          </If>
-          <If
-            when={props.options.length * 32 + (props.label ? 28 : 0) + 10 > panel().height}
-            else={<Options />}
-          >
-            <Scroll bounces={false} style={{ flex: 1 }}>
-              <Options />
-            </Scroll>
-          </If>
-        </View>
-        <NotificationViewport owner={notificationLayer} modal />
-      </View>
-    );
-    return (
-      <NativeDialog
-        open
-        closeOnEscape={false}
-        closeOnBackdropPress={false}
-        closeOnSwipe={false}
-        onCancel={() => open.set(false)}
-        animation="none"
-        style={{ flex: 1 }}
-      >
-        {content}
-      </NativeDialog>
-    );
-  };
+  const open = signal(false);
+  const disabled = () => !!props.disabled;
   return (
-    <View style={{ gap: spacing.xs }}>
+    <View style={{ minWidth: 0, gap: spacing.xxs }}>
       <If when={props.label}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
-          <Text
-            style={{ flex: 1, minWidth: 0, fontSize: typography.sm, fontWeight: "500", color: palette().text }}
-          >
-            {props.label}
-          </Text>
+          <Text style={{ flex: 1, minWidth: 0, fontSize: typography.sm, lineHeight: 20,
+            fontWeight: "500", color: palette().text }}>{props.label}</Text>
           {props.labelAccessory}
         </View>
       </If>
-      <View
-        testID={props.id}
-        class="focus-visible:ring-2 focus-visible:ring-ring"
-        ref={trigger}
-        role="button"
-        accessibilityLabel={props.label}
-        accessibilityState={{ expanded: open(), disabled: !!props.disabled, busy: !!props.loading }}
-        disabled={props.disabled}
-        onPress={() => void show()}
-        style={{
-          height: control.height,
-          paddingHorizontal: spacing.md,
-          borderWidth: 1,
-          borderColor: palette().border,
-          borderRadius: radius.md,
-          backgroundColor: palette().background,
-          flexDirection: "row",
-          alignItems: "center",
-          gap: spacing.sm,
-          opacity: props.disabled ? 0.5 : 1,
-        }}
-      >
-        <Text numberOfLines={1} style={{ flex: 1, fontSize: typography.sm, color: palette().text }}>
-          {props.options.find((option) => option.value === props.value)?.label || props.value}
-        </Text>
-        <View style={{ width: 16, height: 16, alignItems: "center", justifyContent: "center" }}>
-          <If when={props.loading} else={<Icon name="chevron-down" size={16} color={palette().muted} />}>
-            <Spinner size={16} />
-          </If>
+      <Menu open={open()} onOpenChange={(event) => { if (!event.open || !disabled()) open.set(event.open); }}
+        placement="bottom" align="start" offset={4} margin={8}
+        popupStyle={popupSurface()}
+        popupStartingStyle={{ opacity: 0, transform: [{ translateY: -4 }] }}
+        popupEndingStyle={{ opacity: 0 }}
+        backdropStyle={{ backgroundColor: palette().scrim }}
+        trigger={<View testID={props.id} role="button" accessibilityLabel={props.label || "Choose an option"}
+          hitSlop={control.hitSlop(control.height)}
+          accessibilityState={{ expanded: open(), disabled: disabled(), busy: !!props.loading }}
+          disabled={disabled()} focusStyle={focusRing()}
+          hoverStyle={disabled() ? undefined : { backgroundColor: palette().soft }}
+          activeStyle={disabled() ? undefined : { opacity: 0.85 }}
+          style={{ minHeight: control.height, minWidth: 0, paddingHorizontal: spacing.md,
+            paddingVertical: spacing.sm, borderWidth: 1, borderRadius: radius.md,
+            borderColor: open() ? palette().ring : palette().fieldBorder,
+            backgroundColor: open() ? palette().soft : palette().field,
+            flexDirection: "row", alignItems: "center", gap: spacing.sm,
+            opacity: disabled() ? 0.4 : 1, ...feedbackStyle() }}>
+          <Text style={{ flex: 1, minWidth: 0, fontSize: typography.sm, lineHeight: 20, color: palette().text }}>
+            {props.options.find((option) => option.value === props.value)?.label || props.value}
+          </Text>
+          <If when={props.loading} else={<Chevron expanded={open()} />}><Spinner size={16} /></If>
+        </View>}>
+        <View testID="select-popover" style={{ minWidth: 0 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", paddingLeft: spacing.md }}>
+            <Text style={{ flex: 1, minWidth: 0, fontSize: typography.xs, lineHeight: 18, color: palette().muted }}>
+              {props.label}
+            </Text>
+            <IconButton id="select-dismiss" icon="x" label="Close choices" onPress={() => open.set(false)} />
+          </View>
+          <Scroll bounces={false} style={{ maxHeight: Math.max(88, Math.min(480, windowSize().height * 0.65)) }}>
+            <Each of={props.options} key={(option) => option.value}>
+              {(option) => <MenuItem testID={`select-option-${option().value}`} role="menuitemradio"
+                disabled={props.disabled}
+                checked={option().value === props.value} accessibilityLabel={option().label}
+                onSelect={() => { if (option().value !== props.value) props.onChange(option().value); }}
+                focusStyle={focusRing()} hoverStyle={{ backgroundColor: palette().soft }}
+                activeStyle={{ backgroundColor: palette().soft }}
+                style={{ minHeight: control.row, paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+                  borderRadius: radius.sm, flexDirection: "row", alignItems: "center", gap: spacing.sm,
+                  backgroundColor: option().value === props.value ? palette().soft : "transparent", ...feedbackStyle() }}>
+                <Text style={{ flex: 1, minWidth: 0, fontSize: typography.sm, lineHeight: 20, color: palette().text }}>
+                  {option().label}
+                </Text>
+                <View style={{ width: 16, opacity: option().value === props.value ? 1 : 0 }}>
+                  <Icon name="check" size={16} color={palette().text} />
+                </View>
+              </MenuItem>}
+            </Each>
+          </Scroll>
         </View>
-      </View>
-      <If when={open()}>
-        <Popover />
-      </If>
+      </Menu>
     </View>
   );
 }
 
 export function RadioGroup(props: {
-  label: string;
-  value: string;
-  options: { value: string; label: string }[];
-  onChange: (value: string) => void;
+  label: string; value: string; options: { value: string; label: string }[]; onChange: (value: string) => void;
 }) {
-  return (
-    <NativeRadioGroup
-      style={{ gap: spacing.md }}
-    >
-      <Each of={props.options} key={(option) => option.value}>
-        {(option) => (
-          <Radio
-            focusStyle={focusRing()}
-            accessibilityLabel={option().label}
-            checked={props.value === option().value}
-            onChange={() => props.onChange(option().value)}
-            style={{ flexDirection: "row", alignItems: "center", gap: spacing.md, minHeight: 44 }}
-          >
-            <View
-              style={{
-                width: 20,
-                height: 20,
-                borderRadius: radius.full,
-                borderWidth: 1,
-                borderColor: palette().accent,
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <If when={props.value === option().value}>
-                <View
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: radius.full,
-                    backgroundColor: palette().accent,
-                  }}
-                />
-              </If>
-            </View>
-            <Text style={{ fontSize: typography.sm, color: palette().text }}>{option().label}</Text>
-          </Radio>
-        )}
-      </Each>
-    </NativeRadioGroup>
-  );
+  return <NativeRadioGroup style={{ gap: spacing.xxs }}>
+    <Each of={props.options} key={(option) => option.value}>
+      {(option) => <RadioChoice label={option().label} selected={props.value === option().value}
+        onSelect={() => { if (props.value !== option().value) props.onChange(option().value); }} />}
+    </Each>
+  </NativeRadioGroup>;
+}
+function RadioChoice(props: { label: string; selected: boolean; onSelect: () => void }) {
+  const selected = follow(() => props.selected ? 1 : 0);
+  return <Radio focusStyle={focusRing()} accessibilityLabel={props.label} checked={props.selected}
+    onChange={props.onSelect} hoverStyle={{ backgroundColor: palette().soft }} activeStyle={{ opacity: 0.8 }}
+    style={{ minHeight: control.row, flexDirection: "row", alignItems: "center", gap: spacing.md,
+      paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderRadius: radius.md,
+      backgroundColor: props.selected ? palette().soft : "transparent", ...feedbackStyle() }}>
+    <View style={{ width: 20, height: 20, borderRadius: radius.full, borderWidth: 1,
+      borderColor: props.selected ? palette().accent : palette().fieldBorder, alignItems: "center", justifyContent: "center" }}>
+      <View style={{ width: 8, height: 8, borderRadius: radius.full, backgroundColor: palette().accent,
+        opacity: selected, transform: [{ scale: selected }] }} />
+    </View>
+    <Text style={{ flex: 1, minWidth: 0, fontSize: typography.sm, lineHeight: 20, color: palette().text }}>{props.label}</Text>
+  </Radio>;
 }
 export function useLifetime(): () => boolean {
   let alive = true;
@@ -1034,8 +893,7 @@ export function Spinner(props: { size?: number; color?: string }) {
     <View
       role="progressbar"
       accessibilityLabel="Loading"
-      pointerEvents="none"
-      style={{ width: props.size || 16, height: props.size || 16, transform: [{ rotate: angle }] }}
+      style={{ pointerEvents: "none", width: props.size || 16, height: props.size || 16, transform: [{ rotate: angle }] }}
     >
       <Icon name="loader-circle" size={props.size || 16} color={props.color || palette().text} />
     </View>

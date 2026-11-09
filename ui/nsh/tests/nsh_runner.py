@@ -23,6 +23,9 @@ def run_nsh(command, **options):
     parser.add_argument('entry', type=Path)
     parser.add_argument('--width', type=int, default=390)
     parser.add_argument('--height', type=int, default=844)
+    parser.add_argument('--platform', choices=('ios', 'android', 'macos', 'windows', 'linux', 'web'))
+    parser.add_argument('--accept-dialogs', action='store_true')
+    parser.add_argument('--reduced-motion', action='store_true')
     parser.add_argument('--wait', type=int, default=30)
     parser.add_argument('--tap', action=TestStep)
     parser.add_argument('--scroll', action=TestStep, nargs=2, metavar=('SELECTOR', 'DISTANCE'))
@@ -35,10 +38,12 @@ def run_nsh(command, **options):
              'test("fixture acceptance", async () => {',
              'const controls = new Set(), replies = new Map();',
              f'const app = await open({json.dumps(str(entry))}, '
-             f'{{width:{args.width},height:{args.height},locale:"zh-CN",'
+             f'{{width:{args.width},height:{args.height},platform:{json.dumps(args.platform or ("windows" if args.width >= 840 else "ios"))},reducedMotion:{str(args.reduced_motion).lower()},locale:"zh-CN",'
              'host:{handlers:{"paws.test.register":id=>controls.add(id),'
              '"paws.test.done":reply=>replies.set(reply.token,reply)}}});',
              f'await app.wait({args.wait});']
+    if args.accept_dialogs:
+        steps.append('app.onDialog(dialog => dialog.buttons[dialog.buttons.length - 1]);')
     index = 0
     for kind, values in getattr(args, 'steps', []):
         if kind == '--scroll':
@@ -54,8 +59,8 @@ def run_nsh(command, **options):
                       f'await app.host.send("paws.test.action", {{id:{json.dumps(tap.removeprefix("id:"))},token:{index}}});',
                       f'await app.waitUntil(()=>replies.has({index}));',
                       f'if(replies.get({index}).error) throw new Error(replies.get({index}).error);',
-                      f'}} else await app.press({json.dumps(tap)});',
-                      f'await app.wait({args.wait});'])
+                      f'}} else {{ await app.waitFor({json.dumps(tap)}); await app.press({json.dumps(tap)}); }}',
+                      f'await app.wait({max(args.wait, 250)});'])
     steps.append('});')
     directory = entry.parent / '.nsh/test'
     directory.mkdir(parents=True, exist_ok=True)

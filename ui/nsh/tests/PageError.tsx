@@ -1,5 +1,5 @@
 import { testControl } from "./test-controls";
-import { mount, signal, Text, View, type YNode } from "nsh";
+import { mount, signal, Text, View, type ListRef } from "nsh";
 import { PawsApp } from "../src/app";
 import { CoreClient } from "../src/client";
 import { errorTextRows } from "../src/page-error";
@@ -16,7 +16,7 @@ const STACK = stackLines.join("\n");
 const LONG = "公开合成错误😀e\u0301👩‍💻".repeat(3000) + "\r\n\nEND-UNICODE-ERROR";
 const QA_UNBROKEN = "公开错误👩‍💻e\u0301".repeat(512);
 const testHost = globalThis as typeof globalThis & {
-  __pawsPageErrorList?: YNode;
+  __pawsPageErrorList?: ListRef;
   __pawsPageErrorSetScale?: (scale: number) => void;
 };
 

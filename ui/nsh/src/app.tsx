@@ -2,6 +2,7 @@ import {
   cleanup,
   computed,
   effect,
+  fontScale,
   signal,
   Text,
   untracked,
@@ -9,19 +10,22 @@ import {
   type JSX,
   setColorScheme,
   windowSize,
+  Scroll,
+  keymap,
+  platform,
+  reduceMotion,
 } from "nsh";
 import { BackHandler } from "nsh/mobile";
-import { createNavStack, NavPage, NavStack } from "nsh/base";
+import { Button, Tab, Tabs as BaseTabs, createNavStack, NavPage, NavStack } from "nsh/base";
 import { CoreGateway, type CoreClient } from "./client";
 import {
   App,
   Action,
   Actions,
-  Dialog,
-  Empty,
+  Loading,
+  control,
   Alert,
   confirm,
-  Hint,
   Icon,
   IconButton,
   palette,
@@ -32,8 +36,9 @@ import {
   type Page,
   useLifetime,
   useApp,
-  RouteOwner,
-} from "./components";
+  RouteOwner} from "./components";
+import { feedbackStyle } from "./motion";
+import { focusRing } from "./theme";
 import { Dashboard, Traffic } from "./pages/overview";
 import { FloatingVpnPowerButton } from "./floating-vpn";
 import { Profiles } from "./pages/profiles";
@@ -57,6 +62,21 @@ const primary: { page: Page; zh: string; en: string; icon: IconName }[] = [
   { page: "profiles", zh: "订阅", en: "Subscriptions", icon: "rss" },
   { page: "traffic", zh: "流量", en: "Traffic", icon: "activity" },
   { page: "tools", zh: "设置", en: "Settings", icon: "settings" },
+];
+const desktopSections: { title: [string, string]; items: { page: Page; icon: IconName }[] }[] = [
+  { title: ["网络", "Network"], items: [
+    { page: "proxies", icon: "git-branch" }, { page: "connections", icon: "unplug" },
+    { page: "requests", icon: "activity" }, { page: "resources", icon: "database" },
+    { page: "logs", icon: "scroll-text" },
+  ] },
+  { title: ["工具", "Tools"], items: [
+    { page: "converter", icon: "refresh-cw" }, { page: "backups", icon: "archive" },
+    { page: "diagnostics", icon: "shield-check" },
+  ] },
+  { title: ["应用", "App"], items: [
+    { page: "settings", icon: "settings" }, { page: "appearance", icon: "palette" },
+    { page: "about", icon: "paw-print" },
+  ] },
 ];
 const titles: Record<Page, [string, string]> = {
   dashboard: ["首页", "Home"],
@@ -120,7 +140,6 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
     resourceSequence = 0;
   const logRecording = signal(false),
     logRecordingIntent = signal(0);
-  const confirmation: AppContext["confirmation"] = signal(undefined);
   const route = () => nav.routes()[nav.routes().length - 1],
     page = () => route().name;
   const requestNavigation = (action: () => void) => {
@@ -167,7 +186,6 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
     },
     logRecording,
     logRecordingIntent,
-    confirmation,
     t: translator(props.client),
     editProfile: (id) => navigate("editor", id),
     beforeLeave: (check) => {
@@ -191,29 +209,16 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
   effect(() => {
     setColorScheme(theme());
   });
-  effect(() => {
-    route();
-    untracked(() => {
-      confirmation()?.resolve(false);
-      confirmation.set(undefined);
-    });
-  });
-  const stopHardwareBack = BackHandler.onBackPress(() => {
+  const stopHardwareBack = BackHandler.on("press", () => {
     if (!parentPage(page()) && nav.routes().length < 2) return false;
     back();
     return true;
   });
   cleanup(() => {
     stopHardwareBack();
-    confirmation()?.resolve(false);
   });
-  const confirmAnswer = (answer: boolean) => {
-    const current = confirmation();
-    confirmation.set(undefined);
-    current?.resolve(answer);
-  };
   const refreshProfiles = async () => {
-    if (props.client.pending() > 0 || !props.client.domains.fresh(["config", "profiles"])) return;
+    if (props.client.pending() > 0 || !props.client.domains.readyForCommand(["config", "profiles"])) return;
     const attempted = new Set(
       props.client
         .state()
@@ -225,7 +230,7 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
       !alive() ||
       result === undefined ||
       props.client.warning() ||
-      !props.client.domains.fresh(["config", "profiles"])
+      !props.client.domains.readyForCommand(["config", "profiles"])
     )
       return;
     const failed = props.client
@@ -240,6 +245,18 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
         : ui.t("全部订阅没有可刷新的订阅", "No subscriptions to refresh"),
     );
   };
+  if (platform.desktop) {
+    for (let index = 0; index < primary.length; index++)
+      cleanup(keymap.bind(`mod+${index + 1}`, () => navigate(primary[index].page)));
+    cleanup(keymap.bind("mod+,", () => navigate("appearance")));
+    effect(() => {
+      if (page() === "editor") return;
+      cleanup(keymap.bind("mod+r", () => {
+        if (page() === "profiles") void refreshProfiles();
+        else props.client.domains.retry(pageDomains(page()));
+      }));
+    });
+  }
   const Shell = () => {
     const content = (
       <>
@@ -252,7 +269,6 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
               testID="desktop-sidebar"
               style={{
                 width: 248,
-                padding: spacing.md,
                 backgroundColor: palette().sidebar,
                 borderRightWidth: 1,
                 borderRightColor: palette().border,
@@ -261,7 +277,7 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
               <View
                 style={{
                   height: 52,
-                  paddingLeft: spacing.sm,
+                  paddingLeft: spacing.xl,
                   flexDirection: "row",
                   alignItems: "center",
                   gap: spacing.sm,
@@ -281,63 +297,50 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                 </View>
                 <Text style={{ fontSize: 18, fontWeight: "700", color: palette().text }}>Paws</Text>
               </View>
-              <View style={{ height: 1, backgroundColor: palette().border }} />
-              <Text
-                style={{
-                  marginTop: spacing.lg,
-                  marginHorizontal: spacing.sm,
-                  marginBottom: spacing.xs,
-                  color: palette().muted,
-                  fontSize: 12,
-                  fontWeight: "600",
-                  textAlign: "center",
-                }}
-              >
-                {ui.t("功能", "Navigation")}
-              </Text>
-              <Each of={primary}>
-                {(tab) => (
-                  <View
-                    class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-                    testID={`nav-${tab().page}`}
-                    role="button"
-                    accessibilityLabel={ui.t(tab().zh, tab().en)}
-                    accessibilityState={{ selected: group() === tab().page }}
-                    onPress={() => navigate(tab().page)}
-                    activeStyle={{ opacity: 0.65 }}
-                    style={{
-                      height: 40,
-                      paddingHorizontal: spacing.md,
-                      marginBottom: spacing.xxs,
-                      borderRadius: radius.md,
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: spacing.sm,
-                      backgroundColor: group() === tab().page ? palette().soft : "transparent",
-                    }}
-                  >
-                    <View
-                      style={{
-                        width: 3,
-                        height: 18,
-                        borderRadius: radius.full,
-                        backgroundColor: group() === tab().page ? palette().accent : "transparent",
-                      }}
-                    />
-                    <Icon name={tab().icon} size={17} color={palette().text} />
-                    <Text
-                      style={{
-                        color: palette().text,
-                        fontSize: 14,
-                        fontWeight: group() === tab().page ? "600" : "500",
-                      }}
-                    >
-                      {ui.t(tab().zh, tab().en)}
+              <Scroll bounces={false} style={{ flex: 1 }} contentStyle={{ gap: spacing.lg,
+                padding: spacing.md, paddingTop: spacing.lg }}>
+                <View style={{ gap: spacing.xxs }}>
+                  <Each of={primary}>
+                    {(tab, index) => <Button testID={`nav-${tab().page}`}
+                      accessibilityLabel={ui.t(tab().zh, tab().en)}
+                      selected={page() === tab().page || tab().page === "profiles" && page() === "editor"}
+                      onPress={() => navigate(tab().page)} focusStyle={focusRing()}
+                      hoverStyle={{ backgroundColor: palette().soft }} activeStyle={{ opacity: 0.8 }}
+                      style={{ minHeight: control.row, paddingHorizontal: spacing.md, gap: spacing.md,
+                        borderRadius: radius.md, flexDirection: "row", alignItems: "center",
+                        backgroundColor: page() === tab().page || tab().page === "profiles" && page() === "editor"
+                          ? palette().raised : "transparent", ...feedbackStyle() }}>
+                      <Icon name={tab().icon} size={18} color={palette().text} />
+                      <Text style={{ flex: 1, minWidth: 0, color: palette().text, fontSize: 14,
+                        fontWeight: page() === tab().page ? "600" : "500" }}>{ui.t(tab().zh, tab().en)}</Text>
+                      <If when={platform.desktop}>
+                        <Text style={{ fontSize: 11, color: palette().muted }}>{keymap.label(`mod+${index() + 1}`)}</Text>
+                      </If>
+                    </Button>}
+                  </Each>
+                </View>
+                <Each of={desktopSections}>
+                  {(section) => <View style={{ gap: spacing.xxs }}>
+                    <Text role="header" style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.xxs,
+                      fontSize: 12, lineHeight: 18, fontWeight: "500", color: palette().muted }}>
+                      {ui.t(...section().title)}
                     </Text>
-                  </View>
-                )}
-              </Each>
-              <View style={{ flex: 1 }} />
+                    <Each of={section().items}>
+                      {(item) => <Button testID={`desktop-nav-${item().page}`} selected={page() === item().page}
+                        accessibilityLabel={ui.t(...titles[item().page])} onPress={() => navigate(item().page)}
+                        focusStyle={focusRing()} hoverStyle={{ backgroundColor: palette().soft }}
+                        activeStyle={{ opacity: 0.8 }} style={{ minHeight: control.row,
+                          paddingHorizontal: spacing.md, gap: spacing.md, borderRadius: radius.md,
+                          flexDirection: "row", alignItems: "center", ...feedbackStyle(),
+                          backgroundColor: page() === item().page ? palette().raised : "transparent" }}>
+                        <Icon name={item().icon} size={18} color={palette().muted} />
+                        <Text style={{ flex: 1, minWidth: 0, color: palette().text, fontSize: 14,
+                          fontWeight: page() === item().page ? "600" : "500" }}>{ui.t(...titles[item().page])}</Text>
+                      </Button>}
+                    </Each>
+                  </View>}
+                </Each>
+              </Scroll>
               <Text
                 style={{
                   margin: spacing.sm,
@@ -353,7 +356,7 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
           <View style={{ flex: 1, minWidth: 0 }}>
             <View
               style={{
-                height: wide() ? 64 : 56,
+                minHeight: Math.max(wide() ? 64 : 56, 28 * Math.max(1, fontScale()) + 16),
                 borderBottomWidth: 1,
                 borderBottomColor: palette().border,
                 alignItems: "center",
@@ -379,6 +382,7 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                   />
                 </If>
                 <Text
+                  role="header"
                   style={{
                     flex: 1,
                     color: palette().text,
@@ -398,7 +402,7 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                     loading={props.client.isPending("profiles.refreshAll")}
                     disabled={
                       props.client.pending() > 0 ||
-                      !props.client.domains.fresh(["config", "profiles"])
+                      !props.client.domains.readyForCommand(["config", "profiles"])
                     }
                     onPress={() => void refreshProfiles()}
                   />
@@ -456,6 +460,9 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                           void props.client.run(
                             history ? "requests.clear" : "connections.closeAll",
                           ),
+                        { actionLabel: history ? ui.t("清空记录", "Clear history") : ui.t("关闭全部连接", "Close all connections"),
+                          description: history ? ui.t("清除本地保存的请求历史。", "Remove the locally stored request history.")
+                            : ui.t("当前 TCP 与 UDP 会话将断开。", "Disconnect the current TCP and UDP sessions.") },
                       );
                     }}
                   />
@@ -544,18 +551,20 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
             </If>
             <If when={!props.client.state()}>
               <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-                <Empty text={ui.t("正在读取连接状态…", "Loading connection state…")} />
+                <Loading text={ui.t("正在读取连接状态…", "Loading connection state…")} />
                 <If when={props.client.domains.error(["config", "status"])}>
                   <PageError
                     id="critical-error"
                     text={props.client.domains.error(["config", "status"])}
                   />
                 </If>
+                <If when={props.client.domains.error(["config", "status"])}>
                 <Action
                   secondary
                   label={ui.t("重试", "Retry")}
                   onPress={() => props.client.domains.retry(["config", "status"])}
                 />
+                </If>
               </View>
             </If>
             <If when={props.client.state()}>
@@ -636,9 +645,9 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                     <NavPage
                       style={{ backgroundColor: palette().background }}
                       headerVisible={false}
-                      animation="none"
-                      popOnBack={current.name !== "editor"}
-                      onBackPress={() => { if (current.name === "editor") back(); }}
+                      animation={reduceMotion() ? "none" : parentPage(current.name) ? "default" : "fade"}
+                      popOnBack={current.name !== "editor" && current.name !== "settings"}
+                      onBackPress={() => { if (current.name === "editor" || current.name === "settings") back(); }}
                     >
                       {content}
                     </NavPage>
@@ -649,62 +658,25 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
           </View>
         </View>
         <If when={!wide() && !parentPage(page())}>
-          <View
-            testID="bottom-navigation"
-            role="tablist"
-            style={{
-              height: 64,
-              flexDirection: "row",
-              backgroundColor: palette().background,
-              borderTopWidth: 1,
-              borderTopColor: palette().border,
-            }}
-          >
+          <BaseTabs testID="bottom-navigation" style={{ minHeight: 64, flexDirection: "row",
+            paddingHorizontal: spacing.sm, paddingVertical: spacing.xxs, gap: spacing.xxs,
+            backgroundColor: palette().background, borderTopWidth: 1, borderTopColor: palette().border }}
+            indicatorStyle={{ top: spacing.xxs, bottom: spacing.xxs, borderRadius: radius.md,
+              backgroundColor: palette().soft }}>
             <Each of={primary}>
-              {(tab) => (
-                <View
-                  class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-                  testID={`nav-${tab().page}`}
-                  role="tab"
-                  accessibilityLabel={ui.t(tab().zh, tab().en)}
-                  accessibilityState={{ selected: group() === tab().page }}
-                  onPress={() => navigate(tab().page)}
-                  style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 3 }}
-                >
-                  <Icon
-                    name={tab().icon}
-                    size={22}
-                    color={group() === tab().page ? palette().accent : palette().muted}
-                  />
-                  <Text
-                    style={{
-                      fontSize: 12,
-                      lineHeight: 14,
-                      fontWeight: group() === tab().page ? "600" : "500",
-                      color: group() === tab().page ? palette().accent : palette().muted,
-                    }}
-                  >
-                    {ui.t(tab().zh, tab().en)}
-                  </Text>
-                </View>
-              )}
+              {(tab) => <Tab testID={`nav-${tab().page}`} selected={group() === tab().page}
+                accessibilityLabel={ui.t(tab().zh, tab().en)} onPress={() => navigate(tab().page)}
+                focusStyle={focusRing()} activeStyle={{ opacity: 0.8 }}
+                style={{ flex: 1, minHeight: 52, alignItems: "center", justifyContent: "center",
+                  gap: spacing.xxs, borderRadius: radius.md, ...feedbackStyle() }}>
+                <Icon name={tab().icon} size={20} color={group() === tab().page ? palette().accent : palette().muted} />
+                <Text style={{ fontSize: 12, lineHeight: 16, color: group() === tab().page ? palette().text : palette().muted,
+                  fontWeight: group() === tab().page ? "600" : "500" }}>{ui.t(tab().zh, tab().en)}</Text>
+              </Tab>}
             </Each>
-          </View>
+          </BaseTabs>
         </If>
         <FloatingVpnPowerButton visible={!wide() && page() === "dashboard" && !!props.client.state()} />
-        <If when={confirmation()}>
-          <Dialog title={confirmation()!.title} onClose={() => confirmAnswer(false)}>
-            <Actions>
-              <Action
-                id="cancel-confirmation"
-                secondary
-                label={ui.t("取消", "Cancel")}
-                onPress={() => confirmAnswer(false)}
-              />
-              <Action id="confirm-action" danger label={ui.t("确认", "Confirm")} onPress={() => confirmAnswer(true)} />
-            </Actions>
-          </Dialog>
-        </If>
         <NotificationViewport />
       </>
     );
@@ -733,16 +705,18 @@ function PageData(props: { domains: DomainInput[]; children?: JSX.Element }) {
         when={ui.client.domains.has(props.domains)}
         else={
           <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 12 }}>
-            <Empty text={ui.t("正在读取页面数据…", "Loading page data…")} />
+            <Loading text={ui.t("正在读取页面数据…", "Loading page data…")} />
             <If when={ui.client.domains.error(props.domains)}>
               <PageError text={ui.client.domains.error(props.domains)} />
             </If>
+            <If when={ui.client.domains.error(props.domains)}>
             <Action
               id="page-data-retry"
               secondary
               label={ui.t("重试", "Retry")}
               onPress={() => ui.client.domains.retry(props.domains)}
             />
+            </If>
           </View>
         }
       >

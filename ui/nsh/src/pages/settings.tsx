@@ -1,7 +1,8 @@
-import { batch, effect, Scroll, signal, Text, untracked, View, Clipboard } from "nsh";
+import { batch, cleanup, effect, Scroll, signal, Text, untracked, View, Clipboard } from "nsh";
 import {
   Action,
   Actions,
+  askConfirmation,
   Body,
   Card,
   Detail,
@@ -10,17 +11,18 @@ import {
   Hint,
   IconButton,
   RadioGroup,
+  RouteOwner,
   Select,
   palette,
   Separator,
-  Toggle,
+  Check,
   useApp,
   useLifetime,
 } from "../components";
 import type { ControllerAccess, Engine, NetworkPorts, VpnOptions } from "../model";
 import { DraftEdits, draftDecision } from "../draft";
 import { PageError } from "../page-error";
-import { statusColors } from "../theme";
+import { control, statusColors } from "../theme";
 
 const lines = (text: string) =>
   text
@@ -61,6 +63,15 @@ export function Settings() {
   const dirty = signal(new Set<Section>()),
     conflict = signal(false),
     mtu = signal(String(current().vpnOptions.mtu));
+  const route = RouteOwner() || ui.route();
+  effect(() => {
+    if (ui.route() !== route) return;
+    cleanup(ui.beforeLeave?.(() => {
+      if (["settings.vpn", "settings.dns", "settings.network"].some((command) => ui.client.isPending(command))) return false;
+      return !dirty().size || askConfirmation(ui, ui.t("丢弃未保存的网络设置？", "Discard unsaved network settings?"),
+        { actionLabel: ui.t("丢弃草稿", "Discard draft") });
+    }) || (() => {}));
+  });
   const mark = (section: Section) => {
     edits[section].edit();
     dirty.update((previous) => new Set([...previous, section]));
@@ -174,6 +185,7 @@ export function Settings() {
           : ui.t("尚未检查", "Not checked");
   const blocked = () =>
     !profile() || conflict() || ui.client.pending() > 0 || !ui.client.domains.fresh(["config"]);
+  const validMtu = () => Number.isInteger(Number(mtu())) && Number(mtu()) >= 1280 && Number(mtu()) <= 65535;
   const save = async (section: "vpn" | "dns" | "network") => {
     const ticket = edits[section].ticket();
     try {
@@ -292,7 +304,7 @@ export function Settings() {
               "Saving requests a reconnect for the running VPN",
             )}
           >
-            <Toggle
+            <Check
               label={ui.t("DNS 劫持", "DNS hijacking")}
               description={ui.t(
                 "将应用的 DNS 请求交由 VPN 处理。",
@@ -318,13 +330,12 @@ export function Settings() {
               labelAccessory={
                 <View
                   testID="engine-preview-status"
-                  style={{ height: 24, flexDirection: "row", alignItems: "center", gap: 4 }}
+                  style={{ minHeight: control.icon, flexDirection: "row", alignItems: "center", gap: 4 }}
                 >
                   <If when={!previewBusy() && (previewFailed() || previewFallback())}>
                     <Text
                       testID="engine-preview-warning"
-                      numberOfLines={1}
-                      style={{ maxWidth: 128, fontSize: 12, lineHeight: 20, color: statusColors("warning").text }}
+                      style={{ numberOfLines: 1, maxWidth: 128, fontSize: 12, lineHeight: 20, color: statusColors("warning").text }}
                     >
                       {previewFailed()
                         ? ui.t("检查失败", "Check failed")
@@ -373,6 +384,8 @@ export function Settings() {
               value={mtu()}
               placeholder="1500"
               numeric
+              description={ui.t("允许 1280–65535 的整数。", "An integer from 1280 to 65535.")}
+              error={dirty().has("vpn") && !validMtu() ? ui.t("MTU 必须是 1280–65535 的整数。", "MTU must be an integer from 1280 to 65535.") : undefined}
               disabled={blocked()}
               onChange={(value) => {
                 if (value === mtu()) return;
@@ -451,14 +464,13 @@ export function Settings() {
               />
             </Actions>
             <Action
-              id="save-vpn"
+              primary id="save-vpn"
+              loading={ui.client.isPending("settings.vpn")}
               label={ui.t("保存 VPN 设置", "Save VPN settings")}
               disabled={
                 blocked() ||
                 !dirty().has("vpn") ||
-                !Number.isInteger(Number(mtu())) ||
-                Number(mtu()) < 1280 ||
-                Number(mtu()) > 65535 ||
+                !validMtu() ||
                 !!(vpn().trustedApplications?.length && vpn().blockedApplications?.length)
               }
               onPress={() => void save("vpn")}
@@ -471,7 +483,7 @@ export function Settings() {
               "Defaults: 7890 and 9090. Ports must be distinct integers from 1024 to 65535.",
             )}
           >
-            <Toggle
+            <Check
               label={ui.t("启用混合代理服务", "Enable mixed proxy service")}
               description={ui.t(
                 "仅在 VPN 已连接时监听代理端口",
@@ -490,7 +502,7 @@ export function Settings() {
                 mark("network");
               }}
             />
-            <Toggle
+            <Check
               label={ui.t("启用 Controller 服务", "Enable controller service")}
               description={ui.t(
                 "仅在 VPN 已连接时监听控制端口",
@@ -509,7 +521,7 @@ export function Settings() {
                 mark("network");
               }}
             />
-            <Toggle
+            <Check
               label={ui.t("允许局域网访问", "Allow LAN access")}
               value={controller().allowLan}
               onChange={(allowLan) => changeController({ allowLan })}
@@ -537,6 +549,8 @@ export function Settings() {
               />
             </If>
             <Action
+              primary id="save-network"
+              loading={ui.client.isPending("settings.network")}
               label={ui.t("保存网络设置", "Save network settings")}
               disabled={blocked() || !dirty().has("network")}
               onPress={() => void save("network")}
@@ -581,6 +595,8 @@ export function Settings() {
               placeholder="geosite:cn=223.5.5.5,119.29.29.29"
             />
             <Action
+              primary id="save-dns"
+              loading={ui.client.isPending("settings.dns")}
               label={ui.t("保存 DNS 设置", "Save DNS settings")}
               disabled={blocked() || !dirty().has("dns") || !dnsServers().trim()}
               onPress={() => void save("dns")}

@@ -8,6 +8,20 @@ import subprocess
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
+APPLICATION_ABILITY_REVISION = 'b65502500b820a570496f3798c931d12d3b71d39'
+
+
+def default_nsh_root():
+    """Locate the immutable local checkout selected for this application."""
+    revision = (ROOT / 'scripts/nsh-revision').read_text().strip()
+    if len(revision) != 40 or any(character not in '0123456789abcdef' for character in revision):
+        raise ValueError('scripts/nsh-revision must contain one complete commit SHA')
+    return ROOT / 'target/nsh-checkouts' / revision
+
+
+def default_ability_root():
+    """Keep the application's ArkTS helpers independent of Cargo cache eviction."""
+    return ROOT / 'target/ability-checkouts' / APPLICATION_ABILITY_REVISION
 
 
 def ability_metadata(nsh):
@@ -52,7 +66,8 @@ def linked_git_ability(nsh, dependency, explicit):
 
 
 def resolve_inputs():
-    nsh = Path(os.environ.get('NSH_ROOT', ROOT.parent / 'nsh')).resolve(strict=True)
+    selected = os.environ.get('NSH_ROOT')
+    nsh = (Path(selected) if selected else default_nsh_root()).resolve(strict=True)
     manifest = tomllib.loads((nsh / 'Cargo.toml').read_text())
     dependency = manifest.get('workspace', {}).get('dependencies', {}).get('openharmony-ability')
     ability_path = dependency.get('path') if dependency else None
@@ -63,9 +78,7 @@ def resolve_inputs():
         if explicit:
             ability = Path(explicit).resolve(strict=True)
         else:
-            ability = Path.home().joinpath(
-                '.cargo/git/checkouts/openharmony-ability-7e6401132ac36172/b655025'
-            ).resolve(strict=True)
+            ability = default_ability_root().resolve(strict=True)
             git_source = (
                 'git+https://github.com/harmony-contrib/openharmony-ability'
                 '?rev=b65502500b820a570496f3798c931d12d3b71d39'

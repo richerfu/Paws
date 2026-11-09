@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/openharmony-command-package/go-patch",
+  "version": "go1.27.3",
+  "patchSha256": "cb9c9199b60e78fcb052526b86dcb657c11b07e4dbd3d13b757ddfa583cb8d69",
+  "assets": {
+    "darwin-amd64": {
+      "url": "https://github.com/openharmony-command-package/go-patch/releases/download/v1.27.3/go1.27.3.darwin-amd64.tar.gz",
+      "sha256": "df150f80748f6c2eb3e40fbbddfa7fd6101356fa6b75b78776a7579c3367b746"
+    },
+    "darwin-arm64": {
+      "url": "https://github.com/openharmony-command-package/go-patch/releases/download/v1.27.3/go1.27.3.darwin-arm64.tar.gz",
+      "sha256": "32d5f7e432490cd2ffef780546f2b75b4513534c00a430673442a591eb53be0f"
+    },
+    "linux-amd64": {
+      "url": "https://github.com/openharmony-command-package/go-patch/releases/download/v1.27.3/go1.27.3.linux-amd64.tar.gz",
+      "sha256": "b6db5a6d2661834bf3dd57adac79f84863ffa05ff344ee09c447cdbdcff88be6"
+    },
+    "linux-arm64": {
+      "url": "https://github.com/openharmony-command-package/go-patch/releases/download/v1.27.3/go1.27.3.linux-arm64.tar.gz",
+      "sha256": "e116579274f1cf446b4916f85d978e236dc500246f8062fffd5f9ed9ae4bb05d"
+    }
+  }
+}

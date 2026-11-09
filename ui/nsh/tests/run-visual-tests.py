@@ -54,7 +54,7 @@ class NativeTree:
             self.nodes[label_update[1]]['accessibilityLabel'] = json.loads(label_update[3]) if label_update[3] else None
         style = re.search(r'ViewStyle \{ id: (\d+),', line)
         if style and style[1] in self.nodes:
-            self.nodes[style[1]]['hidden'] = 'hidden: true' in line
+            self.nodes[style[1]]['hidden'] = bool(re.search(r'(?<![\w])hidden: true', line))
             self.nodes[style[1]]['style'] = line
 
     def visible(self, node):
@@ -108,6 +108,7 @@ CASES = {
     'profile-error-details': ['nav-profiles', 'profile-menu-visual-error', 'profile-refresh-error',
                               'profile-refresh-failure-details', 'profile-refresh-failure-copy'],
     'resources': ['nav-tools', 'tool-resources'],
+    'provider-detail': ['nav-tools', 'tool-resources', 'provider-menu-proxy-Synthetic failed provider', 'provider-details-Synthetic failed provider'],
     'resources-end': ['nav-tools', 'tool-resources'],
     'rule-detail': ['nav-tools', 'tool-resources', 'rule-details-rule-1'],
     'history': ['nav-tools', 'tool-requests'],
@@ -117,9 +118,9 @@ CASES = {
     'about': ['nav-tools', 'tool-about'],
 }
 LABELS = {
-    'profiles': ['当前', '刷新失败'], 'profile-error': ['刷新失败'], 'profile-error-details': ['刷新失败'],
-    'resources': ['已加载', '规则', '缓存已加载', '刷新失败'],
-    'resources-end': ['等待缓存'],
+    'profiles': ['当前'], 'profile-error': ['刷新失败'], 'profile-error-details': ['刷新失败'],
+    'resources': ['已加载', '规则'],
+    'resources-end': [],
     'rule-detail': ['启用'], 'history': ['活跃', '已结束'],
     'logs-detail': ['日志记录已关闭', 'ERROR', 'WARN'], 'traffic': ['保护未确认'],
     'diagnostics': ['通过', '失败', '不适用', '未测试'], 'stale-health': ['通过', '失败', '未测试'],
@@ -198,41 +199,38 @@ def validate(tree, name, width, height, fixture=None):
             assert x >= -1 and x + w <= parent['frame'][2] + 1, f'Horizontal parent overflow: node {node["id"]}'
     unmeasured_tags = []
     for label in LABELS.get(name, []):
-        tags = tree.tags(label)
-        assert tags, f'Missing accessible status Tag: {label}'
-        for tag in tags:
-            if 'frame' in tag:
-                assert tag['frame'][2] > 0 and tag['frame'][3] > 0
+        matches = [n for n in tree.nodes.values() if tree.visible(n) and n.get('text') == label]
+        assert matches, f'Missing explicit status text: {label}'
+        for item in matches:
+            if 'frame' in item:
+                assert item['frame'][2] > 0 and item['frame'][3] > 0
             else:
-                # The virtual list can prepare an offscreen row without yet
-                # measuring it. Keep semantic coverage separate from geometry.
                 unmeasured_tags.append(label)
-            assert any(n.get('text') == label for n in tree.descendants(tag)), f'Status {label} lost its explicit text'
     alignment = []
     if name in ('diagnostics', 'stale-health'):
         expected = {'配置载入': '通过', '出站保护': '失败', '节点 TCP': '未测试', 'HTTPS': '失败' if name == 'diagnostics' else '未测试'}
         for label, value in expected.items():
             rows = [tree.nodes[n['parent']] for n in mounted if n.get('text') == label and n['parent'] in tree.nodes]
-            matches = [(row, tag) for row in rows for tag in tree.tags(value) if tag in tree.descendants(row)]
+            matches = [(row, text) for row in rows for text in tree.descendants(row) if text.get('text') == value and 'frame' in text]
             assert matches, f'Detail {label} has wrong actual state {value}'
-            for row, tag in matches:
-                delta = abs(tree.x_bounds(row)[1] - tree.x_bounds(tag)[1])
-                assert delta <= 1, f'Tag right edge differs for {label}: {delta}'
-                alignment.append({'label': label, 'value': value, 'rightEdgeDelta': delta})
-        assert bg(tree.tags('通过')[0]) != bg(tree.tags('失败')[0]), 'Success/failure Tag visuals identical'
-        if name == 'diagnostics':
-            assert bg(tree.tags('未测试')[0]) != bg(tree.tags('通过')[0]), 'Untested health looks like a passing result'
-        else:
-            assert not tree.tags('不适用'), 'Stale-session health remained current'
+            for row, text in matches:
+                if width >= 360:
+                    delta = abs(tree.x_bounds(row)[1] - tree.x_bounds(text)[1])
+                    assert delta <= 1, f'Value right edge differs for {label}: {delta}'
+                else:
+                    delta = abs(tree.x_bounds(row)[0] - tree.x_bounds(text)[0])
+                    assert delta <= 1, f'Stacked value left edge differs for {label}: {delta}'
+                alignment.append({'label': label, 'value': value, 'alignmentDelta': delta})
+        if name == 'stale-health':
+            assert not any(n.get('text') == '不适用' for n in mounted), 'Stale-session health remained current'
     if name == 'resources':
-        rows = [tree.nodes[n['parent']] for n in mounted if n.get('text') in ('URL', '路径')]
-        assert len(rows) >= 2, 'Long URL/path fixtures did not mount'
-        for row in rows:
-            direct = [n for n in mounted if n['parent'] == row['id']]
-            label = next(n for n in direct if n['kind'] == 'Text')
-            value = next(n for n in direct if n['kind'] == 'View')
-            assert abs(tree.x_bounds(label)[0] - tree.x_bounds(value)[0]) <= 1, 'Stacked value left edge differs'
-            assert value['frame'][1] >= label['frame'][1] + label['frame'][3], 'Stacked Detail overlaps label'
+        assert any('刷新失败' in n.get('text', '') for n in mounted), 'Failed provider lost explicit status'
+        assert not any(n.get('text') in ('URL', '路径') for n in mounted), 'Provider technical details were not progressively disclosed'
+    if name == 'provider-detail':
+        assert any(n.get('text') == 'URL' for n in mounted), 'Provider details lost full URL'
+        assert any(n.get('text') == '刷新失败' for n in mounted), 'Provider details lost refresh failure'
+    if name == 'resources-end':
+        assert any('等待缓存' in n.get('text', '') for n in mounted), 'Pending provider lost cache status'
     error_presentation = validate_page_error(tree, mounted, name, width, height, fixture) if name in ('profile-error', 'profile-error-details') else None
     if name in ('rule-detail', 'logs-detail'):
         prefix = 'DOMAIN-SUFFIX,long-public-domain-segment.' if name == 'rule-detail' else 'Synthetic error:'

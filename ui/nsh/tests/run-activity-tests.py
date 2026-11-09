@@ -41,11 +41,12 @@ def validate(tree, mode, width, height, language):
     for row_id, host, active in ROWS:
         suffix = f'{mode}-{row_id}'
         row, header, title, actions, meta = [tree.one(f'activity-{part}-{suffix}') for part in ('row', 'header', 'title', 'actions', 'meta')]
-        near(row['frame'][3], 108, 'Row height')
-        near(header['frame'][3], 36, 'Header height')
-        near(title['frame'][3], 36, 'Title height')
-        near(actions['frame'][2], 80, 'Action group width')
-        near(actions['frame'][3], 36, 'Action group height')
+        assert row['frame'][3] >= 112, 'Activity content clipped vertically'
+        target = 32 if width >= 840 else 44
+        assert header['frame'][3] >= target
+        assert title['frame'][3] >= target
+        near(actions['frame'][2], target * 2 + 8, 'Action group width')
+        assert actions['frame'][3] >= target
         near(meta['frame'][3], 22, 'Metadata row height')
         for node in (header, meta):
             about.contains(tree.rect(row), tree.rect(node), 'Row direct content')
@@ -59,27 +60,19 @@ def validate(tree, mode, width, height, language):
         assert text['frame'][3] <= 20, 'Host text displaced main-row actions by wrapping'
         about.text_fits(tree, text)
         near(center(tree.rect(text))[1], center(tree.rect(header))[1], 'Host/action vertical center')
-        if mode == 'request':
-            assert title.get('events', 0) != 0 and 'role: Button' in title.get('props', ''), 'History-to-connections navigation disappeared'
-        else:
-            assert title.get('events', 0) == 0 and 'role: None' in title.get('props', ''), 'Live host became a noop button'
+        assert title.get('events', 0) != 0 and 'role: Button' in title.get('props', ''), 'History navigation / live details lost its action'
         plus = tree.one(f'rule-for-{row_id}')
         about.contains(tree.rect(actions), tree.rect(plus), 'Add-rule button')
         assert plus.get('events', 0) != 0
-        near(plus['frame'][2], 36, 'Plus width')
-        near(plus['frame'][3], 36, 'Plus height')
+        near(plus['frame'][2], target, 'Plus width')
+        near(plus['frame'][3], target, 'Plus height')
         near(center(tree.rect(plus))[1], center(tree.rect(header))[1], 'Plus main-row center')
-        if mode == 'request' and not active:
-            close = tree.one(f'activity-close-slot-request-{row_id}')
-            assert 'accessible: Some(false)' in close.get('props', '') and 'pointer_events: None' in close.get('props', ''), 'Ended close spacer is accessible/interactive'
-            assert close.get('events', 0) == 0 and not tree.descendants(close), 'Ended close spacer owns events/content'
-            assert not any(n.get('testId') == f'activity-close-request-{row_id}' and tree.visible(n) for n in tree.nodes.values()), 'Ended history still has Close action'
-        else:
-            close = tree.one(f'activity-close-{suffix}')
-            assert close.get('events', 0) != 0 and 'role: Button' in close.get('props', '')
-        near(close['frame'][2], 36, 'Close slot width')
-        near(close['frame'][3], 36, 'Close slot height')
-        near(tree.rect(plus)[2] + 8, tree.rect(close)[0], 'Plus/close gap')
+        close = tree.one(f'activity-menu-{row_id}')
+        assert close.get('events', 0) != 0 and 'role: Button' in close.get('props', '')
+        assert 'expanded: Some(false)' in close.get('props', ''), 'Object menu starts open'
+        near(close['frame'][2], target, 'Menu target width')
+        near(close['frame'][3], target, 'Menu target height')
+        near(tree.rect(plus)[2] + 8, tree.rect(close)[0], 'Add/menu gap')
         about.no_overlap(tree.rect(plus), tree.rect(close), 'Main-row icon buttons')
         metadata = next(n for n in children(tree, meta) if n['kind'] == 'Text')
         assert metadata['frame'][2] > 0 and metadata['frame'][3] <= 20, 'Metadata text squeezed/wrapped'
@@ -101,7 +94,7 @@ def validate(tree, mode, width, height, language):
         assert tree.rect(header)[3] <= tree.rect(meta)[1] + 1 and tree.rect(meta)[3] <= tree.rect(bytes_row)[1] + 1, 'Main/metadata/bytes lines overlap'
         results.append({'rowId': row_id, 'active': active if mode == 'request' else True,
                         'titleWidth': title['frame'][2], 'plusRect': tree.rect(plus), 'closeRect': tree.rect(close),
-                        'endedCloseIsNoninteractiveSpacer': mode == 'request' and not active,
+                        'secondaryActionsUseNativeMenu': True,
                         'tagMetadataCenterDelta': tag_center_delta})
     for item in results[1:]:
         near(item['plusRect'][0], results[0]['plusRect'][0], 'Active/ended plus column')

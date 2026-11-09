@@ -6,7 +6,7 @@ import type { CoreRequest, DomainQueryResult, VpnOptions } from "../src/model";
 import { DomainHost } from "./DomainHost";
 import { fixture } from "./fixture";
 
-/** The runner registers the real Field's Input.onChangeText in an owned copy.
+/** The runner registers the real Field's Input.onChange in an owned copy.
  * This exercises the production handler/client, not native typing or IME. */
 type InputPort = { change: (value: string) => void; editable: () => boolean };
 const inputHost = globalThis as typeof globalThis & { __pawsSettingsMtuInput?: InputPort };
@@ -44,7 +44,7 @@ mount(() => {
   host.connect();
   const input = (value: string) => {
     const port = inputHost.__pawsSettingsMtuInput;
-    assert(port, "Real Field Input.onChangeText was not registered by the owned runner");
+    assert(port, "Real Field Input.onChange was not registered by the owned runner");
     assert(port!.editable(), "Attempt to inject a change into a disabled Field");
     port!.change(value);
     console.log(`MTU HANDLER: ${JSON.stringify(value)}`);

@@ -13,18 +13,16 @@ if [ -z "${CLASH_META_ROOT:-}" ]; then
     CLASH_META_ROOT="$WORKSPACE_PARENT/FlClash-ohos-upstream/core/Clash.Meta"
   fi
 fi
-GO_OHOS_ROOT="${GO_OHOS_ROOT:-$WORKSPACE_PARENT/go-ohos-1.24.7-compat}"
-if [ ! -d "$GO_OHOS_ROOT" ] && [ -d "$ROOT_DIR/target/toolchains/go1.24.7-ohos-darwin-arm64" ]; then
-  GO_OHOS_ROOT="$ROOT_DIR/target/toolchains/go1.24.7-ohos-darwin-arm64"
-fi
 OHOS_NDK_HOME="${OHOS_NDK_HOME:-/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony}"
-GO_COMPILER_ROOT="$(sh "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$GO_OHOS_ROOT")"
+GO_COMPILER_ROOT="$(sh "$ROOT_DIR/scripts/prepare-go-ohos.sh" "${GO_OHOS_ROOT:-}")"
+export GO_COMPILER_ROOT
 GO_BIN="$GO_COMPILER_ROOT/bin/go"
-CC_BIN="$OHOS_NDK_HOME/native/llvm/bin/clang"
-CXX_BIN="$OHOS_NDK_HOME/native/llvm/bin/clang++"
-SYSROOT="$OHOS_NDK_HOME/native/sysroot"
+OHOS_NATIVE_HOME="$OHOS_NDK_HOME"
+if [ -d "$OHOS_NATIVE_HOME/native/sysroot" ]; then OHOS_NATIVE_HOME="$OHOS_NATIVE_HOME/native"; fi
+CC_BIN="$GO_COMPILER_ROOT/ohos-scripts/cc-arm64"
+CXX_BIN="$GO_COMPILER_ROOT/ohos-scripts/cxx-arm64"
+test -d "$OHOS_NATIVE_HOME/sysroot" || { echo "OpenHarmony native SDK not found: $OHOS_NATIVE_HOME" >&2; exit 1; }
 CLASH_OUTPUT="${MIHOMO_CORE_OUTPUT:-$ROOT_DIR/entry/libs/arm64-v8a/libclash.so}"
-GVISOR_MOD="github.com/metacubex/gvisor@v0.0.0-20260922041103-e2cbcd6e7400"
 
 test -x "$GO_BIN" || { echo "OpenHarmony Go compiler not found: $GO_BIN" >&2; exit 1; }
 test -x "$CC_BIN" || { echo "OpenHarmony clang not found: $CC_BIN" >&2; exit 1; }
@@ -42,7 +40,7 @@ test "$(git -C "$CLASH_META_ROOT" rev-parse HEAD)" = "8597778c7df410ebe88c57e59e
 BUILD_STAGE="${MIHOMO_BUILD_STAGE:-$ROOT_DIR/target/mihomo-ohos-build}"
 test "$BUILD_STAGE/core/Clash.Meta" != "$CLASH_META_ROOT" || { echo "Build stage cannot be the source checkout" >&2; exit 1; }
 rm -rf "$BUILD_STAGE"
-mkdir -p "$BUILD_STAGE/core/Clash.Meta" "$BUILD_STAGE/.dart_tool/ohos" "$(dirname "$CLASH_OUTPUT")"
+mkdir -p "$BUILD_STAGE/core/Clash.Meta" "$(dirname "$CLASH_OUTPUT")"
 python3 "$ROOT_DIR/scripts/mihomo-source-inventory.py" "$ROOT_DIR" > "$BUILD_STAGE/inputs-before.json"
 git -C "$CLASH_META_ROOT" archive 8597778c7df410ebe88c57e59eaab32d203156df -o "$BUILD_STAGE/source.tar"
 tar -xf "$BUILD_STAGE/source.tar" -C "$BUILD_STAGE/core/Clash.Meta"
@@ -61,16 +59,10 @@ if grep -Fq '_ = syscall.Close(fd)' "$BUILD_STAGE/core/tun/tun.go"; then
   patch -p1 -F 0 -d "$BUILD_STAGE" -i "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch"
 fi
 
-GVISOR_DIR="$(cd "$BUILD_STAGE/core" && env GOTOOLCHAIN=local "$GO_BIN" mod download -json "$GVISOR_MOD" | python3 -c 'import json,sys; data=json.load(sys.stdin); print(data["Dir"]) if "Dir" in data else sys.exit(data.get("Error", "Go module download did not return a source directory"))')"
-cp -R "$GVISOR_DIR" "$BUILD_STAGE/.dart_tool/ohos/gvisor"
-chmod -R u+w "$BUILD_STAGE/.dart_tool/ohos/gvisor"
-patch --dry-run -p1 -F 0 -d "$BUILD_STAGE/.dart_tool/ohos/gvisor" -i "$ROOT_DIR/patches/gvisor-fstat.patch"
-patch -p1 -F 0 -d "$BUILD_STAGE/.dart_tool/ohos/gvisor" -i "$ROOT_DIR/patches/gvisor-fstat.patch"
-
 cd "$BUILD_STAGE/core"
-env GOTOOLCHAIN=local GOOS=openharmony GOARCH=arm64 CGO_ENABLED=1 \
-  CC="$CC_BIN --target=aarch64-linux-ohos --sysroot=$SYSROOT" \
-  CXX="$CXX_BIN --target=aarch64-linux-ohos --sysroot=$SYSROOT" \
+env GOTOOLCHAIN=local GOROOT="$GO_COMPILER_ROOT" GOOS=openharmony GOARCH=arm64 CGO_ENABLED=1 \
+  OHOS_NDK_HOME="$OHOS_NATIVE_HOME" CC="$CC_BIN" CXX="$CXX_BIN" \
+  AR="$OHOS_NATIVE_HOME/llvm/bin/llvm-ar" \
   "$GO_BIN" build -mod=mod -tags=with_gvisor -buildmode=c-shared \
   -trimpath -ldflags='-s -w' -o "$BUILD_STAGE/libclash.so" .
 

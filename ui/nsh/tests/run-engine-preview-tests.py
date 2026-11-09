@@ -73,7 +73,7 @@ def verify_geometry(states, width):
         assert geometry == baseline, (index, geometry, baseline)
         engine, stack = geometry['vpn-engine'], geometry['vpn-stack']
         assert 0 < stack[1] - engine[1] - engine[3] <= 48, (index, engine, stack)
-        assert one(tree, 'engine-preview-status')['frame'][3] == 24
+        assert one(tree, 'engine-preview-status')['frame'][3] == (32 if width >= 840 else 44)
         for name in ('engine-preview-reasons', 'engine-preview-info-summary', 'page-data-issues'):
             assert not mounted(tree, name), (index, name)
         # Internal observation metadata remains in the actual store, while no
@@ -89,6 +89,8 @@ def verify_geometry(states, width):
 
 def run(binary, output_dir, name, taps, checks, markers=(), width=390):
     args = [str(binary), 'trace', ENTRY, '--wait', '40', '--width', str(width), '--height', '844']
+    if name.startswith('compact-fallback-close-back'):
+        args.append('--accept-dialogs')
     for tap in taps:
         args += ['--tap', tap]
     process = run_nsh(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

@@ -92,8 +92,8 @@ export function PageError(props: {
       <If when={!props.renderTrigger}>
         <Text
           testID={`${id()}-summary`}
-          numberOfLines={3}
           style={{
+            numberOfLines: 3,
             width: "100%",
             minWidth: 0,
             fontSize: 13,
@@ -112,7 +112,7 @@ export function PageError(props: {
               id={`${id()}-details`}
               secondary
               small
-              label={ui.t("查看详情", "View details")}
+              label={ui.t("查看详情…", "View details…")}
               onPress={() => detail.set(props.text)}
             />
           </Actions>
@@ -124,6 +124,22 @@ export function PageError(props: {
         <Dialog
           title={danger() ? ui.t("错误详情", "Error details") : ui.t("详细信息", "Details")}
           onClose={() => detail.set(undefined)}
+          footer={<Actions>
+            <Action
+              id={`${id()}-close`}
+              secondary
+              label={ui.t("关闭", "Close")}
+              onPress={() => detail.set(undefined)}
+            />
+            <Action
+              id={`${id()}-copy`}
+              secondary
+              label={danger()
+                ? ui.t("复制完整错误", "Copy full error")
+                : ui.t("复制完整信息", "Copy full information")}
+              onPress={() => Clipboard.writeText(detail() || "")}
+            />
+          </Actions>}
         >
           <View
             testID={`${id()}-list`}
@@ -139,9 +155,9 @@ export function PageError(props: {
               {(row) => (
                 <Text
                   testID={`${id()}-chunk-${row().key}`}
-                  selectable
                   accessibilityLabel={row().raw}
                   style={{
+                    userSelect: "text",
                     alignSelf: "flex-start",
                     maxWidth: "100%",
                     minWidth: 0,
@@ -156,22 +172,7 @@ export function PageError(props: {
               )}
             </List>
           </View>
-          <Actions>
-            <Action
-              id={`${id()}-close`}
-              secondary
-              label={ui.t("关闭", "Close")}
-              onPress={() => detail.set(undefined)}
-            />
-            <Action
-              id={`${id()}-copy`}
-              secondary
-              label={danger()
-                ? ui.t("复制完整错误", "Copy full error")
-                : ui.t("复制完整信息", "Copy full information")}
-              onPress={() => Clipboard.writeText(detail() || "")}
-            />
-          </Actions>
+
         </Dialog>
       </If>
     </View>

@@ -45,8 +45,9 @@ Do not pass SVG strings to the OHOS bitmap decoder.
 Run from the repository root. Build the local SDK with
 `scripts/build-nsh-ohos.sh`; the standard CLI is `dist/nsh-sdk/release/nsh`.
 A compatible alternate CLI can be selected with `NSH_BIN` or `--nsh-bin`.
-The SDK sources are staged read-only from `../nsh` (or `NSH_ROOT`), including
-local binding source fingerprints. The UIContext-based host uses current NSH
+The SDK uses the commit in `scripts/nsh-revision`, copied from `../nsh` into a
+clean checkout inside Paws (or an explicit `NSH_ROOT`), including binding source
+fingerprints. The UIContext-based host uses current NSH
 input and dialogs directly; legacy Ability editor patches are not applied.
 Choose an owned, untracked output directory before running:
 
@@ -65,6 +66,10 @@ The fixtures drive actual production components/client with public synthetic
 receipts. Runners require delivered events, expected state and commands; runtime
 errors, missing taps and timeouts fail. Geometry tests must check sibling overlap,
 vertical clipping and end-of-scroll access as well as window bounds.
+`profile-freshness.test.ts` holds profile counter queries while exercising the
+real menus and subscription editor. Polling keeps actions available for the same
+loaded configuration; generation changes, config revisions and query failures
+still block commands, and an open editor retains its revision conflict check.
 
 ## Real-device boundary
 

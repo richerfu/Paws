@@ -9,11 +9,13 @@ import {
   untracked,
   View,
   createAnimatedValue as createNativeValue,
+  reduceMotion,
   safeArea,
   safeAreaInsets as useSafeAreaInsets,
 } from "nsh";
 import { Icon } from "./icons";
-import { palette, radius, surfaceFinish } from "./theme";
+import { motion } from "./motion";
+import { control, focusRing, palette, radius, surfaceFinish } from "./theme";
 
 export type Notification = { id: number; message: string; created: number; leaving: boolean };
 
@@ -109,8 +111,8 @@ export function NotificationViewport(props: { owner?: number; modal?: boolean })
     <If when={active() && entries().length > 0}>
       <View
         testID="sonner-viewport"
-        pointerEvents="box-none"
         style={{
+          pointerEvents: "box-none",
           position: "absolute",
           top: 16 + Math.max(insets().top, safeArea().top),
           left: 16 + Math.max(insets().left, safeArea().left),
@@ -120,8 +122,8 @@ export function NotificationViewport(props: { owner?: number; modal?: boolean })
         }}
       >
         <View
-          pointerEvents="box-none"
           style={{
+            pointerEvents: "box-none",
             width: "100%",
             maxWidth: 420,
             height: center.expanded() ? entries().length * 80 : 100,
@@ -146,18 +148,20 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
     const next = offset();
     if (next !== previousOffset) {
       previousOffset = next;
-      void stackY.timing(next, { duration: 400, easing: "easeOut" });
+      if (reduceMotion()) stackY.set(next);
+      else void stackY.spring(next, motion.move);
     }
   });
-  const enter = Date.now() - props.item.created < 380;
+  const enter = !reduceMotion() && Date.now() - props.item.created < 220;
   const opacity = createNativeValue(enter ? 0 : 1),
     entrance = createNativeValue(enter ? -80 : 0);
   if (enter) {
-    void opacity.timing(1, { duration: 380, easing: "easeOut" });
-    void entrance.timing(0, { duration: 380, easing: "easeOut" });
+    void opacity.timing(1, { duration: 220, easing: "easeOut" });
+    void entrance.timing(0, { duration: 220, easing: "easeOut" });
   }
   effect(() => {
     if (props.item.leaving) {
+      if (reduceMotion()) { opacity.set(0); entrance.set(0); return; }
       void opacity.timing(0, { duration: 260, easing: "easeOut" });
       void entrance.timing(-80, { duration: 260, easing: "easeOut" });
     }
@@ -169,6 +173,12 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
     void opacity.stop();
     void entrance.stop();
   });
+  effect(() => {
+    if (!reduceMotion()) return;
+    stackY.set(offset());
+    entrance.set(0);
+    opacity.set(props.item.leaving ? 0 : 1);
+  });
   const vertical = y.add(entrance).add(stackY);
   const front = () => props.index === 0 || props.center.expanded();
   return (
@@ -176,11 +186,10 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
       testID={`toast-${props.item.id}`}
       role="alert"
       accessibilityLabel={props.item.message}
-      pointerEvents={front() && !props.item.leaving ? "auto" : "none"}
       pan={{ x, y }}
       onPanEnd={(event) => {
-        const dx = event.translationX,
-          dy = event.translationY;
+        const dx = event.translation.x,
+          dy = event.translation.y;
         const stackable = props.center.items().filter((item) => !item.leaving).length > 1;
         const horizontal = Math.abs(dx) >= 72 && Math.abs(dx) >= Math.abs(dy);
         if (
@@ -190,10 +199,11 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
         )
           props.center.expanded.set(!props.center.expanded());
         else if (Math.abs(dx) >= 72 || dy <= -56) props.center.dismiss(props.item.id);
-        void x.spring(0);
-        void y.spring(0);
+        if (reduceMotion()) { x.set(0); y.set(0); }
+        else { void x.spring(0, motion.move); void y.spring(0, motion.move); }
       }}
       style={{
+        pointerEvents: front() && !props.item.leaving ? "auto" : "none",
         position: "absolute",
         top: 0,
         left: `${props.center.expanded() ? 0 : props.index * 2.5}%`,
@@ -207,7 +217,7 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
         borderColor: palette().border,
         borderRadius: radius.xl,
         backgroundColor: palette().panel,
-        ...surfaceFinish("card"),
+        ...surfaceFinish("overlay"),
         flexDirection: "row",
         alignItems: "center",
         zIndex: props.item.leaving ? 200 : 100 - props.index,
@@ -216,12 +226,12 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
       }}
     >
       <If when={front()}>
-        <View style={{ width: 28, height: 32, justifyContent: "center" }}>
+        <View style={{ width: 28, height: control.icon, justifyContent: "center" }}>
           <Icon name="info" size={16} color={palette().accent} />
         </View>
         <Text
-          numberOfLines={2}
           style={{
+            numberOfLines: 2,
             flex: 1,
             fontSize: 14,
             lineHeight: 20,
@@ -236,10 +246,12 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
           class="focus-visible:ring-2 focus-visible:ring-ring"
           role="button"
           accessibilityLabel="Dismiss notification"
+          focusStyle={focusRing()}
+          hoverStyle={{ backgroundColor: palette().soft }}
           onPress={() => props.center.dismiss(props.item.id)}
           style={{
-            width: 32,
-            height: 32,
+            width: control.icon,
+            height: control.icon,
             alignItems: "center",
             justifyContent: "center",
             borderRadius: 6,

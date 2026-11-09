@@ -38,8 +38,8 @@ def cases(log_dir):
         "id:nav-back", "id:nav-profiles", "id:profile-menu-test-profile", "id:edit-yaml-test-profile", "id:validate-profile", "id:nav-back", "id:add-profile", "id:dialog-close", "id:add-profile", "id:dialog-close",
     ]
     desktop_taps = [
-        "id:nav-tools", "id:tool-resources", "id:rule-down-rule-1",
-        "label:详情", "label:测速 >> nth=0", "id:dialog-close",
+        "id:nav-tools", "id:tool-resources", "id:rule-menu-rule-1", "id:rule-down-rule-1",
+        "id:provider-menu-proxy-Test provider", "label:资源详情…", "label:测速 >> nth=0", "id:dialog-close",
         "label:GeoIP", "id:dialog-close", "id:nav-back",
         "id:tool-appearance", "label:深色", "label:浅色",
         "id:nav-back", "id:tool-resources", "id:lookup-rule", "id:dialog-close", "id:add-rule", "id:dialog-close", "id:lookup-rule", "id:dialog-close",
@@ -63,7 +63,10 @@ def cases(log_dir):
         ("check", ["check", "ui/nsh"], (), None),
         ("production-entry", ["build", "ui/nsh", "-o", str(log_dir / "production-entry")], (), None),
         ("profile-editor", ["test", "ui/nsh/tests/profile-editor.test.ts"], ("6 tests: 6 passed, 0 failed",), None),
+        ("responsive-interactions", ["test", "ui/nsh/tests/responsive-interactions.test.ts"], ("2 tests: 2 passed, 0 failed",), None),
+        ("profile-freshness", ["test", "--trace", "ui/nsh/tests/profile-freshness.test.ts"], ("2 tests: 2 passed, 0 failed",), None),
         ("floating-vpn", ["test", "--trace", "ui/nsh/tests/floating-vpn.test.ts"], ("3 tests: 3 passed, 0 failed",), None),
+        ("floating-vpn-busy", ["test", "ui/nsh/tests/floating-vpn-busy.test.ts"], ("1 test: 1 passed, 0 failed",), None),
         (
             "state", ["trace", "ui/nsh/tests/State.tsx", "--wait", "120", "--taps", "0"],
             (
@@ -128,13 +131,19 @@ def validate_output(name, output, markers, expected_taps):
         # Inspect real native animation commands after the public drag steps:
         # release x/y, then the edge the spring settles at. These assertions
         # fail when pan is missing, even if a cancelled press still looks safe.
+        vpn_views = set(re.findall(r'ViewProps \{ id: (\d+),[^\n]*test_id: Some\("vpn-toggle"\)', output))
+        pan_nodes = set()
+        for view, x, y in re.findall(r'Gestures \{ id: (\d+), values: GestureValues \{ pan_x: Some\((\d+)\), pan_y: Some\((\d+)\)', output):
+            if view in vpn_views:
+                pan_nodes.update((x, y))
+        assert pan_nodes, "Floating button lost its actual native pan bindings"
         values, docks = [], []
         for line in output.splitlines():
             value = re.search(r'Animation\(Set \{ node: (\d+), value: ([\deE.+-]+) \}', line)
             spring = re.search(r'Animation\(Start \{ node: (\d+), .*driver: Spring \{ to: ([\deE.+-]+)', line)
-            if value:
+            if value and value[1] in pan_nodes:
                 values.append((value[1], float(value[2])))
-            if spring and len(values) >= 2 and spring[1] == values[-2][0]:
+            if spring and spring[1] in pan_nodes and len(values) >= 2 and spring[1] == values[-2][0]:
                 docks.append((values[-2][1], values[-1][1], float(spring[2])))
         expected = [(206, 415, 286), (46, 265, 0), (260, 445, 286),
                     (0, 0, 0), (636, 101, 636), (36, 335, 0)]
@@ -155,8 +164,8 @@ def validate_output(name, output, markers, expected_taps):
             raise ValueError("gateway-queue: import and cancellation did not share the native intent token")
     if name == "widgets":
         presses = re.split(r"(?m)^PAWS PRESS #\b", output)[1:]
-        if "kind: Scroll" in presses[0] or presses[2].count("kind: Scroll") != 1:
-            raise ValueError("widgets: short Select scrolled or long Select lost its scroll viewport")
+        if "select-option-two" not in output or "select-dismiss" not in output:
+            raise ValueError("widgets: native Select options or close control were not mounted")
         if 'placeholder: "https://example.com/profile"' not in output or "line_height: 20pt" not in output:
             raise ValueError("widgets: native input lost its placeholder or text metrics")
         if 'test_id: Some("sonner-viewport")' not in output or "Feedback above the dialog" not in output:
@@ -181,7 +190,7 @@ def validate_output(name, output, markers, expected_taps):
         # Actual native mounts for the dark/light presses: only the selected
         # radio dot changes identity. Translated option rows must stay mounted.
         presses = re.split(r"(?m)^PAWS PRESS #\b", output)[1:]
-        for index in (10, 11):
+        for index in (12, 13):
             if presses[index].count("Create {") > 1 or presses[index].count("Delete {") > 1:
                 raise ValueError("desktop-wire: theme change recreated translated control rows")
     if name == "phone-wire":
@@ -249,7 +258,7 @@ def validate_resource_dialogs(output):
             controls.pop(deleted[1], None)
         elif PRESS.match(line):
             press += 1
-            expected = "rule-lookup-query" if press in (16, 20) else "manual-rule-value" if press == 18 else None
+            expected = "rule-lookup-query" if press in (18, 22) else "manual-rule-value" if press == 20 else None
             if expected and expected not in controls.values():
                 raise ValueError(f"desktop-wire: resource intent did not mount {expected} before press {press}")
 

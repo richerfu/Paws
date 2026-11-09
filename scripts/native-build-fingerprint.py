@@ -11,6 +11,7 @@ files = [Path(p) for p in sys.argv[2:]] + [root / 'Cargo.lock', root / 'Cargo.to
     root / 'scripts/build-sing-box-ohos.sh', root / 'scripts/sing-box-source-inventory.py',
     root / 'scripts/build-mihomo-ohos.sh', root / 'scripts/mihomo-source-inventory.py',
     root / 'scripts/prepare-go-ohos.sh', root / 'scripts/ohos-env.sh',
+    root / 'scripts/go_toolchain.py', root / 'scripts/go-ohos-toolchain.json',
     root / 'entry/libs/arm64-v8a/libnsh_platform_ohos.so',
     root / 'entry/src/main/resources/rawfile/paws.bundle.js', root / 'target/ohos/nsh-source-inputs.json']
 for key in ['PAWS_RAW_ENGINE_DIAGNOSTIC', 'PAWS_BENCH_PEER_IP', 'PAWS_BENCH_NODE_FINGERPRINT', 'PAWS_SOCKET_WIRE_CAPTURE']:

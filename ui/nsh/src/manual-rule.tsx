@@ -9,7 +9,7 @@ import {
   radius,
   Select,
   Tabs,
-  Toggle,
+  Check,
   useApp,
   useLifetime,
   useDomainInterests,
@@ -101,6 +101,19 @@ export function ManualRuleDialog(props: { context?: RuleContext; onClose: () => 
         "Add a priority rule for this domain or IP.",
       )}
       onClose={props.onClose}
+      footer={<If when={ui.client.domains.has(["rules", "summary"])}><Action
+          primary id="save-manual-rule"
+          label={ui.t("保存规则", "Save rule")}
+          loading={busy()}
+          disabled={
+            busy() ||
+            !ui.client.domains.fresh(["config", "rules", "summary"]) ||
+            !value().trim() ||
+            !ui.client.state()!.activeProfile ||
+            baseline !== ui.client.state()!.configRevision
+          }
+          onPress={() => void save()}
+        /></If>}
     >
       <If
         when={ui.client.domains.has(["rules", "summary"])}
@@ -196,7 +209,7 @@ export function ManualRuleDialog(props: { context?: RuleContext; onClose: () => 
           />
         </If>
         <If when={props.context?.connectionId}>
-          <Toggle
+          <Check
             label={ui.t("保存后断开此连接", "Disconnect this connection after saving")}
             value={disconnect()}
             onChange={(next) => disconnect.set(next)}
@@ -215,18 +228,7 @@ export function ManualRuleDialog(props: { context?: RuleContext; onClose: () => 
         <If when={ui.client.error()}>
           <PageError id="manual-rule-save-error" text={ui.client.error()} />
         </If>
-        <Action
-          id="save-manual-rule"
-          label={busy() ? ui.t("正在保存…", "Saving…") : ui.t("保存规则", "Save rule")}
-          disabled={
-            busy() ||
-            !ui.client.domains.fresh(["config", "rules", "summary"]) ||
-            !value().trim() ||
-            !ui.client.state()!.activeProfile ||
-            baseline !== ui.client.state()!.configRevision
-          }
-          onPress={() => void save()}
-        />
+
       </If>
     </Dialog>
   );

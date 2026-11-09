@@ -1,5 +1,6 @@
 import {
   computed,
+  fontScale,
   effect,
   signal,
   Text,
@@ -16,6 +17,7 @@ import {
   Badge,
   Card,
   Code,
+  control,
   confirm,
   Detail,
   Dialog,
@@ -26,14 +28,15 @@ import {
   IconButton,
   palette,
   radius,
-  Tabs,
   useApp,
-  useLifetime,
-} from "../components";
-import { bytes, includes, timestamp } from "../locale";
+  useLifetime} from "../components";
+import { bytes, timestamp } from "../locale";
 import { matchesGeodata, matchesProvider, matchesRule } from "../query";
 import { ManualRuleDialog, type RuleContext } from "../manual-rule";
 import type { UiState, Rule, Provider } from "../model";
+import { ObjectMenu } from "../object-menu";
+import { feedbackStyle } from "../motion";
+import { focusRing } from "../theme";
 import { PageError } from "../page-error";
 
 type Lookup = {
@@ -101,7 +104,7 @@ export function Resources() {
     );
   };
   const ruleLookup = async () => {
-    if (lookupBusy()) return;
+    if (lookupBusy() || !lookup().trim() || !current().activeProfile) return;
     const ticket = ++lookupGeneration;
     lookupBusy.set(true);
     const result = await ui.client.run<Lookup>("rules.lookup", { query: lookup() });
@@ -166,7 +169,7 @@ export function Resources() {
     >
       <View style={{ marginBottom: 12 }}>
         <Field
-          label=""
+          label={ui.t("搜索资源", "Search resources")}
           placeholder={ui.t(
             "输入资源名、规则、路径、类型或状态",
             "Search resource, rule, path, type or status",
@@ -239,17 +242,14 @@ export function Resources() {
             <If when={row().kind === "geo-header"}>
               <View
                 style={{
-                  height: 64,
-                  marginTop: 12,
+                  minHeight: 48,
+                  marginTop: 16,
                   paddingHorizontal: 16,
                   flexDirection: "row",
                   alignItems: "center",
-                  borderWidth: 1,
-                  borderColor: palette().border,
-                  borderRadius: radius.lg,
                 }}
               >
-                <Text style={{ flex: 1, fontSize: 14, fontWeight: "600", color: palette().text }}>
+                <Text role="header" style={{ flex: 1, fontSize: 14, fontWeight: "600", color: palette().text }}>
                   GeoData
                 </Text>
                 <Hint
@@ -261,14 +261,17 @@ export function Resources() {
               <View
                 role="button"
                 accessibilityLabel={row().file!.name}
+                focusStyle={focusRing()} hoverStyle={{ backgroundColor: palette().soft }}
+                activeStyle={{ opacity: 0.85 }}
                 onPress={() => geodata.set(row().file)}
                 style={{
-                  height: 76,
+                  minHeight: Math.max(76, 38 * Math.max(1, fontScale()) + 24),
                   paddingLeft: 14,
                   paddingRight: 12,
                   flexDirection: "row",
                   alignItems: "center",
                   gap: 11,
+                  ...feedbackStyle(),
                   borderWidth: 1,
                   borderColor: palette().border,
                   borderRadius: radius.lg,
@@ -293,8 +296,7 @@ export function Resources() {
                 </View>
                 <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
                   <Text
-                    numberOfLines={1}
-                    style={{ fontSize: 14, fontWeight: "600", color: palette().text }}
+                    style={{ numberOfLines: 1, fontSize: 14, fontWeight: "600", color: palette().text }}
                   >
                     {row().file!.name}
                   </Text>
@@ -337,8 +339,9 @@ export function Resources() {
             <If when={row().kind === "rules-header"}>
               <View
                 style={{
-                  height: 56,
-                  marginTop: 12,
+                  minHeight: control.height + 16,
+                  marginTop: 16,
+                  flexWrap: "wrap",
                   flexDirection: "row",
                   alignItems: "center",
                   gap: 8,
@@ -456,7 +459,8 @@ export function Resources() {
         >
           <Field
             id="rule-lookup-query"
-            label=""
+            label={ui.t("域名或 IP", "Domain or IP")}
+            onSubmit={() => void ruleLookup()}
             value={lookup()}
             placeholder="example.com / 203.0.113.1"
             disabled={lookupBusy()}
@@ -513,7 +517,7 @@ export function Resources() {
           </If>
           <Action
             loading={lookupBusy()}
-            label={lookupBusy() ? ui.t("正在查询…", "Looking up…") : ui.t("查询", "Look up")}
+            primary label={ui.t("查询", "Look up")}
             disabled={lookupBusy() || !lookup().trim() || !current().activeProfile}
             onPress={() => void ruleLookup()}
           />
@@ -527,6 +531,7 @@ export function Resources() {
           }
           onClose={() => providerName.set(undefined)}
         >
+          <ProviderDetails provider={selectedProvider()!} />
           <If when={selectedProviderRuntime()?.available === false}><PageError id={`provider-detail-runtime-${selectedProvider()!.providerType}-${selectedProvider()!.name}`} danger={false} text={selectedProviderRuntime()!.reason || ui.t("当前内核资源不可用", "The engine resource is unavailable")} /></If>
           <If when={selectedProvider()!.providerType === "proxy" && selectedProviderRuntime()?.available !== false}>
             <View style={{ height: 320 }}>
@@ -550,8 +555,7 @@ export function Resources() {
                   >
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text
-                        numberOfLines={1}
-                        style={{ fontSize: 12, fontWeight: "600", color: palette().text }}
+                        style={{ numberOfLines: 1, fontSize: 12, fontWeight: "600", color: palette().text }}
                       >
                         {member().name}
                       </Text>
@@ -628,154 +632,84 @@ export function renderObject(value: unknown, depth = 0): string {
 }
 
 function RuleRow(props: {
-  rule: Rule;
-  onMove: (id: string, delta: number) => void;
-  onDetails: () => void;
+  rule: Rule; onMove: (id: string, delta: number) => void; onDetails: () => void;
 }) {
-  const ui = useApp(),
-    current = () => ui.client.state()!,
-    rule = () => props.rule,
-    busy = () =>
-      ui.client.pending() > 0 ||
-      !ui.client.domains.fresh(["config", "rules", "providers", "geodata"]);
-  return (
-    <View
-      style={{
-        height: 104,
-        paddingHorizontal: 10,
-        paddingVertical: 8,
-        gap: 4,
-        borderWidth: 1,
-        borderColor: palette().border,
-        borderRadius: radius.lg,
-        backgroundColor: palette().panel,
-      }}
-    >
-      <View style={{ height: 32, flexDirection: "row", alignItems: "center", gap: 7 }}>
-        <Text
-          style={{
-            color: rule().enabled ? palette().success : palette().muted,
-            fontSize: 12,
-            fontWeight: "600",
-          }}
-        >
-          #{rule().order + 1}
-        </Text>
-        <Text
-          numberOfLines={1}
-          style={{ flex: 1, minWidth: 0, fontSize: 12, color: palette().muted }}
-        >
-          {rule().source === "profile-yaml"
-            ? ui.t("订阅 YAML", "Subscription YAML")
-            : rule().source}
-        </Text>
-        <If when={rule().source !== "profile-yaml"}>
-          <IconButton
-            icon="chevron-up"
-            label={ui.t("上移", "Move up")}
-            small
-            disabled={busy() || current().rules[0]?.id === rule().id}
-            onPress={() => props.onMove(rule().id, -1)}
-          />
-          <IconButton
-            id={`rule-down-${rule().id}`}
-            icon="chevron-down"
-            label={ui.t("下移", "Move down")}
-            small
-            disabled={busy() || current().rules[current().rules.length - 1]?.id === rule().id}
-            onPress={() => props.onMove(rule().id, 1)}
-          />
-          <Action
-            variant="ghost"
-            small
-            label={rule().enabled ? ui.t("停用", "Disable") : ui.t("启用", "Enable")}
-            disabled={busy()}
-            onPress={() =>
-              void ui.client.run(
-                "rules.enabled",
-                {
-                  id: rule().id,
-                  enabled: !rule().enabled,
-                  expectedRevision: current().configRevision,
-                },
-                ui.t("规则设置已保存", "Rule settings saved"),
-              )
-            }
-          />
-          <IconButton
-            icon="trash-2"
-            label={ui.t("删除", "Delete")}
-            small
-            disabled={busy()}
-            onPress={() => {
-              const id = rule().id,
-                expectedRevision = current().configRevision;
-              void confirm(
-                ui,
-                ui.t("删除此规则？", "Delete this rule?"),
-                () =>
-                  void ui.client.run(
-                    "rules.delete",
-                    { id, expectedRevision },
-                    ui.t("规则设置已保存", "Rule settings saved"),
-                  ),
-              );
-            }}
-          />
-        </If>
-      </View>
-      <View
-        testID={`rule-details-${rule().id}`}
-        role="button"
-        accessibilityLabel={ui.t("查看完整规则", "View complete rule")}
-        onPress={props.onDetails}
-        style={{ minWidth: 0 }}
-      >
+  const ui = useApp(), current = () => ui.client.state()!, rule = () => props.rule;
+  const busy = () => ui.client.pending() > 0 || !ui.client.domains.fresh(["config", "rules", "providers", "geodata"]);
+  const readonly = () => rule().source === "profile-yaml";
+  return <ObjectMenu id={`rule-menu-${rule().id}`} title={ui.t(`规则 ${rule().order + 1}`, `Rule ${rule().order + 1}`)}
+    commands={[
+      { label: ui.t("规则详情…", "Rule details…"), icon: "info", run: props.onDetails },
+      { label: ui.t("复制完整规则", "Copy full rule"), icon: "file-text", run: () => Clipboard.writeText(rule().line) },
+      { id: `rule-up-${rule().id}`, label: ui.t("上移", "Move up"), icon: "arrow-up",
+        disabled: readonly() || busy() || current().rules[0]?.id === rule().id, run: () => props.onMove(rule().id, -1) },
+      { id: `rule-down-${rule().id}`, label: ui.t("下移", "Move down"), icon: "arrow-down",
+        disabled: readonly() || busy() || current().rules[current().rules.length - 1]?.id === rule().id,
+        run: () => props.onMove(rule().id, 1) },
+      { id: `rule-enabled-${rule().id}`, label: rule().enabled ? ui.t("停用", "Disable") : ui.t("启用", "Enable"), icon: "circle-check",
+        disabled: readonly() || busy(), run: () => { void ui.client.run("rules.enabled", {
+          id: rule().id, enabled: !rule().enabled, expectedRevision: current().configRevision,
+        }, ui.t("规则设置已保存", "Rule settings saved")); } },
+      { label: ui.t("删除…", "Delete…"), icon: "trash-2", danger: true, disabled: readonly() || busy(), run: () => {
+        const id = rule().id, expectedRevision = current().configRevision;
+        void confirm(ui, ui.t("删除此规则？", "Delete this rule?"),
+          () => { void ui.client.run("rules.delete", { id, expectedRevision }, ui.t("规则设置已保存", "Rule settings saved")); },
+          { actionLabel: ui.t("删除规则", "Delete rule"), description: rule().line });
+      } },
+    ]}
+    row={(menu) => <View style={{ minHeight: Math.max(80, 38 * Math.max(1, fontScale()) + 24),
+      padding: 12, gap: 8, borderBottomWidth: 1, borderBottomColor: palette().line,
+      backgroundColor: palette().panel, flexDirection: "row", alignItems: "center" }}>
+      <Text style={{ width: 28, fontVariant: ["tabular-nums"], fontSize: 12,
+        color: rule().enabled ? palette().text : palette().muted }}>{rule().order + 1}</Text>
+      <View testID={`rule-details-${rule().id}`} role="button" accessibilityLabel={ui.t("查看完整规则", "View complete rule")}
+        onPress={props.onDetails} focusStyle={focusRing()} hoverStyle={{ backgroundColor: palette().soft }}
+        style={{ flex: 1, minWidth: 0, minHeight: control.height, justifyContent: "center", gap: 4 }}>
         <Code text={rule().line} lines={2} />
+        <Text style={{ fontSize: 12, lineHeight: 18, color: palette().muted }}>
+          {rule().enabled ? ui.t("已启用", "Enabled") : ui.t("已停用", "Disabled")} · {readonly() ? ui.t("订阅 YAML", "Subscription YAML") : rule().source}
+        </Text>
       </View>
-    </View>
-  );
+      {menu}
+    </View>} />;
 }
 function ProviderCard(props: { provider: Provider; onDetails: () => void }) {
-  const ui = useApp(),
-    provider = () => props.provider,
-    busy = () =>
-      ui.client.pending() > 0 ||
-      !ui.client.domains.fresh(["config", "rules", "providers", "geodata"]);
+  const ui = useApp(), provider = () => props.provider;
+  const busy = () => ui.client.pending() > 0 || !ui.client.domains.fresh(["config", "rules", "providers", "geodata"]);
+  const refreshing = () => ui.client.pendingRequests().some((r) => r.command === "providers.refresh"
+    && r.payload.name === provider().name && r.payload.providerType === provider().providerType);
+  const checking = () => ui.client.pendingRequests().some((r) => r.command === "providers.healthcheck" && r.payload.name === provider().name);
+  return <ObjectMenu id={`provider-menu-${provider().providerType}-${provider().name}`} title={provider().name}
+    commands={[
+      { id: `provider-details-${provider().name}`, label: ui.t("资源详情…", "Resource details…"), icon: "info", run: props.onDetails },
+      { id: `refresh-provider-${provider().providerType}-${provider().name}`, label: ui.t("刷新资源", "Refresh resource"), icon: "refresh-cw",
+        disabled: busy(), run: () => { void ui.client.run("providers.refresh", { name: provider().name, providerType: provider().providerType },
+          ui.t(`资源 ${provider().name} 已刷新`, `Resource ${provider().name} refreshed`)); } },
+      { id: `healthcheck-provider-${provider().name}`, label: ui.t("检查节点健康", "Check node health"), icon: "zap",
+        disabled: busy() || provider().providerType !== "proxy", run: () => { void ui.client.run("providers.healthcheck", { name: provider().name }); } },
+    ]}
+    row={(menu) => <View style={{ minHeight: Math.max(80, 38 * Math.max(1, fontScale()) + 24), padding: 12,
+      gap: 12, flexDirection: "row", alignItems: "center", borderBottomWidth: 1,
+      borderBottomColor: palette().line, backgroundColor: palette().panel }}>
+      <Icon name="database" size={18} color={palette().muted} />
+      <View role="button" onPress={props.onDetails} focusStyle={focusRing()} hoverStyle={{ backgroundColor: palette().soft }}
+        accessibilityLabel={provider().name} style={{ flex: 1, minWidth: 0, minHeight: control.height, justifyContent: "center", gap: 4 }}>
+        <Text style={{ fontSize: 14, lineHeight: 20, numberOfLines: 1, fontWeight: "600", color: palette().text }}>{provider().name}</Text>
+        <Text style={{ fontSize: 12, lineHeight: 18, numberOfLines: 1,
+          color: provider().lastRefreshError ? palette().danger : palette().muted }}>
+          {provider().providerType} · {provider().vehicleType || "—"} · {refreshing() ? ui.t("正在刷新", "Refreshing")
+            : checking() ? ui.t("正在检查", "Checking") : provider().lastRefreshError ? ui.t("刷新失败", "Refresh failed")
+            : provider().cacheExists ? bytes(provider().cacheBytes) : ui.t("等待缓存", "Waiting for cache")}
+        </Text>
+      </View>
+      {menu}
+    </View>} />;
+}
+function ProviderDetails(props: { provider: Provider }) {
+  const ui = useApp(), provider = () => props.provider;
   const runtime = () => ui.client.domains.data("providers")?.runtimeAvailability?.find(item => item.name === provider().name && item.providerType === provider().providerType);
-  const refreshing = () =>
-    ui.client
-      .pendingRequests()
-      .some(
-        (request) =>
-          request.command === "providers.refresh" &&
-          request.payload.name === provider().name &&
-          request.payload.providerType === provider().providerType,
-      );
-  const checking = () =>
-    provider().providerType === "proxy" &&
-    ui.client
-      .pendingRequests()
-      .some(
-        (request) =>
-          request.command === "providers.healthcheck" && request.payload.name === provider().name,
-      );
-  const refresh = () => {
-    if (!busy())
-      void ui.client.run(
-        "providers.refresh",
-        { name: provider().name, providerType: provider().providerType },
-        ui.t(`资源 ${provider().name} 已刷新`, `Resource ${provider().name} refreshed`),
-      );
-  };
-  const check = () => {
-    if (!busy()) void ui.client.run("providers.healthcheck", { name: provider().name });
-  };
-  return (
-    <Card
-      title={provider().name}
-      subtitle={provider().providerType + " · " + (provider().vehicleType || "")}
-    >
+  const refreshing = () => ui.client.pendingRequests().some(r => r.command === "providers.refresh" && r.payload.name === provider().name && r.payload.providerType === provider().providerType);
+  return <View style={{ gap: 12 }}>
       <If when={runtime()}><Detail tone={runtime()!.available ? "success" : "warning"} label={ui.t("内核资源", "Engine resource")} value={runtime()!.available ? ui.t("已接入", "Available") : ui.t("当前不可用", "Unavailable")} /><If when={runtime()!.reason}><PageError id={`provider-runtime-${provider().providerType}-${provider().name}`} danger={false} text={runtime()!.reason!} /></If><If when={runtime()!.ruleCount != null}><Detail label={ui.t("运行规则数", "Runtime rule count")} value={String(runtime()!.ruleCount)} /></If><If when={runtime()!.updatedAt}><Detail label={ui.t("内核更新时间", "Engine update time")} value={timestamp(runtime()!.updatedAt || undefined)} /></If></If>
       <Detail
         tone={
@@ -835,30 +769,5 @@ function ProviderCard(props: { provider: Provider; onDetails: () => void }) {
       <If when={provider().lastRefreshError}>
         <PageError id={`provider-error-${provider().providerType}-${provider().name}`} text={provider().lastRefreshError!} />
       </If>
-      <Actions>
-        <If when={provider().providerType === "proxy"}>
-          <Action secondary small label={ui.t("详情", "Details")} onPress={props.onDetails} />
-          <Action
-            id={`healthcheck-provider-${provider().name}`}
-            secondary
-            small
-            loading={checking()}
-            label={ui.t("检查", "Check")}
-            disabled={busy()}
-            onPress={check}
-          />
-        </If>
-        <Action
-          id={`refresh-provider-${provider().providerType}-${provider().name}`}
-          secondary
-          small
-          icon="refresh-cw"
-          loading={refreshing()}
-          label={ui.t("刷新", "Refresh")}
-          disabled={busy()}
-          onPress={refresh}
-        />
-      </Actions>
-    </Card>
-  );
+  </View>;
 }

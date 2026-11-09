@@ -87,14 +87,23 @@ ownership, configuration revisions, disposal and acceptance requirements.
 If DevEco Studio is installed outside `/Applications/DevEco-Studio.app`, set
 `DEVECO_STUDIO_HOME` to its `Contents` directory before running these scripts.
 
-This branch uses the locally adapted NSH checkout at `../nsh`. Set `NSH_ROOT`
-to select another compatible checkout. `scripts/build-nsh-ohos.sh` builds its
+This branch pins NSH to `4794cd525b6d37ba444e25d6f7f3e83ff296bce1`, the local
+`ohos` branch tip selected for this migration (see `scripts/nsh-revision`).
+The build creates a clean checkout under `target/nsh-checkouts` from Git objects
+in `../nsh`, independently of that repository's active branch or uncommitted edits.
+Set `NSH_ROOT` to select another compatible checkout. `scripts/build-nsh-ohos.sh` builds its
 native library and CLI, bundles `ui/nsh`, and stages its ArkTS host plus the
 application's capability helpers under this project's `target/ohos`. The
 current NSH host attaches through `NshSurface(UIContext)` and uses its native
 editor and dialogs without the legacy Ability patch set. Source fingerprints
 cover NSH and local binding overrides. Generated outputs stay in Paws.
-Set `NSH_ABILITY_ROOT` when the application capability helpers live elsewhere. Run that
+The floating VPN control uses NSH's `Overlay` and native pan binding. Its
+action guard does not disable dragging. The pinned native SDK is built from
+unchanged upstream sources; no Paws pointer, editor, dialog or frame scheduler
+patches are applied.
+Application capability helpers retain Ability `b6550250`, staged under
+`target/ability-checkouts` from the local Ability repository or Cargo Git object
+cache. Set `NSH_ABILITY_ROOT` when those helpers live elsewhere. Run that
 script before a standalone `ohpm install --all`; `scripts/package-hap.sh` runs
 it automatically.
 
@@ -113,8 +122,8 @@ local protocol profile generation, and an OpenHarmony `aarch` build.
 ### Build an unsigned release HAP
 
 Prepare the Go engines from the vendored bridges and pinned upstream sources;
-follow [Building Mihomo and sing-box with patched OpenHarmony Go](docs/native-engines-build.md)
-for first-time compiler preparation, reusing patched Go 1.24.7, engine patches,
+follow [Building Mihomo and sing-box with go-patch](docs/native-engines-build.md)
+for the checksum-pinned go-patch compiler, engine patches,
 explicit library paths, and release/debug packaging. Keep that guide's exported
 environment when running the commands below. A separate FlClash checkout is
 no longer required.

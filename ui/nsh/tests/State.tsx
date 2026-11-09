@@ -10,7 +10,7 @@ import {
   matchesProfile,
   matchesRule,
 } from "../src/query";
-import { selectPanelLayout, translator, useLifetime } from "../src/components";
+import { translator, useLifetime } from "../src/components";
 import { vpnIntentTrace } from "./VpnIntent";
 import {
   effectiveGroupLeaf,
@@ -35,33 +35,6 @@ mount(() => {
   const alive = useLifetime();
   const client = new CoreClient(),
     initial = fixture();
-  const compactSelect = selectPanelLayout(
-    { pageX: 16, pageY: 100, width: 358, height: 36 },
-    { width: 390, height: 844 },
-    { top: 32, bottom: 24, left: 0, right: 0 },
-    0,
-    2,
-    true,
-  );
-  assert(
-    compactSelect.height === 102,
-    "short Select clipped row content inside padding and borders",
-  );
-  const keyboardSelect = selectPanelLayout(
-    { pageX: 10, pageY: 500, width: 800, height: 36 },
-    { width: 390, height: 844 },
-    { top: 32, bottom: 24, left: 12, right: 12 },
-    360,
-    12,
-    true,
-  );
-  assert(
-    keyboardSelect.x >= 20 &&
-      keyboardSelect.x + keyboardSelect.width <= 370 &&
-      keyboardSelect.y >= 40 &&
-      keyboardSelect.y + keyboardSelect.height <= 476,
-    "Select escaped safe area or covered the keyboard",
-  );
   const translate = translator(client);
   let translationRuns = 0;
   const translated = computed(() => {

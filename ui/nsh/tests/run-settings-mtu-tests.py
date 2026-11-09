@@ -26,11 +26,11 @@ reader = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reader)
 REGISTER = '''
 // Test-only: record the exact handler assigned to the real Field's Input.
-function registerSettingsMtuInput(change: (value: string) => void, editable: () => boolean) {
+function registerSettingsMtuInput(change: (event: { value: string }) => void, editable: () => boolean) {
   const host = globalThis as typeof globalThis & {
     __pawsSettingsMtuInput?: { change: (value: string) => void; editable: () => boolean };
   };
-  host.__pawsSettingsMtuInput = { change, editable };
+  host.__pawsSettingsMtuInput = { change: (value: string) => change({ value }), editable };
   return change;
 }
 '''
@@ -83,7 +83,7 @@ def state(tree, value, save_enabled, editable=True):
     assert 'placeholder: "1500"' in field["inputConfig"] and "keyboard: Number" in field["inputConfig"]
     assert f"editable: {str(editable).lower()}" in field["inputConfig"]
     assert f"disabled: {str(not save_enabled).lower()}" in one(tree, "save-vpn")["props"]
-    assert one(tree, "engine-preview-status")["frame"][3] == 24
+    assert one(tree, "engine-preview-status")["frame"][3] == 44
     assert not any(n.get("testId") == "engine-preview-reasons" and tree.visible(n)
                    for n in tree.nodes.values())
 
@@ -124,10 +124,10 @@ def main():
     shutil.copytree(UI, stage, ignore=shutil.ignore_patterns(".nsh", "__pycache__"))
     components = stage / "src/components.tsx"
     source = components.read_text()
-    old = "          onChange={props.onChange}\n"
+    old = "          onChange={(event) => props.onChange(event.value)}\n"
     new = '''          onChange={props.id === "vpn-mtu"
-            ? registerSettingsMtuInput(props.onChange, () => !props.disabled)
-            : props.onChange}
+            ? registerSettingsMtuInput((event) => props.onChange(event.value), () => !props.disabled)
+            : (event) => props.onChange(event.value)}
 '''
     assert source.count(old) == 1, "Field Input handler registration span changed; refusing broad instrumentation"
     original_components_sha = digest(components)

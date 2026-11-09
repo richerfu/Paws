@@ -68,15 +68,9 @@ NATIVE_LIB_DIR="$ROOT_DIR/entry/libs/arm64-v8a"
 SO_DST="$NATIVE_LIB_DIR/libpaws_ui.so"
 CXX_SHARED_DST="$NATIVE_LIB_DIR/libc++_shared.so"
 WORKSPACE_PARENT="$(cd "$ROOT_DIR/.." && pwd)"
-MIHOMO_OHOS_ROOT="${MIHOMO_OHOS_ROOT:-$WORKSPACE_PARENT/FlClash-ohos-upstream}"
 MIHOMO_CORE_DST="$NATIVE_LIB_DIR/libclash.so"
-if [ -d "$MIHOMO_OHOS_ROOT" ]; then
-  MIHOMO_CORE_SRC="${MIHOMO_CORE_SRC:-$MIHOMO_OHOS_ROOT/ohos/core/libs/arm64-v8a/libclash.so}"
-  MIHOMO_TUN_SRC="${MIHOMO_TUN_SRC:-$MIHOMO_OHOS_ROOT/core/tun/tun.go}"
-else
-  MIHOMO_CORE_SRC="${MIHOMO_CORE_SRC:-$MIHOMO_CORE_DST}"
-  MIHOMO_TUN_SRC="${MIHOMO_TUN_SRC:-$ROOT_DIR/vendor/mihomo-bridge/tun/tun.go}"
-fi
+MIHOMO_CORE_SRC="${MIHOMO_CORE_SRC:-$MIHOMO_CORE_DST}"
+MIHOMO_TUN_SRC="${MIHOMO_TUN_SRC:-$ROOT_DIR/vendor/mihomo-bridge/tun/tun.go}"
 SING_BOX_CORE_SRC="${SING_BOX_CORE_SRC:-$NATIVE_LIB_DIR/libsingbox.so}"
 SING_BOX_CORE_DST="$NATIVE_LIB_DIR/libsingbox.so"
 HAP_PATH="${HAP_PATH:-$ROOT_DIR/entry/build/default/outputs/default/entry-default-unsigned.hap}"
@@ -149,7 +143,7 @@ if [ ! -f "$MIHOMO_CORE_SRC" ]; then
   mihomo_stale=1
 elif [ "$MIHOMO_CORE_SRC" = "$MIHOMO_CORE_DST" ]; then
   # Rebuild repository-owned outputs after any bridge/toolchain patch changes.
-  for mihomo_input in "$ROOT_DIR/scripts/build-mihomo-ohos.sh" "$ROOT_DIR/scripts/mihomo-source-inventory.py" "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$ROOT_DIR/patches/mihomo-openharmony.patch" "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch" "$ROOT_DIR/patches/mihomo-paws-management.patch" "$ROOT_DIR/patches/gvisor-fstat.patch" "$ROOT_DIR/patches/go-ohos-1.24.7-compat.patch"; do
+  for mihomo_input in "$ROOT_DIR/scripts/build-mihomo-ohos.sh" "$ROOT_DIR/scripts/mihomo-source-inventory.py" "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$ROOT_DIR/patches/mihomo-openharmony.patch" "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch" "$ROOT_DIR/patches/mihomo-paws-management.patch" "$ROOT_DIR/scripts/go_toolchain.py" "$ROOT_DIR/scripts/go-ohos-toolchain.json"; do
     if [ "$mihomo_input" -nt "$MIHOMO_CORE_SRC" ]; then mihomo_stale=1; fi
   done
   if [ -n "$(find "$ROOT_DIR/vendor/mihomo-bridge" -type f -newer "$MIHOMO_CORE_SRC" -print -quit)" ]; then mihomo_stale=1; fi
@@ -178,7 +172,7 @@ if [ "$MIHOMO_TUN_SRC" -nt "$MIHOMO_CORE_SRC" ]; then
 fi
 sing_box_stale=0
 if [ ! -f "$SING_BOX_CORE_SRC" ]; then sing_box_stale=1; fi
-for bridge_source in "$ROOT_DIR/scripts/build-sing-box-ohos.sh" "$ROOT_DIR/scripts/sing-box-source-inventory.py" "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$ROOT_DIR/patches/go-ohos-1.24.7-compat.patch" "$ROOT_DIR"/patches/sing-box-*.patch "$ROOT_DIR"/vendor/sing-box-bridge/*.go "$ROOT_DIR"/vendor/sing-box-bridge/*.c "$ROOT_DIR"/vendor/sing-box-bridge/*.h "$ROOT_DIR"/vendor/sing-box-bridge/httpobfs/*.go "$ROOT_DIR"/vendor/sing-box-bridge/tlsretry/*.go "$ROOT_DIR"/vendor/paws-engine-observation/*.go; do
+for bridge_source in "$ROOT_DIR/scripts/build-sing-box-ohos.sh" "$ROOT_DIR/scripts/sing-box-source-inventory.py" "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$ROOT_DIR/scripts/go_toolchain.py" "$ROOT_DIR/scripts/go-ohos-toolchain.json" "$ROOT_DIR"/patches/sing-box-*.patch "$ROOT_DIR"/vendor/sing-box-bridge/*.go "$ROOT_DIR"/vendor/sing-box-bridge/*.c "$ROOT_DIR"/vendor/sing-box-bridge/*.h "$ROOT_DIR"/vendor/sing-box-bridge/httpobfs/*.go "$ROOT_DIR"/vendor/sing-box-bridge/tlsretry/*.go "$ROOT_DIR"/vendor/paws-engine-observation/*.go; do
   if [ "$bridge_source" -nt "$SING_BOX_CORE_SRC" ]; then sing_box_stale=1; fi
 done
 if [ "$sing_box_stale" -eq 1 ]; then "$ROOT_DIR/scripts/build-sing-box-ohos.sh"; fi

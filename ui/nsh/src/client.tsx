@@ -224,7 +224,7 @@ export class CoreClient {
   ): Promise<CommandReceipt<T>> {
     if (this.disposed) return Promise.reject(new Error("View disposed"));
     if (this.domains.observing) {
-      if (!this.domains.fresh(commandDomains(command)))
+      if (!this.domains.readyForCommand(commandDomains(command)))
         return Promise.reject(
           new Error("Required state is loading or unavailable. Reload it before making changes."),
         );

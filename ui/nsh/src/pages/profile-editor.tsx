@@ -1,12 +1,13 @@
-import { cleanup, computed, Scroll, signal, Text, View } from "nsh";
+import { cleanup, computed, effect, keymap, Scroll, signal, Text, View } from "nsh";
 import { Editor, type EditorRef, type EditorSearchResult } from "nsh/base";
 import {
   Action, Actions, askConfirmation, Badge, Field, Hint, IconButton,
-  palette, radius, Spinner, useApp, useLifetime,
+  palette, radius, RouteOwner, Spinner, useApp, useLifetime,
 } from "../components";
 import { DraftEdits } from "../draft";
 import { PageError } from "../page-error";
 import { summarizeYaml } from "../yaml-summary";
+import { animateDisclosure } from "../motion";
 
 /** A route owns this draft; NSH owns the code buffer, input and viewport. */
 export function ProfileEditor(props: { profileId: string }) {
@@ -25,7 +26,8 @@ export function ProfileEditor(props: { profileId: string }) {
 
   cleanup(ui.beforeLeave?.(() => {
     if (busy() && operation() !== "load") return false;
-    return !dirty() || askConfirmation(ui, ui.t("放弃未保存的修改并离开？", "Discard unsaved changes and leave?"));
+    return !dirty() || askConfirmation(ui, ui.t("丢弃未保存的修改？", "Discard unsaved changes?"),
+      { actionLabel: ui.t("丢弃修改", "Discard changes") });
   }) || (() => {}));
 
   const load = async () => {
@@ -81,21 +83,31 @@ export function ProfileEditor(props: { profileId: string }) {
   };
   const reload = async () => {
     if (busy()) return;
-    if (dirty() && !(await askConfirmation(ui, ui.t("重新载入会丢弃当前编辑，继续？", "Discard edits and reload?")))) return;
+    if (dirty() && !(await askConfirmation(ui, ui.t("重新载入配置？", "Reload the profile?"),
+      { actionLabel: ui.t("丢弃并载入", "Discard and reload"),
+        description: ui.t("当前未保存的修改会被替换。", "This replaces your unsaved changes.") }))) return;
     if (alive()) void load();
   };
+  const toggleFind = () => { animateDisclosure(); finding.set(!finding()); };
+  const route = RouteOwner() || ui.route();
+  effect(() => {
+    if (ui.route() !== route) return;
+    cleanup(keymap.bind("mod+s", () => { void save(); }, { when: "always" }));
+    cleanup(keymap.bind("mod+f", () => { if (loaded()) toggleFind(); }, { when: "always" }));
+    cleanup(keymap.bind("mod+shift+r", () => { void reload(); }, { when: "always" }));
+  });
   void load();
 
   return (
     <View testID="profile-editor-page" style={{ flex: 1, minHeight: 0, paddingBottom: "env(keyboard-inset-height)" }}>
       <View style={{ padding: 16, gap: 12 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-          <Text selectable numberOfLines={2} style={{ flex: 1, minWidth: 0, color: palette().text, fontSize: 16, fontWeight: "600" }}>{name()}</Text>
+          <Text style={{ userSelect: "text", numberOfLines: 2, flex: 1, minWidth: 0, color: palette().text, fontSize: 16, fontWeight: "600" }}>{name()}</Text>
           <Badge label={dirty() ? ui.t("未保存", "Unsaved") : "YAML"} tone={dirty() ? "warning" : "neutral"} />
         </View>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
           <Actions>
-            <IconButton id="editor-find" icon="search" label={ui.t("查找", "Find")} disabled={!loaded()} onPress={() => finding.set(!finding())} />
+            <IconButton id="editor-find" icon="search" label={ui.t("查找", "Find")} disabled={!loaded()} onPress={toggleFind} />
             <Action id="editor-wrap" secondary small selected={wrap()} label={ui.t("自动换行", "Wrap lines")} onPress={() => wrap.set(!wrap())} />
             <Action id="reset-profile" variant="ghost" small label={ui.t("还原", "Reset")} disabled={busy() || !dirty()} onPress={() => {
               text.set(original()); edits.edit(); error.set("");
@@ -104,12 +116,13 @@ export function ProfileEditor(props: { profileId: string }) {
           <View style={{ marginLeft: "auto" }}>
             <Actions>
               <Action id="validate-profile" secondary small icon="check" label={ui.t("校验", "Validate")} loading={operation() === "validate"} disabled={!loaded() || busy() || !text().trim()} onPress={() => void validate()} />
-              <Action id="save-profile" small icon="save" label={ui.t("保存", "Save")} loading={operation() === "save"} disabled={!loaded() || busy() || conflict() || !text().trim()} onPress={() => void save()} />
+              <Action primary id="save-profile" small icon="save" label={ui.t("保存", "Save")} loading={operation() === "save"} disabled={!loaded() || busy() || conflict() || !text().trim()} onPress={() => void save()} />
             </Actions>
           </View>
         </View>
         <If when={finding()}>
-          <Field id="editor-search" label={ui.t("查找配置内容", "Find in profile")} value={query()} onChange={(value) => query.set(value)} />
+          <Field id="editor-search" autoFocus label={ui.t("查找配置内容", "Find in profile")} value={query()}
+            onChange={(value) => query.set(value)} onSubmit={() => { if (query()) void editor.run("findNext"); }} />
           <Actions>
             <Action secondary small id="editor-find-previous" label={ui.t("上一个", "Previous")} disabled={!query() || !matches().count} onPress={() => void editor.run("findPrevious")} />
             <Action secondary small id="editor-find-next" label={ui.t("下一个", "Next")} disabled={!query() || !matches().count} onPress={() => void editor.run("findNext")} />
@@ -139,13 +152,13 @@ export function ProfileEditor(props: { profileId: string }) {
           testID="profile-yaml-editor"
           accessibilityLabel={ui.t("YAML 配置编辑器", "YAML profile editor")}
           value={text()}
-          onChange={(value) => { text.set(value); edits.edit(); error.set(""); }}
+          onChange={(event) => { text.set(event.value); edits.edit(); error.set(""); }}
           language="yaml"
           tabSize={2}
           softWrap={wrap()}
           readOnly={busy()}
           search={finding() && query() ? { query: query() } : undefined}
-          onSearchChange={(result) => matches.set(result)}
+          onSearchChange={(event) => matches.set(event.result)}
           style={{ flex: 1, minHeight: 0, marginHorizontal: 16, borderRadius: radius.lg, borderWidth: 1, borderColor: palette().border, backgroundColor: palette().panel }}
         />
       </If>

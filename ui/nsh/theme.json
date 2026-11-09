@@ -1,12 +1,14 @@
 {
-  "name": "NSH Gallery UI",
+  "name": "Paws · NSH Gallery",
   "cssVars": {
     "theme": {
       "radius": "12px",
       "radius-card": "16px",
       "radius-control": "10px",
       "brand-fill": "#c8f26d",
-      "on-brand": "#13160c"
+      "on-brand": "#13160c",
+      "radius-small": "6px",
+      "radius-dialog": "20px"
     },
     "light": {
       "background": "#f4f4f2",
@@ -61,7 +63,8 @@
       "up-tint": "color-mix(in srgb, var(--up) 10%, transparent)",
       "down-tint": "color-mix(in srgb, var(--down) 10%, transparent)",
       "violet": "#6e56c4",
-      "destructive-foreground": "#ffffff"
+      "destructive-foreground": "#ffffff",
+      "overlay-scrim": "rgba(0,0,0,0.48)"
     },
     "dark": {
       "background": "#101113",
@@ -102,7 +105,7 @@
       "secondary": "var(--raised)",
       "secondary-foreground": "var(--foreground)",
       "chart-1": "var(--brand)",
-      "chart-2": "var(--up)",
+      "chart-2": "var(--info)",
       "chart-3": "var(--info)",
       "chart-4": "var(--warn)",
       "chart-5": "var(--down)",
@@ -116,7 +119,8 @@
       "sidebar-primary-foreground": "var(--primary-foreground)",
       "sidebar-ring": "var(--ring)",
       "down": "var(--destructive)",
-      "destructive-foreground": "#13160c"
+      "destructive-foreground": "#13160c",
+      "overlay-scrim": "rgba(0,0,0,0.64)"
     }
   }
 }

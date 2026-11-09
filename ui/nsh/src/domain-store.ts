@@ -226,6 +226,23 @@ export class DomainStore {
       );
     });
   }
+  readyForCommand(inputs: DomainInput[]): boolean {
+    return inputs.every((input) => {
+      const interest = normalize(input);
+      if (interest.domain !== "profiles") return this.fresh([interest]);
+      const entry = this.entry(interest);
+      // Profiles also refresh their traffic counters every second. Those reads
+      // do not invalidate edits based on the same loaded configuration. Keep
+      // generation, query failures and real config changes as write fences.
+      return (
+        this.fresh(["config"]) &&
+        !!entry.data() &&
+        entry.phase() !== "error" &&
+        entry.appliedGeneration === this.generation &&
+        this.profilesConfigRevision === this.configRevision()
+      );
+    });
+  }
   error(inputs: DomainInput[]): string {
     return (
       this.subscriptionError() ||

@@ -5,7 +5,7 @@ import {
   effect,
   reduceMotion,
   safeArea,
-  View,
+  Overlay,
   windowSize,
 } from "nsh";
 import { useApp } from "./components";
@@ -51,10 +51,13 @@ export function FloatingVpnPowerButton(props: { visible: boolean }) {
   });
   return (
     <If when={props.visible}>
-      <View
+      <Overlay
         testID="vpn-floating-area"
-        pointerEvents="box-none"
-        style={{ position: "absolute", ...area() }}
+        style={{
+          position: "fixed", left: area().left, top: area().top,
+          width: size, height: size,
+          transform: [{ translateX: translateX() }, { translateY: translateY() }],
+        }}
       >
         <VpnPowerButton
           size={size}
@@ -64,8 +67,8 @@ export function FloatingVpnPowerButton(props: { visible: boolean }) {
           )}
           pan={{ x, y }}
           onPanEnd={(event) => {
-            const releaseX = clamp(event.valueX ?? (right ? maxX() : 0) + event.translationX, maxX());
-            const releaseY = clamp(event.valueY ?? vertical * maxY() + event.translationY, maxY());
+            const releaseX = clamp(event.value?.x ?? (right ? maxX() : 0) + event.translation.x, maxX());
+            const releaseY = clamp(event.value?.y ?? vertical * maxY() + event.translation.y, maxY());
             right = releaseX >= maxX() / 2;
             vertical = maxY() ? releaseY / maxY() : vertical;
             // Normalize overshoot before the spring, so dragging out of bounds
@@ -76,12 +79,8 @@ export function FloatingVpnPowerButton(props: { visible: boolean }) {
             if (reduceMotion()) x.set(target);
             else void x.spring(target, { stiffness: 320, damping: 32 });
           }}
-          style={{
-            position: "absolute", left: 0, top: 0,
-            transform: [{ translateX: translateX() }, { translateY: translateY() }],
-          }}
         />
-      </View>
+      </Overlay>
     </If>
   );
 }

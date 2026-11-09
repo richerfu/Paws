@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Exercise source staging with real Git trees, patches and an offline Cargo graph."""
+"""Exercise source staging with unmodified Git trees and an offline Cargo graph."""
 import importlib.util
-import copy
+import json
 import os
 from pathlib import Path
 import shutil
@@ -15,66 +15,7 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
-class BuildSourceRecipeTests(unittest.TestCase):
-    def setUp(self):
-        self.builder = module.BuildSource
-        self.inputs = {'ability': {'revision': self.builder.UPSTREAM_ABILITY},
-                       'nsh': {'sdkSourceSha256': self.builder.UPSTREAM_SDK,
-                               'worktreeSha256': self.builder.UPSTREAM_WORKTREE}}
-        self.names = [path.name for path in Path(__file__).resolve().parents[1].joinpath('patches/nsh').glob('*.patch')]
-
-    def plan(self, inputs=None, names=None, binding=None):
-        return self.builder.patch_plan(inputs or self.inputs, self.names if names is None else names,
-                                       binding or self.builder.UPSTREAM_BINDING)
-
-    def test_reviewed_ability_sdk_uses_only_eight_explicit_binding_fixes(self):
-        plan = self.plan()
-        self.assertEqual(plan['name'], 'upstream-native-ability-b6550250')
-        self.assertEqual(plan['stagedPatches'], list(self.builder.BINDING_STAGED))
-        self.assertEqual(len(plan['bindingPatches']), 8)
-        self.assertEqual(set(plan['bindingPatches']) | set(plan['omittedPatches']), set(self.names))
-        self.assertFalse(set(plan['bindingPatches']) & set(plan['omittedPatches']))
-        self.assertTrue(all(plan['omittedPatches'].values()))
-        self.assertIn('not ported', plan['omittedPatches']['zz-document-editor.patch'])
-        self.assertIn('not ported', plan['omittedPatches']['zzzzz-text-raster-budget-wait.patch'])
-
-    def test_changed_upstream_source_or_binding_fails_before_any_patch_can_be_selected(self):
-        for field in ('sdkSourceSha256', 'worktreeSha256'):
-            changed = copy.deepcopy(self.inputs)
-            changed['nsh'][field] = '0' * 64
-            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'Rebase'):
-                self.plan(changed)
-        with self.assertRaisesRegex(ValueError, 'Rebase'):
-            self.plan(binding='unreviewed')
-
-    def test_current_local_ui_context_sdk_never_receives_legacy_editor_or_ability_patches(self):
-        inputs = {**self.inputs, 'hostModel': 'native-ui-context'}
-        plan = self.plan(inputs, binding='local-released-bindings')
-        self.assertEqual(plan['name'], 'local-native-ui-context')
-        self.assertEqual(plan['stagedPatches'], [])
-        self.assertEqual(set(plan['omittedPatches']), set(self.names))
-
-    def test_added_removed_or_duplicate_patch_cannot_be_silently_ignored(self):
-        for names in (self.names + ['new.patch'], self.names[1:], self.names + self.names[:1]):
-            with self.subTest(names=names), self.assertRaisesRegex(ValueError, 'inventory'):
-                self.plan(names=names)
-
-    def test_legacy_sources_still_apply_all_patches_in_original_sorted_order(self):
-        changed = copy.deepcopy(self.inputs)
-        changed['ability']['revision'] = '3f2dcce14d8bf268b198e1b1115c4322c6783e0d'
-        plan = self.plan(changed)
-        self.assertEqual(plan['stagedPatches'], sorted(set(self.names) - set(self.builder.BINDING_DIRECT)))
-        self.assertEqual(plan['omittedPatches'], {})
-
-
 class BuildSourceTests(unittest.TestCase):
-    def test_only_reviewed_binding_sources_receive_their_required_preparation(self):
-        self.assertEqual(module.BuildSource.binding_preparation('e9a376c4313d76eeb41b148d05b682576b57a2e0'), ())
-        self.assertEqual(module.BuildSource.binding_preparation('43aec6c125503a47f7e875c793aaf2462e91ad19'),
-                         ('arkui-dialog-operation.patch', 'arkui-host-fixtures.patch'))
-        with self.assertRaisesRegex(ValueError, 'Rebase'):
-            module.BuildSource.binding_preparation('unreviewed')
-
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -89,11 +30,16 @@ class BuildSourceTests(unittest.TestCase):
         (ability / 'native_ability').mkdir()
         (ability / 'native_ability/oh-package.json5').write_text('{}')
         (ability / 'crates/ability').mkdir(parents=True)
-        self.source.joinpath('Cargo.toml').write_text('[workspace]\nmembers=["app"]\nexclude=["paws-patches/ohos-arkui-binding"]\nresolver="2"\n'
-            '[workspace.dependencies]\nopenharmony-ability={path="' + str(ability / 'crates/ability') + '"}\n')
+        self.source.joinpath('Cargo.toml').write_text('[workspace]\nmembers=["app", "binding"]\nresolver="2"\n')
         (self.source / 'app/src').mkdir(parents=True)
-        (self.source / 'app/Cargo.toml').write_text('[package]\nname="fixture"\nversion="0.1.0"\nedition="2021"\n')
+        (self.source / 'app/Cargo.toml').write_text('[package]\nname="fixture"\nversion="0.1.0"\nedition="2021"\n'
+            '[dependencies]\nohos-arkui-binding={path="../binding"}\n')
         (self.source / 'app/src/lib.rs').write_text('')
+        (self.source / 'binding/src').mkdir(parents=True)
+        (self.source / 'binding/Cargo.toml').write_text('[package]\nname="ohos-arkui-binding"\nversion="0.4.2"\nedition="2021"\n')
+        (self.source / 'binding/src/lib.rs').write_text('')
+        subprocess.run(['cargo', 'generate-lockfile', '--offline'], cwd=self.source, check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         (self.source / 'source.rs').write_text('original\n')
         (self.source / '.gitignore').write_text('/crates/nsh-platform-ohos/\n/target/\n')
         for repo in (self.source, ability):
@@ -106,36 +52,24 @@ class BuildSourceTests(unittest.TestCase):
         (port / 'arkts/oh_modules/generated.js').write_text('cache')
         (self.root / 'scripts').mkdir(parents=True)
         shutil.copyfile(Path(__file__).with_name('nsh_build_inputs.py'), self.root / 'scripts/nsh_build_inputs.py')
-        (self.root / 'patches/nsh').mkdir(parents=True)
-        self.patch_file = self.root / 'patches/nsh/source.patch'
-        self.patch_file.write_text('--- a/source.rs\n+++ b/source.rs\n@@ -1 +1 @@\n-original\n+patched\n')
         self.environment = patch.dict(os.environ, {'NSH_ROOT': str(self.source), 'NSH_ABILITY_ROOT': str(ability)})
         self.environment.start()
         self.addCleanup(self.environment.stop)
         root_patch = patch.object(module, 'ROOT', self.root)
         root_patch.start()
         self.addCleanup(root_patch.stop)
-        binding_patch = patch.object(module.BuildSource, 'binding', self.binding)
-        binding_patch.start()
-        self.addCleanup(binding_patch.stop)
-
     @staticmethod
     def git(root, *args):
         return subprocess.check_output(['git', '-C', str(root), *args], stderr=subprocess.PIPE, timeout=20)
 
-    @staticmethod
-    def binding(builder):
-        crate = builder.stage / 'paws-patches/ohos-arkui-binding'
-        (crate / 'src').mkdir(parents=True)
-        (crate / 'Cargo.toml').write_text('[package]\nname="ohos-arkui-binding"\nversion="0.4.2"\nedition="2021"\n[workspace]\n')
-        (crate / 'src/lib.rs').write_text('')
-        with (builder.stage / 'app/Cargo.toml').open('a') as stream:
-            stream.write('[dependencies]\nohos-arkui-binding={path="../paws-patches/ohos-arkui-binding"}\n')
-
     def test_actual_source_copy_and_prepared_root_are_idempotent(self):
         before = self.git(self.source, 'diff', 'HEAD', '--binary')
         stage = module.BuildSource().prepare()
-        self.assertEqual((stage / 'source.rs').read_text(), 'patched\n')
+        self.assertEqual((stage / 'source.rs').read_text(), 'original\n')
+        self.assertEqual(self.git(stage, 'diff', 'HEAD', '--binary'), before)
+        record = json.loads(stage.with_suffix('.json').read_text())
+        self.assertEqual(record['originalInputs']['nsh'], record['preparedInputs']['nsh'])
+        self.assertEqual(record['originalInputs']['ability'], record['preparedInputs']['ability'])
         self.assertTrue((stage / 'crates/nsh-platform-ohos/native.rs').is_file())
         self.assertFalse((stage / 'crates/nsh-platform-ohos/arkts/oh_modules').exists())
         self.assertEqual(self.git(self.source, 'diff', 'HEAD', '--binary'), before)
@@ -145,25 +79,56 @@ class BuildSourceTests(unittest.TestCase):
             self.assertEqual(module.BuildSource().prepare(), stage)
         self.assertEqual(len(list((self.root / 'target/nsh-build-source').glob('*/Cargo.toml'))), 1)
 
+    def test_pinned_checkout_ignores_the_source_branch_and_local_edits(self):
+        revision = self.git(self.source, 'rev-parse', 'HEAD').decode().strip()
+        self.git(self.source, 'checkout', '-qb', 'another-branch')
+        (self.source / 'source.rs').write_text('newer branch\n')
+        self.git(self.source, 'commit', '-qam', 'another revision')
+        (self.source / 'source.rs').write_text('uncommitted work\n')
+        (self.source / 'untracked.rs').write_text('personal work\n')
+        before = self.git(self.source, 'status', '--porcelain=v1')
+        target = self.root / 'target/nsh-checkouts' / revision
+        module.BuildSource.checkout_at(self.source, target)
+        self.assertEqual(self.git(target, 'rev-parse', 'HEAD').decode().strip(), revision)
+        self.assertEqual((target / 'source.rs').read_text(), 'original\n')
+        self.assertFalse((target / 'untracked.rs').exists())
+        self.assertEqual(self.git(self.source, 'status', '--porcelain=v1'), before)
+        self.assertEqual((self.source / 'source.rs').read_text(), 'uncommitted work\n')
+        module.BuildSource.checkout_at(self.source, target)
+        (target / 'source.rs').write_text('tampered\n')
+        with self.assertRaisesRegex(ValueError, 'pinned source checkout changed'):
+            module.BuildSource.checkout_at(self.source, target)
+
     def test_ignored_actual_source_tampering_is_rejected(self):
         stage = module.BuildSource().prepare()
         (stage / 'crates/nsh-platform-ohos/native.rs').write_text('changed\n')
         with patch.dict(os.environ, {'NSH_ROOT': str(stage)}), self.assertRaisesRegex(ValueError, 'Staged NSH sources changed'):
             module.BuildSource().prepare()
 
-    def test_prepared_root_rejects_changed_patch_recipe(self):
+    def test_prepared_root_rejects_changed_staging_recipe(self):
         stage = module.BuildSource().prepare()
-        self.patch_file.write_text(self.patch_file.read_text() + '\n')
+        recipe = self.root / 'scripts/nsh_build_inputs.py'
+        recipe.write_text(recipe.read_text() + '\n')
         with patch.dict(os.environ, {'NSH_ROOT': str(stage)}), self.assertRaisesRegex(ValueError, 'recipe changed'):
             module.BuildSource().prepare()
 
-    def test_patched_binding_source_tampering_is_rejected(self):
+    def test_binding_source_tampering_is_rejected(self):
         stage = module.BuildSource().prepare()
-        (stage / 'paws-patches/ohos-arkui-binding/src/lib.rs').write_text('changed binding\n')
+        (stage / 'binding/src/lib.rs').write_text('changed binding\n')
         with patch.dict(os.environ, {'NSH_ROOT': str(stage)}), self.assertRaisesRegex(ValueError, 'Staged NSH sources changed'):
             module.BuildSource().prepare()
 
-    def test_source_changes_during_copy_fail_before_patching(self):
+    def test_legacy_ability_sdk_is_rejected_without_modifying_the_source(self):
+        manifest = self.source / 'Cargo.toml'
+        with manifest.open('a') as stream:
+            stream.write('[workspace.dependencies]\nopenharmony-ability={path="'
+                         + str(Path(os.environ['NSH_ABILITY_ROOT']) / 'crates/ability') + '"}\n')
+        before = manifest.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'legacy Ability SDK overlays are unsupported'):
+            module.BuildSource().prepare()
+        self.assertEqual(manifest.read_bytes(), before)
+
+    def test_source_changes_during_copy_are_rejected(self):
         copytree = shutil.copytree
 
         def copying(source, target, *args, **kwargs):

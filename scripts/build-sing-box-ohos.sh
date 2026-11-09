@@ -8,14 +8,15 @@ SING_BOX_ROOT="${SING_BOX_ROOT:-$WORKSPACE_PARENT/sing-box-ohos}"
 if [ ! -d "$SING_BOX_ROOT" ] && [ -d "$ROOT_DIR/target/engine-sources/sing-box-ohos" ]; then
   SING_BOX_ROOT="$ROOT_DIR/target/engine-sources/sing-box-ohos"
 fi
-GO_OHOS_ROOT="${GO_OHOS_ROOT:-$WORKSPACE_PARENT/go-ohos-1.24.7-compat}"
-if [ ! -d "$GO_OHOS_ROOT" ] && [ -d "$ROOT_DIR/target/toolchains/go1.24.7-ohos-darwin-arm64" ]; then
-  GO_OHOS_ROOT="$ROOT_DIR/target/toolchains/go1.24.7-ohos-darwin-arm64"
-fi
 OHOS_NDK_HOME="${OHOS_NDK_HOME:-/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony}"
-GO_COMPILER_ROOT="$(sh "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$GO_OHOS_ROOT")"
+GO_COMPILER_ROOT="$(sh "$ROOT_DIR/scripts/prepare-go-ohos.sh" "${GO_OHOS_ROOT:-}")"
+export GO_COMPILER_ROOT
 GO_BIN="$GO_COMPILER_ROOT/bin/go"
-CC_BIN="$OHOS_NDK_HOME/native/llvm/bin/aarch64-unknown-linux-ohos-clang"
+OHOS_NATIVE_HOME="$OHOS_NDK_HOME"
+if [ -d "$OHOS_NATIVE_HOME/native/sysroot" ]; then OHOS_NATIVE_HOME="$OHOS_NATIVE_HOME/native"; fi
+CC_BIN="$GO_COMPILER_ROOT/ohos-scripts/cc-arm64"
+CXX_BIN="$GO_COMPILER_ROOT/ohos-scripts/cxx-arm64"
+test -d "$OHOS_NATIVE_HOME/sysroot" || { echo "OpenHarmony native SDK not found: $OHOS_NATIVE_HOME" >&2; exit 1; }
 OUTPUT="${SING_BOX_OUTPUT:-$ROOT_DIR/entry/libs/arm64-v8a/libsingbox.so}"
 BUILD_STAGE="${SING_BOX_BUILD_STAGE:-$ROOT_DIR/target/sing-box-ohos-build}"
 PIN=628cb31ffa79cffffd34c2f9cde6cae044e4fc12
@@ -45,7 +46,9 @@ for observation_source in journal.go wire.go public.go; do
   cp "$ROOT_DIR/vendor/paws-engine-observation/$observation_source" "$BUILD_STAGE/source/cmd/libtinypaws/paws_$observation_source"
 done
 cd "$BUILD_STAGE/source"
-env GOTOOLCHAIN=local GOOS=openharmony GOARCH=arm64 CGO_ENABLED=1 CC="$CC_BIN" \
+env GOTOOLCHAIN=local GOROOT="$GO_COMPILER_ROOT" GOOS=openharmony GOARCH=arm64 CGO_ENABLED=1 \
+  OHOS_NDK_HOME="$OHOS_NATIVE_HOME" CC="$CC_BIN" CXX="$CXX_BIN" \
+  AR="$OHOS_NATIVE_HOME/llvm/bin/llvm-ar" \
   "$GO_BIN" build -trimpath -buildmode=c-shared \
   -tags 'with_gvisor,with_quic,with_dhcp,with_utls,with_clash_api' \
   -ldflags '-s -w' -o "$BUILD_STAGE/libsingbox.so" ./cmd/libtinypaws

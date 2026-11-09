@@ -15,11 +15,11 @@ license links; these are not claims about the latest upstream releases.
 - Mihomo 1.10.0 (the version declared by `constant/version.go` in the pinned
   [FlClash source fork](https://github.com/chen08209/Clash.Meta/tree/8597778c7df410ebe88c57e59eaab32d203156df),
   commit `8597778c7df410ebe88c57e59eaab32d203156df` with
-  `patches/mihomo-openharmony.patch` and `patches/gvisor-fstat.patch`):
+  `patches/mihomo-openharmony.patch` and `patches/mihomo-paws-management.patch`):
   [GPL-3.0](https://github.com/chen08209/Clash.Meta/blob/8597778c7df410ebe88c57e59eaab32d203156df/LICENSE).
 - The unmodified upstream license text is included at
   [LICENSES/mihomo/LICENSE](LICENSES/mihomo/LICENSE).
-- The packaged `libcore.so` and `libclash.so` are compiled via `scripts/build-mihomo-ohos.sh` from `vendor/mihomo-bridge` and commit `8597778c` (2026-10-01).
+- The packaged `libclash.so` is compiled via `scripts/build-mihomo-ohos.sh` from `vendor/mihomo-bridge` and commit `8597778c` (2026-10-01).
 
 The bridge sources, adaptation patches, and complete upstream license texts are
 included in this repository. The pinned upstream source links and build
@@ -39,12 +39,13 @@ advanced-protocol use.
   text is included at [LICENSES/sing-box/COPYING](LICENSES/sing-box/COPYING).
 - OpenHarmony Go bridge source: `vendor/sing-box-bridge/main.go`.
 - The packaged `libsingbox.so` is compiled for `openharmony/arm64` with the
-  OpenHarmony SIG Go 1.24 toolchain and the DevEco OpenHarmony clang/sysroot.
+  [go-patch v1.27.3](https://github.com/openharmony-command-package/go-patch/releases/tag/v1.27.3) toolchain and the DevEco OpenHarmony clang/sysroot.
 
-The Go compiler can be rebuilt from the OpenHarmony SIG Go 1.24.5 source
-distribution with `patches/go-ohos-1.24.7-compat.patch`. This patch contains the
-remaining official Go 1.24.5-to-1.24.7 changes missing from that distribution;
-the existing OpenHarmony changes are retained. Go uses a BSD-style license.
+Paws consumes the precompiled go-patch distribution without modifying Go or
+gVisor sources. The pinned release and archive checksums are recorded in
+`scripts/go-ohos-toolchain.json`. Go retains its upstream BSD-style license;
+source and port attribution are available in the distribution and its
+[repository](https://github.com/openharmony-command-package/go-patch).
 See `docs/native-engines-build.md` for source revisions and build commands.
 
 Redistribution of a HAP containing `libsingbox.so` must include the matching

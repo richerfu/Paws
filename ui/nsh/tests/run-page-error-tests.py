@@ -227,7 +227,7 @@ def main():
     old = "            <List\n              bounces={false}\n"
     new = '''            <List
               ref={(node) => {
-                (globalThis as typeof globalThis & { __pawsPageErrorList?: import("nsh").YNode })
+                (globalThis as typeof globalThis & { __pawsPageErrorList?: import("nsh").ListRef })
                   .__pawsPageErrorList = node;
               }}
               bounces={false}

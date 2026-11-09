@@ -1,4 +1,4 @@
-import { computed, Scroll, Text, View, windowSize, type ViewProps } from "nsh";
+import { computed, fontScale, Scroll, Text, token, View, windowSize, type ViewProps } from "nsh";
 import {
   Action,
   Actions,
@@ -21,6 +21,8 @@ import type { Mode } from "../model";
 import { connectionState } from "../connection-state";
 import { PageError } from "../page-error";
 import { ProxyGroupList } from "./proxies";
+import { feedbackStyle, useGlyphTransition, usePressFeedback } from "../motion";
+import { focusRing, surfaceFinish } from "../theme";
 
 export function VpnPowerButton(
   props: { size: number } & Pick<ViewProps, "pan" | "onPanEnd" | "style" | "accessibilityHint">,
@@ -33,48 +35,56 @@ export function VpnPowerButton(
     ui.client.vpnOperation() === "restart";
   const stopping = () => ui.client.vpnOperation() === "stop";
   const stop = () => current().vpnRunning || starting();
+  const pressDisabled = () => !!ui.client.vpnUnconfirmed() || stopping()
+    || (!stop() && (!current().activeProfile || ui.client.pending() > 0));
+  const press = usePressFeedback(pressDisabled);
+  const glyph = useGlyphTransition(() => starting() || stopping() ? "busy" : current().vpnRunning ? "stop" : "start");
+  const foreground = () => stop() ? palette().primaryText : token("primary-foreground");
   return (
     <View
-      class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
       testID="vpn-toggle"
       role="button"
       accessibilityLabel={stop() ? ui.t("停止 VPN", "Stop VPN") : ui.t("启动 VPN", "Start VPN")}
       accessibilityHint={props.accessibilityHint}
-      accessibilityState={{ disabled: stopping() }}
+      accessibilityState={{ disabled: pressDisabled() }}
       pan={props.pan}
-      onPanEnd={props.onPanEnd}
-      disabled={
-        !!ui.client.vpnUnconfirmed() ||
-        stopping() ||
-        (!stop() && (!current().activeProfile || ui.client.pending() > 0))
-      }
-      onPress={() => void ui.client.run(stop() ? "vpn.stop" : "vpn.start")}
-      activeStyle={{ opacity: 0.8 }}
+      onPanEnd={props.pan ? (event) => { press.up(); props.onPanEnd?.(event); } : undefined}
+      // A temporarily unavailable VPN action must not disable its native drag.
+      disabled={!props.pan && pressDisabled()}
+      onPress={() => {
+        if (!pressDisabled()) void ui.client.run(stop() ? "vpn.stop" : "vpn.start");
+      }}
+      onPressDown={press.down}
+      onPressUp={press.up}
+      activeStyle={pressDisabled() ? undefined : { opacity: 0.85 }}
+      focusStyle={focusRing()}
+      hoverStyle={{ opacity: 0.88 }}
       style={[
         {
+          // Keep the icon within the same input target as the native pan gesture.
+          pointerEvents: "box-only",
           width: props.size,
           height: props.size,
           borderRadius: props.size / 2,
-          backgroundColor: current().vpnRunning ? palette().danger : palette().brandFill,
           alignItems: "center",
           justifyContent: "center",
-          opacity: stopping() ? 0.6 : 1,
+          backgroundColor: stop() ? palette().brandFill : token("primary"),
+          ...(stop() ? surfaceFinish("accent") : surfaceFinish("light")),
+          opacity: pressDisabled() && !starting() && !stopping() ? 0.5 : 1,
+          transform: [{ scale: press.scale }],
+          ...feedbackStyle(),
         },
         props.style,
       ]}
     >
+      <View style={{ transform: [{ scale: glyph }], alignItems: "center", justifyContent: "center" }}>
       <If
         when={starting() || stopping()}
-        else={
-          <Icon
-            name={current().vpnRunning ? "square" : "power"}
-            size={props.size * 0.4}
-            color={palette().primaryText}
-          />
-        }
+        else={<Icon name={current().vpnRunning ? "square" : "power"} size={props.size * 0.4} color={foreground()} />}
       >
-        <Spinner size={props.size * 0.4} color={palette().primaryText} />
+        <Spinner size={props.size * 0.4} color={foreground()} />
       </If>
+      </View>
     </View>
   );
 }
@@ -111,6 +121,8 @@ export function Dashboard() {
                 : ui.t("未连接", "Disconnected");
   const toggle = () =>
     void ui.client.run(current().vpnRunning || state() === "connecting" ? "vpn.stop" : "vpn.start");
+  const unavailable = () => !!ui.client.vpnUnconfirmed() || ui.client.vpnOperation() === "stop"
+    || (!current().vpnRunning && state() !== "connecting" && (!current().activeProfile || ui.client.pending() > 0));
   const node = () =>
     current().mode === "direct"
       ? ui.t("直连", "Direct")
@@ -145,15 +157,15 @@ export function Dashboard() {
         paddingTop: windowSize().width >= 840 ? 24 : 16,
       }}
     >
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 16, height: 52 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 16, minHeight: Math.max(64, 40 * Math.max(1, fontScale()) + 16) }}>
         <View
           class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
           testID="connection-row"
           role="button"
           accessibilityLabel={label()}
-          disabled={!!ui.client.vpnUnconfirmed() || ui.client.vpnOperation() === "stop"}
+          disabled={unavailable()}
           onPress={toggle}
-          style={{ flex: 1, height: 52, flexDirection: "row", alignItems: "center", gap: 12 }}
+          style={{ flex: 1, minHeight: Math.max(64, 40 * Math.max(1, fontScale()) + 16), flexDirection: "row", alignItems: "center", gap: 12, borderRadius: radius.md, ...feedbackStyle() }}
         >
           <View
             style={{
@@ -185,12 +197,10 @@ export function Dashboard() {
               {label()}
             </Text>
             <View style={{ flexDirection: "row", minWidth: 0, alignItems: "center", gap: 6 }}>
-              <If when={home().activeProfileName}>
-                <Badge label={ui.t("当前配置", "Current profile")} />
-              </If>
+
               <Text
-                numberOfLines={1}
                 style={{
+                  numberOfLines: 1,
                   flex: 1,
                   minWidth: 0,
                   fontSize: 12,
@@ -208,7 +218,7 @@ export function Dashboard() {
           <VpnPowerButton size={44} />
         </If>
       </View>
-      <View style={{ height: 14 }} />
+      <View style={{ height: 16 }} />
       <Tabs
         idPrefix="mode"
         value={current().mode}
@@ -230,7 +240,7 @@ export function Dashboard() {
         }}
         disabled={ui.client.pending() > 0}
       />
-      <View style={{ height: 14 }} />
+      <View style={{ height: 16 }} />
       <View
         style={{
           borderWidth: 1,
@@ -253,15 +263,15 @@ export function Dashboard() {
       <If when={current().networkProtectError}>
         <PageError id="home-protection-error" text={current().networkProtectError || ""} />
       </If>
-      <View style={{ height: 14 }} />
+      <View style={{ height: 16 }} />
       <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 6 }}>
         <View style={{ flex: 1 }}>
           <Text style={{ fontSize: 14, lineHeight: 20, fontWeight: "600", color: palette().text }}>
-            {ui.t("全局节点与策略分组", "Global nodes and policy groups")}
+            {ui.t("节点与分组", "Nodes and groups")}
           </Text>
           <Text style={{ fontSize: 12, lineHeight: 16, color: palette().muted }}>
-            {summary().global} {ui.t("个全局节点", "global nodes")} · {summary().members}{" "}
-            {ui.t("个节点", "nodes")} · {summary().groups} {ui.t("个分组", "groups")}
+            {summary().global} {ui.t("个全局节点", "global nodes")} · {summary().groups}{" "}
+            {ui.t("个策略组", "policy groups")}
           </Text>
         </View>
         <If when={home().groups.length > 0}>
@@ -288,7 +298,7 @@ export function Dashboard() {
             />
             <Action
               icon="plus"
-              label={ui.t("添加订阅", "Add subscription")}
+              primary label={ui.t("添加订阅…", "Add subscription…")}
               onPress={() => {
                 ui.navigate("profiles");
                 ui.importIntent.set(ui.importIntent() + 1);
@@ -316,18 +326,18 @@ function ConnectionRow(props: {
         paddingVertical: 10,
         minWidth: 0,
         flexDirection: "row",
-        alignItems: "flex-start",
+        alignItems: "center",
         gap: 8,
       }}
     >
       <Icon name={props.icon} size={15} color={palette().muted} />
-      <Text style={{ width: 68, color: palette().muted, fontSize: 12 }}>{props.label}</Text>
+      <Text style={{ width: 68, color: palette().muted, fontSize: 12, lineHeight: 20 }}>{props.label}</Text>
       <Text
         testID={props.id}
         accessibilityLabel={props.value}
-        selectable
-        numberOfLines={props.lines}
         style={{
+          userSelect: "text",
+          numberOfLines: props.lines,
           flex: 1,
           minWidth: 0,
           marginLeft: 12,
@@ -385,7 +395,7 @@ export function Traffic() {
           }
         />
         <SectionTitle label={ui.t("流量用量", "Traffic usage")} />
-        <View style={{ flexDirection: "row", gap: 12 }}>
+        <View style={{ flexDirection: windowSize().width < 360 || fontScale() > 1.3 ? "column" : "row", gap: 12 }}>
           <UsageCard
             title={ui.t("当前配置", "Current profile")}
             upload={profile()?.uploadBytes || 0}
@@ -427,45 +437,24 @@ export function Traffic() {
         >
           <Detail label={ui.t("峰值下载", "Peak download")} value={`${bytes(peakDownload())}/s`} />
           <Detail label={ui.t("峰值上传", "Peak upload")} value={`${bytes(peakUpload())}/s`} />
-          <View
-            accessibilityLabel={ui.t("最近流量趋势", "Recent traffic history")}
-            style={{
-              height: 62,
-              paddingHorizontal: 4,
-              paddingTop: 7,
-              paddingBottom: 3,
-              borderRadius: radius.md,
-              backgroundColor: palette().soft,
-              flexDirection: "row",
-              alignItems: "flex-end",
-            }}
-          >
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 16 }}>
+            <Legend color={palette().chartDownload} label={ui.t("下载", "Download")} />
+            <Legend color={palette().chartUpload} label={ui.t("上传", "Upload")} />
+          </View>
+          <View testID="traffic-chart" accessible accessibilityLabel={ui.t("最近流量趋势", "Recent traffic history")}
+            style={{ height: 112, paddingHorizontal: 8, paddingTop: 8,
+              borderBottomWidth: 1, borderBottomColor: palette().border,
+              flexDirection: "row", alignItems: "flex-end", gap: 2 }}>
             <Each of={history()} key="index">
-              {(point) => (
-                <View
-                  style={{
-                    flex: 1,
-                    alignItems: "center",
-                    justifyContent: "flex-end",
-                    height: "100%",
-                  }}
-                >
-                  <View
-                    style={{
-                      width: "72%",
-                      borderRadius: 2,
-                      height:
-                        (Math.max(point().downloadSpeed, point().uploadSpeed) / peak()) * 49 + 3,
-                      backgroundColor:
-                        point().downloadSpeed >= point().uploadSpeed
-                          ? palette().success
-                          : palette().warning,
-                    }}
-                  />
-                </View>
-              )}
+              {(point) => <View style={{ flex: 1, height: "100%", flexDirection: "row", gap: 1, alignItems: "flex-end" }}>
+                <View style={{ flex: 1, borderTopLeftRadius: 2, borderTopRightRadius: 2,
+                  height: point().downloadSpeed / peak() * 104, backgroundColor: palette().chartDownload }} />
+                <View style={{ flex: 1, borderTopLeftRadius: 2, borderTopRightRadius: 2,
+                  height: point().uploadSpeed / peak() * 104, backgroundColor: palette().chartUpload }} />
+              </View>}
             </Each>
           </View>
+          <If when={!history().length}><Hint text={ui.t("等待流量采样", "Waiting for traffic samples")} /></If>
         </Card>
         <Card
           title={ui.t("当前连接", "Current connections")}
@@ -665,7 +654,7 @@ function UsageCard(props: { title: string; upload: number; download: number }) {
       style={{
         flex: 1,
         minWidth: 0,
-        height: 126,
+        minHeight: 126,
         padding: 12,
         gap: 10,
         borderWidth: 1,
@@ -674,16 +663,16 @@ function UsageCard(props: { title: string; upload: number; download: number }) {
         backgroundColor: palette().panel,
       }}
     >
-      <Text numberOfLines={1} style={{ fontSize: 14, fontWeight: "600", color: palette().text }}>
+      <Text style={{ numberOfLines: 1, fontSize: 14, fontWeight: "600", color: palette().text }}>
         {props.title}
       </Text>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Icon name="arrow-up" size={14} color={palette().warning} />
-        <Text style={{ fontSize: 14, color: palette().text }}>{bytes(props.upload)}</Text>
+        <Icon name="arrow-up" size={14} color={palette().chartUpload} />
+        <Text style={{ fontSize: 14, color: palette().text, fontVariant: ["tabular-nums"] }}>{bytes(props.upload)}</Text>
       </View>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <Icon name="arrow-down" size={14} color={palette().success} />
-        <Text style={{ fontSize: 14, color: palette().text }}>{bytes(props.download)}</Text>
+        <Icon name="arrow-down" size={14} color={palette().chartDownload} />
+        <Text style={{ fontSize: 14, color: palette().text, fontVariant: ["tabular-nums"] }}>{bytes(props.download)}</Text>
       </View>
     </View>
   );
@@ -713,17 +702,24 @@ function SpeedMetric(props: { download?: boolean; value: number }) {
         <Icon
           name={props.download ? "arrow-down" : "arrow-up"}
           size={18}
-          color={props.download ? palette().success : palette().warning}
+          color={props.download ? palette().chartDownload : palette().chartUpload}
         />
       </View>
       <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
         <Text style={{ color: palette().muted, fontSize: 12 }}>
           {props.download ? ui.t("下载", "Download") : ui.t("上传", "Upload")}
         </Text>
-        <Text numberOfLines={1} style={{ color: palette().text, fontSize: 18, fontWeight: "600" }}>
+        <Text style={{ numberOfLines: 1, color: palette().text, fontSize: 20, fontWeight: "600", fontVariant: ["tabular-nums"] }}>
           {bytes(props.value)}/s
         </Text>
       </View>
     </View>
   );
+}
+
+function Legend(props: { color: string; label: string }) {
+  return <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+    <View style={{ width: 8, height: 8, borderRadius: 2, backgroundColor: props.color }} />
+    <Text style={{ fontSize: 12, lineHeight: 18, color: palette().muted }}>{props.label}</Text>
+  </View>;
 }

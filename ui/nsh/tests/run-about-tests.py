@@ -102,9 +102,9 @@ def validate_layout(tree, width, height, language, theme):
         source, license = tree.one(f'about-source-{index}'), tree.one(f'about-license-{index}')
         for button in (source, license):
             assert button.get('events', 0) != 0, 'Link lost native event registration'
-            assert button['frame'][3] >= 30, 'Link touch frame collapsed'
+            assert button['frame'][3] >= (28 if width >= 840 else 44), 'Link target collapsed'
             contains(tree.rect(actions), tree.rect(button), 'About link actions')
-            assert 'role: Button' in button.get('props', '')
+            assert 'role: Link' in button.get('props', ''), 'External destination lost native Link semantics'
             assert any(n.get('text') for n in tree.descendants(button)), 'Link label missing'
         no_overlap(tree.rect(source), tree.rect(license), name + ' link buttons')
         component_results.append({'name': name, 'nameFrame': title['frame'], 'versionChars': len(version['text']),
@@ -122,7 +122,7 @@ def validate_layout(tree, width, height, language, theme):
     expected_label = 'Third-party components and adaptations' if language == 'en' else '第三方组件与适配说明'
     assert any(n.get('text') == expected_label for n in tree.descendants(adaptations)), 'Translated long adaptations label missing'
     for button in (source, adaptations, tree.one('about-privacy')):
-        assert button.get('events', 0) != 0 and button['frame'][3] >= 30
+        assert button.get('events', 0) != 0 and button['frame'][3] >= (28 if width >= 840 else 44)
     content_w, content_h = scroll['scrollContent']
     viewport = tree.rect(scroll)
     privacy = tree.rect(tree.one('about-privacy'))

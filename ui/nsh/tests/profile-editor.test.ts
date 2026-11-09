@@ -60,12 +60,10 @@ test("unsaved edits guard native Back and desktop navigation; cancel and undo re
   await openEditor(app);
   await append(app);
   await app.back();
-  await app.waitFor("id:cancel-confirmation");
-  await app.press("id:cancel-confirmation");
+  expect(app.dialogs().at(-1)!.buttons).toEqual(["取消", "丢弃修改"]);
   expect(app.shows("id:profile-yaml-editor")).toBe(true);
   await app.press("id:nav-tools");
-  await app.waitFor("id:cancel-confirmation");
-  await app.press("id:cancel-confirmation");
+  expect(app.dialogs().at(-1)!.buttons).toEqual(["取消", "丢弃修改"]);
   await app.press("text:x");
   await app.keyboard.press("mod+z");
   await app.waitFor("text:YAML");
@@ -103,10 +101,10 @@ test("a remote config revision blocks saving until an explicit discard and reloa
   expect(app.enabled("id:save-profile")).toBe(false);
   expect(reports.filter((r) => r.command === "profiles.save")).toHaveLength(0);
   await app.press("id:reload-profile");
-  await app.press("id:cancel-confirmation");
+  expect(app.dialogs().at(-1)!.buttons).toEqual(["取消", "丢弃并载入"]);
   expect(app.shows("text:未保存")).toBe(true);
+  app.onDialog((dialog) => dialog.buttons.at(-1)!);
   await app.press("id:reload-profile");
-  await app.press("id:confirm-action");
   await app.waitFor("text:# refreshed remotely");
   expect(app.enabled("id:save-profile")).toBe(true);
   await app.press("id:save-profile");

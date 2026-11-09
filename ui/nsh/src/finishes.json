@@ -50,6 +50,9 @@
       "boxShadow": "inset 0 1px 0 rgba(255,255,255,0.11), inset 0 -1px 0 rgba(0,0,0,0.25), 0 12px 32px rgba(0,0,0,0.42)",
       "borderColor": "rgba(255,255,255,0.08)",
       "backdropFilter": "blur(24px)"
+    },
+    "overlay": {
+      "boxShadow": "0 16px 48px -12px rgba(0,0,0,0.65)"
     }
   },
   "light": {
@@ -103,6 +106,9 @@
       "boxShadow": "inset 0 1px 0 #ffffff, inset 0 -1px 0 rgba(20,20,10,0.05), 0 12px 32px rgba(20,20,10,0.12)",
       "borderColor": "rgba(20,20,10,0.08)",
       "backdropFilter": "blur(24px)"
+    },
+    "overlay": {
+      "boxShadow": "0 16px 48px -12px rgba(0,0,0,0.22)"
     }
   }
 }

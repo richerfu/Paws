@@ -1,4 +1,4 @@
-# Building Mihomo and sing-box with patched OpenHarmony Go
+# Building Mihomo and sing-box with go-patch
 
 This guide builds the currently pinned Mihomo and sing-box libraries, then
 packages them with Rust/Meow and the native UI in an `arm64-v8a` HAP. Run the
@@ -59,108 +59,39 @@ test "$(git -C "$SING_BOX_ROOT" rev-parse HEAD)" = 628cb31ffa79cffffd34c2f9cde6c
 ```
 
 Both build scripts enforce these revisions and apply the engine patches
-described below. Modified and generated files in these dedicated checkouts
-are expected after building.
+described below. Each build archives the pinned commit into an owned stage; the selected
+checkouts remain unchanged.
 
-## 3. Prepare or reuse patched Go
+## 3. Resolve the pinned go-patch compiler
 
-The engine compiler must run on the build machine, report `go1.24.7`, and
-support the `openharmony/arm64` target. A stock Go installation is useful for
-bootstrapping and host tests; the engine builds use the patched OHOS compiler
-by absolute path.
-
-### First build from the OHOS Go distribution
-
-Extract the OpenHarmony SIG `go1.24.5.ohosv1r1` distribution and locate the
-directory containing `VERSION` and `src/make.bash`. The distributed Linux
-x86-64 executable cannot run on an Apple Silicon Mac, but its source can be
-used to build a native compiler.
-
-Use a working host Go installation **at least 1.22.6** as the bootstrap
-compiler. `GOROOT_BOOTSTRAP` is its installation root, containing `bin/go`.
-For example, an existing Homebrew Go 1.22.5 is too old for this step.
+The build uses the precompiled [go-patch v1.27.3 release](https://github.com/openharmony-command-package/go-patch/releases/tag/v1.27.3).
+[scripts/go-ohos-toolchain.json](../scripts/go-ohos-toolchain.json) pins the
+release, port identity and SHA256 for each supported macOS/Linux host archive.
+Paws does not patch or bootstrap Go sources.
 
 ```sh
-export GO_OHOS_SOURCE="$HOME/Downloads/go1.24.5.ohosv1r1"
-export GOROOT_BOOTSTRAP=/path/to/host-go
-test -f "$GO_OHOS_SOURCE/src/make.bash"
-head -1 "$GO_OHOS_SOURCE/VERSION"
-GOTOOLCHAIN=local "$GOROOT_BOOTSTRAP/bin/go" version
-
-# Build logs go to stderr; stdout is the resulting compiler directory.
-GO_OHOS_ROOT="$(sh scripts/prepare-go-ohos.sh "$GO_OHOS_SOURCE")"
+GO_OHOS_ROOT="$(sh scripts/prepare-go-ohos.sh)"
 export GO_OHOS_ROOT
-```
-
-[prepare-go-ohos.sh](../scripts/prepare-go-ohos.sh) copies the distribution to
-`target/toolchains/go1.24.7-ohos-<host>`, applies
-[go-ohos-1.24.7-compat.patch](../patches/go-ohos-1.24.7-compat.patch) with
-`patch -p1 -F 0`, then runs `src/make.bash`. On Apple Silicon the default
-directory is `target/toolchains/go1.24.7-ohos-darwin-arm64`.
-The original distribution remains unchanged.
-
-The patch contains the remaining changes missing from the OHOS distribution
-between these upstream Go revisions:
-
-| Base | Revision |
-| --- | --- |
-| Go 1.24.5 | `9d828e80fa1f3cc52de60428cae446b35b576de8` |
-| Go 1.24.7 | `d41a8222133aabaf5527eab64586050a0fbb773b` |
-
-It updates six files, including version metadata, toolchain prerelease
-handling and IPv4-mapped UDP address handling, while retaining the OHOS
-runtime/syscall changes. Apply it to the OHOS distribution through the helper;
-it is not a complete OHOS port for a stock Go source tree. The Go license and
-source attribution are recorded in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
-
-### Reuse an already prepared compiler
-
-On subsequent builds, skip bootstrapping and point to the existing compiler.
-For the default Apple Silicon layout:
-
-```sh
-export GO_OHOS_ROOT="$PAWS_ROOT/target/toolchains/go1.24.7-ohos-darwin-arm64"
-```
-
-Both engine scripts call the helper internally. An executable compiler at
-`GO_OHOS_ROOT` that reports exactly `go1.24.7` and supports
-`openharmony/arm64` is reused without rebuilding. `GO_OHOS_ROOT` can also point
-to the original distribution, in which case the helper resolves its cache.
-
-Check the selected compiler before building:
-
-```sh
-test -x "$GO_OHOS_ROOT/bin/go"
 GOTOOLCHAIN=local "$GO_OHOS_ROOT/bin/go" version
 GOTOOLCHAIN=local "$GO_OHOS_ROOT/bin/go" tool dist list | grep -x 'openharmony/arm64'
 ```
 
-For Apple Silicon the expected version line is
-`go version go1.24.7 darwin/arm64`; the second command must print
-`openharmony/arm64`. Both engine scripts set `GOTOOLCHAIN=local`,
-`GOOS=openharmony`, `GOARCH=arm64` and `CGO_ENABLED=1` for compilation.
-Keep those settings scoped to the engine commands so host tests still build
-for macOS.
+The resolver downloads and verifies the archive, extracts it under
+`target/toolchains/go-patch-1.27.3-<host>` and validates `BUILD-INFO.json`, the
+compiler version, the OpenHarmony target and the SDK compiler wrappers.
+`GO_OHOS_ROOT` may select an existing distribution of the same pinned release;
+stock Go and the previous Go 1.24 source distributions are rejected.
+Build inventories record both the release identity and the selected Go binary hash.
 
-If the Go patch or original distribution changes, prepare a new cache from
-the source distribution:
-
-```sh
-# Select a directory that does not already exist.
-export GO_OHOS_HOST_ROOT="$PAWS_ROOT/target/toolchains/go1.24.7-ohos-rebuild-01"
-GO_OHOS_ROOT="$(sh scripts/prepare-go-ohos.sh "$GO_OHOS_SOURCE")"
-export GO_OHOS_ROOT
-```
-
-The cache signature records the source path and patch hash. Direct reuse of an
-already executable `GO_OHOS_ROOT` checks its version and target support, so it
-does not by itself apply a subsequently edited Go patch.
+Both engine scripts use `GOTOOLCHAIN=local`, `GOOS=openharmony`, `GOARCH=arm64`
+and `CGO_ENABLED=1`. They invoke go-patch's `cc-arm64`/`cxx-arm64` wrappers with
+`OHOS_NDK_HOME` scoped to the SDK's `native` directory; the Paws shell environment
+continues to use the parent OpenHarmony SDK directory from step 1.
 
 ## 4. Build both native engines
 
-Keep the build outputs and packaging inputs explicit. This also prevents
-`package-hap.sh` from selecting libraries from a legacy sibling
-`FlClash-ohos-upstream` checkout.
+The packager defaults to repository-owned engine libraries. Keep custom
+outputs and packaging inputs explicit when overriding them.
 
 ```sh
 export MIHOMO_CORE_OUTPUT="$PAWS_ROOT/entry/libs/arm64-v8a/libclash.so"
@@ -173,24 +104,21 @@ scripts/build-mihomo-ohos.sh
 scripts/build-sing-box-ohos.sh
 ```
 
-The Go compatibility patch above and the engine patches below are different
-layers. The build scripts apply the engine patches automatically.
+Only Mihomo and sing-box patches are maintained in `patches/`. The build
+scripts apply them automatically. NSH, Go and gVisor use their upstream sources.
 
 | Owner | Patch / source | Purpose |
 | --- | --- | --- |
 | Mihomo checkout | [mihomo-openharmony.patch](../patches/mihomo-openharmony.patch) | OHOS build and DNS adaptation |
 | Mihomo checkout | [mihomo-paws-management.patch](../patches/mihomo-paws-management.patch) | Session-owned management, observations and public-service integration |
 | Mihomo staged bridge | [mihomo-ohos-tun-fd-ownership.patch](../patches/mihomo-ohos-tun-fd-ownership.patch) | Preserve HarmonyOS ownership of the TUN descriptor; applied if the copied bridge still closes it |
-| Mihomo staged gVisor | [gvisor-fstat.patch](../patches/gvisor-fstat.patch) | Adapt `IsSocketFD` for the pinned gVisor module |
 | sing-box checkout | [sing-box-http-obfs-handshake.patch](../patches/sing-box-http-obfs-handshake.patch) and [sing-box-http-obfs-first-flight.patch](../patches/sing-box-http-obfs-first-flight.patch) | HTTP-obfs handshake and first-flight behavior |
 | sing-box checkout | [sing-box-benchmark-probe.patch](../patches/sing-box-benchmark-probe.patch) | Local protocol probe support |
 | sing-box checkout | [sing-box-paws-management.patch](../patches/sing-box-paws-management.patch) | Managed runtime, providers, DNS and observation integration |
 | Both bridges | [vendor/mihomo-bridge](../vendor/mihomo-bridge/) and [vendor/sing-box-bridge](../vendor/sing-box-bridge/) | Paws entry points, platform integration and telemetry |
 
 Mihomo rebuilds `target/mihomo-ohos-build` on each invocation. It stages the
-bridge and `github.com/metacubex/gvisor@v0.0.0-20260922041103-e2cbcd6e7400`,
-then patches that copy with `patch -p1 -F 0`. It leaves the shared Go module
-cache unchanged. The Go build uses `-tags=with_gvisor -buildmode=c-shared`.
+bridge and resolves the locked gVisor dependency without a local source override. The Go build uses `-tags=with_gvisor -buildmode=c-shared`.
 Rust loads its C ABI directly; the old Mihomo N-API wrapper is not built or
 packaged by this path.
 
@@ -198,8 +126,7 @@ sing-box archives its pinned source into an owned build stage, applies the
 declared patches and copies the bridge into staged `cmd/libtinypaws`, then builds
 with `-buildmode=c-shared` and
 `with_gvisor,with_quic,with_dhcp,with_utls,with_clash_api`.
-Both scripts supply the SDK compiler; Mihomo also passes the OHOS target and
-sysroot explicitly. Source inventories are compared before publishing either
+Both scripts use go-patch's wrappers to select the matching SDK target and sysroot. Source inventories are compared before publishing either
 library; neither script patches the selected source checkout or module cache.
 
 | Output under `entry/libs/arm64-v8a/` | Role |
@@ -292,7 +219,7 @@ GOTOOLCHAIN=go1.26.5 sh scripts/test-sing-box-traffic.sh
 ```
 
 That override may download a host toolchain. It is only for host tests;
-engine compilation continues to use patched OHOS Go 1.24.7. The broader
+engine compilation continues to use the pinned go-patch release. The broader
 repository checks are available through `scripts/verify.sh`.
 Compilation and package checks do not replace device verification: after
 installing a signed HAP, test both engines with active upload/download traffic,
@@ -302,12 +229,9 @@ idle periods, disconnect and reconnect, and inspect the speed chart.
 
 | Symptom | Check / recovery |
 | --- | --- |
-| `exec format error` when running the distribution's `bin/go` | Use its source with `prepare-go-ohos.sh` to build a compiler for the host machine. |
-| Bootstrap Go is missing or too old | Set `GOROOT_BOOTSTRAP` to a host installation root with Go >= 1.22.6; verify its `bin/go version`. |
-| `Compiler cache belongs to a different source` | Select a new `GO_OHOS_HOST_ROOT` and prepare from the original distribution; retain the old cache until the new compiler is verified. |
+| `exec format error` when running `bin/go` | Use `prepare-go-ohos.sh` to resolve the archive for the current host. |
 | `unsupported GOOS/GOARCH pair openharmony/arm64` or unwanted toolchain download | Verify `GO_OHOS_ROOT/bin/go tool dist list`; build through the scripts, which use that compiler with `GOTOOLCHAIN=local`. |
 | Source revision mismatch or patch rejects | Check the pinned commit and local diff. Use a fresh dedicated checkout if the existing one contains unrelated changes; do not force the patch onto another revision. |
 | Clang, sysroot or `libc++_shared.so` unavailable | Check `OHOS_NDK_HOME` against the installed native SDK and use the same DevEco installation for packaging. |
 | Module download fails | Check network/proxy access for the selected `GOPATH`; keep the compiler pinned while resolving dependency access. |
-| Package contains an old Mihomo library | Set the explicit `MIHOMO_*_SRC` paths from step 4 so an old sibling FlClash checkout cannot override the local build. |
 | Missing `TinyPawsSingTraffic`, or old `updateSingBoxVpnTraffic` declarations | Rebuild sing-box and run `package-hap.sh` to rebuild Rust and refresh ArkTS declarations together. |
