@@ -13,7 +13,6 @@ inputs = [root / name for name in [
     'scripts/prepare-go-ohos.sh', 'scripts/ohos-env.sh',
     'scripts/go_toolchain.py', 'scripts/go-ohos-toolchain.json',
     'patches/mihomo-openharmony.patch',
-    'patches/mihomo-ohos-tun-fd-ownership.patch',
     'patches/mihomo-paws-management.patch',
 ]]
 for directory in ['vendor/mihomo-bridge', 'vendor/paws-engine-observation']:

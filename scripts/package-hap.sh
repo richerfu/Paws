@@ -143,7 +143,7 @@ if [ ! -f "$MIHOMO_CORE_SRC" ]; then
   mihomo_stale=1
 elif [ "$MIHOMO_CORE_SRC" = "$MIHOMO_CORE_DST" ]; then
   # Rebuild repository-owned outputs after any bridge/toolchain patch changes.
-  for mihomo_input in "$ROOT_DIR/scripts/build-mihomo-ohos.sh" "$ROOT_DIR/scripts/mihomo-source-inventory.py" "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$ROOT_DIR/patches/mihomo-openharmony.patch" "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch" "$ROOT_DIR/patches/mihomo-paws-management.patch" "$ROOT_DIR/scripts/go_toolchain.py" "$ROOT_DIR/scripts/go-ohos-toolchain.json"; do
+  for mihomo_input in "$ROOT_DIR/scripts/build-mihomo-ohos.sh" "$ROOT_DIR/scripts/mihomo-source-inventory.py" "$ROOT_DIR/scripts/prepare-go-ohos.sh" "$ROOT_DIR/patches/mihomo-openharmony.patch" "$ROOT_DIR/patches/mihomo-paws-management.patch" "$ROOT_DIR/scripts/go_toolchain.py" "$ROOT_DIR/scripts/go-ohos-toolchain.json"; do
     if [ "$mihomo_input" -nt "$MIHOMO_CORE_SRC" ]; then mihomo_stale=1; fi
   done
   if [ -n "$(find "$ROOT_DIR/vendor/mihomo-bridge" -type f -newer "$MIHOMO_CORE_SRC" -print -quit)" ]; then mihomo_stale=1; fi
@@ -163,7 +163,7 @@ if [ ! -f "$MIHOMO_TUN_SRC" ]; then
 fi
 if grep -Fq '_ = syscall.Close(fd)' "$MIHOMO_TUN_SRC"; then
   echo "Mihomo still closes the HarmonyOS-owned TUN fd: $MIHOMO_TUN_SRC" >&2
-  echo "Apply patches/mihomo-ohos-tun-fd-ownership.patch and rebuild libclash.so." >&2
+  echo "Fix the borrowed descriptor ownership in the bridge and rebuild libclash.so." >&2
   exit 1
 fi
 if [ "$MIHOMO_TUN_SRC" -nt "$MIHOMO_CORE_SRC" ]; then

@@ -201,6 +201,7 @@ fn configured_tunnel(config: SnifferConfig) -> Arc<dyn EngineTunnel> {
             override_destination: config.override_destination,
             tls_ports: config.tls_ports,
             http_ports: config.http_ports,
+            quic_ports: Vec::new(),
             force_domain: config.force_domain.into_iter().map(Into::into).collect(),
             skip_domain: config.skip_domain.into_iter().map(Into::into).collect(),
         },

@@ -119,40 +119,7 @@ pub(crate) fn compile(
                     })
                     .map(ToOwned::to_owned)
                     .collect(),
-                ProviderFormat::Mrs => {
-                    let reader = meow_rules::mrs_parser::UpstreamRuleSetReader::open_bounded(
-                        bytes,
-                        MAX_OUTPUT_BYTES as u64,
-                    )
-                    .map_err(|_| {
-                        error("invalid MRS binary payload or decompression budget exceeded")
-                    })?;
-                    let expected = match behavior {
-                        RuleBehavior::Domain => 0,
-                        RuleBehavior::IpCidr => 1,
-                        RuleBehavior::Classical => {
-                            return Err(error("MRS has no classical rule-set encoding"));
-                        }
-                    };
-                    if reader.behavior() != expected || reader.count() > 250_000 {
-                        return Err(error("MRS behavior or count exceeds bounds"));
-                    }
-                    let mut entries = Vec::new();
-                    if expected == 0 {
-                        reader
-                            .for_each_domain_bounded(
-                                |domain| entries.push(domain.to_owned()),
-                                250_000,
-                                MAX_OUTPUT_BYTES / 2,
-                            )
-                            .map_err(|_| error("MRS domain output exceeds bounds or is invalid"))?;
-                    } else {
-                        reader
-                            .for_each_net_bounded(|net| entries.push(net.to_string()), 250_000)
-                            .map_err(|_| error("MRS CIDR output exceeds bounds or is invalid"))?;
-                    }
-                    entries
-                }
+                ProviderFormat::Mrs => decode_mrs(bytes, behavior)?,
             };
             let rules = entries
                 .iter()
@@ -177,6 +144,60 @@ pub(crate) fn compile(
             Ok(json!({"rules":rules,"ruleCount":entries.len()}))
         }
     }
+}
+
+// Validate the application byte budget before handing the same immutable
+// payload to the upstream reader. Its public API has a larger general cap.
+fn decode_mrs(bytes: &[u8], behavior: RuleBehavior) -> Result<Vec<String>, EngineError> {
+    use std::io::Read;
+    let decoder = zstd::stream::read::Decoder::new(bytes)
+        .map_err(|_| error("invalid MRS compressed payload"))?;
+    let written = std::io::copy(
+        &mut decoder.take(MAX_OUTPUT_BYTES as u64 + 1),
+        &mut std::io::sink(),
+    )
+    .map_err(|_| error("invalid MRS compressed payload"))?;
+    if written > MAX_OUTPUT_BYTES as u64 {
+        return Err(error("MRS decompression budget exceeded"));
+    }
+    let reader = meow_rules::mrs_parser::UpstreamRuleSetReader::open(bytes)
+        .map_err(|_| error("invalid MRS binary payload"))?;
+    let expected = match behavior {
+        RuleBehavior::Domain => 0,
+        RuleBehavior::IpCidr => 1,
+        RuleBehavior::Classical => return Err(error("MRS has no classical rule-set encoding")),
+    };
+    if reader.behavior() != expected || reader.count() > 250_000 {
+        return Err(error("MRS behavior or count exceeds bounds"));
+    }
+    let mut entries = Vec::new();
+    let mut total_bytes = 0usize;
+    let mut exceeded = false;
+    let mut collect = |value: &str| {
+        total_bytes = total_bytes.saturating_add(value.len());
+        if entries.len() >= 250_000 || total_bytes > MAX_OUTPUT_BYTES / 2 {
+            exceeded = true;
+        }
+        if !exceeded {
+            entries.push(value.to_owned());
+        }
+    };
+    if expected == 0 {
+        let skipped = reader
+            .for_each_domain(&mut collect)
+            .map_err(|_| error("MRS domain output is invalid"))?;
+        if skipped != 0 {
+            return Err(error("MRS domains contain invalid UTF-8"));
+        }
+    } else {
+        reader
+            .for_each_net(|net| collect(&net.to_string()))
+            .map_err(|_| error("MRS CIDR output is invalid"))?;
+    }
+    if exceeded {
+        return Err(error("MRS output exceeds byte or entry budget"));
+    }
+    Ok(entries)
 }
 
 #[cfg(test)]

@@ -28,6 +28,7 @@ import (
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing-box/route/rule"
 	M "github.com/sagernet/sing/common/metadata"
+	"github.com/sagernet/sing/common/observable"
 	"github.com/sagernet/sing/service"
 )
 
@@ -200,7 +201,6 @@ func (p *pawsSingRuntime) bind(ctx context.Context, registry *O.Registry) contex
 	p.registry = registry
 	O.Register[pawsGroupOptions](registry, "paws-group", newPawsManagedGroup(p))
 	service.MustRegister[adapter.RuntimeManagement](ctx, p)
-	service.MustRegister[adapter.RuntimeDNSObserver](ctx, p)
 	return ctx
 }
 func (p *pawsSingRuntime) initialize(instance *box.Box) error {
@@ -215,7 +215,22 @@ func (p *pawsSingRuntime) initialize(instance *box.Box) error {
 	if server := service.FromContext[adapter.ClashServer](p.ctx); server != nil {
 		if source, ok := server.(interface{ TrafficManager() *trafficontrol.Manager }); ok {
 			p.traffic = source.TrafficManager()
-			p.traffic.SetLifecycleObserver(p.connectionEvent)
+			events := observable.NewSubscriber[trafficontrol.ConnectionEvent](1024)
+			p.traffic.SetEventHook(events)
+			subscription, done := events.Subscription()
+			p.launch(func() {
+				defer events.Close()
+				for {
+					select {
+					case event := <-subscription:
+						p.connectionEvent(event)
+					case <-done:
+						return
+					case <-p.ctx.Done():
+						return
+					}
+				}
+			})
 		}
 	}
 	if err := p.initializeGeo(); err != nil {
@@ -427,9 +442,6 @@ func (p *pawsSingRuntime) ConnectionState(connection net.Conn, state http.ConnSt
 		p.controllerConnections[connection] = struct{}{}
 	}
 }
-func (p *pawsSingRuntime) DNSQuery(name string, recordType uint16, cached bool) {
-	p.observations.dnsQuery(strings.TrimSuffix(name, "."), D.TypeToString[recordType], cached)
-}
 func (p *pawsSingRuntime) WrapHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		credential := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -576,7 +588,8 @@ func (p *pawsSingRuntime) handle(w http.ResponseWriter, r *http.Request) {
 			err = errors.New("native mode service unavailable")
 		}
 	case path == "dns":
-		value = p.observations.dnsSnapshot()
+		http.Error(w, "upstream DNS query observation is unavailable", http.StatusNotImplemented)
+		return
 	case path == "dns-config":
 		value = p.metadata.DNSConfig
 	case path == "applied-services":
@@ -958,7 +971,7 @@ func (p *pawsSingRuntime) connectionSummary() (pawsConnectionSummary, error) {
 	count := 0
 	upload, download := p.traffic.Total()
 	recent := make([]*trafficontrol.TrackerMetadata, 0, 5)
-	p.traffic.RangeConnections(func(info *trafficontrol.TrackerMetadata) {
+	for _, info := range p.traffic.Connections() {
 		count++
 		at := sort.Search(len(recent), func(index int) bool { return recent[index].CreatedAt.Before(info.CreatedAt) })
 		if at < 5 {
@@ -969,7 +982,7 @@ func (p *pawsSingRuntime) connectionSummary() (pawsConnectionSummary, error) {
 				recent = recent[:5]
 			}
 		}
-	})
+	}
 	result := pawsConnectionSummary{Count: count, Upload: uint64(max(0, upload)), Download: uint64(max(0, download)), Recent: []pawsConnection{}}
 	for _, info := range recent {
 		result.Recent = append(result.Recent, pawsSingConnection(info))

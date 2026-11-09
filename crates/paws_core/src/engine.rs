@@ -821,7 +821,11 @@ impl CoreHandle {
         )
         .await
         .map_err(|_| PawsError::Core("engine revision observation timed out".into()))
-        .and_then(|result| result.map_err(engine_error));
+        .and_then(|result| match result {
+            Ok(revisions) => Ok(Some(revisions)),
+            Err(paws_engine::EngineError::ObservationUnavailable { .. }) => Ok(None),
+            Err(error) => Err(engine_error(error)),
+        });
         let mut failure = None;
         let recording = {
             if !self.engine_observation_lane.current(ticket) {
@@ -845,7 +849,7 @@ impl CoreHandle {
                 };
             }
             match revisions {
-                Ok(revisions) => {
+                Ok(Some(revisions)) => {
                     let changed = state
                         .engine_observation
                         .revisions
@@ -859,6 +863,13 @@ impl CoreHandle {
                     if changed {
                         self.publish_resource_change_locked(&mut state);
                     }
+                }
+                Ok(None) => {
+                    // An upstream backend without revision hooks is queried
+                    // on the ordinary UI refresh cadence. No synthetic engine
+                    // revision or hidden roster scan is required.
+                    state.engine_observation.revisions = None;
+                    self.publish_resource_change_locked(&mut state);
                 }
                 Err(error) => failure = Some(error),
             }
@@ -1740,6 +1751,85 @@ mod tests {
             server.abort();
             let _ = fs::remove_dir_all(root);
         }
+    }
+
+    #[tokio::test]
+    async fn upstream_queries_work_without_revision_hooks_or_connection_events() {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let endpoint = paws_engine::EngineControllerEndpoint {
+            address: listener.local_addr().unwrap(),
+            secret: None,
+        };
+        let active = Arc::new(AtomicBool::new(true));
+        let sample_active = active.clone();
+        let router = axum::Router::new()
+            .route("/connections", axum::routing::get(move || {
+                let active = sample_active.clone();
+                async move {
+                    let rows = if active.load(Ordering::Acquire) {
+                        vec![serde_json::json!({
+                            "id":"sampled-flow", "metadata":{"host":"public.example", "network":"tcp"},
+                            "chains":["DIRECT"], "start":"2026-11-09T00:00:00Z", "rule":"MATCH"
+                        })]
+                    } else { Vec::new() };
+                    axum::Json(serde_json::json!({"connections":rows}))
+                }
+            }))
+            .fallback(|| async { axum::http::StatusCode::NOT_IMPLEMENTED });
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let (core, root) = managed_core(endpoint.clone()).await;
+        *core.active_engine.lock().unwrap() = Some(ActiveEngineSession {
+            attempt: "attempt-a".into(),
+            session: Arc::new(SampleSession {
+                endpoint,
+                traffic_fails: false,
+                stall_revision: false,
+                traffic_sequence: None,
+            }),
+        });
+        let revision = core.lock_state().unwrap().resource_revision;
+        core.poll_engine_observations().await.unwrap();
+        assert!(core.lock_state().unwrap().resource_revision > revision);
+        assert!(core
+            .lock_state()
+            .unwrap()
+            .engine_observation
+            .revisions
+            .is_none());
+        let requests = RuntimeDomainKey {
+            domain: RuntimeDomain::Requests,
+            group_key: None,
+        };
+        let frame = core
+            .refresh_and_query_runtime_domain(requests.clone())
+            .await
+            .unwrap();
+        assert!(serde_json::to_value(frame)
+            .unwrap()
+            .to_string()
+            .contains("\"sampled\":true"));
+        {
+            let state = core.lock_state().unwrap();
+            assert_eq!(state.connections.len(), 1);
+            assert_eq!(state.request_history.len(), 1);
+            assert!(state.engine_observation.sampled_history);
+        }
+        active.store(false, Ordering::Release);
+        core.refresh_and_query_runtime_domain(requests)
+            .await
+            .unwrap();
+        {
+            let state = core.lock_state().unwrap();
+            assert!(state.connections.is_empty());
+            assert_eq!(state.request_history.len(), 1);
+            assert!(!state.request_history[0].active);
+        }
+        core.clear_runtime_history(false).await.unwrap();
+        assert!(core.lock_state().unwrap().request_history.is_empty());
+        server.abort();
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]

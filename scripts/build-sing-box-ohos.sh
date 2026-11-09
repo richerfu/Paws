@@ -36,7 +36,7 @@ python3 "$ROOT_DIR/scripts/sing-box-source-inventory.py" "$ROOT_DIR" > "$BUILD_S
 git -C "$SING_BOX_ROOT" archive "$PIN" -o "$BUILD_STAGE/source.tar"
 tar -xf "$BUILD_STAGE/source.tar" -C "$BUILD_STAGE/source"
 rm "$BUILD_STAGE/source.tar"
-for declared_patch in sing-box-http-obfs-handshake.patch sing-box-http-obfs-first-flight.patch sing-box-benchmark-probe.patch sing-box-paws-management.patch; do
+for declared_patch in sing-box-http-obfs-handshake.patch sing-box-http-obfs-first-flight.patch sing-box-paws-management.patch; do
   patch --batch --dry-run -p1 -F 0 -d "$BUILD_STAGE/source" -i "$ROOT_DIR/patches/$declared_patch"
   patch --batch -p1 -F 0 -d "$BUILD_STAGE/source" -i "$ROOT_DIR/patches/$declared_patch"
 done

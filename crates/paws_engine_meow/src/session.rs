@@ -294,6 +294,6 @@ impl EngineSession for MeowEngineSession {
         })
     }
     fn version(&self) -> Result<String, EngineError> {
-        Ok("0.22.0".into())
+        Ok(crate::VERSION.into())
     }
 }

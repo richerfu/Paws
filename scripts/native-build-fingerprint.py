@@ -16,8 +16,7 @@ files = [Path(p) for p in sys.argv[2:]] + [root / 'Cargo.lock', root / 'Cargo.to
     root / 'entry/src/main/resources/rawfile/paws.bundle.js', root / 'target/ohos/nsh-source-inputs.json']
 for key in ['PAWS_RAW_ENGINE_DIAGNOSTIC', 'PAWS_BENCH_PEER_IP', 'PAWS_BENCH_NODE_FINGERPRINT', 'PAWS_SOCKET_WIRE_CAPTURE']:
     digest.update(key.encode() + b'\0' + os.environ.get(key, '').encode() + b'\0')
-for directory in ['vendor/meow-listener', 'vendor/meow-common', 'vendor/meow-proxy', 'vendor/meow-anytls', 'vendor/meow-dns',
-                  'vendor/meow-config', 'vendor/meow-rules', 'vendor/meow-tunnel', 'vendor/meow-transport', 'vendor/mihomo-bridge', 'vendor/sing-box-bridge', 'vendor/paws-engine-observation',
+for directory in ['vendor/mihomo-bridge', 'vendor/sing-box-bridge', 'vendor/paws-engine-observation',
                   'patches', 'ui/nsh/src']:
     files.extend(p for p in (root / directory).rglob('*') if p.is_file()
                  and p.suffix in ['.rs', '.go', '.c', '.cpp', '.h', '.toml', '.patch', '.ts', '.tsx'])

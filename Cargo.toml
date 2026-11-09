@@ -1,6 +1,5 @@
 [workspace]
-members = ["crates/*", "vendor/meow-tunnel", "vendor/meow-common"]
-exclude = ["vendor/meow-proxy", "vendor/meow-anytls", "vendor/meow-listener", "vendor/meow-transport", "vendor/meow-config", "vendor/meow-rules", "vendor/meow-dns"]
+members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
@@ -33,16 +32,16 @@ ohos-ashmem-binding = "0.1.0"
 ohos-hilog-binding = "0.2.3"
 ohos-resource-manager-binding = "0.3.4"
 
-meow-api = "=0.22.0"
-meow-common = "=0.22.0"
-meow-config = { version = "=0.22.0", features = ["anytls", "boring-tls"] }
-meow-dns = "=0.22.0"
-meow-listener = "=0.22.0"
-meow-proxy = { version = "=0.22.0", features = ["anytls"] }
-meow-trie = "=0.22.0"
-meow-rules = "=0.22.0"
-meow-transport = { version = "=0.22.0", default-features = false, features = ["simple-obfs"] }
-meow-tunnel = "=0.22.0"
+meow-api = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e" }
+meow-common = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e" }
+meow-config = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e", features = ["anytls", "boring-tls"] }
+meow-dns = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e", default-features = false }
+meow-listener = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e" }
+meow-proxy = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e", features = ["default", "anytls"], default-features = false }
+meow-trie = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e" }
+meow-rules = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e" }
+meow-transport = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e", default-features = false, features = ["simple-obfs"] }
+meow-tunnel = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e" }
 
 anyhow = "1"
 async-trait = "0.1"
@@ -53,9 +52,9 @@ futures = "0.3"
 getrandom = "0.2"
 ipnet = "2"
 libc = "0.2"
-maxminddb = "0.27"
+maxminddb = { version = "0.27", features = ["mmap"] }
 regex = "1"
-lwip = { package = "meow-lwip", version = "=0.22.0" }
+lwip = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e", package = "meow-lwip" }
 netstack-smoltcp = "0.2"
 napi-build-ohos = "1.2.0"
 napi-derive-ohos = "1.2.0"
@@ -63,22 +62,49 @@ napi-ohos = { version = "1.2.0", features = ["napi8", "tokio_rt"] }
 once_cell = "1"
 parking_lot = "0.12"
 percent-encoding = "2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "cookies", "gzip", "brotli", "json", "multipart", "stream"] }
-serde = { version = "1", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "http2",
+  "cookies",
+  "gzip",
+  "brotli",
+  "json",
+  "multipart",
+  "stream",
+] }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 sha2 = "0.10"
 serde_yaml = "0.9"
-shadowsocks = { version = "1.24", default-features = false, features = ["aead-cipher"] }
+shadowsocks = { version = "1.24", default-features = false, features = ["aead-cipher", "aead-cipher-2022", "stream-cipher"] }
 subtle = "2"
 thiserror = "2"
-time = { version = "0.3", features = ["formatting"] }
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "net", "fs", "io-util"] }
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
+tokio = { version = "1", features = [
+  "full",
+  "macros",
+  "rt",
+  "rt-multi-thread",
+  "sync",
+  "time",
+  "net",
+  "fs",
+  "io-util",
+] }
+tokio-tungstenite = { version = "0.29", default-features = false, features = [
+  "connect",
+  "handshake",
+] }
 toml = "0.9"
 tracing = "0.1"
 tracing-appender = "0.2.5"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
+
+# Native provider decoding and local wire regressions.
+hickory-proto = "0.26"
+zstd = "0.14"
+tempfile = "3"
 
 [workspace.lints.clippy]
 dbg_macro = "warn"
@@ -87,14 +113,3 @@ unimplemented = "warn"
 
 [workspace.lints.rust]
 unused_must_use = "warn"
-
-[patch.crates-io]
-meow-dns = { path = "vendor/meow-dns" }
-meow-rules = { path = "vendor/meow-rules" }
-meow-config = { path = "vendor/meow-config" }
-meow-listener = { path = "vendor/meow-listener" }
-meow-common = { path = "vendor/meow-common" }
-meow-anytls = { path = "vendor/meow-anytls" }
-meow-proxy = { path = "vendor/meow-proxy" }
-meow-tunnel = { path = "vendor/meow-tunnel" }
-meow-transport = { path = "vendor/meow-transport" }

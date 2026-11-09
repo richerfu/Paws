@@ -211,21 +211,18 @@ impl MeowConfigLoader<'_> {
             })
             .transpose()?;
         let raw_yaml = self.raw_yaml.to_owned();
-        let options = meow_config::ConfigLoadOptions {
-            provider_network: match self.purpose {
-                MeowLoadPurpose::Preview | MeowLoadPurpose::Capability => {
-                    meow_config::ProviderNetworkPolicy::CacheOnly
-                }
-                MeowLoadPurpose::Runtime => meow_config::ProviderNetworkPolicy::Live,
-            },
-        };
         let strict = self.purpose != MeowLoadPurpose::Preview;
         let read_only = self.purpose != MeowLoadPurpose::Runtime;
         let runtime = tokio::runtime::Handle::current();
         // YAML decoding/proxy construction must stay off the UI worker.
         tokio::task::spawn_blocking(move || {
             runtime.block_on(async {
-                let mut raw = meow_config::parse_raw_yaml(&raw_yaml)?;
+                let mut raw = meow_config::parse_raw_yaml(&raw_yaml)
+                    .map_err(|error| PawsError::Core(error.to_string()))?;
+                if let Some(dns) = raw.dns.as_mut() {
+                    // Preserve Paws policy isolation through the upstream API.
+                    dns.nameserver_policy_exclusive.get_or_insert(true);
+                }
                 if read_only {
                     // Cache-only network authority does not prevent a proxy
                     // constructor from launching an executable. Keep that
@@ -238,7 +235,16 @@ impl MeowConfigLoader<'_> {
                 let cache = path
                     .as_deref()
                     .map(meow_config::resource_cache_dir_for_config_path);
-                meow_config::build_config_with_options(raw, cache.as_deref(), options).await
+                if read_only {
+                    crate::meow_preview::MeowPreviewLoader::new(raw, cache.as_deref())
+                        .build()
+                        .await
+                        .map_err(|error| PawsError::Core(error.to_string()))
+                } else {
+                    meow_config::build_config(raw, cache.as_deref())
+                        .await
+                        .map_err(|error| PawsError::Core(error.to_string()))
+                }
             })
         })
         .await

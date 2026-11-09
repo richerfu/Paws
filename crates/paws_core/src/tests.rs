@@ -34,13 +34,38 @@ impl paws_engine::EngineSession for RunningTestEngine {
 static TEST_LOG_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 const PLATFORM_RECOVERY_OWNER_CHILD_MARKER: &str = "PAWS_PLATFORM_RECOVERY_OWNER_CHILD_MARKER";
 
+/// Match the application bootstrap's installed public assets. Runtime loader
+/// tests must not depend on downloading the default databases from the web.
+pub(super) fn install_bundled_test_geodata(root: &Path) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../entry/src/main/resources/rawfile/geodata");
+    for name in ["Country.mmdb", "GeoLite2-ASN.mmdb", "geosite.dat"] {
+        let destination = root.join("geodata").join(name);
+        if destination.exists() {
+            continue;
+        }
+        // The public assets are immutable; runtime updates atomically replace
+        // their destination. Sharing these inodes keeps isolated tests small.
+        if fs::hard_link(source.join(name), &destination).is_err() {
+            fs::copy(source.join(name), &destination).unwrap();
+        }
+    }
+}
+
 /// These routing/protocol fixtures do not exercise GeoSite. Declare that
 /// explicitly instead of relying on non-strict runtime loading to skip the
 /// application's default policy when no database was installed by the test.
 pub(super) fn without_test_geodata(core: &CoreHandle, profile: &str) {
     let mut state = core.lock_state().unwrap();
     let source = state.profiles.raw_yaml(profile).unwrap();
-    let mut yaml: serde_yaml::Value = serde_yaml::from_str(&source).unwrap();
+    state
+        .profiles
+        .update_profile_content(profile, &without_geodata_policy(&source))
+        .unwrap();
+}
+
+fn without_geodata_policy(source: &str) -> String {
+    let mut yaml: serde_yaml::Value = serde_yaml::from_str(source).unwrap();
     let root = yaml.as_mapping_mut().unwrap();
     let key = serde_yaml::Value::String("dns".into());
     let dns = root
@@ -52,10 +77,7 @@ pub(super) fn without_test_geodata(core: &CoreHandle, profile: &str) {
         serde_yaml::Value::String("nameserver-policy".into()),
         serde_yaml::Value::Mapping(Default::default()),
     );
-    state
-        .profiles
-        .update_profile_content(profile, &serde_yaml::to_string(&yaml).unwrap())
-        .unwrap();
+    serde_yaml::to_string(&yaml).unwrap()
 }
 
 #[test]
@@ -899,12 +921,13 @@ async fn checked_profile_import_is_one_revision_and_rejects_stale_reuse() {
     ));
     let core = CoreHandle::new_with_profile_root(&root);
     let initial = core.config_projection().unwrap();
+    let source = without_geodata_policy(&paws_profile::default_runtime_yaml());
 
     let receipt = core
         .import_profile_from_content_and_activate_checked(
             "Imported",
             "test",
-            &paws_profile::default_runtime_yaml(),
+            &source,
             None,
             initial.revisions.config_revision,
         )
@@ -975,6 +998,7 @@ async fn profile_update_reports_both_primary_and_secondary_rollback_failures() {
         )
         .await
         .unwrap();
+    without_test_geodata(&core, &profile_id);
     core.reload_config(&profile_id).await.unwrap();
     let expected_revision = core.config_projection().unwrap().revisions.config_revision;
     core.fail_next_config_reload.store(true, Ordering::Release);
@@ -3831,7 +3855,7 @@ async fn vpn_prepare_reuses_an_already_loaded_tunnel() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cold_vpn_config_failure_is_recorded_before_controller_start_and_can_retry() {
     let root = std::env::temp_dir().join(format!("paws-startup-error-test-{}", now_unix_nanos()));
-    let good = paws_profile::default_runtime_yaml();
+    let good = without_geodata_policy(&paws_profile::default_runtime_yaml());
     let core = CoreHandle::new_with_profile_root(&root);
     let id = core
         .import_profile_from_content("Startup", "test", &good, None)
@@ -3871,7 +3895,7 @@ rules: [MATCH,Broken]
         .find(|log| log.level == "error" && log.message.contains("config reload failed"))
         .expect("startup error in app log");
     assert!(entry.message.contains(&id));
-    assert!(entry.message.contains("meow 0.22.0"));
+    assert!(entry.message.contains(&format!("meow {MEOW_RS_VERSION}")));
     assert!(entry.message.contains(&error));
     let status = core.log_recording_status().unwrap();
     assert!(status.archives.iter().any(|archive| core
@@ -3920,7 +3944,7 @@ async fn config_validation_failure_is_recorded_before_a_vpn_transaction() {
             entry.level == "error" && entry.message.contains("configuration load rejected")
         })
         .expect("validation error must reach application logs before any VPN transaction");
-    assert!(entry.message.contains("meow 0.22.0"));
+    assert!(entry.message.contains(&format!("meow {MEOW_RS_VERSION}")));
     assert!(entry.message.contains("invalid uuid"));
     assert!(!entry.message.contains("private-invalid-uuid"));
     assert!(core

@@ -51,12 +51,14 @@ See `docs/native-engines-build.md` for source revisions and build commands.
 Redistribution of a HAP containing `libsingbox.so` must include the matching
 sing-box source, bridge source, and GPL-3.0-or-later license notice.
 
-The Rust native engine uses [meow-rs 0.22.0](https://github.com/meow-rs/meow-rs)
-under the MIT license. The local copies of `meow-common`,
-`meow-proxy`, `meow-anytls`, `meow-listener`, `meow-tunnel`, and `meow-transport`
-in `vendor/` retain their original source and license notices. Paws changes
-add OpenHarmony socket protection, network-bound bootstrap DNS, HTTP-obfs
-compatibility and bounded diagnostics; see `vendor/TINYPAWS-PATCHES.md`.
+The Rust native engine uses unmodified [meow-rs at
+`809b7a7320598b017093e234ab2fe71e9454b47e`](https://github.com/meow-rs/meow-rs/commit/809b7a7320598b017093e234ab2fe71e9454b47e)
+under the MIT license, reported as `0.29.0+809b7a7`. This revision includes
+fixes newer than the v0.29.0 release tag. All former meow-rs vendor copies and
+Cargo patches have been removed; see [vendor/README.md](vendor/README.md).
+The GeoSite category decoder in `paws_engine_go` is adapted from meow-rs.
+Its original MIT notice is included at
+[LICENSES/meow-rs/LICENSE](LICENSES/meow-rs/LICENSE).
 
 The sing-box bridge additionally includes `physical_network.go`, `obfs_plugin.go`,
 `trace.go`, and `httpobfs/conn.go`; the required upstream handshake change is

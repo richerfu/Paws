@@ -119,6 +119,7 @@ enum RuntimeDomainData {
     Requests {
         #[serde(rename = "requestHistory")]
         request_history: Vec<RequestSummary>,
+        sampled: bool,
     },
     Logs {
         logs: Vec<LogEntry>,
@@ -367,6 +368,7 @@ impl CoreHandle {
             },
             RuntimeDomain::Requests => RuntimeDomainData::Requests {
                 request_history: state.request_history.iter().cloned().rev().collect(),
+                sampled: state.engine_observation.sampled_history,
             },
             RuntimeDomain::Logs => RuntimeDomainData::Logs {
                 logs: projected_logs(state),

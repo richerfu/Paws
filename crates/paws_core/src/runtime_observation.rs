@@ -92,6 +92,7 @@ pub(super) struct EngineObservationState {
     pub providers: Vec<ProviderAvailability>,
     pub log_cursor: u64,
     pub connection_cursor: u64,
+    pub sampled_history: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -176,6 +177,7 @@ enum Sample {
     ),
     Connections(Vec<ConnectionSummary>),
     Requests(EngineConnectionPage, Vec<ConnectionSummary>),
+    SampledRequests(Vec<ConnectionSummary>),
     Logs(EngineLogPage),
     Dns(
         Result<EngineDnsConfig, PawsError>,
@@ -298,9 +300,11 @@ impl CoreHandle {
         let watermark = if logs {
             bounded(management.runtime_logs(0, 1)).await?.high_watermark
         } else {
-            bounded(management.connection_events(0, 1))
-                .await?
-                .high_watermark
+            match bounded(management.connection_events(0, 1)).await {
+                Ok(page) => page.high_watermark,
+                Err(PawsError::EngineObservationUnavailable { .. }) => 0,
+                Err(error) => return Err(error),
+            }
         };
         let mut state = self.lock_state()?;
         self.sync_platform_vpn_state_locked(&mut state);
@@ -681,10 +685,15 @@ impl CoreHandle {
             RuntimeDomain::Connections => {
                 Sample::Connections(scope.read(management.connections()).await?)
             }
-            RuntimeDomain::Requests => Sample::Requests(
-                drain_connections(&scope, management.as_ref(), connection_cursor).await?,
-                scope.read(management.connections()).await?,
-            ),
+            RuntimeDomain::Requests => {
+                match drain_connections(&scope, management.as_ref(), connection_cursor).await {
+                    Ok(page) => Sample::Requests(page, scope.read(management.connections()).await?),
+                    Err(PawsError::EngineObservationUnavailable { .. }) => {
+                        Sample::SampledRequests(scope.read(management.connections()).await?)
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
             RuntimeDomain::Logs => {
                 Sample::Logs(drain_logs(&scope, management.as_ref(), log_cursor).await?)
             }
@@ -836,6 +845,11 @@ impl CoreHandle {
             Sample::Connections(connections) => {
                 record_request_history(&mut state, &connections);
                 state.connections = connections;
+            }
+            Sample::SampledRequests(active) => {
+                state.engine_observation.sampled_history = true;
+                record_request_history(&mut state, &active);
+                state.connections = active;
             }
             Sample::Requests(page, active) => {
                 if page.next_cursor < state.engine_observation.connection_cursor {

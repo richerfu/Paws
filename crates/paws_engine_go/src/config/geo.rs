@@ -1,7 +1,7 @@
 //! Pure resource compilation. The bridge reads explicit prepared paths; this
 //! module consumes bounded bytes and returns native headless matcher options.
+use super::geosite::{DatError, GeoSitePatternKind, GeositeCategory};
 use maxminddb::{PathElement, Reader};
-use meow_rules::geosite_dat::{visit_dat_category, DatError, GeoSitePatternKind};
 use paws_engine::EngineError;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -83,28 +83,29 @@ fn site_rules(category: &str, source: &[u8]) -> Result<Vec<Value>, EngineError> 
     for bucket in buckets {
         let mut fields: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         let mut entries = 0usize;
-        visit_dat_category(source, &bucket, |kind, value| {
-            entries += 1;
-            estimated_bytes = estimated_bytes.saturating_add(json_string_bytes(value) + 3);
-            if entries > MAX_ENTRIES || estimated_bytes > super::provider::MAX_OUTPUT_BYTES {
-                return ControlFlow::Break(());
-            }
-            let key = match kind {
-                GeoSitePatternKind::Keyword => "domain_keyword",
-                GeoSitePatternKind::Regex => "domain_regex",
-                GeoSitePatternKind::Suffix => "domain_suffix",
-                GeoSitePatternKind::Full => "domain",
-            };
-            fields.entry(key).or_default().push(value.to_owned());
-            ControlFlow::Continue(())
-        })
-        .map_err(|error_kind| match error_kind {
-            DatError::VisitorStopped => {
-                error("geosite category exceeds entry or output byte budget")
-            }
-            DatError::MissingCategory => error("requested geosite category is missing"),
-            _ => error("invalid geosite binary resource"),
-        })?;
+        GeositeCategory::new(source, &bucket)
+            .visit(|kind, value| {
+                entries += 1;
+                estimated_bytes = estimated_bytes.saturating_add(json_string_bytes(value) + 3);
+                if entries > MAX_ENTRIES || estimated_bytes > super::provider::MAX_OUTPUT_BYTES {
+                    return ControlFlow::Break(());
+                }
+                let key = match kind {
+                    GeoSitePatternKind::Keyword => "domain_keyword",
+                    GeoSitePatternKind::Regex => "domain_regex",
+                    GeoSitePatternKind::Suffix => "domain_suffix",
+                    GeoSitePatternKind::Full => "domain",
+                };
+                fields.entry(key).or_default().push(value.to_owned());
+                ControlFlow::Continue(())
+            })
+            .map_err(|error_kind| match error_kind {
+                DatError::VisitorStopped => {
+                    error("geosite category exceeds entry or output byte budget")
+                }
+                DatError::MissingCategory => error("requested geosite category is missing"),
+                _ => error("invalid geosite binary resource"),
+            })?;
         if entries > MAX_ENTRIES {
             return Err(error("geosite category exceeds entry budget"));
         }

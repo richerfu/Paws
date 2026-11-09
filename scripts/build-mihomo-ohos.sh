@@ -54,10 +54,6 @@ for observation_source in journal.go wire.go public.go; do
   cp "$ROOT_DIR/vendor/paws-engine-observation/$observation_source" "$BUILD_STAGE/core/paws_$observation_source"
 done
 
-if grep -Fq '_ = syscall.Close(fd)' "$BUILD_STAGE/core/tun/tun.go"; then
-  patch --dry-run -p1 -F 0 -d "$BUILD_STAGE" -i "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch"
-  patch -p1 -F 0 -d "$BUILD_STAGE" -i "$ROOT_DIR/patches/mihomo-ohos-tun-fd-ownership.patch"
-fi
 
 cd "$BUILD_STAGE/core"
 env GOTOOLCHAIN=local GOROOT="$GO_COMPILER_ROOT" GOOS=openharmony GOARCH=arm64 CGO_ENABLED=1 \

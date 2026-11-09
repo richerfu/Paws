@@ -535,7 +535,9 @@ impl PublicState {
 
     async fn snapshot(&self, request: &PublicRequest) -> Result<Value, StatusCode> {
         match request.operation {
-            Operation::Version => Ok(json!({"meta": false, "version": "meow-0.22.0"})),
+            Operation::Version => {
+                Ok(json!({"meta": false, "version": format!("meow-{}", crate::VERSION)}))
+            }
             Operation::Config => Ok(json!({
                 "mode": self.management.tunnel.mode().to_string(),
                 "mixed-port": if self.network.ports.mixed_enabled { self.network.ports.mixed_port } else { 0 },

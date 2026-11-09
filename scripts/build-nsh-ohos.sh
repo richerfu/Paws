@@ -52,7 +52,10 @@ test -s "$NSH_OUTPUT/arm64-v8a/libnsh_platform_ohos.so" || { echo 'NSH native bu
 test -s "$NSH_OUTPUT/index.d.ts" || { echo 'NSH native build produced no declarations' >&2; exit 1; }
 if [ -z "${NSH_BIN:-}" ]; then
   cargo build --manifest-path "$NSH_ROOT/Cargo.toml" --target-dir "$NSH_TARGET" -p nsh-cli --locked
-  cp "$NSH_TARGET/debug/nsh" "$NSH_OUTPUT/nsh"
+  # Replacing an executable's mapped inode can invalidate macOS code-signing
+  # caches. Publish a new inode, as for the native shared libraries.
+  cp "$NSH_TARGET/debug/nsh" "$NSH_OUTPUT/nsh.tmp"
+  mv -f "$NSH_OUTPUT/nsh.tmp" "$NSH_OUTPUT/nsh"
   NSH_BIN="$NSH_OUTPUT/nsh"
 fi
 python3 - "$ROOT_DIR/scripts" "$NSH_INPUTS" "$NSH_OUTPUT/source-inputs.json" "$NSH_BIN" "$NSH_CLI_SOURCE" <<'PY_ATTEST'

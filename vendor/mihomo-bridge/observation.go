@@ -20,12 +20,10 @@ import (
 	"github.com/metacubex/mihomo/common/yaml"
 	"github.com/metacubex/mihomo/config"
 	C "github.com/metacubex/mihomo/constant"
-	"github.com/metacubex/mihomo/dns"
 	"github.com/metacubex/mihomo/hub/route"
 	"github.com/metacubex/mihomo/listener"
 	"github.com/metacubex/mihomo/tunnel"
 	"github.com/metacubex/mihomo/tunnel/statistic"
-	D "github.com/miekg/dns"
 )
 
 // Each authenticated router retains this owner. Looking up a process-global
@@ -75,49 +73,8 @@ func preparePawsMihomo(cfg *config.Config, raw []byte) (*pawsMihomoRuntime, erro
 	pawsMihomoRegistry.Unlock()
 	pawsMihomoCurrent.Store(owner)
 	pawsMihomoLastLogs.Store(owner.observations.logs)
-	owner.bindRuntimeObservers()
 	return owner, nil
 }
-func (p *pawsMihomoRuntime) bindProxy(proxy C.Proxy) {
-	if bound, ok := proxy.(interface{ SetRuntimeObserver(func()) }); ok {
-		bound.SetRuntimeObserver(func() {
-			if p.observations.active.Load() {
-				p.observations.groups.Add(1)
-				p.observations.providers.Add(1)
-			}
-		})
-	}
-}
-func (p *pawsMihomoRuntime) bindRuntimeObservers() {
-	for _, proxy := range p.config.Proxies {
-		p.bindProxy(proxy)
-	}
-	for _, provider := range p.config.Providers {
-		if bound, ok := provider.(interface{ SetRuntimeObserver(func([]C.Proxy)) }); ok {
-			bound.SetRuntimeObserver(func(proxies []C.Proxy) {
-				if !p.observations.active.Load() {
-					return
-				}
-				for _, proxy := range proxies {
-					p.bindProxy(proxy)
-				}
-				p.observations.providers.Add(1)
-				p.observations.groups.Add(1)
-			})
-		}
-	}
-	for _, provider := range p.config.RuleProviders {
-		if bound, ok := provider.(interface{ SetUpdateObserver(func()) }); ok {
-			bound.SetUpdateObserver(func() {
-				if p.observations.active.Load() {
-					p.observations.providers.Add(1)
-					p.observations.rules.Add(1)
-				}
-			})
-		}
-	}
-}
-
 func (p *pawsMihomoRuntime) close() error {
 	if p == nil {
 		return nil
@@ -175,17 +132,6 @@ func init() {
 			})
 		}
 	})
-	dns.DefaultQueryObserver = func() dns.QueryNotify {
-		owner := pawsMihomoCurrent.Load()
-		return func(record dns.QueryRecord) {
-			if owner != nil {
-				owner.observations.dnsQuery(strings.TrimSuffix(record.Question.Name, "."), D.Type(record.Question.Qtype).String(), record.Cached)
-			}
-			if dns.DefaultQueryNotify != nil {
-				dns.DefaultQueryNotify(record)
-			}
-		}
-	}
 	route.RegisterWithSecret(func(router chi.Router, secret string) {
 		pawsMihomoRegistry.RLock()
 		owner := pawsMihomoRegistry.sessions[secret]
@@ -198,20 +144,7 @@ func init() {
 			owner.handle(w, r)
 		})
 	})
-	statistic.DefaultConnectionObserver = func(connection statistic.Tracker) func(statistic.Tracker) {
-		owner := pawsMihomoCurrent.Load()
-		if owner == nil {
-			return nil
-		}
-		if err := owner.observations.connection(pawsMihomoConnection(connection.Info()), false); err != nil {
-			logError("connection journal: %v", err)
-		}
-		return func(closed statistic.Tracker) {
-			if err := owner.observations.connection(pawsMihomoConnection(closed.Info()), true); err != nil {
-				logError("connection journal: %v", err)
-			}
-		}
-	}
+
 }
 func (p *pawsMihomoRuntime) handle(w H.ResponseWriter, r *H.Request) {
 	if !p.observations.active.Load() {
@@ -232,8 +165,9 @@ func (p *pawsMihomoRuntime) handle(w H.ResponseWriter, r *H.Request) {
 	var value any
 	var err error
 	switch {
-	case name == "revisions":
-		value = p.observations.revisions()
+	case name == "revisions" || name == "connection-events" || name == "dns":
+		H.Error(w, "upstream backend has no runtime observer", H.StatusNotImplemented)
+		return
 	case name == "groups":
 		value = p.groups()
 	case strings.HasPrefix(name, "proxy-groups/"):
@@ -253,8 +187,6 @@ func (p *pawsMihomoRuntime) handle(w H.ResponseWriter, r *H.Request) {
 		value = rules
 	case name == "mode":
 		value = tunnel.Mode().String()
-	case name == "dns":
-		value = p.observations.dnsSnapshot()
 	case name == "dns-config":
 		value = p.dnsConfig()
 	case name == "applied-services":
@@ -265,7 +197,7 @@ func (p *pawsMihomoRuntime) handle(w H.ResponseWriter, r *H.Request) {
 		value = pawsMemory{Scope: "engineHeap", InUse: memory.HeapInuse}
 	case name == "connection-summary":
 		value = p.connectionSummary()
-	case name == "connection-events" || name == "logs":
+	case name == "logs":
 		after, parseErr := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
 		limit, limitErr := strconv.ParseUint(r.URL.Query().Get("limit"), 10, 16)
 		if parseErr != nil || limitErr != nil {

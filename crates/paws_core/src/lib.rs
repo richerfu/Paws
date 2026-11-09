@@ -41,6 +41,7 @@ mod app_http;
 mod controller;
 mod diagnostics;
 mod engine;
+mod meow_preview;
 use engine::engine_error;
 pub use engine::register_engine_process_resolver;
 pub use paws_engine::ProcessResolver;
@@ -53,13 +54,7 @@ pub mod network_binding;
 mod process_evidence;
 mod service_watch;
 pub use service_watch::ServiceWatchPolicy;
-#[cfg(test)]
-#[path = "../../../vendor/meow-listener/src/benchmark_probe.rs"]
-mod benchmark_probe_regression_tests;
 mod exit_location;
-#[cfg(test)]
-#[path = "../../../vendor/meow-proxy/src/first_flight.rs"]
-mod first_flight_regression_tests;
 pub mod http_client;
 mod log_recording;
 mod logging;
@@ -76,9 +71,6 @@ mod test_projection;
 pub use runtime_domain::{RuntimeDomain, RuntimeDomainKey, RuntimeDomainProjection};
 #[cfg(test)]
 use test_projection::RuntimeSnapshot;
-#[cfg(test)]
-#[path = "../../../vendor/meow-proxy/src/socket_trace.rs"]
-mod socket_trace_regression_tests;
 mod subscription;
 mod telemetry;
 mod webdav;
@@ -122,7 +114,7 @@ const EXIT_LOCATION_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 const RUNTIME_UI_CACHE_FILE: &str = "runtime/ui-cache.json";
 const RUNTIME_UI_CACHE_VERSION: u32 = 1;
 const APP_VERSION: &str = "1.3.0";
-const MEOW_RS_VERSION: &str = "0.22.0";
+const MEOW_RS_VERSION: &str = paws_engine_meow::VERSION;
 // Versions of the source revisions pinned by scripts/build-*-ohos.sh.
 const MIHOMO_VERSION: &str = "1.10.0";
 const SING_BOX_VERSION: &str = "1.13.21";
@@ -944,6 +936,7 @@ impl CoreHandle {
         };
         let (runtime_revision_tx, _) = tokio::sync::watch::channel(initial_revisions);
         let profiles = ProfileStore::open(root).expect("test profile store");
+        tests::install_bundled_test_geodata(profiles.root());
         let log_root = profiles.root().to_path_buf();
         log_recording::set_recording_enabled(&log_root, true)
             .expect("enable log recording for core tests");
@@ -3326,10 +3319,7 @@ impl CoreHandle {
                 matched.rule_payload.to_owned(),
                 matched.adapter_name.to_owned(),
             )),
-            LazyMatchOutcome::NeedsEnrichment {
-                needs_ip,
-                needs_process: _,
-            } => {
+            LazyMatchOutcome::NeedsEnrichment { needs_ip, .. } => {
                 if needs_ip {
                     resolution_attempted = true;
                     metadata.dst_ip = tunnel.resolver().resolve_ip_real(&metadata.host).await;
@@ -8133,6 +8123,7 @@ impl CoreHandle {
             proxy_provider_refresh,
             listeners,
             external_ui: None,
+            ui_storage: Default::default(),
             traffic_feed: meow_api::routes::TrafficFeed::default(),
             // Paws answers TUN DNS in process; it owns no standalone socket.
             dns_server: Arc::new(parking_lot::RwLock::new(None)),

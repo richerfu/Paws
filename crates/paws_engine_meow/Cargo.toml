@@ -32,3 +32,4 @@ subtle.workspace = true
 [dev-dependencies]
 reqwest.workspace = true
 tokio-tungstenite.workspace = true
+hickory-proto.workspace = true

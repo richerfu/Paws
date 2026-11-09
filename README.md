@@ -1,13 +1,10 @@
 # Paws
 
-Paws is a native HarmonyOS proxy client with an NSH OpenHarmony interface and three
+Paws is a native OpenHarmony proxy client with an NSH OpenHarmony interface and three
 integrated proxy engines: Mihomo, sing-box, and
-[meow-rs 0.22.0](https://github.com/meow-rs/meow-rs).
-Profiles that use plugin transports are resolved through the route-validated
-mihomo engine even when a candidate engine is selected, so a compatibility
-preference cannot produce a false Connected state.
+[meow-rs](https://github.com/meow-rs/meow-rs).
 Its product flow follows
-[Meow for Android](https://github.com/meow-rs/meow-android), while the HarmonyOS UI,
+[Meow for Android](https://github.com/meow-rs/meow-android), while the OpenHarmony UI,
 VPN lifecycle, native bridge, packaging, and device validation are implemented
 in this repository.
 
@@ -30,7 +27,7 @@ Backend adapters
 Network
 ```
 
-HarmonyOS abilities own platform permissions, TUN creation and protected network
+OpenHarmony abilities own platform permissions, TUN creation and protected network
 selection. Every engine follows the same prepare/start/stop/reload bridge.
 See [the architecture contract](docs/nsh-three-layer-architecture.md) for
 ownership, configuration revisions, disposal and acceptance requirements.

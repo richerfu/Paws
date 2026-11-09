@@ -102,40 +102,9 @@ fn connection_summary(connection: &meow_tunnel::statistics::ConnectionInfo) -> C
     }
 }
 
-pub(crate) struct ConnectionRecorder {
-    pub events: paws_engine::EngineConnectionBuffer,
-    active: std::sync::atomic::AtomicBool,
-}
-impl ConnectionRecorder {
-    pub fn new() -> Self {
-        Self {
-            events: paws_engine::EngineConnectionBuffer::new(VpnEngine::Meow, 1024, 1024 * 1024),
-            active: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-    fn record(&self, connection: &meow_tunnel::statistics::ConnectionInfo, closed: bool) {
-        if self.active.load(std::sync::atomic::Ordering::Acquire) {
-            if let Err(error) = self.events.record(connection_summary(connection), closed) {
-                tracing::error!(%error, "meow connection journal failed");
-            }
-        }
-    }
-}
-impl meow_tunnel::statistics::ConnectionObserver for ConnectionRecorder {
-    fn opened(&self, connection: &meow_tunnel::statistics::ConnectionInfo) {
-        self.record(connection, false);
-    }
-    fn closed(&self, connection: &meow_tunnel::statistics::ConnectionInfo) {
-        self.record(connection, true);
-    }
-}
-
 pub(crate) struct MeowManagement {
     pub retiring: std::sync::atomic::AtomicBool,
     pub cancellation: tokio::sync::Notify,
-    pub clock: std::sync::Arc<crate::observation::ObservationClock>,
-    pub provider_clock: std::sync::Arc<crate::observation::ProviderClock>,
-    pub connections: std::sync::Arc<ConnectionRecorder>,
     pub logs: std::sync::Arc<paws_engine::EngineLogBuffer>,
     pub lease: tokio::sync::RwLock<bool>,
     pub tunnel: Tunnel,
@@ -160,13 +129,9 @@ impl MeowManagement {
             std::sync::Arc<meow_config::rule_provider::RuleProvider>,
         >,
     ) -> Self {
-        let clock = std::sync::Arc::new(crate::observation::ObservationClock::new());
         Self {
-            provider_clock: std::sync::Arc::new(crate::observation::ProviderClock(clock.clone())),
-            clock,
             retiring: Default::default(),
             cancellation: Default::default(),
-            connections: std::sync::Arc::new(ConnectionRecorder::new()),
             logs: std::sync::Arc::new(paws_engine::EngineLogBuffer::new(
                 VpnEngine::Meow,
                 512,
@@ -183,39 +148,7 @@ impl MeowManagement {
         if self.retiring.load(std::sync::atomic::Ordering::Acquire) {
             return Err(EngineError::NotRunning);
         }
-        for provider in self.proxy_providers.values() {
-            let observer: std::sync::Arc<dyn meow_config::observation::ProviderObserver> =
-                self.provider_clock.clone();
-            provider
-                .observe_runtime(std::sync::Arc::downgrade(&observer))
-                .await
-                .map_err(|error| self.error("bind provider", error))?;
-        }
-        for provider in self.rule_providers.values() {
-            let observer: std::sync::Arc<dyn meow_config::observation::ProviderObserver> =
-                self.provider_clock.clone();
-            provider
-                .observe_runtime(std::sync::Arc::downgrade(&observer))
-                .await
-                .map_err(|error| self.error("bind rule provider", error))?;
-        }
-        self.clock.activate();
-        let route = self.tunnel.route_snapshot();
-        for proxy in route.proxies.values() {
-            self.clock.bind(proxy);
-        }
-        for provider in self.proxy_providers.values() {
-            for proxy in provider.proxies() {
-                self.clock.bind(&proxy);
-            }
-        }
         *self.lease.write().await = true;
-        self.connections
-            .active
-            .store(true, std::sync::atomic::Ordering::Release);
-        self.tunnel
-            .statistics()
-            .set_connection_observer(Some(self.connections.clone()));
         Ok(())
     }
     pub async fn revoke(&self) {
@@ -225,23 +158,7 @@ impl MeowManagement {
         self.retiring
             .store(true, std::sync::atomic::Ordering::Release);
         self.cancellation.notify_waiters();
-        for provider in self.proxy_providers.values() {
-            provider.cancel_runtime();
-        }
-        for provider in self.rule_providers.values() {
-            provider.cancel_runtime();
-        }
-        for provider in self.proxy_providers.values() {
-            provider.retire_runtime().await;
-        }
-        for provider in self.rule_providers.values() {
-            provider.retire_runtime().await;
-        }
         *self.lease.write().await = false;
-        self.clock.revoke();
-        self.connections
-            .active
-            .store(false, std::sync::atomic::Ordering::Release);
     }
     async fn enter(&self) -> Result<tokio::sync::RwLockReadGuard<'_, bool>, EngineError> {
         if self.retiring.load(std::sync::atomic::Ordering::Acquire) {
@@ -282,14 +199,7 @@ impl MeowManagement {
 impl EngineManagement for MeowManagement {
     async fn runtime_revisions(&self) -> Result<paws_engine::EngineRuntimeRevisions, EngineError> {
         let _lease = self.enter().await?;
-        let mut revisions = self.clock.snapshot()?;
-        revisions.connections = self.connections.events.revision()?;
-        revisions.logs = self.logs.revision()?;
-        revisions.dns = self
-            .vpn
-            .traffic_counters()
-            .map_or(0, |counters| counters.dns_packets);
-        Ok(revisions)
+        Err(self.observation_unavailable(paws_engine::EngineObservationDomain::Groups))
     }
     async fn proxy_group(&self, name: &str) -> Result<paws_model::ProxyGroup, EngineError> {
         let _lease = self.enter().await?;
@@ -302,11 +212,11 @@ impl EngineManagement for MeowManagement {
     }
     async fn connection_events(
         &self,
-        after: u64,
-        limit: u16,
+        _: u64,
+        _: u16,
     ) -> Result<paws_engine::EngineConnectionPage, EngineError> {
         let _lease = self.enter().await?;
-        self.connections.events.page(after, limit)
+        Err(self.observation_unavailable(paws_engine::EngineObservationDomain::ConnectionEvents))
     }
     async fn connection_summary(
         &self,
@@ -318,7 +228,7 @@ impl EngineManagement for MeowManagement {
             upload_bytes: 0,
             download_bytes: 0,
             recent: Vec::new(),
-            latest_rule_node: self.connections.events.latest_rule_node()?,
+            latest_rule_node: None,
         };
         for connection in &self.tunnel.statistics().connections {
             let info = connection.value();
@@ -336,6 +246,10 @@ impl EngineManagement for MeowManagement {
             }
         }
         summary.recent = recent.iter().map(connection_summary).collect();
+        summary.latest_rule_node = summary
+            .recent
+            .first()
+            .map(|connection| connection.proxy.clone());
         Ok(summary)
     }
     async fn memory(&self) -> Result<paws_engine::EngineMemory, EngineError> {
@@ -642,23 +556,26 @@ impl EngineManagement for MeowManagement {
     }
     async fn refresh_provider(&self, kind: &str, name: &str) -> Result<(), EngineError> {
         let _lease = self.enter().await?;
-        match kind {
-            "proxy" | "proxies" => self
-                .proxy_providers
-                .get(name)
-                .ok_or_else(|| self.error("provider refresh", "provider not found"))?
-                .refresh()
-                .await
-                .map_err(|error| self.error("provider refresh", error)),
-            "rule" | "rules" => self
-                .rule_providers
-                .get(name)
-                .ok_or_else(|| self.error("provider refresh", "provider not found"))?
-                .refresh()
-                .await
-                .map_err(|error| self.error("provider refresh", error)),
-            _ => Err(self.error("provider refresh", "unknown provider kind")),
-        }
+        self.interruptible(async {
+            match kind {
+                "proxy" | "proxies" => self
+                    .proxy_providers
+                    .get(name)
+                    .ok_or_else(|| self.error("provider refresh", "provider not found"))?
+                    .refresh()
+                    .await
+                    .map_err(|error| self.error("provider refresh", error)),
+                "rule" | "rules" => self
+                    .rule_providers
+                    .get(name)
+                    .ok_or_else(|| self.error("provider refresh", "provider not found"))?
+                    .refresh()
+                    .await
+                    .map_err(|error| self.error("provider refresh", error)),
+                _ => Err(self.error("provider refresh", "unknown provider kind")),
+            }
+        })
+        .await
     }
     async fn provider_health(
         &self,

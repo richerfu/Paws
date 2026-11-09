@@ -1,6 +1,7 @@
 //! meow-rs translation at the packet-stack boundary.
+/// Version and source revision of the packaged meow-rs engine.
+pub const VERSION: &str = "0.29.0+809b7a7";
 mod memory;
-mod observation;
 #[cfg(test)]
 mod tests;
 use async_trait::async_trait;

@@ -3,6 +3,8 @@ mod dns;
 #[cfg(any(target_env = "ohos", test))]
 pub(crate) mod geo;
 #[cfg(any(target_env = "ohos", test))]
+mod geosite;
+#[cfg(any(target_env = "ohos", test))]
 pub(crate) mod provider;
 mod provider_definition;
 mod rule;

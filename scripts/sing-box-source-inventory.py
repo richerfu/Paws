@@ -14,7 +14,6 @@ inputs = [root / name for name in [
     'scripts/go_toolchain.py', 'scripts/go-ohos-toolchain.json',
     'patches/sing-box-http-obfs-handshake.patch',
     'patches/sing-box-http-obfs-first-flight.patch',
-    'patches/sing-box-benchmark-probe.patch',
     'patches/sing-box-paws-management.patch',
 ]]
 for directory in ['vendor/sing-box-bridge', 'vendor/paws-engine-observation']:

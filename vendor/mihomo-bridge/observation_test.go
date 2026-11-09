@@ -21,7 +21,7 @@ import (
 )
 
 // This runs the actual pinned native config, private controller, group Set /
-// ForceSet handlers, scoped credentials and owner revisions. No fake controller
+// ForceSet handlers and scoped credentials. No fake controller
 // returns a canned projection; no platform TUN or user profile is involved.
 func TestPawsNativeControllerSelectionAndRetirementHaveTheSameOwner(t *testing.T) {
 	C.SetHomeDir(t.TempDir())
@@ -58,7 +58,7 @@ func TestPawsNativeControllerSelectionAndRetirementHaveTheSameOwner(t *testing.T
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		status, _, err := request("GET", "/paws/observations/revisions", nil)
+		status, _, err := request("GET", "/paws/observations/groups", nil)
 		if err == nil && status == 200 {
 			break
 		}
@@ -67,25 +67,14 @@ func TestPawsNativeControllerSelectionAndRetirementHaveTheSameOwner(t *testing.T
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	revisions := func() uint64 {
-		status, data, err := request("GET", "/paws/observations/revisions", nil)
-		if err != nil || status != 200 {
-			t.Fatal(status, err)
+	for _, path := range []string{"/paws/observations/revisions", "/paws/observations/connection-events", "/paws/observations/dns"} {
+		if status, _, err := request("GET", path, nil); err != nil || status != http.StatusNotImplemented {
+			t.Fatal(path, status, err)
 		}
-		var value pawsRevisions
-		if err := json.Unmarshal(data, &value); err != nil {
-			t.Fatal(err)
-		}
-		return value.Groups
 	}
-	before := revisions()
 	status, _, err := request("PUT", "/proxies/Auto", []byte(`{"name":"B"}`))
 	if err != nil || status != 204 {
 		t.Fatal(status, err)
-	}
-	after := revisions()
-	if after <= before {
-		t.Fatal("native selection did not advance the actual owner revision", before, after)
 	}
 	status, data, err := request("GET", "/paws/observations/proxy-groups/Auto", nil)
 	if err != nil || status != 200 {
@@ -102,23 +91,13 @@ func TestPawsNativeControllerSelectionAndRetirementHaveTheSameOwner(t *testing.T
 	if err != nil || status != 204 {
 		t.Fatal(status, err)
 	}
-	if got := revisions(); got != after {
-		t.Fatal("same native pin produced a false revision", after, got)
-	}
 	status, _, err = request("DELETE", "/proxies/Auto", nil)
 	if err != nil || status != 204 {
 		t.Fatal(status, err)
 	}
-	unfixed := revisions()
-	if unfixed <= after {
-		t.Fatal("actual unfix did not advance group revision")
-	}
 	status, _, err = request("PUT", "/proxies/Auto", []byte(`{"name":"not-present"}`))
 	if err != nil || status != 400 {
 		t.Fatal(status, err)
-	}
-	if got := revisions(); got != unfixed {
-		t.Fatal("failed native mutation advanced revision")
 	}
 	if err := owner.close(); err != nil {
 		t.Fatal(err)
@@ -126,9 +105,6 @@ func TestPawsNativeControllerSelectionAndRetirementHaveTheSameOwner(t *testing.T
 	status, _, err = request("PUT", "/proxies/Auto", []byte(`{"name":"A"}`))
 	if err == nil && status < 400 {
 		t.Fatal("retired owner accepted native mutation", strconv.Itoa(status))
-	}
-	if owner.observations.revisions().Groups != unfixed {
-		t.Fatal("retired owner mutated its group revision")
 	}
 }
 

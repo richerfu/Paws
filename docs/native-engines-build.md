@@ -1,5 +1,9 @@
 # Building Mihomo and sing-box with go-patch
 
+The Go libraries build independently. The current unmodified Meow revision
+has an OHOS export-condition error that blocks the complete application HAP;
+see the [current upstream build gate](../vendor/README.md).
+
 This guide builds the currently pinned Mihomo and sing-box libraries, then
 packages them with Rust/Meow and the native UI in an `arm64-v8a` HAP. Run the
 steps in the same shell from the Paws repository root. The bridges and patches
@@ -110,11 +114,9 @@ scripts apply them automatically. NSH, Go and gVisor use their upstream sources.
 | Owner | Patch / source | Purpose |
 | --- | --- | --- |
 | Mihomo checkout | [mihomo-openharmony.patch](../patches/mihomo-openharmony.patch) | OHOS build and DNS adaptation |
-| Mihomo checkout | [mihomo-paws-management.patch](../patches/mihomo-paws-management.patch) | Session-owned management, observations and public-service integration |
-| Mihomo staged bridge | [mihomo-ohos-tun-fd-ownership.patch](../patches/mihomo-ohos-tun-fd-ownership.patch) | Preserve HarmonyOS ownership of the TUN descriptor; applied if the copied bridge still closes it |
+| Mihomo checkout | [mihomo-paws-management.patch](../patches/mihomo-paws-management.patch) | Session-owned management, provider retirement and public-service integration |
 | sing-box checkout | [sing-box-http-obfs-handshake.patch](../patches/sing-box-http-obfs-handshake.patch) and [sing-box-http-obfs-first-flight.patch](../patches/sing-box-http-obfs-first-flight.patch) | HTTP-obfs handshake and first-flight behavior |
-| sing-box checkout | [sing-box-benchmark-probe.patch](../patches/sing-box-benchmark-probe.patch) | Local protocol probe support |
-| sing-box checkout | [sing-box-paws-management.patch](../patches/sing-box-paws-management.patch) | Managed runtime, providers, DNS and observation integration |
+| sing-box checkout | [sing-box-paws-management.patch](../patches/sing-box-paws-management.patch) | Managed runtime, providers, DNS policy and authenticated management integration |
 | Both bridges | [vendor/mihomo-bridge](../vendor/mihomo-bridge/) and [vendor/sing-box-bridge](../vendor/sing-box-bridge/) | Paws entry points, platform integration and telemetry |
 
 Mihomo rebuilds `target/mihomo-ohos-build` on each invocation. It stages the

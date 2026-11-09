@@ -80,17 +80,6 @@ type pawsLogRecord struct {
 	Message   string `json:"message"`
 	Timestamp string `json:"timestamp"`
 }
-type pawsDnsQuery struct {
-	Name       string `json:"name"`
-	RecordType string `json:"recordType"`
-	Count      uint64 `json:"count"`
-}
-type pawsDnsStatistics struct {
-	Handled uint64         `json:"handledPackets"`
-	Hits    uint64         `json:"cacheHits"`
-	Misses  uint64         `json:"cacheMisses"`
-	Recent  []pawsDnsQuery `json:"recentQueries"`
-}
 type pawsDnsConfig struct {
 	Model     string              `json:"model"`
 	Listen    *string             `json:"listen"`
@@ -124,54 +113,19 @@ type pawsObservations struct {
 	groups         atomic.Uint64
 	providers      atomic.Uint64
 	rules          atomic.Uint64
-	dnsRevision    atomic.Uint64
 	logs           *pawsJournal
 	connections    *pawsJournal
 	mu             sync.Mutex
-	dns            pawsDnsStatistics
 	latestRuleNode *string
 }
 
 func newPawsObservations() *pawsObservations {
-	p := &pawsObservations{logs: newPawsJournal(512, 256*1024), connections: newPawsJournal(1024, 1024*1024), dns: pawsDnsStatistics{Recent: []pawsDnsQuery{}}}
+	p := &pawsObservations{logs: newPawsJournal(512, 256*1024), connections: newPawsJournal(1024, 1024*1024)}
 	p.active.Store(true)
 	return p
 }
 func (p *pawsObservations) revisions() pawsRevisions {
-	return pawsRevisions{Groups: p.groups.Load(), Providers: p.providers.Load(), Rules: p.rules.Load(), Dns: p.dnsRevision.Load(), Connections: p.connections.revision(), Logs: p.logs.revision()}
-}
-func (p *pawsObservations) dnsQuery(name, recordType string, cached bool) {
-	if !p.active.Load() {
-		return
-	}
-	p.mu.Lock()
-	p.dns.Handled++
-	if cached {
-		p.dns.Hits++
-	} else {
-		p.dns.Misses++
-	}
-	query := pawsDnsQuery{Name: name, RecordType: recordType, Count: 1}
-	for i, old := range p.dns.Recent {
-		if old.Name == name && old.RecordType == recordType {
-			query.Count += old.Count
-			p.dns.Recent = append(p.dns.Recent[:i], p.dns.Recent[i+1:]...)
-			break
-		}
-	}
-	p.dns.Recent = append([]pawsDnsQuery{query}, p.dns.Recent...)
-	if len(p.dns.Recent) > 16 {
-		p.dns.Recent = p.dns.Recent[:16]
-	}
-	p.mu.Unlock()
-	p.dnsRevision.Add(1)
-}
-func (p *pawsObservations) dnsSnapshot() pawsDnsStatistics {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	snapshot := p.dns
-	snapshot.Recent = append([]pawsDnsQuery{}, snapshot.Recent...)
-	return snapshot
+	return pawsRevisions{Groups: p.groups.Load(), Providers: p.providers.Load(), Rules: p.rules.Load(), Connections: p.connections.revision(), Logs: p.logs.revision()}
 }
 func (p *pawsObservations) connection(connection pawsConnection, closed bool) error {
 	if !p.active.Load() {
