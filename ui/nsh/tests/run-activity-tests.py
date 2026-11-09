@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
-from nsh_runner import run_nsh
+from nsh_runner import run_nsh, navigation_steps
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -37,12 +37,14 @@ def children(tree, node):
 
 def validate(tree, mode, width, height, language):
     about.visual.validate(tree, 'history' if mode == 'request' and language == 'zh' else 'home', width, height)
+    if width >= 840:
+        return validate_table(tree, mode, language)
     results = []
     for row_id, host, active in ROWS:
         suffix = f'{mode}-{row_id}'
         row, header, title, actions, meta = [tree.one(f'activity-{part}-{suffix}') for part in ('row', 'header', 'title', 'actions', 'meta')]
-        assert row['frame'][3] >= 112, 'Activity content clipped vertically'
-        target = 32 if width >= 840 else 44
+        assert row['frame'][3] >= 100, 'Activity content clipped vertically'
+        target = 36
         assert header['frame'][3] >= target
         assert title['frame'][3] >= target
         near(actions['frame'][2], target * 2 + 8, 'Action group width')
@@ -72,7 +74,7 @@ def validate(tree, mode, width, height, language):
         assert 'expanded: Some(false)' in close.get('props', ''), 'Object menu starts open'
         near(close['frame'][2], target, 'Menu target width')
         near(close['frame'][3], target, 'Menu target height')
-        near(tree.rect(plus)[2] + 8, tree.rect(close)[0], 'Add/menu gap')
+        near(tree.rect(plus)[2] + 6, tree.rect(close)[0], 'Add/menu gap')
         about.no_overlap(tree.rect(plus), tree.rect(close), 'Main-row icon buttons')
         metadata = next(n for n in children(tree, meta) if n['kind'] == 'Text')
         assert metadata['frame'][2] > 0 and metadata['frame'][3] <= 20, 'Metadata text squeezed/wrapped'
@@ -113,6 +115,33 @@ def validate(tree, mode, width, height, language):
     return {'rows': results, 'headerActionRect': tree.rect(control), 'measuredRows': len(results)}
 
 
+def validate_table(tree, mode, language):
+    header = tree.one('activity-table-header')
+    results = []
+    for row_id, host, active in ROWS:
+        row, destination, actions = [tree.one(f'activity-table-{part}-{row_id}') for part in ('row', 'destination', 'actions')]
+        assert row['frame'][3] >= 72
+        assert destination['accessibilityLabel'] == host
+        assert destination['frame'][2] > 80
+        for node in (destination, actions):
+            about.contains(tree.rect(row), tree.rect(node), 'Desktop table cell')
+        about.no_overlap(tree.rect(destination), tree.rect(actions), 'Destination and actions')
+        row_children = children(tree, row)
+        header_children = children(tree, header)
+        assert len(row_children) == len(header_children) == 6, 'Desktop table lost a column'
+        for cell, heading in zip(row_children, header_children):
+            near(tree.rect(cell)[0], tree.rect(heading)[0], 'Desktop column alignment')
+        plus, menu = tree.one(f'rule-for-{row_id}'), tree.one(f'activity-menu-{row_id}')
+        near(plus['frame'][2], 32, 'Desktop action size')
+        near(menu['frame'][2], 32, 'Desktop menu size')
+        about.no_overlap(tree.rect(plus), tree.rect(menu), 'Desktop table actions')
+        results.append({'rowId': row_id, 'destinationRect': tree.rect(destination), 'actionsRect': tree.rect(actions)})
+    label = ('清空记录' if mode == 'request' else '关闭全部') if language == 'zh' else ('Clear history' if mode == 'request' else 'Close all')
+    controls = [n for n in tree.nodes.values() if tree.visible(n) and n.get('accessibilityLabel') == label and 'frame' in n]
+    assert len(controls) == 1, 'Desktop workspace clear action missing'
+    return {'rows': results, 'headerActionRect': tree.rect(controls[0]), 'measuredRows': len(results), 'desktopTable': True}
+
+
 def inputs():
     paths = [ROOT / ENTRY, Path(__file__).resolve(), ABOUT_READER, about.VISUAL_READER,
              *sorted((ROOT / 'ui/nsh/src').rglob('*.ts')), *sorted((ROOT / 'ui/nsh/src').rglob('*.tsx'))]
@@ -130,7 +159,7 @@ def main():
     for width, mode, language, theme in itertools.product((320, 390, 1280), ('request', 'connection'), ('zh', 'en'), ('light', 'dark')):
         height = 900 if width == 1280 else 844
         taps = (['activity-preview-language'] if language == 'en' else []) + (['activity-preview-theme'] if theme == 'dark' else [])
-        taps += ['activity-preview-hide', 'nav-tools', 'tool-requests' if mode == 'request' else 'tool-connections']
+        taps += ['activity-preview-hide', *navigation_steps('requests' if mode == 'request' else 'connections', width)]
         command = [str(args.nsh_bin.resolve()), 'trace', ENTRY, '--width', str(width), '--height', str(height), '--wait', '30']
         for tap in taps:
             command.extend(['--tap', 'id:' + tap])

@@ -3,11 +3,17 @@ import { expect, open, test } from "nsh/test";
 async function fixture(width = 390, height = 844) {
   const commands: string[] = [];
   const app = await open("./Preview.tsx", {
-    width, height, locale: "zh-CN",
+    width,
+    height,
+    locale: "zh-CN",
     safeArea: { top: 47, bottom: 34, left: 0, right: 0 },
-    host: { handlers: {
-      "paws.test.report": (report: { command: string }) => { commands.push(report.command); },
-    } },
+    host: {
+      handlers: {
+        "paws.test.report": (report: { command: string }) => {
+          commands.push(report.command);
+        },
+      },
+    },
   });
   await app.waitFor("id:vpn-toggle");
   return { app, commands };

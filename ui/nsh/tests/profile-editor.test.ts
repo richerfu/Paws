@@ -1,15 +1,29 @@
 import { expect, open, test, type App } from "nsh/test";
 
 async function fixture(width = 390, scheme: "light" | "dark" = "light") {
-  const reports: { command: string; content?: string; expectedRevision?: number; profileId?: string }[] = [];
+  const reports: {
+    command: string;
+    content?: string;
+    expectedRevision?: number;
+    profileId?: string;
+  }[] = [];
   const replies = new Map<number, { error?: string }>();
   const app = await open("./ProfileEditorPreview.tsx", {
-    width, height: 844, colorScheme: scheme, locale: "zh-CN",
-    host: { handlers: {
-      "paws.test.register": null,
-      "paws.test.done": (reply: { token: number; error?: string }) => { replies.set(reply.token, reply); },
-      "paws.test.report": (report: typeof reports[number]) => { reports.push(report); },
-    } },
+    width,
+    height: 844,
+    colorScheme: scheme,
+    locale: "zh-CN",
+    host: {
+      handlers: {
+        "paws.test.register": null,
+        "paws.test.done": (reply: { token: number; error?: string }) => {
+          replies.set(reply.token, reply);
+        },
+        "paws.test.report": (report: (typeof reports)[number]) => {
+          reports.push(report);
+        },
+      },
+    },
   });
   let token = 0;
   const action = async (name: string) => {
@@ -62,7 +76,7 @@ test("unsaved edits guard native Back and desktop navigation; cancel and undo re
   await app.back();
   expect(app.dialogs().at(-1)!.buttons).toEqual(["取消", "丢弃修改"]);
   expect(app.shows("id:profile-yaml-editor")).toBe(true);
-  await app.press("id:nav-tools");
+  await app.press("id:desktop-nav-settings");
   expect(app.dialogs().at(-1)!.buttons).toEqual(["取消", "丢弃修改"]);
   await app.press("text:x");
   await app.keyboard.press("mod+z");
@@ -125,8 +139,9 @@ test("a held save blocks leaving and a large YAML document keeps its exact sourc
   expect(app.enabled("id:validate-profile")).toBe(false);
   await action("release-save");
   await app.waitFor("id:add-profile");
-  expect(reports.filter((r) => r.command === "profiles.save")[0].content)
-    .toBe("proxies: []\nrules: []\n" + "# synthetic YAML 0123456789\n".repeat(4000));
+  expect(reports.filter((r) => r.command === "profiles.save")[0].content).toBe(
+    "proxies: []\nrules: []\n" + "# synthetic YAML 0123456789\n".repeat(4000),
+  );
 });
 
 test("Back leaves a pending read and a late result cannot reopen the disposed editor", async () => {

@@ -73,7 +73,7 @@ def verify_geometry(states, width):
         assert geometry == baseline, (index, geometry, baseline)
         engine, stack = geometry['vpn-engine'], geometry['vpn-stack']
         assert 0 < stack[1] - engine[1] - engine[3] <= 48, (index, engine, stack)
-        assert one(tree, 'engine-preview-status')['frame'][3] == (32 if width >= 840 else 44)
+        assert one(tree, 'engine-preview-status')['frame'][3] == (32 if width >= 840 else 36)
         for name in ('engine-preview-reasons', 'engine-preview-info-summary', 'page-data-issues'):
             assert not mounted(tree, name), (index, name)
         # Internal observation metadata remains in the actual store, while no

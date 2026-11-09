@@ -35,8 +35,14 @@ mount(() => {
     }
     assert(request.command === "settings.vpn", `Unexpected MTU command: ${request.command}`);
     assert(request.payload.profileId === "test-profile", "MTU write lost the profile owner");
-    assert(request.payload.expectedRevision === state.configRevision, "MTU write lost its revision");
-    assert((request.payload.options as VpnOptions).mtu === 2816, "MTU write did not contain numeric 2816");
+    assert(
+      request.payload.expectedRevision === state.configRevision,
+      "MTU write lost its revision",
+    );
+    assert(
+      (request.payload.options as VpnOptions).mtu === 2816,
+      "MTU write did not contain numeric 2816",
+    );
     received++;
     writes.push(request);
     console.log("PASS MTU: actual settings.vpn payload mtu=2816 profile/revision preserved");
@@ -53,17 +59,35 @@ mount(() => {
     if (phase === "no-write")
       assert(received === 0 && client.pending() === 0, "Input alone dispatched a settings write");
     if (phase === "write")
-      assert(received === 1 && writes.length === 1 && client.pending() === 1, "MTU write was not held/pending");
+      assert(
+        received === 1 && writes.length === 1 && client.pending() === 1,
+        "MTU write was not held/pending",
+      );
     if (phase === "barrier")
-      assert(writes.length === 0 && queries.length > 0 && client.pending() === 1, "MTU write escaped the config barrier");
+      assert(
+        writes.length === 0 && queries.length > 0 && client.pending() === 1,
+        "MTU write escaped the config barrier",
+      );
     if (phase === "saved")
-      assert(received === 1 && client.pending() === 0 && client.domains.fresh(["config"]) &&
-        state.vpnOptions.mtu === 2816, "MTU save did not finish with authoritative 2816");
+      assert(
+        received === 1 &&
+          client.pending() === 0 &&
+          client.domains.fresh(["config"]) &&
+          state.vpnOptions.mtu === 2816,
+        "MTU save did not finish with authoritative 2816",
+      );
     console.log(`PASS MTU: ${phase}`);
   };
   const port = (id: string, action: () => void) => {
-    const press = testControl(`mtu-${id}`, () => { action(); tick.set(tick() + 1); });
-    return <View testID={`mtu-${id}`} onPress={press}><Text>{id}</Text></View>;
+    const press = testControl(`mtu-${id}`, () => {
+      action();
+      tick.set(tick() + 1);
+    });
+    return (
+      <View testID={`mtu-${id}`} onPress={press}>
+        <Text>{id}</Text>
+      </View>
+    );
   };
   return (
     <View style={{ flex: 1 }}>
@@ -87,8 +111,12 @@ mount(() => {
           assert(writes.length === 1, "No MTU write to release");
           const request = writes.shift()!;
           holdConfig = true;
-          state = { ...state, revision: state.revision + 1, configRevision: state.configRevision + 1,
-            vpnOptions: request.payload.options as VpnOptions };
+          state = {
+            ...state,
+            revision: state.revision + 1,
+            configRevision: state.configRevision + 1,
+            vpnOptions: request.payload.options as VpnOptions,
+          };
           host.reply(request, true, ["config"]);
         })}
         {port("query-result", () => {

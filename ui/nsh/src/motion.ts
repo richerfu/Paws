@@ -17,7 +17,10 @@ export const motion = {
   disclosure: 180,
 } as const;
 
-export function follow(target: () => number, spring: { stiffness: number; damping: number } = motion.control): AnimatedValue {
+export function follow(
+  target: () => number,
+  spring: { stiffness: number; damping: number } = motion.control,
+): AnimatedValue {
   const value = createAnimatedValue(target());
   let shown = target();
   effect(() => {
@@ -28,7 +31,9 @@ export function follow(target: () => number, spring: { stiffness: number; dampin
     if (reduced) value.set(next);
     else value.spring(next, spring);
   });
-  cleanup(() => { void value.stop(); });
+  cleanup(() => {
+    void value.stop();
+  });
   return value;
 }
 
@@ -46,18 +51,29 @@ export function useGlyphTransition(key: () => string | undefined): AnimatedValue
       value.spring(1, motion.control);
     }
   });
-  cleanup(() => { void value.stop(); });
+  cleanup(() => {
+    void value.stop();
+  });
   return value;
 }
 
 export function usePressFeedback(disabled: () => boolean) {
   const scale = createAnimatedValue(1);
-  effect(() => { if (disabled() || reduceMotion()) scale.set(1); });
-  cleanup(() => { void scale.stop(); });
+  effect(() => {
+    if (disabled() || reduceMotion()) scale.set(1);
+  });
+  cleanup(() => {
+    void scale.stop();
+  });
   return {
     scale,
-    down: () => { if (!disabled() && !reduceMotion()) scale.spring(0.97, motion.press); },
-    up: () => { if (reduceMotion()) scale.set(1); else scale.spring(1, motion.press); },
+    down: () => {
+      if (!disabled() && !reduceMotion()) scale.spring(0.97, motion.press);
+    },
+    up: () => {
+      if (reduceMotion()) scale.set(1);
+      else scale.spring(1, motion.press);
+    },
   };
 }
 

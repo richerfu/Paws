@@ -1,3 +1,4 @@
+import { density } from "./theme";
 import {
   batch,
   cleanup,
@@ -17,7 +18,12 @@ import { Icon } from "./icons";
 import { motion } from "./motion";
 import { control, focusRing, palette, radius, surfaceFinish } from "./theme";
 
-export type Notification = { id: number; message: string; created: number; leaving: boolean };
+export type Notification = {
+  id: number;
+  message: string;
+  created: number;
+  leaving: boolean;
+};
 
 // Bounded feedback shared by pages and modal layers; each message expires
 // independently, including entries hidden behind the three-card viewport.
@@ -39,7 +45,10 @@ export class NotificationCenter {
       clearTimeout(this.timers.get(current[0].id));
       this.timers.delete(current[0].id);
     }
-    this.items.set([...current.slice(-31), { id, message, created: Date.now(), leaving: false }]);
+    this.items.set([
+      ...current.slice(-31),
+      { id, message, created: Date.now(), leaving: false },
+    ]);
     this.timers.set(
       id,
       setTimeout(() => this.dismiss(id), this.duration),
@@ -50,7 +59,9 @@ export class NotificationCenter {
     if (!this.items().some((item) => item.id === id && !item.leaving)) return;
     clearTimeout(this.timers.get(id));
     this.items.set(
-      this.items().map((item) => (item.id === id ? { ...item, leaving: true } : item)),
+      this.items().map((item) =>
+        item.id === id ? { ...item, leaving: true } : item,
+      ),
     );
     this.timers.set(
       id,
@@ -58,7 +69,8 @@ export class NotificationCenter {
         this.timers.delete(id);
         batch(() => {
           this.items.set(this.items().filter((item) => item.id !== id));
-          if (this.items().filter((item) => !item.leaving).length < 2) this.expanded.set(false);
+          if (this.items().filter((item) => !item.leaving).length < 2)
+            this.expanded.set(false);
         });
       }, this.exit),
     );
@@ -86,7 +98,10 @@ export function useNotificationLayer(): number {
   return id;
 }
 
-export function NotificationViewport(props: { owner?: number; modal?: boolean }) {
+export function NotificationViewport(props: {
+  owner?: number;
+  modal?: boolean;
+}) {
   const center = Notifications();
   if (!center) return;
   const insets = useSafeAreaInsets();
@@ -98,7 +113,9 @@ export function NotificationViewport(props: { owner?: number; modal?: boolean })
     const visible = center.expanded() ? live : live.slice(0, 3);
     // A queued card which was never visible must not flash into the deck just
     // because its independent timer expired behind the three-card cap.
-    const leaving = items.filter((item) => item.leaving && painted.has(item.id));
+    const leaving = items.filter(
+      (item) => item.leaving && painted.has(item.id),
+    );
     painted = new Set([...visible, ...leaving].map((item) => item.id));
     return [
       ...visible.map((item, index) => ({ item, index })),
@@ -130,7 +147,13 @@ export function NotificationViewport(props: { owner?: number; modal?: boolean })
           }}
         >
           <Each of={entries()} key={(entry) => entry.item.id}>
-            {(entry) => <ToastCard center={center} item={entry().item} index={entry().index} />}
+            {(entry) => (
+              <ToastCard
+                center={center}
+                item={entry().item}
+                index={entry().index}
+              />
+            )}
           </Each>
         </View>
       </View>
@@ -138,10 +161,16 @@ export function NotificationViewport(props: { owner?: number; modal?: boolean })
   );
 }
 
-function ToastCard(props: { center: NotificationCenter; item: Notification; index: number }) {
+function ToastCard(props: {
+  center: NotificationCenter;
+  item: Notification;
+  index: number;
+}) {
   const x = createNativeValue(0),
     y = createNativeValue(0);
-  const offset = computed(() => props.index * (props.center.expanded() ? 80 : 14));
+  const offset = computed(
+    () => props.index * (props.center.expanded() ? 80 : 14),
+  );
   let previousOffset = offset();
   const stackY = createNativeValue(previousOffset);
   effect(() => {
@@ -161,7 +190,11 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
   }
   effect(() => {
     if (props.item.leaving) {
-      if (reduceMotion()) { opacity.set(0); entrance.set(0); return; }
+      if (reduceMotion()) {
+        opacity.set(0);
+        entrance.set(0);
+        return;
+      }
       void opacity.timing(0, { duration: 260, easing: "easeOut" });
       void entrance.timing(-80, { duration: 260, easing: "easeOut" });
     }
@@ -190,17 +223,25 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
       onPanEnd={(event) => {
         const dx = event.translation.x,
           dy = event.translation.y;
-        const stackable = props.center.items().filter((item) => !item.leaving).length > 1;
+        const stackable =
+          props.center.items().filter((item) => !item.leaving).length > 1;
         const horizontal = Math.abs(dx) >= 72 && Math.abs(dx) >= Math.abs(dy);
         if (
           !horizontal &&
           stackable &&
-          ((!props.center.expanded() && dy >= 40) || (props.center.expanded() && dy <= -40))
+          ((!props.center.expanded() && dy >= 40) ||
+            (props.center.expanded() && dy <= -40))
         )
           props.center.expanded.set(!props.center.expanded());
-        else if (Math.abs(dx) >= 72 || dy <= -56) props.center.dismiss(props.item.id);
-        if (reduceMotion()) { x.set(0); y.set(0); }
-        else { void x.spring(0, motion.move); void y.spring(0, motion.move); }
+        else if (Math.abs(dx) >= 72 || dy <= -56)
+          props.center.dismiss(props.item.id);
+        if (reduceMotion()) {
+          x.set(0);
+          y.set(0);
+        } else {
+          void x.spring(0, motion.move);
+          void y.spring(0, motion.move);
+        }
       }}
       style={{
         pointerEvents: front() && !props.item.leaving ? "auto" : "none",
@@ -210,9 +251,9 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
         width: `${props.center.expanded() ? 100 : 100 - props.index * 5}%`,
         minHeight: 52,
         height: front() ? undefined : 72,
-        paddingVertical: 12,
-        paddingLeft: 12,
-        paddingRight: 8,
+        paddingVertical: density.space(12),
+        paddingLeft: density.space(12),
+        paddingRight: density.space(8),
         borderWidth: 1,
         borderColor: palette().border,
         borderRadius: radius.xl,
@@ -226,15 +267,17 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
       }}
     >
       <If when={front()}>
-        <View style={{ width: 28, height: control.icon, justifyContent: "center" }}>
+        <View
+          style={{ width: 28, height: control.icon, justifyContent: "center" }}
+        >
           <Icon name="info" size={16} color={palette().accent} />
         </View>
         <Text
           style={{
             numberOfLines: 2,
             flex: 1,
-            fontSize: 14,
-            lineHeight: 20,
+            fontSize: density.font(14),
+            lineHeight: density.line(20),
             fontWeight: "600",
             color: palette().text,
           }}
@@ -254,7 +297,7 @@ function ToastCard(props: { center: NotificationCenter; item: Notification; inde
             height: control.icon,
             alignItems: "center",
             justifyContent: "center",
-            borderRadius: 6,
+            borderRadius: density.space(6),
           }}
         >
           <Icon name="x" size={16} color={palette().muted} />

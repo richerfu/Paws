@@ -156,10 +156,12 @@ mount(() => {
   });
   // The runner independently checks exact raw reconstruction, scalar bounds,
   // actual mounted chunks and the native Copy command against this public source.
-  console.log(`VISUAL ERROR FIXTURE: ${JSON.stringify({
-    source: VISUAL_REFRESH_ERROR,
-    rows: errorTextRows(VISUAL_REFRESH_ERROR),
-  })}`);
+  console.log(
+    `VISUAL ERROR FIXTURE: ${JSON.stringify({
+      source: VISUAL_REFRESH_ERROR,
+      rows: errorTextRows(VISUAL_REFRESH_ERROR),
+    })}`,
+  );
   const state = visualFixture();
   let staleHealth = false;
   const host = new DomainHost(client, () => state);

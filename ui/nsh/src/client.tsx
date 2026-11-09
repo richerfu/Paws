@@ -42,7 +42,12 @@ export class CoreClient {
   readonly state = (): UiState | undefined =>
     this.domains.has(["config", "status"]) ? this.view : undefined;
   readonly preferences = signal<Preferences>(
-    { language: "system", theme: "system", advanced: false, systemLocale: "zh-CN" },
+    {
+      language: "system",
+      theme: "system",
+      advanced: false,
+      systemLocale: "zh-CN",
+    },
     {
       equals: (previous, next) =>
         previous.language === next.language &&
@@ -55,7 +60,9 @@ export class CoreClient {
   readonly pending = signal(0);
   readonly pendingRequests = signal<CoreRequest[]>([]);
   isPending(command: string): boolean {
-    return this.pendingRequests().some((request) => request.command === command);
+    return this.pendingRequests().some(
+      (request) => request.command === command,
+    );
   }
   readonly vpnOperation = signal<"start" | "stop" | "restart" | undefined>();
   readonly vpnUnconfirmed = signal<
@@ -86,7 +93,13 @@ export class CoreClient {
       stateTimeoutMs,
     );
     const fields: { [D in keyof DomainData]?: (keyof UiState)[] } = {
-      config: ["activeProfile", "mode", "vpnOptions", "controllerAccess", "networkPorts"],
+      config: [
+        "activeProfile",
+        "mode",
+        "vpnOptions",
+        "controllerAccess",
+        "networkPorts",
+      ],
       status: [
         "vpnSessionId",
         "vpnLifecycle",
@@ -118,7 +131,9 @@ export class CoreClient {
           enumerable: true,
           get: () =>
             (
-              this.domains.data(domain as keyof DomainData) as Record<string, unknown> | undefined
+              this.domains.data(domain as keyof DomainData) as
+                | Record<string, unknown>
+                | undefined
             )?.[key],
         });
       }
@@ -146,7 +161,8 @@ export class CoreClient {
     if (value.id === this.vpnUnconfirmed()?.requestId) {
       this.vpnUnconfirmed.set(undefined);
       if (pending.expired) {
-        if (!value.ok) this.error.set(value.error || "The VPN operation failed");
+        if (!value.ok)
+          this.error.set(value.error || "The VPN operation failed");
         else this.error.set("");
       }
     }
@@ -157,7 +173,10 @@ export class CoreClient {
       confirmation &&
       confirmation.requestId === this.vpnUnconfirmed()?.requestId
     ) {
-      if (confirmation.status === "succeeded" || confirmation.status === "failed")
+      if (
+        confirmation.status === "succeeded" ||
+        confirmation.status === "failed"
+      )
         this.acceptResult({
           id: confirmation.requestId,
           ok: confirmation.status === "succeeded",
@@ -174,19 +193,26 @@ export class CoreClient {
       pending.request.command !== "vpn.recover" ||
       (confirmation?.status === "succeeded" &&
         confirmation.requestId === pending.request.payload.requestId);
-    if (value.id === this.vpnRequestId && value.ok && recovered) this.vpnUnconfirmed.set(undefined);
+    if (value.id === this.vpnRequestId && value.ok && recovered)
+      this.vpnUnconfirmed.set(undefined);
     if (pending.request.command === "vpn.recover" && value.ok && !recovered)
       this.error.set(
-        confirmation?.error || "The stop operation is unconfirmed. Confirm it or retry recovery.",
+        confirmation?.error ||
+          "The stop operation is unconfirmed. Confirm it or retry recovery.",
       );
     this.updatePending();
     if (value.ok && value.stateRefreshError) {
       this.domains.retry();
       pending.resolve({
         data: value.data,
-        stateRefreshError: new CommittedStateError(value.stateRefreshError).message,
+        stateRefreshError: new CommittedStateError(value.stateRefreshError)
+          .message,
       });
-    } else if (value.ok && value.barrier && !pending.request.command.startsWith("state.")) {
+    } else if (
+      value.ok &&
+      value.barrier &&
+      !pending.request.command.startsWith("state.")
+    ) {
       this.settling.add(pending);
       this.updatePending();
       void this.domains
@@ -199,7 +225,8 @@ export class CoreClient {
             if (!this.disposed)
               pending.resolve({
                 data: value.data,
-                stateRefreshError: error instanceof Error ? error.message : String(error),
+                stateRefreshError:
+                  error instanceof Error ? error.message : String(error),
               });
           },
         )
@@ -211,9 +238,13 @@ export class CoreClient {
     else pending.reject(new Error(value.error || "The operation failed"));
   }
 
-  send<T = unknown>(command: string, payload: Record<string, unknown> = {}): Promise<T> {
+  send<T = unknown>(
+    command: string,
+    payload: Record<string, unknown> = {},
+  ): Promise<T> {
     return this.dispatch<T>(command, payload).then((receipt) => {
-      if (!this.disposed && receipt.stateRefreshError) this.warning.set(receipt.stateRefreshError);
+      if (!this.disposed && receipt.stateRefreshError)
+        this.warning.set(receipt.stateRefreshError);
       return receipt.data;
     });
   }
@@ -226,7 +257,9 @@ export class CoreClient {
     if (this.domains.observing) {
       if (!this.domains.readyForCommand(commandDomains(command)))
         return Promise.reject(
-          new Error("Required state is loading or unavailable. Reload it before making changes."),
+          new Error(
+            "Required state is loading or unavailable. Reload it before making changes.",
+          ),
         );
       if (
         ["proxies.select", "proxies.unfix"].includes(command) &&
@@ -234,7 +267,9 @@ export class CoreClient {
           !(
             this.domains.fresh(["proxies"]) ||
             (typeof payload.group === "string" &&
-              this.domains.fresh([{ domain: "proxies", groupKey: payload.group }]))
+              this.domains.fresh([
+                { domain: "proxies", groupKey: payload.group },
+              ]))
           ))
       )
         return Promise.reject(
@@ -254,7 +289,8 @@ export class CoreClient {
         );
     }
     if (
-      (command === "profiles.importUrl" || command === "profiles.importContent") &&
+      (command === "profiles.importUrl" ||
+        command === "profiles.importContent") &&
       payload.intentId === undefined
     )
       payload = { ...payload, intentId: this.nextImportIntent() };
@@ -303,9 +339,17 @@ export class CoreClient {
             ),
           );
         },
-        command.startsWith("state.") ? this.stateTimeoutMs : this.commandTimeoutMs,
+        command.startsWith("state.")
+          ? this.stateTimeoutMs
+          : this.commandTimeoutMs,
       );
-      this.waiting.set(id, { resolve, reject, timer, request, action: vpnAction });
+      this.waiting.set(id, {
+        resolve,
+        reject,
+        timer,
+        request,
+        action: vpnAction,
+      });
     });
     this.updatePending();
     this.queue.push(request);
@@ -315,25 +359,39 @@ export class CoreClient {
 
   private updatePending(): void {
     const requests = [...this.waiting.values(), ...this.settling]
-      .filter((value) => !value.expired && !value.request.command.startsWith("state."))
+      .filter(
+        (value) =>
+          !value.expired && !value.request.command.startsWith("state."),
+      )
       .map((value) => value.request);
     this.pendingRequests.set(requests);
     // A decision preview has its own page-local lifetime/loading state. It
     // remains tracked and receives its receipt without blocking real edits.
-    this.pending.set(requests.filter((request) => request.command !== "engines.decision").length);
+    this.pending.set(
+      requests.filter((request) => request.command !== "engines.decision")
+        .length,
+    );
   }
 
   /** Native fact: this request entered an actual platform VPN effect. */
   acceptOperation(value: { requestId: number; action: VpnAction }): void {
     const pending = this.waiting.get(value.requestId);
-    if (this.disposed || !pending || !["start", "stop", "restart"].includes(value.action)) return;
+    if (
+      this.disposed ||
+      !pending ||
+      !["start", "stop", "restart"].includes(value.action)
+    )
+      return;
     this.acceptReceived(value.requestId);
     pending.action = value.action;
     if (value.requestId < this.vpnRequestId) return;
     this.vpnRequestId = value.requestId;
     if (pending.expired) {
       this.vpnOperation.set(undefined);
-      this.vpnUnconfirmed.set({ requestId: value.requestId, action: value.action });
+      this.vpnUnconfirmed.set({
+        requestId: value.requestId,
+        action: value.action,
+      });
     } else {
       this.vpnUnconfirmed.set(undefined);
       this.vpnOperation.set(value.action);
@@ -342,7 +400,13 @@ export class CoreClient {
 
   /** Receipt ACK means the host observed the prop; operation completion is independent. */
   acceptReceived(id: number): void {
-    if (this.disposed || !Number.isSafeInteger(id) || id !== this.sendingId || id === 0) return;
+    if (
+      this.disposed ||
+      !Number.isSafeInteger(id) ||
+      id !== this.sendingId ||
+      id === 0
+    )
+      return;
     this.sendingId = 0;
     this.drain();
   }
@@ -368,7 +432,8 @@ export class CoreClient {
     });
     try {
       const receipt = await this.dispatch<T>(command, payload);
-      if (!this.disposed && receipt.stateRefreshError) this.warning.set(receipt.stateRefreshError);
+      if (!this.disposed && receipt.stateRefreshError)
+        this.warning.set(receipt.stateRefreshError);
       else if (!this.disposed && success) this.notice.set(success);
       return receipt.data;
     } catch (error) {
@@ -384,7 +449,8 @@ export class CoreClient {
   dispose(): void {
     this.disposed = true;
     this.domains.dispose();
-    for (const pending of this.settling) pending.reject(new CommittedStateError("View disposed"));
+    for (const pending of this.settling)
+      pending.reject(new CommittedStateError("View disposed"));
     this.settling.clear();
     for (const pending of this.waiting.values()) {
       clearTimeout(pending.timer);

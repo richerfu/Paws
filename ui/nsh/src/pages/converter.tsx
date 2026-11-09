@@ -39,7 +39,8 @@ export function Converter() {
   let uploadEdits = 0;
   void state.load();
   cleanup(() => {
-    if (draft() && dirty()) void ui.client.run("converter.saveDraft", { draft: draft() });
+    if (draft() && dirty())
+      void ui.client.run("converter.saveDraft", { draft: draft() });
   });
   const change = (patch: Partial<ConverterDraft>) => state.change(patch);
   const busy = () => operation() !== "";
@@ -59,7 +60,9 @@ export function Converter() {
   const build = () =>
     run("build", async () => {
       const submitted = draft()!;
-      const url = await ui.client.run<string>("converter.buildUrl", { draft: submitted });
+      const url = await ui.client.run<string>("converter.buildUrl", {
+        draft: submitted,
+      });
       if (!alive() || url === undefined) return;
       if (draft() !== submitted) {
         ui.client.error.set(
@@ -73,7 +76,11 @@ export function Converter() {
       longUrl.set(url);
       shortUrl.set("");
       await state.save();
-      if (alive()) copy(url, ui.t("转换链接已生成并复制", "Conversion URL generated and copied"));
+      if (alive())
+        copy(
+          url,
+          ui.t("转换链接已生成并复制", "Conversion URL generated and copied"),
+        );
     });
   const shorten = () =>
     run("short", async () => {
@@ -121,14 +128,20 @@ export function Converter() {
       if (alive())
         copy(
           url,
-          ui.t("配置已上传，地址已填入并复制", "Configuration uploaded; URL filled and copied"),
+          ui.t(
+            "配置已上传，地址已填入并复制",
+            "Configuration uploaded; URL filled and copied",
+          ),
         );
     });
   const checkVersion = () =>
     run("version", async () => {
       const backend = draft()!.backend;
-      const value = await ui.client.run<string>("converter.backendVersion", { backend });
-      if (alive() && draft()?.backend === backend && value !== undefined) version.set(value);
+      const value = await ui.client.run<string>("converter.backendVersion", {
+        backend,
+      });
+      if (alive() && draft()?.backend === backend && value !== undefined)
+        version.set(value);
     });
   return (
     <Scroll bounces={false} style={{ flex: 1 }}>
@@ -137,7 +150,14 @@ export function Converter() {
           <Card title={ui.t("转换规则", "Conversion rules")}>
             <If
               when={ui.client.error()}
-              else={<Hint text={ui.t("正在读取转换设置…", "Loading conversion settings…")} />}
+              else={
+                <Hint
+                  text={ui.t(
+                    "正在读取转换设置…",
+                    "Loading conversion settings…",
+                  )}
+                />
+              }
             >
               <PageError id="converter-load-error" text={ui.client.error()} />
             </If>
@@ -167,7 +187,10 @@ export function Converter() {
                   { value: "basic", label: ui.t("基础模式", "Basic") },
                   { value: "advanced", label: ui.t("进阶模式", "Advanced") },
                 ]}
-                onChange={(value) => { animateDisclosure(); change({ advanced: value === "advanced" }); }}
+                onChange={(value) => {
+                  animateDisclosure();
+                  change({ advanced: value === "advanced" });
+                }}
               />
               <Field
                 label={ui.t("订阅或节点链接", "Subscription or node links")}
@@ -192,7 +215,10 @@ export function Converter() {
             <If when={draft()!.advanced}>
               <>
                 <Card
-                  title={ui.t("后端与远程配置", "Backend and remote configuration")}
+                  title={ui.t(
+                    "后端与远程配置",
+                    "Backend and remote configuration",
+                  )}
                   subtitle={ui.t(
                     "转换请求由目标服务处理，请只使用信任的后端。",
                     "Conversion requests are handled by the selected service. Use a trusted backend.",
@@ -209,7 +235,11 @@ export function Converter() {
                     }}
                   />
                   <Actions>
-                    <Hint text={version() || ui.t("尚未检测后端", "Backend not checked")} />
+                    <Hint
+                      text={
+                        version() || ui.t("尚未检测后端", "Backend not checked")
+                      }
+                    />
                     <Action
                       secondary
                       small
@@ -223,7 +253,9 @@ export function Converter() {
                   <Select
                     label={ui.t("远程配置预设", "Remote config preset")}
                     value={
-                      REMOTE_CONFIGS.some((option) => option.value === draft()!.remote_config)
+                      REMOTE_CONFIGS.some(
+                        (option) => option.value === draft()!.remote_config,
+                      )
                         ? draft()!.remote_config
                         : ""
                     }
@@ -267,7 +299,10 @@ export function Converter() {
                   <Field
                     label={ui.t("输出文件名", "Output filename")}
                     value={draft()!.filename}
-                    placeholder={ui.t("返回的订阅文件名", "Output subscription filename")}
+                    placeholder={ui.t(
+                      "返回的订阅文件名",
+                      "Output subscription filename",
+                    )}
                     disabled={busy()}
                     onChange={(filename) => change({ filename })}
                   />
@@ -293,7 +328,9 @@ export function Converter() {
                     }
                   />
                 </Card>
-                <Card title={ui.t("输出与定制选项", "Output and customization")}>
+                <Card
+                  title={ui.t("输出与定制选项", "Output and customization")}
+                >
                   <Each
                     of={[
                       [
@@ -310,7 +347,13 @@ export function Converter() {
                         "为节点名添加地区 Emoji",
                         "Add region emoji to node names",
                       ],
-                      ["scv", "跳过证书验证", "Skip certificate verification", "scv", "scv"],
+                      [
+                        "scv",
+                        "跳过证书验证",
+                        "Skip certificate verification",
+                        "scv",
+                        "scv",
+                      ],
                       ["udp", "启用 UDP", "Enable UDP", "udp", "udp"],
                       ["tfo", "TCP Fast Open", "TCP Fast Open", "tfo", "tfo"],
                       [
@@ -321,11 +364,41 @@ export function Converter() {
                         "append_type",
                       ],
                       ["sort", "排序节点", "Sort nodes", "sort", "sort"],
-                      ["fdn", "过滤非法节点", "Filter invalid nodes", "fdn", "fdn"],
-                      ["expand", "展开规则", "Expand rules", "expand", "expand"],
-                      ["surge_doh", "Surge DoH", "Surge DoH", "surge.doh", "surge.doh"],
-                      ["clash_doh", "Clash DoH", "Clash DoH", "clash.doh", "clash.doh"],
-                      ["new_name", "Clash 新字段", "New Clash field names", "new_name", "new_name"],
+                      [
+                        "fdn",
+                        "过滤非法节点",
+                        "Filter invalid nodes",
+                        "fdn",
+                        "fdn",
+                      ],
+                      [
+                        "expand",
+                        "展开规则",
+                        "Expand rules",
+                        "expand",
+                        "expand",
+                      ],
+                      [
+                        "surge_doh",
+                        "Surge DoH",
+                        "Surge DoH",
+                        "surge.doh",
+                        "surge.doh",
+                      ],
+                      [
+                        "clash_doh",
+                        "Clash DoH",
+                        "Clash DoH",
+                        "clash.doh",
+                        "clash.doh",
+                      ],
+                      [
+                        "new_name",
+                        "Clash 新字段",
+                        "New Clash field names",
+                        "new_name",
+                        "new_name",
+                      ],
                       [
                         "insert",
                         "插入默认节点",
@@ -344,7 +417,9 @@ export function Converter() {
                         onChange={(value) =>
                           change({
                             [option()[0]]: value,
-                            ...(option()[0] === "udp" ? { need_udp: true } : {}),
+                            ...(option()[0] === "udp"
+                              ? { need_udp: true }
+                              : {}),
                           })
                         }
                       />
@@ -361,7 +436,8 @@ export function Converter() {
               )}
             >
               <Action
-                primary id="converter-build"
+                primary
+                id="converter-build"
                 icon="refresh-cw"
                 label={ui.t("生成订阅链接", "Generate subscription URL")}
                 loading={operation() === "build"}
@@ -386,7 +462,9 @@ export function Converter() {
                   icon="file-text"
                   label={ui.t("复制长链", "Copy long URL")}
                   disabled={!longUrl()}
-                  onPress={() => copy(longUrl(), ui.t("长链接已复制", "Long URL copied"))}
+                  onPress={() =>
+                    copy(longUrl(), ui.t("长链接已复制", "Long URL copied"))
+                  }
                 />
                 <Action
                   secondary
@@ -407,8 +485,11 @@ export function Converter() {
               />
               <If when={shortUrl()}>
                 <Action
-                  secondary label={ui.t("复制短链接", "Copy short URL")}
-                  onPress={() => copy(shortUrl(), ui.t("短链接已复制", "Short URL copied"))}
+                  secondary
+                  label={ui.t("复制短链接", "Copy short URL")}
+                  onPress={() =>
+                    copy(shortUrl(), ui.t("短链接已复制", "Short URL copied"))
+                  }
                 />
               </If>
               <Action

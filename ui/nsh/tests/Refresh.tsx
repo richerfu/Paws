@@ -144,15 +144,26 @@ mount(() => {
     console.log(`PASS REFRESH: ${name} latest=${latestKey} calls=${calls.get(latestKey) || 0}`);
   };
   for (const [id, name] of Object.entries({
-    shared: "shared-one", one: "one", barrier: "barrier", idle: "idle",
-    error: "error", warning: "warning", "config-held": "config-held",
-    "health-initial": "health-initial", "health-refreshed": "health-refreshed",
-  })) testControl(`refresh-assert-${id}`, () => checkpoint(name));
+    shared: "shared-one",
+    one: "one",
+    barrier: "barrier",
+    idle: "idle",
+    error: "error",
+    warning: "warning",
+    "config-held": "config-held",
+    "health-initial": "health-initial",
+    "health-refreshed": "health-refreshed",
+  }))
+    testControl(`refresh-assert-${id}`, () => checkpoint(name));
   const releaseWarning = testControl("refresh-release-warning", () => {
     assert(pending.length === 1, "No refresh receipt for warning");
     const request = pending.shift()!;
-    host.result({ id: request.id, ok: true, data: ["test-profile"],
-      stateRefreshError: "Controlled refresh synchronization warning" });
+    host.result({
+      id: request.id,
+      ok: true,
+      data: ["test-profile"],
+      stateRefreshError: "Controlled refresh synchronization warning",
+    });
   });
   const holdConfigRead = testControl("refresh-hold-config", () => {
     holdConfig = true;
@@ -259,19 +270,13 @@ mount(() => {
         <View testID="refresh-assert-error" onPress={() => checkpoint("error")}>
           <Text>Assert failed reset</Text>
         </View>
-        <View
-          testID="refresh-release-warning"
-          onPress={releaseWarning}
-        >
+        <View testID="refresh-release-warning" onPress={releaseWarning}>
           <Text>Committed warning</Text>
         </View>
         <View testID="refresh-assert-warning" onPress={() => checkpoint("warning")}>
           <Text>Assert synchronization warning</Text>
         </View>
-        <View
-          testID="refresh-hold-config"
-          onPress={holdConfigRead}
-        >
+        <View testID="refresh-hold-config" onPress={holdConfigRead}>
           <Text>Hold config freshness</Text>
         </View>
         <View testID="refresh-assert-config-held" onPress={() => checkpoint("config-held")}>

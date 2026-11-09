@@ -20,37 +20,64 @@ mount(() => {
     host.post("paws.test.command", request.command);
     server.reply(request, null);
   };
-  cleanup(host.on("paws.test.invalidate", (config: boolean) => {
-    holding.add("profiles");
-    if (config) holding.add("config");
-    state = { ...state, revision: state.revision + 1,
-      configRevision: state.configRevision + (config ? 1 : 0),
-      profiles: state.profiles.map((profile) => ({ ...profile, uploadBytes: profile.uploadBytes + 128 })) };
-    server.change(config ? ["config", "profiles"] : ["profiles"]);
-  }));
-  cleanup(host.on("paws.test.release", (domain: DomainName) => {
-    holding.delete(domain);
-    const pending = held.get(domain);
-    held.delete(domain);
-    if (pending) server.reply(pending.request, pending.reply);
-  }));
-  cleanup(host.on("paws.test.fail-profiles", () => {
-    const pending = held.get("profiles");
-    held.delete("profiles");
-    holding.delete("profiles");
-    if (pending) server.result({ id: pending.request.id, ok: false, error: "Synthetic profile query failure" });
-  }));
-  cleanup(host.on("paws.test.attempt", () => {
-    void client.send("profiles.subscription", { profileId: "test-profile", expectedRevision: state.configRevision,
-      name: "Synthetic", url: "https://fixture.example/sub" }).catch(() => host.post("paws.test.blocked", true));
-  }));
+  cleanup(
+    host.on("paws.test.invalidate", (config: boolean) => {
+      holding.add("profiles");
+      if (config) holding.add("config");
+      state = {
+        ...state,
+        revision: state.revision + 1,
+        configRevision: state.configRevision + (config ? 1 : 0),
+        profiles: state.profiles.map((profile) => ({
+          ...profile,
+          uploadBytes: profile.uploadBytes + 128,
+        })),
+      };
+      server.change(config ? ["config", "profiles"] : ["profiles"]);
+    }),
+  );
+  cleanup(
+    host.on("paws.test.release", (domain: DomainName) => {
+      holding.delete(domain);
+      const pending = held.get(domain);
+      held.delete(domain);
+      if (pending) server.reply(pending.request, pending.reply);
+    }),
+  );
+  cleanup(
+    host.on("paws.test.fail-profiles", () => {
+      const pending = held.get("profiles");
+      held.delete("profiles");
+      holding.delete("profiles");
+      if (pending)
+        server.result({
+          id: pending.request.id,
+          ok: false,
+          error: "Synthetic profile query failure",
+        });
+    }),
+  );
+  cleanup(
+    host.on("paws.test.attempt", () => {
+      void client
+        .send("profiles.subscription", {
+          profileId: "test-profile",
+          expectedRevision: state.configRevision,
+          name: "Synthetic",
+          url: "https://fixture.example/sub",
+        })
+        .catch(() => host.post("paws.test.blocked", true));
+    }),
+  );
   cleanup(host.on("paws.test.retry", () => client.domains.retry(["profiles"])));
-  effect(() => host.post("paws.test.readiness", {
-    fresh: client.domains.fresh(["profiles"]),
-    ready: client.domains.readyForCommand(["config", "profiles"]),
-    config: client.domains.fresh(["config"]),
-    configRevision: client.domains.configRevision(),
-  }));
+  effect(() =>
+    host.post("paws.test.readiness", {
+      fresh: client.domains.fresh(["profiles"]),
+      ready: client.domains.readyForCommand(["config", "profiles"]),
+      config: client.domains.fresh(["config"]),
+      configRevision: client.domains.configRevision(),
+    }),
+  );
   server.connect();
   return <PawsApp client={client} embeddedGateway={false} />;
 });

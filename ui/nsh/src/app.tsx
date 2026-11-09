@@ -1,3 +1,4 @@
+import { density } from "./theme";
 import {
   cleanup,
   computed,
@@ -10,18 +11,24 @@ import {
   type JSX,
   setColorScheme,
   windowSize,
-  Scroll,
   keymap,
   platform,
   reduceMotion,
 } from "nsh";
 import { BackHandler } from "nsh/mobile";
-import { Button, Tab, Tabs as BaseTabs, createNavStack, NavPage, NavStack } from "nsh/base";
+import {
+  Tab,
+  Tabs as BaseTabs,
+  createNavStack,
+  NavPage,
+  NavStack,
+} from "nsh/base";
 import { CoreGateway, type CoreClient } from "./client";
 import {
   App,
   Action,
   Actions,
+  Tabs,
   Loading,
   control,
   Alert,
@@ -36,9 +43,15 @@ import {
   type Page,
   useLifetime,
   useApp,
-  RouteOwner} from "./components";
+  RouteOwner,
+} from "./components";
 import { feedbackStyle } from "./motion";
-import { focusRing } from "./theme";
+import { chrome, focusRing } from "./theme";
+import {
+  DesktopNavigation,
+  desktopPrimary,
+  desktopRootPages,
+} from "./desktop-navigation";
 import { Dashboard, Traffic } from "./pages/overview";
 import { FloatingVpnPowerButton } from "./floating-vpn";
 import { Profiles } from "./pages/profiles";
@@ -48,11 +61,22 @@ import { Activity } from "./pages/activity";
 import { Resources } from "./pages/resources";
 import { Appearance, Settings } from "./pages/settings";
 import { Logs } from "./pages/logs";
-import { About, Backups, Diagnostics, Tools, Privacy, AdvancedDiagnostics } from "./pages/tools";
+import {
+  About,
+  Backups,
+  Diagnostics,
+  Tools,
+  Privacy,
+  AdvancedDiagnostics,
+} from "./pages/tools";
 import { Converter } from "./pages/converter";
 import { COPY } from "./product-copy";
 import type { IconName } from "./icons";
-import { NotificationCenter, Notifications, NotificationViewport } from "./notifications";
+import {
+  NotificationCenter,
+  Notifications,
+  NotificationViewport,
+} from "./notifications";
 import { pageDomains } from "./page-data";
 import { PageError } from "./page-error";
 import type { DomainInput } from "./model";
@@ -62,21 +86,6 @@ const primary: { page: Page; zh: string; en: string; icon: IconName }[] = [
   { page: "profiles", zh: "订阅", en: "Subscriptions", icon: "rss" },
   { page: "traffic", zh: "流量", en: "Traffic", icon: "activity" },
   { page: "tools", zh: "设置", en: "Settings", icon: "settings" },
-];
-const desktopSections: { title: [string, string]; items: { page: Page; icon: IconName }[] }[] = [
-  { title: ["网络", "Network"], items: [
-    { page: "proxies", icon: "git-branch" }, { page: "connections", icon: "unplug" },
-    { page: "requests", icon: "activity" }, { page: "resources", icon: "database" },
-    { page: "logs", icon: "scroll-text" },
-  ] },
-  { title: ["工具", "Tools"], items: [
-    { page: "converter", icon: "refresh-cw" }, { page: "backups", icon: "archive" },
-    { page: "diagnostics", icon: "shield-check" },
-  ] },
-  { title: ["应用", "App"], items: [
-    { page: "settings", icon: "settings" }, { page: "appearance", icon: "palette" },
-    { page: "about", icon: "paw-print" },
-  ] },
 ];
 const titles: Record<Page, [string, string]> = {
   dashboard: ["首页", "Home"],
@@ -120,20 +129,31 @@ export function pageMeasure(page: Page, wide: boolean): number {
             : 840;
 }
 
-export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }) {
+export function PawsApp(props: {
+  client: CoreClient;
+  embeddedGateway?: boolean;
+}) {
   const notifications = new NotificationCenter();
-  for (const source of [props.client.error, props.client.warning, props.client.notice])
+  for (const source of [
+    props.client.error,
+    props.client.warning,
+    props.client.notice,
+  ])
     effect(() => {
       const message = source();
       if (message) untracked(() => notifications.publish(message));
     });
   cleanup(() => notifications.dispose());
-  const nav = createNavStack<{ name: Page; query?: string }>([{ name: "dashboard" }]);
+  const nav = createNavStack<{ name: Page; query?: string }>([
+    { name: "dashboard" },
+  ]);
   const alive = useLifetime(),
     importIntent = signal(0),
     resourceIntent: AppContext["resourceIntent"] = signal(undefined),
     proxyDelayLoading = signal(false);
-  const leaveGuard = signal<{ route: unknown; check: () => boolean | Promise<boolean> } | undefined>();
+  const leaveGuard = signal<
+    { route: unknown; check: () => boolean | Promise<boolean> } | undefined
+  >();
   let leaving = false;
   let importConsumed = 0,
     resourceConsumed = 0,
@@ -144,26 +164,43 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
     page = () => route().name;
   const requestNavigation = (action: () => void) => {
     const guard = leaveGuard();
-    if (!guard || guard.route !== route()) { action(); return; }
-    if (leaving) return;
-    const current = route(), result = guard.check();
-    if (typeof result === "boolean") { if (result) action(); return; }
-    leaving = true;
-    void result.then((accepted) => {
-      if (accepted && alive() && route() === current) action();
-    }).finally(() => { leaving = false; });
-  };
-  const navigate = (next: Page, query?: string) => requestNavigation(() => {
-    if (primary.some((item) => item.page === next)) nav.setRoutes([{ name: next, query }]);
-    else nav.push({ name: next, query });
-  });
-  const back = () => requestNavigation(() => {
-    if (nav.routes().length > 1) nav.pop();
-    else {
-      const parent = parentPage(page());
-      if (parent) nav.setRoutes([{ name: parent }]);
+    if (!guard || guard.route !== route()) {
+      action();
+      return;
     }
-  });
+    if (leaving) return;
+    const current = route(),
+      result = guard.check();
+    if (typeof result === "boolean") {
+      if (result) action();
+      return;
+    }
+    leaving = true;
+    void result
+      .then((accepted) => {
+        if (accepted && alive() && route() === current) action();
+      })
+      .finally(() => {
+        leaving = false;
+      });
+  };
+  const navigate = (next: Page, query?: string) =>
+    requestNavigation(() => {
+      if (
+        (platform.desktop && desktopRootPages.includes(next)) ||
+        primary.some((item) => item.page === next)
+      )
+        nav.setRoutes([{ name: next, query }]);
+      else nav.push({ name: next, query });
+    });
+  const back = () =>
+    requestNavigation(() => {
+      if (nav.routes().length > 1) nav.pop();
+      else {
+        const parent = parentPage(page());
+        if (parent) nav.setRoutes([{ name: parent }]);
+      }
+    });
   const ui: AppContext = {
     client: props.client,
     page,
@@ -191,10 +228,14 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
     beforeLeave: (check) => {
       const guard = { route: route(), check };
       leaveGuard.set(guard);
-      return () => { if (leaveGuard() === guard) leaveGuard.set(undefined); };
+      return () => {
+        if (leaveGuard() === guard) leaveGuard.set(undefined);
+      };
     },
   };
-  const wide = () => windowSize().width >= 840;
+  const wide = () => platform.desktop || windowSize().width >= 840;
+  const canBack = () =>
+    nav.routes().length > 1 || (!platform.desktop && !!parentPage(page()));
   const group = () =>
     page() === "proxies" || page() === "editor"
       ? "profiles"
@@ -210,7 +251,7 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
     setColorScheme(theme());
   });
   const stopHardwareBack = BackHandler.on("press", () => {
-    if (!parentPage(page()) && nav.routes().length < 2) return false;
+    if (!canBack()) return false;
     back();
     return true;
   });
@@ -218,7 +259,11 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
     stopHardwareBack();
   });
   const refreshProfiles = async () => {
-    if (props.client.pending() > 0 || !props.client.domains.readyForCommand(["config", "profiles"])) return;
+    if (
+      props.client.pending() > 0 ||
+      !props.client.domains.readyForCommand(["config", "profiles"])
+    )
+      return;
     const attempted = new Set(
       props.client
         .state()
@@ -235,7 +280,9 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
       return;
     const failed = props.client
       .state()!
-      .profiles.filter((profile) => attempted.has(profile.id) && profile.lastRefreshError).length;
+      .profiles.filter(
+        (profile) => attempted.has(profile.id) && profile.lastRefreshError,
+      ).length;
     props.client.notice.set(
       attempted.size
         ? ui.t(
@@ -246,15 +293,21 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
     );
   };
   if (platform.desktop) {
-    for (let index = 0; index < primary.length; index++)
-      cleanup(keymap.bind(`mod+${index + 1}`, () => navigate(primary[index].page)));
+    for (let index = 0; index < desktopPrimary.length; index++)
+      cleanup(
+        keymap.bind(`mod+${index + 1}`, () =>
+          navigate(desktopPrimary[index].page),
+        ),
+      );
     cleanup(keymap.bind("mod+,", () => navigate("appearance")));
     effect(() => {
       if (page() === "editor") return;
-      cleanup(keymap.bind("mod+r", () => {
-        if (page() === "profiles") void refreshProfiles();
-        else props.client.domains.retry(pageDomains(page()));
-      }));
+      cleanup(
+        keymap.bind("mod+r", () => {
+          if (page() === "profiles") void refreshProfiles();
+          else props.client.domains.retry(pageDomains(page()));
+        }),
+      );
     });
   }
   const Shell = () => {
@@ -265,98 +318,20 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
         </If>
         <View style={{ flex: 1, flexDirection: wide() ? "row" : "column" }}>
           <If when={wide()}>
-            <View
-              testID="desktop-sidebar"
-              style={{
-                width: 248,
-                backgroundColor: palette().sidebar,
-                borderRightWidth: 1,
-                borderRightColor: palette().border,
-              }}
-            >
-              <View
-                style={{
-                  height: 52,
-                  paddingLeft: spacing.xl,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: spacing.sm,
-                }}
-              >
-                <View
-                  style={{
-                    width: 32,
-                    height: 32,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    borderRadius: radius.lg,
-                    backgroundColor: palette().brandFill,
-                  }}
-                >
-                  <Icon name="paw-print" size={18} color={palette().primaryText} />
-                </View>
-                <Text style={{ fontSize: 18, fontWeight: "700", color: palette().text }}>Paws</Text>
-              </View>
-              <Scroll bounces={false} style={{ flex: 1 }} contentStyle={{ gap: spacing.lg,
-                padding: spacing.md, paddingTop: spacing.lg }}>
-                <View style={{ gap: spacing.xxs }}>
-                  <Each of={primary}>
-                    {(tab, index) => <Button testID={`nav-${tab().page}`}
-                      accessibilityLabel={ui.t(tab().zh, tab().en)}
-                      selected={page() === tab().page || tab().page === "profiles" && page() === "editor"}
-                      onPress={() => navigate(tab().page)} focusStyle={focusRing()}
-                      hoverStyle={{ backgroundColor: palette().soft }} activeStyle={{ opacity: 0.8 }}
-                      style={{ minHeight: control.row, paddingHorizontal: spacing.md, gap: spacing.md,
-                        borderRadius: radius.md, flexDirection: "row", alignItems: "center",
-                        backgroundColor: page() === tab().page || tab().page === "profiles" && page() === "editor"
-                          ? palette().raised : "transparent", ...feedbackStyle() }}>
-                      <Icon name={tab().icon} size={18} color={palette().text} />
-                      <Text style={{ flex: 1, minWidth: 0, color: palette().text, fontSize: 14,
-                        fontWeight: page() === tab().page ? "600" : "500" }}>{ui.t(tab().zh, tab().en)}</Text>
-                      <If when={platform.desktop}>
-                        <Text style={{ fontSize: 11, color: palette().muted }}>{keymap.label(`mod+${index() + 1}`)}</Text>
-                      </If>
-                    </Button>}
-                  </Each>
-                </View>
-                <Each of={desktopSections}>
-                  {(section) => <View style={{ gap: spacing.xxs }}>
-                    <Text role="header" style={{ paddingHorizontal: spacing.md, paddingBottom: spacing.xxs,
-                      fontSize: 12, lineHeight: 18, fontWeight: "500", color: palette().muted }}>
-                      {ui.t(...section().title)}
-                    </Text>
-                    <Each of={section().items}>
-                      {(item) => <Button testID={`desktop-nav-${item().page}`} selected={page() === item().page}
-                        accessibilityLabel={ui.t(...titles[item().page])} onPress={() => navigate(item().page)}
-                        focusStyle={focusRing()} hoverStyle={{ backgroundColor: palette().soft }}
-                        activeStyle={{ opacity: 0.8 }} style={{ minHeight: control.row,
-                          paddingHorizontal: spacing.md, gap: spacing.md, borderRadius: radius.md,
-                          flexDirection: "row", alignItems: "center", ...feedbackStyle(),
-                          backgroundColor: page() === item().page ? palette().raised : "transparent" }}>
-                        <Icon name={item().icon} size={18} color={palette().muted} />
-                        <Text style={{ flex: 1, minWidth: 0, color: palette().text, fontSize: 14,
-                          fontWeight: page() === item().page ? "600" : "500" }}>{ui.t(...titles[item().page])}</Text>
-                      </Button>}
-                    </Each>
-                  </View>}
-                </Each>
-              </Scroll>
-              <Text
-                style={{
-                  margin: spacing.sm,
-                  color: palette().muted,
-                  fontSize: 12,
-                  textAlign: "center",
-                }}
-              >
-                Paws {props.client.domains.data("summary")?.appVersion || ""}
-              </Text>
-            </View>
+            <DesktopNavigation
+              page={page()}
+              navigate={navigate}
+              t={ui.t}
+              version={props.client.domains.data("summary")?.appVersion || ""}
+            />
           </If>
           <View style={{ flex: 1, minWidth: 0 }}>
             <View
               style={{
-                minHeight: Math.max(wide() ? 64 : 56, 28 * Math.max(1, fontScale()) + 16),
+                minHeight: Math.max(
+                  chrome.header,
+                  density.line(28) * Math.max(1, fontScale()) + spacing.lg,
+                ),
                 borderBottomWidth: 1,
                 borderBottomColor: palette().border,
                 alignItems: "center",
@@ -373,7 +348,7 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                   gap: spacing.xxs,
                 }}
               >
-                <If when={parentPage(page())}>
+                <If when={canBack()}>
                   <IconButton
                     id="nav-back"
                     icon="arrow-left"
@@ -386,13 +361,16 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                   style={{
                     flex: 1,
                     color: palette().text,
-                    fontSize: 20,
-                    lineHeight: 28,
+                    fontSize: density.font(20),
+                    lineHeight: density.line(28),
                     fontWeight: "600",
                     letterSpacing: -0.3,
                   }}
                 >
-                  {ui.t(...titles[page()])}
+                  {platform.desktop &&
+                  (page() === "connections" || page() === "requests")
+                    ? ui.t("连接与请求", "Network activity")
+                    : ui.t(...titles[page()])}
                 </Text>
                 <If when={page() === "profiles"}>
                   <IconButton
@@ -402,7 +380,10 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                     loading={props.client.isPending("profiles.refreshAll")}
                     disabled={
                       props.client.pending() > 0 ||
-                      !props.client.domains.readyForCommand(["config", "profiles"])
+                      !props.client.domains.readyForCommand([
+                        "config",
+                        "profiles",
+                      ])
                     }
                     onPress={() => void refreshProfiles()}
                   />
@@ -418,15 +399,21 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                     icon="zap"
                     label={ui.t("测试延迟", "Test latency")}
                     loading={proxyDelayLoading()}
-                    disabled={proxyDelayLoading() || !props.client.domains.fresh(["proxies"])}
+                    disabled={
+                      proxyDelayLoading() ||
+                      !props.client.domains.fresh(["proxies"])
+                    }
                     onPress={() => {
                       if (proxyDelayLoading()) return;
                       proxyDelayLoading.set(true);
                       void (async () => {
                         try {
-                          for (const group of props.client.state()!.proxyGroups) {
+                          for (const group of props.client.state()!
+                            .proxyGroups) {
                             if (!alive()) return;
-                            await props.client.run("proxies.testGroup", { group: group.name });
+                            await props.client.run("proxies.testGroup", {
+                              group: group.name,
+                            });
                           }
                         } finally {
                           if (alive()) proxyDelayLoading.set(false);
@@ -455,14 +442,28 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                         ui,
                         history
                           ? ui.t("清空请求记录？", "Clear request history?")
-                          : ui.t("关闭全部活动连接？", "Close all active connections?"),
+                          : ui.t(
+                              "关闭全部活动连接？",
+                              "Close all active connections?",
+                            ),
                         () =>
                           void props.client.run(
                             history ? "requests.clear" : "connections.closeAll",
                           ),
-                        { actionLabel: history ? ui.t("清空记录", "Clear history") : ui.t("关闭全部连接", "Close all connections"),
-                          description: history ? ui.t("清除本地保存的请求历史。", "Remove the locally stored request history.")
-                            : ui.t("当前 TCP 与 UDP 会话将断开。", "Disconnect the current TCP and UDP sessions.") },
+                        {
+                          actionLabel: history
+                            ? ui.t("清空记录", "Clear history")
+                            : ui.t("关闭全部连接", "Close all connections"),
+                          description: history
+                            ? ui.t(
+                                "清除本地保存的请求历史。",
+                                "Remove the locally stored request history.",
+                              )
+                            : ui.t(
+                                "当前 TCP 与 UDP 会话将断开。",
+                                "Disconnect the current TCP and UDP sessions.",
+                              ),
+                        },
                       );
                     }}
                   />
@@ -477,7 +478,9 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                         : ui.t("开始记录日志", "Record logs")
                     }
                     disabled={props.client.pending() > 0}
-                    onPress={() => logRecordingIntent.set(logRecordingIntent() + 1)}
+                    onPress={() =>
+                      logRecordingIntent.set(logRecordingIntent() + 1)
+                    }
                   />
                 </If>
                 <If when={page() === "converter"}>
@@ -496,21 +499,72 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                     id="lookup-rule"
                     icon="search"
                     label={ui.t("规则查询", "Rule lookup")}
-                    disabled={!props.client.domains.fresh(pageDomains("resources"))}
-                    onPress={() => resourceIntent.set({ id: ++resourceSequence, kind: "lookup" })}
+                    disabled={
+                      !props.client.domains.fresh(pageDomains("resources"))
+                    }
+                    onPress={() =>
+                      resourceIntent.set({
+                        id: ++resourceSequence,
+                        kind: "lookup",
+                      })
+                    }
                   />
                   <IconButton
                     id="add-rule"
                     icon="plus"
                     label={ui.t("添加规则", "Add rule")}
-                    disabled={!props.client.domains.fresh(pageDomains("resources"))}
-                    onPress={() => resourceIntent.set({ id: ++resourceSequence, kind: "add" })}
+                    disabled={
+                      !props.client.domains.fresh(pageDomains("resources"))
+                    }
+                    onPress={() =>
+                      resourceIntent.set({
+                        id: ++resourceSequence,
+                        kind: "add",
+                      })
+                    }
                   />
                 </If>
               </View>
             </View>
+            <If
+              when={
+                platform.desktop &&
+                (page() === "connections" || page() === "requests")
+              }
+            >
+              <View
+                style={{
+                  paddingHorizontal: spacing.xxl,
+                  paddingTop: spacing.md,
+                  alignSelf: "center",
+                  width: "100%",
+                  maxWidth: pageMeasure(page(), true),
+                }}
+              >
+                <Tabs
+                  idPrefix="activity-view"
+                  value={page()}
+                  options={[
+                    {
+                      value: "connections",
+                      label: ui.t("活动连接", "Active connections"),
+                    },
+                    {
+                      value: "requests",
+                      label: ui.t("请求历史", "Request history"),
+                    },
+                  ]}
+                  onChange={(value) => navigate(value as Page)}
+                />
+              </View>
+            </If>
             <If when={props.client.vpnUnconfirmed()}>
-              <View style={{ paddingHorizontal: spacing.lg, paddingVertical: spacing.sm }}>
+              <View
+                style={{
+                  paddingHorizontal: spacing.lg,
+                  paddingVertical: spacing.sm,
+                }}
+              >
                 <Alert
                   title={ui.t("VPN 操作尚未确认", "VPN operation unconfirmed")}
                   text={ui.t(
@@ -529,7 +583,9 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                       onPress={() => {
                         const current = props.client.vpnUnconfirmed();
                         if (current)
-                          void props.client.run("vpn.confirm", { requestId: current.requestId });
+                          void props.client.run("vpn.confirm", {
+                            requestId: current.requestId,
+                          });
                       }}
                     />
                     <Action
@@ -542,7 +598,9 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                       onPress={() => {
                         const current = props.client.vpnUnconfirmed();
                         if (current)
-                          void props.client.run("vpn.recover", { requestId: current.requestId });
+                          void props.client.run("vpn.recover", {
+                            requestId: current.requestId,
+                          });
                       }}
                     />
                   </Actions>
@@ -550,8 +608,16 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
               </View>
             </If>
             <If when={!props.client.state()}>
-              <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-                <Loading text={ui.t("正在读取连接状态…", "Loading connection state…")} />
+              <View
+                style={{
+                  flex: 1,
+                  justifyContent: "center",
+                  alignItems: "center",
+                }}
+              >
+                <Loading
+                  text={ui.t("正在读取连接状态…", "Loading connection state…")}
+                />
                 <If when={props.client.domains.error(["config", "status"])}>
                   <PageError
                     id="critical-error"
@@ -559,11 +625,13 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                   />
                 </If>
                 <If when={props.client.domains.error(["config", "status"])}>
-                <Action
-                  secondary
-                  label={ui.t("重试", "Retry")}
-                  onPress={() => props.client.domains.retry(["config", "status"])}
-                />
+                  <Action
+                    secondary
+                    label={ui.t("重试", "Retry")}
+                    onPress={() =>
+                      props.client.domains.retry(["config", "status"])
+                    }
+                  />
                 </If>
               </View>
             </If>
@@ -571,12 +639,17 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
               <NavStack state={nav} style={{ flex: 1 }}>
                 {(current) => {
                   const content = (
-                    <View style={{ flex: 1, backgroundColor: palette().background }}>
+                    <View
+                      style={{ flex: 1, backgroundColor: palette().background }}
+                    >
                       <View
                         style={{
                           flex: 1,
                           width: "100%",
-                          maxWidth: current.name === "editor" ? undefined : pageMeasure(current.name, wide()),
+                          maxWidth:
+                            current.name === "editor"
+                              ? undefined
+                              : pageMeasure(current.name, wide()),
                           alignSelf: "center",
                         }}
                       >
@@ -645,9 +718,25 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
                     <NavPage
                       style={{ backgroundColor: palette().background }}
                       headerVisible={false}
-                      animation={reduceMotion() ? "none" : parentPage(current.name) ? "default" : "fade"}
-                      popOnBack={current.name !== "editor" && current.name !== "settings"}
-                      onBackPress={() => { if (current.name === "editor" || current.name === "settings") back(); }}
+                      animation={
+                        reduceMotion()
+                          ? "none"
+                          : platform.desktop
+                            ? "fade"
+                            : parentPage(current.name)
+                              ? "default"
+                              : "fade"
+                      }
+                      popOnBack={
+                        current.name !== "editor" && current.name !== "settings"
+                      }
+                      onBackPress={() => {
+                        if (
+                          current.name === "editor" ||
+                          current.name === "settings"
+                        )
+                          back();
+                      }}
                     >
                       {content}
                     </NavPage>
@@ -658,32 +747,88 @@ export function PawsApp(props: { client: CoreClient; embeddedGateway?: boolean }
           </View>
         </View>
         <If when={!wide() && !parentPage(page())}>
-          <BaseTabs testID="bottom-navigation" style={{ minHeight: 64, flexDirection: "row",
-            paddingHorizontal: spacing.sm, paddingVertical: spacing.xxs, gap: spacing.xxs,
-            backgroundColor: palette().background, borderTopWidth: 1, borderTopColor: palette().border }}
-            indicatorStyle={{ top: spacing.xxs, bottom: spacing.xxs, borderRadius: radius.md,
-              backgroundColor: palette().soft }}>
+          <BaseTabs
+            testID="bottom-navigation"
+            style={{
+              minHeight: chrome.bottom,
+              flexDirection: "row",
+              paddingHorizontal: spacing.sm,
+              paddingVertical: spacing.xxs,
+              gap: spacing.xxs,
+              backgroundColor: palette().background,
+              borderTopWidth: 1,
+              borderTopColor: palette().border,
+            }}
+            indicatorStyle={{
+              top: spacing.xxs,
+              bottom: spacing.xxs,
+              borderRadius: radius.md,
+              backgroundColor: palette().soft,
+            }}
+          >
             <Each of={primary}>
-              {(tab) => <Tab testID={`nav-${tab().page}`} selected={group() === tab().page}
-                accessibilityLabel={ui.t(tab().zh, tab().en)} onPress={() => navigate(tab().page)}
-                focusStyle={focusRing()} activeStyle={{ opacity: 0.8 }}
-                style={{ flex: 1, minHeight: 52, alignItems: "center", justifyContent: "center",
-                  gap: spacing.xxs, borderRadius: radius.md, ...feedbackStyle() }}>
-                <Icon name={tab().icon} size={20} color={group() === tab().page ? palette().accent : palette().muted} />
-                <Text style={{ fontSize: 12, lineHeight: 16, color: group() === tab().page ? palette().text : palette().muted,
-                  fontWeight: group() === tab().page ? "600" : "500" }}>{ui.t(tab().zh, tab().en)}</Text>
-              </Tab>}
+              {(tab) => (
+                <Tab
+                  testID={`nav-${tab().page}`}
+                  selected={group() === tab().page}
+                  accessibilityLabel={ui.t(tab().zh, tab().en)}
+                  onPress={() => navigate(tab().page)}
+                  focusStyle={focusRing()}
+                  activeStyle={{ opacity: 0.8 }}
+                  style={{
+                    flex: 1,
+                    minHeight: control.compact ? 44 : 52,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: spacing.xxs,
+                    borderRadius: radius.md,
+                    ...feedbackStyle(),
+                  }}
+                >
+                  <Icon
+                    name={tab().icon}
+                    size={20}
+                    color={
+                      group() === tab().page
+                        ? palette().accent
+                        : palette().muted
+                    }
+                  />
+                  <Text
+                    style={{
+                      fontSize: density.font(12),
+                      lineHeight: density.line(16),
+                      color:
+                        group() === tab().page
+                          ? palette().text
+                          : palette().muted,
+                      fontWeight: group() === tab().page ? "600" : "500",
+                    }}
+                  >
+                    {ui.t(tab().zh, tab().en)}
+                  </Text>
+                </Tab>
+              )}
             </Each>
           </BaseTabs>
         </If>
-        <FloatingVpnPowerButton visible={!wide() && page() === "dashboard" && !!props.client.state()} />
+        <FloatingVpnPowerButton
+          visible={!wide() && page() === "dashboard" && !!props.client.state()}
+        />
         <NotificationViewport />
       </>
     );
     return (
-      <View style={{ flex: 1, backgroundColor: palette().background,
-        paddingTop: "env(safe-area-inset-top)", paddingBottom: "env(safe-area-inset-bottom)",
-        paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)" }}>
+      <View
+        style={{
+          flex: 1,
+          backgroundColor: palette().background,
+          paddingTop: "env(safe-area-inset-top)",
+          paddingBottom: "env(safe-area-inset-bottom)",
+          paddingLeft: "env(safe-area-inset-left)",
+          paddingRight: "env(safe-area-inset-right)",
+        }}
+      >
         {content}
       </View>
     );
@@ -704,26 +849,38 @@ function PageData(props: { domains: DomainInput[]; children?: JSX.Element }) {
       <If
         when={ui.client.domains.has(props.domains)}
         else={
-          <View style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 12 }}>
+          <View
+            style={{
+              flex: 1,
+              alignItems: "center",
+              justifyContent: "center",
+              gap: density.space(12),
+            }}
+          >
             <Loading text={ui.t("正在读取页面数据…", "Loading page data…")} />
             <If when={ui.client.domains.error(props.domains)}>
               <PageError text={ui.client.domains.error(props.domains)} />
             </If>
             <If when={ui.client.domains.error(props.domains)}>
-            <Action
-              id="page-data-retry"
-              secondary
-              label={ui.t("重试", "Retry")}
-              onPress={() => ui.client.domains.retry(props.domains)}
-            />
+              <Action
+                id="page-data-retry"
+                secondary
+                label={ui.t("重试", "Retry")}
+                onPress={() => ui.client.domains.retry(props.domains)}
+              />
             </If>
           </View>
         }
       >
         {props.children}
       </If>
-      <If when={ui.client.domains.has(props.domains) && ui.client.domains.error(props.domains)}>
-        <View style={{ padding: 12, gap: 8 }}>
+      <If
+        when={
+          ui.client.domains.has(props.domains) &&
+          ui.client.domains.error(props.domains)
+        }
+      >
+        <View style={{ padding: density.space(12), gap: density.space(8) }}>
           <PageError text={ui.client.domains.error(props.domains)} />
           <Action
             id="page-data-retry"

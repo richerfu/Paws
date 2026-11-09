@@ -4,12 +4,7 @@ import { fixture } from "./fixture";
 import { DraftEdits, draftDecision } from "../src/draft";
 import { isChinese } from "../src/locale";
 import { connectionState } from "../src/connection-state";
-import {
-  matchesGeodata,
-  matchesLog,
-  matchesProfile,
-  matchesRule,
-} from "../src/query";
+import { matchesGeodata, matchesLog, matchesProfile, matchesRule } from "../src/query";
 import { translator, useLifetime } from "../src/components";
 import { vpnIntentTrace } from "./VpnIntent";
 import {

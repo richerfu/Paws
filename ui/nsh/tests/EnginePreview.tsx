@@ -23,8 +23,11 @@ mount(() => {
     if (!condition) throw new Error(message);
   };
   host.onQuery = (request, reply) => {
-    reply.observation = { engine: "meow", session: state.vpnSessionId ?? null,
-      issues: [{ field: "configuration", reason: "INTERNAL_CONFIGURATION_PREVIEW_METADATA" }] };
+    reply.observation = {
+      engine: "meow",
+      session: state.vpnSessionId ?? null,
+      issues: [{ field: "configuration", reason: "INTERNAL_CONFIGURATION_PREVIEW_METADATA" }],
+    };
     if (failSummary && reply.domain === "summary") {
       host.result({ id: request.id, ok: false, error: "Actual summary query failure" });
       return true;
@@ -49,10 +52,23 @@ mount(() => {
     if (fail) host.result({ id: request!.id, ok: false, error: "Controlled preview failure" });
     else {
       const engine = (request!.payload.options as VpnOptions).engine;
-      const selected = fallback ? "mihomo" : engine === "auto" ? "meow" : engine === "singbox" ? "sing-box" : engine;
-      host.reply(request!, { selected, reasons: [longReason
-        ? "Long compatibility explanation " + "x".repeat(200)
-        : fallback ? "Requested engine cannot compile this public synthetic rule" : `reason-${engine}`] });
+      const selected = fallback
+        ? "mihomo"
+        : engine === "auto"
+          ? "meow"
+          : engine === "singbox"
+            ? "sing-box"
+            : engine;
+      host.reply(request!, {
+        selected,
+        reasons: [
+          longReason
+            ? "Long compatibility explanation " + "x".repeat(200)
+            : fallback
+              ? "Requested engine cannot compile this public synthetic rule"
+              : `reason-${engine}`,
+        ],
+      });
     }
   };
   const change = (profile: boolean) => {
@@ -96,19 +112,34 @@ mount(() => {
         "Reselecting the current engine dispatched a preview/write",
       );
     if (name === "metadata-hidden")
-      assert(client.domains.issues(["config"]).includes("INTERNAL_CONFIGURATION_PREVIEW_METADATA"),
-        "Observation metadata was deleted rather than merely hidden");
+      assert(
+        client.domains.issues(["config"]).includes("INTERNAL_CONFIGURATION_PREVIEW_METADATA"),
+        "Observation metadata was deleted rather than merely hidden",
+      );
     if (name === "query-error")
-      assert(client.domains.error(["summary"]) === "Actual summary query failure" && writes.length === 0,
-        "Actual query failure was lost or replayed a write");
+      assert(
+        client.domains.error(["summary"]) === "Actual summary query failure" && writes.length === 0,
+        "Actual query failure was lost or replayed a write",
+      );
     if (name === "query-recovered")
-      assert(client.domains.error(["summary"]) === "" && client.domains.fresh(["summary"]) && writes.length === 0,
-        "Readonly Retry did not recover actual query failure");
+      assert(
+        client.domains.error(["summary"]) === "" &&
+          client.domains.fresh(["summary"]) &&
+          writes.length === 0,
+        "Readonly Retry did not recover actual query failure",
+      );
     console.log(`PASS PREVIEW: ${name}`);
   };
   const port = (id: string, action: () => void) => {
-    const press = testControl(`preview-${id}`, () => { action(); tick.set(tick() + 1); });
-    return <View testID={`preview-${id}`} onPress={press}><Text>{id}</Text></View>;
+    const press = testControl(`preview-${id}`, () => {
+      action();
+      tick.set(tick() + 1);
+    });
+    return (
+      <View testID={`preview-${id}`} onPress={press}>
+        <Text>{id}</Text>
+      </View>
+    );
   };
   return (
     <View style={{ flex: 1 }}>
@@ -130,7 +161,9 @@ mount(() => {
           state = { ...state, revision: state.revision + 1 };
           host.change(["summary"]);
         })}
-        {port("query-allow", () => { failSummary = false; })}
+        {port("query-allow", () => {
+          failSummary = false;
+        })}
         {port("write-result", () => {
           assert(writes.length === 1, "No write to release");
           const request = writes.shift()!;

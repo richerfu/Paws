@@ -168,7 +168,7 @@ mount(() => {
     mihomoVersion: "v1.19.16+8597778c7df410ebe88c57e59eaab32d203156df-public-synthetic-local-build",
     singBoxVersion:
       "1.13.0-alpha.22+628cb31ffa79cffffd34c2f9cde6cae044e4fc12-public-synthetic-local-build",
-    meowRsVersion: "0.22.0-public-synthetic-local-build." + "abcdef0123456789".repeat(4),
+    meowRsVersion: "0.29.0+809b7a7-public-synthetic-local-build." + "abcdef0123456789".repeat(4),
     rustVersion: "rustc 1.99.0-nightly (public-synthetic-2026-10-22-local-build)",
   };
   const host = new DomainHost(client, () => state);

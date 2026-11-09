@@ -1,3 +1,4 @@
+import { density } from "./theme";
 import {
   computed,
   signal,
@@ -25,9 +26,15 @@ function detailScale(scale: number): number {
 
 /** Keep the exact source separately from each bounded display row. Hard line
  * separators belong to raw; no surrogate pair or CRLF is split. */
-export function errorTextRows(source: string, scale = 1): { key: number; text: string; raw: string }[] {
+export function errorTextRows(
+  source: string,
+  scale = 1,
+): { key: number; text: string; raw: string }[] {
   const rows: { key: number; text: string; raw: string }[] = [];
-  const chunkScalars = Math.max(1, Math.floor(DETAIL_SCALARS / detailScale(scale)));
+  const chunkScalars = Math.max(
+    1,
+    Math.floor(DETAIL_SCALARS / detailScale(scale)),
+  );
   let start = 0,
     offset = 0,
     scalars = 0;
@@ -43,7 +50,8 @@ export function errorTextRows(source: string, scale = 1): { key: number; text: s
   while (offset < source.length) {
     const value = source.charCodeAt(offset);
     if (HARD_BREAKS.has(value)) {
-      const end = offset + (value === 13 && source.charCodeAt(offset + 1) === 10 ? 2 : 1);
+      const end =
+        offset + (value === 13 && source.charCodeAt(offset + 1) === 10 ? 2 : 1);
       push(end, offset);
       offset = end;
       continue;
@@ -87,7 +95,11 @@ export function PageError(props: {
   return (
     <View
       testID={id()}
-      style={{ width: props.renderTrigger ? undefined : "100%", minWidth: 0, gap: props.renderTrigger ? 0 : 8 }}
+      style={{
+        width: props.renderTrigger ? undefined : "100%",
+        minWidth: 0,
+        gap: props.renderTrigger ? 0 : density.space(8),
+      }}
     >
       <If when={!props.renderTrigger}>
         <Text
@@ -96,8 +108,8 @@ export function PageError(props: {
             numberOfLines: 3,
             width: "100%",
             minWidth: 0,
-            fontSize: 13,
-            lineHeight: 20,
+            fontSize: density.font(13),
+            lineHeight: density.line(20),
             color: danger() ? statusColors("danger").text : palette().muted,
           }}
         >
@@ -122,28 +134,41 @@ export function PageError(props: {
       </If>
       <If when={detail() !== undefined}>
         <Dialog
-          title={danger() ? ui.t("错误详情", "Error details") : ui.t("详细信息", "Details")}
+          title={
+            danger()
+              ? ui.t("错误详情", "Error details")
+              : ui.t("详细信息", "Details")
+          }
           onClose={() => detail.set(undefined)}
-          footer={<Actions>
-            <Action
-              id={`${id()}-close`}
-              secondary
-              label={ui.t("关闭", "Close")}
-              onPress={() => detail.set(undefined)}
-            />
-            <Action
-              id={`${id()}-copy`}
-              secondary
-              label={danger()
-                ? ui.t("复制完整错误", "Copy full error")
-                : ui.t("复制完整信息", "Copy full information")}
-              onPress={() => Clipboard.writeText(detail() || "")}
-            />
-          </Actions>}
+          footer={
+            <Actions>
+              <Action
+                id={`${id()}-close`}
+                secondary
+                label={ui.t("关闭", "Close")}
+                onPress={() => detail.set(undefined)}
+              />
+              <Action
+                id={`${id()}-copy`}
+                secondary
+                label={
+                  danger()
+                    ? ui.t("复制完整错误", "Copy full error")
+                    : ui.t("复制完整信息", "Copy full information")
+                }
+                onPress={() => Clipboard.writeText(detail() || "")}
+              />
+            </Actions>
+          }
         >
           <View
             testID={`${id()}-list`}
-            style={{ height: Math.max(20, Math.min(DETAIL_VIEWPORT_HEIGHT, windowSize().height * 0.4)) }}
+            style={{
+              height: Math.max(
+                20,
+                Math.min(DETAIL_VIEWPORT_HEIGHT, windowSize().height * 0.4),
+              ),
+            }}
           >
             <List
               bounces={false}
@@ -162,7 +187,7 @@ export function PageError(props: {
                     maxWidth: "100%",
                     minWidth: 0,
                     minHeight: rowHeight(),
-                    fontSize: 13,
+                    fontSize: density.font(13),
                     lineHeight: DETAIL_LINE_HEIGHT,
                     color: palette().text,
                   }}
@@ -172,7 +197,6 @@ export function PageError(props: {
               )}
             </List>
           </View>
-
         </Dialog>
       </If>
     </View>

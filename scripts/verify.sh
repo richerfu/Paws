@@ -12,6 +12,8 @@ python3 scripts/test-nsh-build-source.py
 python3 scripts/test-signing-profile.py
 python3 scripts/test-sign-existing-hap.py
 python3 ui/nsh/run-tests.py
+python3 ui/nsh/tests/run-density-tests.py
+python3 ui/nsh/tests/run-workspace-layout-tests.py
 python3 ui/nsh/tests/run-about-tests.py
 python3 ui/nsh/tests/run-activity-tests.py
 python3 ui/nsh/tests/run-refresh-tests.py

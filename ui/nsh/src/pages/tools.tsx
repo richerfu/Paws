@@ -1,4 +1,5 @@
-import { Scroll, signal, Text, View} from "nsh";
+import { density } from "../theme";
+import { Scroll, signal, Text, View } from "nsh";
 import {
   Action,
   Actions,
@@ -17,10 +18,10 @@ import {
   Toggle,
   type Page,
   useApp,
-  useLifetime} from "../components";
+  useLifetime,
+} from "../components";
 import { feedbackStyle } from "../motion";
 import { control, focusRing } from "../theme";
-
 
 import { ABOUT_LINKS } from "../about";
 import { COPY } from "../product-copy";
@@ -162,9 +163,16 @@ export function Tools() {
       <Body>
         <Each of={sections}>
           {(section) => (
-            <View style={{ gap: 8, marginBottom: 4 }}>
+            <View
+              style={{ gap: density.space(8), marginBottom: density.space(4) }}
+            >
               <Text
-                style={{ color: palette().muted, fontSize: 14, fontWeight: "600", marginLeft: 4 }}
+                style={{
+                  color: palette().muted,
+                  fontSize: density.font(14),
+                  fontWeight: "600",
+                  marginLeft: density.space(4),
+                }}
               >
                 {ui.t(section().zh, section().en)}
               </Text>
@@ -186,15 +194,16 @@ export function Tools() {
                         role="button"
                         accessibilityLabel={ui.t(tool().zh, tool().en)}
                         onPress={() => ui.navigate(tool().page)}
-                        focusStyle={focusRing()} hoverStyle={{ backgroundColor: palette().soft }}
+                        focusStyle={focusRing()}
+                        hoverStyle={{ backgroundColor: palette().soft }}
                         activeStyle={{ opacity: 0.85 }}
                         style={{
                           minHeight: control.height >= 44 ? 76 : 64,
                           ...feedbackStyle(),
-                          padding: 12,
+                          padding: density.space(12),
                           flexDirection: "row",
                           alignItems: "center",
-                          gap: 12,
+                          gap: density.space(12),
                         }}
                       >
                         <View
@@ -207,13 +216,23 @@ export function Tools() {
                             justifyContent: "center",
                           }}
                         >
-                          <Icon name={tool().icon} size={17} color={palette().text} />
+                          <Icon
+                            name={tool().icon}
+                            size={17}
+                            color={palette().text}
+                          />
                         </View>
-                        <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
+                        <View
+                          style={{
+                            flex: 1,
+                            minWidth: 0,
+                            gap: density.space(4),
+                          }}
+                        >
                           <Text
                             style={{
-                              fontSize: 14,
-                              lineHeight: 20,
+                              fontSize: density.font(14),
+                              lineHeight: density.line(20),
                               fontWeight: "600",
                               color: palette().text,
                             }}
@@ -221,12 +240,20 @@ export function Tools() {
                             {ui.t(tool().zh, tool().en)}
                           </Text>
                           <Text
-                            style={{ fontSize: 12, lineHeight: 18, color: palette().muted }}
+                            style={{
+                              fontSize: density.font(12),
+                              lineHeight: density.line(18),
+                              color: palette().muted,
+                            }}
                           >
                             {ui.t(tool().descriptionZh, tool().descriptionEn)}
                           </Text>
                         </View>
-                        <Icon name="chevron-right" size={16} color={palette().muted} />
+                        <Icon
+                          name="chevron-right"
+                          size={16}
+                          color={palette().muted}
+                        />
                       </View>
                       <If when={index() + 1 < section().rows.length}>
                         <Separator />
@@ -238,7 +265,14 @@ export function Tools() {
             </View>
           )}
         </Each>
-        <Text style={{ textAlign: "center", marginTop: 24, fontSize: 12, color: palette().muted }}>
+        <Text
+          style={{
+            textAlign: "center",
+            marginTop: density.space(24),
+            fontSize: density.font(12),
+            color: palette().muted,
+          }}
+        >
           Paws {ui.client.domains.data("summary")?.appVersion || ""}
         </Text>
       </Body>
@@ -259,7 +293,9 @@ export function Diagnostics() {
   const ui = useApp(),
     current = () => ui.client.state()!,
     alive = useLifetime();
-  const group = signal(ui.client.domains.data("summary")!.groups[0]?.name || ""),
+  const group = signal(
+      ui.client.domains.data("summary")!.groups[0]?.name || "",
+    ),
     url = signal("https://www.gstatic.com/generate_204"),
     watch = signal<Watch>({ enabled: false, group: "", url: "" }),
     health = signal<Health | null>(null),
@@ -295,23 +331,30 @@ export function Diagnostics() {
     ui.client.domains
       .data("summary")!
       .groups.some(
-        (entry) => entry.name === group() && entry.groupType.toLowerCase() === "selector",
+        (entry) =>
+          entry.name === group() &&
+          entry.groupType.toLowerCase() === "selector",
       );
   const validUrl = () => /^https:\/\/[^/?#@\s]+(?:\/[^?#\s]*)?$/.test(url());
   const saveWatch = async (enabled: boolean) => {
     const value = await ui.client.run<Watch>(
       "diagnostics.watchSet",
-      enabled ? { enabled, group: group(), url: url() } : { enabled: false, group: "", url: "" },
+      enabled
+        ? { enabled, group: group(), url: url() }
+        : { enabled: false, group: "", url: "" },
       ui.t("自动恢复策略已保存", "Recovery policy saved"),
     );
     if (alive() && value) watch.set(value);
   };
   const probe = async () => {
     if (busy()) return;
-    const value = await ui.client.run<{ delay: number; sessionId: string }>("diagnostics.probe", {
-      group: group(),
-      url: url(),
-    });
+    const value = await ui.client.run<{ delay: number; sessionId: string }>(
+      "diagnostics.probe",
+      {
+        group: group(),
+        url: url(),
+      },
+    );
     if (alive() && value) result.set(`${value.delay} ms · ${group()}`);
   };
   const checkTone = (state: string) =>
@@ -339,6 +382,16 @@ export function Diagnostics() {
   return (
     <Scroll bounces={false} style={{ flex: 1 }}>
       <Body>
+        <Actions>
+          <Action
+            id="diagnostics-advanced"
+            secondary
+            small
+            icon="stethoscope"
+            label={ui.t("高级诊断", "Advanced diagnostics")}
+            onPress={() => ui.navigate("advanced-diagnostics")}
+          />
+        </Actions>
         <Card
           title={ui.t("连接状态", "Connection status")}
           subtitle={ui.t(
@@ -356,7 +409,9 @@ export function Diagnostics() {
             }
             label="VPN"
             value={
-              current().vpnRunning ? ui.t("已连接", "Connected") : ui.t("未连接", "Disconnected")
+              current().vpnRunning
+                ? ui.t("已连接", "Connected")
+                : ui.t("未连接", "Disconnected")
             }
           />
           <Detail
@@ -369,7 +424,10 @@ export function Diagnostics() {
             value={
               current().dns.statisticsAvailable
                 ? `${current().dns.handledPackets} / ${current().dns.cacheHits} / ${current().dns.cacheMisses}`
-                : ui.t("当前内核未提供统计", "Statistics unavailable from the engine")
+                : ui.t(
+                    "当前内核未提供统计",
+                    "Statistics unavailable from the engine",
+                  )
             }
           />
           <Separator />
@@ -420,7 +478,10 @@ export function Diagnostics() {
             onPress={() => void loadHealth(true)}
           />
           <If when={current().networkProtectError}>
-            <PageError id="diagnostics-protection-error" text={current().networkProtectError || ""} />
+            <PageError
+              id="diagnostics-protection-error"
+              text={current().networkProtectError || ""}
+            />
           </If>
         </Card>
         <Card
@@ -452,8 +513,14 @@ export function Diagnostics() {
                 : "custom"
             }
             options={[
-              { value: "https://www.gstatic.com/generate_204", label: "Gstatic 204" },
-              { value: "https://cp.cloudflare.com/generate_204", label: "Cloudflare" },
+              {
+                value: "https://www.gstatic.com/generate_204",
+                label: "Gstatic 204",
+              },
+              {
+                value: "https://cp.cloudflare.com/generate_204",
+                label: "Cloudflare",
+              },
               { value: "https://github.com/robots.txt", label: "GitHub" },
               { value: "custom", label: ui.t("自定义", "Custom") },
             ]}
@@ -484,14 +551,17 @@ export function Diagnostics() {
             />
           </If>
           <Action
-            primary id="diagnostics-probe"
+            primary
+            id="diagnostics-probe"
             loading={ui.client.isPending("diagnostics.probe")}
             label={
               current().vpnRunning
                 ? ui.t("开始探测", "Run probe")
                 : ui.t("请先连接 VPN", "Connect VPN first")
             }
-            disabled={busy() || !current().vpnRunning || !group() || !validUrl()}
+            disabled={
+              busy() || !current().vpnRunning || !group() || !validUrl()
+            }
             onPress={() => void probe()}
           />
           <If when={result()}>
@@ -512,7 +582,9 @@ export function Diagnostics() {
               "Available for manual Selector groups.",
             )}
             value={watch().enabled}
-            disabled={busy() || (!watch().enabled && (!selector() || !validUrl()))}
+            disabled={
+              busy() || (!watch().enabled && (!selector() || !validUrl()))
+            }
             onChange={(enabled) => void saveWatch(enabled)}
           />
           <If when={watch().enabled}>
@@ -579,9 +651,10 @@ export function AdvancedDiagnostics() {
           <Select
             label={ui.t("策略组", "Proxy group")}
             value={group()}
-            options={ui.client.domains
-              .data("summary")!
-              .groups.map((entry) => ({ value: entry.name, label: entry.name }))}
+            options={ui.client.domains.data("summary")!.groups.map((entry) => ({
+              value: entry.name,
+              label: entry.name,
+            }))}
             onChange={(value) => group.set(value)}
             disabled={busy()}
           />
@@ -599,7 +672,8 @@ export function AdvancedDiagnostics() {
             )}
           />
           <Action
-            primary loading={ui.client.isPending("diagnostics.serviceDns")}
+            primary
+            loading={ui.client.isPending("diagnostics.serviceDns")}
             label={ui.t("应用 DoH 策略", "Apply DoH policy")}
             disabled={busy() || !group() || !domains().trim()}
             onPress={() =>
@@ -680,21 +754,32 @@ export function Backups() {
   const exportBackup = async () => {
     const content = await ui.client.run<string>("backups.export");
     if (alive() && content !== undefined)
-      await ui.client.run("platform.export", { name: "Paws-backup.json", content });
+      await ui.client.run("platform.export", {
+        name: "Paws-backup.json",
+        content,
+      });
   };
   const restore = async () => {
-    const file = await ui.client.run<{ name: string; content: string }>("platform.importFile");
+    const file = await ui.client.run<{ name: string; content: string }>(
+      "platform.importFile",
+    );
     if (alive() && file)
       void confirm(
         ui,
-        ui.t(`从“${file.name}”恢复配置？`, `Restore profiles from “${file.name}”?`),
+        ui.t(
+          `从“${file.name}”恢复配置？`,
+          `Restore profiles from “${file.name}”?`,
+        ),
         () =>
           void ui.client.run(
             "backups.restore",
             { content: file.content },
             ui.t("备份已恢复", "Backup restored"),
           ),
-        { actionLabel: ui.t("恢复配置副本", "Restore profile copies"), destructive: false },
+        {
+          actionLabel: ui.t("恢复配置副本", "Restore profile copies"),
+          destructive: false,
+        },
       );
   };
   const webdav = (command: string) =>
@@ -799,9 +884,16 @@ export function Backups() {
               onPress={() =>
                 void confirm(
                   ui,
-                  ui.t("下载远程备份并恢复？", "Download and restore the remote backup?"),
+                  ui.t(
+                    "下载远程备份并恢复？",
+                    "Download and restore the remote backup?",
+                  ),
                   () => webdav("backups.webdavRestore"),
-                  { actionLabel: ui.t("下载并恢复", "Download and restore"), description: url(), destructive: false },
+                  {
+                    actionLabel: ui.t("下载并恢复", "Download and restore"),
+                    description: url(),
+                    destructive: false,
+                  },
                 )
               }
             />
@@ -815,14 +907,22 @@ export function Backups() {
 export function About() {
   const ui = useApp(),
     about = () => ui.client.state()!.about;
-  const renderComponent = (name: string, version: string, license: string, index: number) => (
-    <View testID={`about-component-${index}`} style={{ minWidth: 0, gap: 8 }}>
+  const renderComponent = (
+    name: string,
+    version: string,
+    license: string,
+    index: number,
+  ) => (
+    <View
+      testID={`about-component-${index}`}
+      style={{ minWidth: 0, gap: density.space(8) }}
+    >
       <Text
         testID={`about-name-${index}`}
         style={{
           minWidth: 0,
-          fontSize: 14,
-          lineHeight: 20,
+          fontSize: density.font(14),
+          lineHeight: density.line(20),
           fontWeight: "500",
           color: palette().text,
         }}
@@ -835,8 +935,8 @@ export function About() {
           userSelect: "text",
           minWidth: 0,
           maxWidth: "100%",
-          fontSize: 13,
-          lineHeight: 20,
+          fontSize: density.font(13),
+          lineHeight: density.line(20),
           color: palette().muted,
         }}
       >
@@ -844,8 +944,18 @@ export function About() {
       </Text>
       <View testID={`about-actions-${index}`}>
         <Actions>
-          <ExternalLink id={`about-source-${index}`} small label={ui.t("源代码", "Source code")} href={ABOUT_LINKS[index].url} />
-          <ExternalLink id={`about-license-${index}`} small label={license} href={ABOUT_LINKS[index + 1].url} />
+          <ExternalLink
+            id={`about-source-${index}`}
+            small
+            label={ui.t("源代码", "Source code")}
+            href={ABOUT_LINKS[index].url}
+          />
+          <ExternalLink
+            id={`about-license-${index}`}
+            small
+            label={license}
+            href={ABOUT_LINKS[index + 1].url}
+          />
         </Actions>
       </View>
     </View>
@@ -853,7 +963,14 @@ export function About() {
   return (
     <Scroll testID="about-scroll" bounces={false} style={{ flex: 1 }}>
       <Body>
-        <View style={{ alignItems: "center", gap: 8, paddingTop: 8, paddingBottom: 16 }}>
+        <View
+          style={{
+            alignItems: "center",
+            gap: density.space(8),
+            paddingTop: density.space(8),
+            paddingBottom: density.space(16),
+          }}
+        >
           <View
             style={{
               width: 56,
@@ -866,7 +983,15 @@ export function About() {
           >
             <Icon name="paw-print" size={26} color={palette().text} />
           </View>
-          <Text style={{ fontSize: 20, fontWeight: "600", color: palette().text }}>Paws</Text>
+          <Text
+            style={{
+              fontSize: density.font(20),
+              fontWeight: "600",
+              color: palette().text,
+            }}
+          >
+            Paws
+          </Text>
           <Hint
             text={ui.t(
               "HarmonyOS 原生多内核代理客户端",
@@ -876,8 +1001,16 @@ export function About() {
         </View>
         <View testID="about-version-section">
           <Card title={ui.t("版本", "Version")}>
-            <Detail stacked label={ui.t("应用版本", "App version")} value={about().appVersion} />
-            <Detail stacked label={ui.t("核心版本", "Core version")} value={about().coreVersion} />
+            <Detail
+              stacked
+              label={ui.t("应用版本", "App version")}
+              value={about().appVersion}
+            />
+            <Detail
+              stacked
+              label={ui.t("核心版本", "Core version")}
+              value={about().coreVersion}
+            />
             <Detail
               stacked
               label={ui.t("界面运行时", "UI runtime")}
@@ -896,7 +1029,12 @@ export function About() {
           >
             {renderComponent("Mihomo", about().mihomoVersion, "GPL-3.0", 0)}
             <Separator />
-            {renderComponent("sing-box", about().singBoxVersion, "GPL-3.0-or-later", 2)}
+            {renderComponent(
+              "sing-box",
+              about().singBoxVersion,
+              "GPL-3.0-or-later",
+              2,
+            )}
             <Separator />
             {renderComponent("meow-rs", about().meowRsVersion, "MIT", 4)}
           </Card>
@@ -916,9 +1054,17 @@ export function About() {
               6,
             )}
             <Separator />
-            <View testID="about-component-flclash" style={{ minWidth: 0, gap: 8 }}>
+            <View
+              testID="about-component-flclash"
+              style={{ minWidth: 0, gap: density.space(8) }}
+            >
               <Text
-                style={{ fontSize: 14, lineHeight: 20, fontWeight: "500", color: palette().text }}
+                style={{
+                  fontSize: density.font(14),
+                  lineHeight: density.line(20),
+                  fontWeight: "500",
+                  color: palette().text,
+                }}
               >
                 FlClash
               </Text>
@@ -929,8 +1075,21 @@ export function About() {
                 )}
               />
               <Actions>
-                <ExternalLink id="about-source-8" small label={ui.t("源代码", "Source code")} href={ABOUT_LINKS[8].url} />
-                <ExternalLink id="about-adaptations" small label={ui.t("第三方组件与适配说明", "Third-party components and adaptations")} href={ABOUT_LINKS[9].url} />
+                <ExternalLink
+                  id="about-source-8"
+                  small
+                  label={ui.t("源代码", "Source code")}
+                  href={ABOUT_LINKS[8].url}
+                />
+                <ExternalLink
+                  id="about-adaptations"
+                  small
+                  label={ui.t(
+                    "第三方组件与适配说明",
+                    "Third-party components and adaptations",
+                  )}
+                  href={ABOUT_LINKS[9].url}
+                />
               </Actions>
             </View>
           </Card>
@@ -965,9 +1124,22 @@ export function Privacy() {
         <Card title={ui.t("隐私与数据处理", "Privacy & data handling")}>
           <Each of={about().privacySummary}>
             {(line) => (
-              <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 8 }}>
-
-                <Text style={{ userSelect: "text", flex: 1, fontSize: 14, lineHeight: 24, color: palette().text }}>
+              <View
+                style={{
+                  flexDirection: "row",
+                  alignItems: "flex-start",
+                  gap: density.space(8),
+                }}
+              >
+                <Text
+                  style={{
+                    userSelect: "text",
+                    flex: 1,
+                    fontSize: density.font(14),
+                    lineHeight: density.line(24),
+                    color: palette().text,
+                  }}
+                >
                   {line()}
                 </Text>
               </View>
@@ -983,7 +1155,10 @@ export function Privacy() {
         >
           <Each of={about().exitIpServices}>
             {(service) => (
-              <ExternalLink label={service().name} href={service().documentationUrl} />
+              <ExternalLink
+                label={service().name}
+                href={service().documentationUrl}
+              />
             )}
           </Each>
         </Card>

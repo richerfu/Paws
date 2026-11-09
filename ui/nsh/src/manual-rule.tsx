@@ -1,3 +1,4 @@
+import { density } from "./theme";
 import { computed, signal, View } from "nsh";
 import {
   Action,
@@ -16,8 +17,16 @@ import {
 } from "./components";
 import { PageError } from "./page-error";
 
-export type RuleContext = { domain?: string; destinationIp?: string; connectionId?: string };
-export function rulePreview(kind: string, input: string, target: string): string {
+export type RuleContext = {
+  domain?: string;
+  destinationIp?: string;
+  connectionId?: string;
+};
+export function rulePreview(
+  kind: string,
+  input: string,
+  target: string,
+): string {
   const normalized =
     kind === "domain-suffix"
       ? input
@@ -33,13 +42,20 @@ export function rulePreview(kind: string, input: string, target: string): string
       : normalized;
   return `${kind === "domain-suffix" ? "DOMAIN-SUFFIX" : kind === "domain" ? "DOMAIN" : normalized.includes(":") ? "IP-CIDR6" : "IP-CIDR"},${value},${target.trim().toUpperCase() === "DIRECT" ? "DIRECT" : target.trim()}`;
 }
-export function ManualRuleDialog(props: { context?: RuleContext; onClose: () => void }) {
+export function ManualRuleDialog(props: {
+  context?: RuleContext;
+  onClose: () => void;
+}) {
   const ui = useApp(),
     alive = useLifetime(),
     baseline = ui.client.state()!.configRevision;
   useDomainInterests(() => ["rules", "summary"]);
   const kind = signal(
-      props.context?.domain ? "domain" : props.context?.destinationIp ? "ip-cidr" : "domain",
+      props.context?.domain
+        ? "domain"
+        : props.context?.destinationIp
+          ? "ip-cidr"
+          : "domain",
     ),
     value = signal(props.context?.domain || props.context?.destinationIp || ""),
     target = signal("DIRECT"),
@@ -70,7 +86,10 @@ export function ManualRuleDialog(props: { context?: RuleContext; onClose: () => 
       target: target(),
       expectedRevision: baseline,
       ...(props.context?.connectionId
-        ? { connectionId: props.context.connectionId, disconnectAfterSave: disconnect() }
+        ? {
+            connectionId: props.context.connectionId,
+            disconnectAfterSave: disconnect(),
+          }
         : {}),
     });
     if (!alive()) return;
@@ -101,25 +120,35 @@ export function ManualRuleDialog(props: { context?: RuleContext; onClose: () => 
         "Add a priority rule for this domain or IP.",
       )}
       onClose={props.onClose}
-      footer={<If when={ui.client.domains.has(["rules", "summary"])}><Action
-          primary id="save-manual-rule"
-          label={ui.t("保存规则", "Save rule")}
-          loading={busy()}
-          disabled={
-            busy() ||
-            !ui.client.domains.fresh(["config", "rules", "summary"]) ||
-            !value().trim() ||
-            !ui.client.state()!.activeProfile ||
-            baseline !== ui.client.state()!.configRevision
-          }
-          onPress={() => void save()}
-        /></If>}
+      footer={
+        <If when={ui.client.domains.has(["rules", "summary"])}>
+          <Action
+            primary
+            id="save-manual-rule"
+            label={ui.t("保存规则", "Save rule")}
+            loading={busy()}
+            disabled={
+              busy() ||
+              !ui.client.domains.fresh(["config", "rules", "summary"]) ||
+              !value().trim() ||
+              !ui.client.state()!.activeProfile ||
+              baseline !== ui.client.state()!.configRevision
+            }
+            onPress={() => void save()}
+          />
+        </If>
+      }
     >
       <If
         when={ui.client.domains.has(["rules", "summary"])}
         else={
           <>
-            <Hint text={ui.t("正在读取规则与策略组…", "Loading rules and policy groups…")} />
+            <Hint
+              text={ui.t(
+                "正在读取规则与策略组…",
+                "Loading rules and policy groups…",
+              )}
+            />
             <If when={ui.client.domains.error(["rules", "summary"])}>
               <PageError
                 id="manual-rule-read-error"
@@ -138,14 +167,18 @@ export function ManualRuleDialog(props: { context?: RuleContext; onClose: () => 
           value={kind()}
           options={[
             { value: "domain", label: ui.t("精确域名", "Exact domain") },
-            { value: "domain-suffix", label: ui.t("域名后缀", "Domain suffix") },
+            {
+              value: "domain-suffix",
+              label: ui.t("域名后缀", "Domain suffix"),
+            },
             { value: "ip-cidr", label: "IP/CIDR" },
           ]}
           onChange={(next) => {
             kind.set(next);
             if (next === "ip-cidr" && props.context?.destinationIp)
               value.set(props.context.destinationIp);
-            else if (next !== "ip-cidr" && props.context?.domain) value.set(props.context.domain);
+            else if (next !== "ip-cidr" && props.context?.domain)
+              value.set(props.context.domain);
           }}
           disabled={busy()}
         />
@@ -172,8 +205,8 @@ export function ManualRuleDialog(props: { context?: RuleContext; onClose: () => 
         />
         <View
           style={{
-            padding: 8,
-            gap: 3,
+            padding: density.space(8),
+            gap: density.space(3),
             borderWidth: 1,
             borderColor: palette().border,
             borderRadius: radius.lg,
@@ -186,7 +219,8 @@ export function ManualRuleDialog(props: { context?: RuleContext; onClose: () => 
         <If when={conflict()}>
           <Hint
             text={
-              conflict()!.line.split(",")[2]?.trim().toUpperCase() === target().toUpperCase()
+              conflict()!.line.split(",")[2]?.trim().toUpperCase() ===
+              target().toUpperCase()
                 ? ui.t(
                     "已有相同匹配和目标，将保留或重新启用现有规则。",
                     "An equivalent rule already exists; it will be retained or re-enabled.",
@@ -210,7 +244,10 @@ export function ManualRuleDialog(props: { context?: RuleContext; onClose: () => 
         </If>
         <If when={props.context?.connectionId}>
           <Check
-            label={ui.t("保存后断开此连接", "Disconnect this connection after saving")}
+            label={ui.t(
+              "保存后断开此连接",
+              "Disconnect this connection after saving",
+            )}
             value={disconnect()}
             onChange={(next) => disconnect.set(next)}
             disabled={busy()}
@@ -228,7 +265,6 @@ export function ManualRuleDialog(props: { context?: RuleContext; onClose: () => 
         <If when={ui.client.error()}>
           <PageError id="manual-rule-save-error" text={ui.client.error()} />
         </If>
-
       </If>
     </Dialog>
   );

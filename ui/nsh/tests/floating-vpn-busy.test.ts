@@ -4,12 +4,20 @@ test("a busy VPN action leaves its floating control draggable and blocks taps", 
   let busy = false;
   const commands: string[] = [];
   const app = await open("./FloatingHitPreview.tsx", {
-    width: 390, height: 844, locale: "zh-CN",
+    width: 390,
+    height: 844,
+    locale: "zh-CN",
     safeArea: { top: 47, bottom: 34, left: 0, right: 0 },
-    host: { handlers: {
-      "paws.test.busy": (value: boolean) => { busy = value; },
-      "paws.test.report": (value: { command: string }) => { commands.push(value.command); },
-    } },
+    host: {
+      handlers: {
+        "paws.test.busy": (value: boolean) => {
+          busy = value;
+        },
+        "paws.test.report": (value: { command: string }) => {
+          commands.push(value.command);
+        },
+      },
+    },
   });
   await app.waitFor("id:vpn-toggle");
   await app.host.send("paws.test.hold-action", true);

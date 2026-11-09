@@ -1,3 +1,4 @@
+import { density } from "../theme";
 import {
   computed,
   effect,
@@ -17,6 +18,7 @@ import {
   Badge,
   Code,
   confirm,
+  control,
   Dialog,
   Empty,
   Field,
@@ -25,7 +27,8 @@ import {
   radius,
   Tabs,
   useApp,
-  useLifetime} from "../components";
+  useLifetime,
+} from "../components";
 import { ObjectMenu } from "../object-menu";
 import { feedbackStyle } from "../motion";
 import { focusRing } from "../theme";
@@ -45,12 +48,16 @@ export function Logs() {
     recording = signal<LogRecording>({ enabled: false });
   const rows = computed(() => {
     const duplicates = new Map<string, number>();
-    return ui.client.state()!.logs.map((row) => {
-      const identity = `${row.timestamp}:${row.level}:${row.message}`;
-      const count = duplicates.get(identity) || 0;
-      duplicates.set(identity, count + 1);
-      return { ...row, key: `${identity}:${count}` };
-    }).filter((row) => matchesLog(row, query(), level())).reverse();
+    return ui.client
+      .state()!
+      .logs.map((row) => {
+        const identity = `${row.timestamp}:${row.level}:${row.message}`;
+        const count = duplicates.get(identity) || 0;
+        duplicates.set(identity, count + 1);
+        return { ...row, key: `${identity}:${count}` };
+      })
+      .filter((row) => matchesLog(row, query(), level()))
+      .reverse();
   });
   const apply = (data: LogRecording | undefined) => {
     if (alive() && data) {
@@ -58,7 +65,8 @@ export function Logs() {
       ui.logRecording.set(data.enabled);
     }
   };
-  const load = async () => apply(await ui.client.run<LogRecording>("logs.recordingStatus"));
+  const load = async () =>
+    apply(await ui.client.run<LogRecording>("logs.recordingStatus"));
   void load();
   let lastIntent = ui.logRecordingIntent();
   effect(() => {
@@ -67,7 +75,9 @@ export function Logs() {
       lastIntent = intent;
       untracked(() => {
         void ui.client
-          .run<LogRecording>("logs.setRecording", { enabled: !recording().enabled })
+          .run<LogRecording>("logs.setRecording", {
+            enabled: !recording().enabled,
+          })
           .then((data) => {
             apply(data);
             if (alive() && data) {
@@ -85,7 +95,8 @@ export function Logs() {
   });
   const recordingError = () => {
     const domain = ui.client.domains.data("logs");
-    return domain && Object.prototype.hasOwnProperty.call(domain, "recordingError")
+    return domain &&
+      Object.prototype.hasOwnProperty.call(domain, "recordingError")
       ? domain.recordingError
       : recording().lastError;
   };
@@ -104,16 +115,27 @@ export function Logs() {
       : ["warn", "warning"].includes(value.toLowerCase())
         ? ("warning" as const)
         : ("neutral" as const);
-  const meta = (row: Log) => `${row.level.toUpperCase()}  ·  ${timestamp(row.timestamp)}`;
+  const meta = (row: Log) =>
+    `${row.level.toUpperCase()}  ·  ${timestamp(row.timestamp)}`;
   return (
     <View
       style={{
         flex: 1,
-        paddingHorizontal: windowSize().width >= 840 ? 24 : 16,
-        paddingTop: windowSize().width >= 840 ? 24 : 16,
+        paddingHorizontal:
+          windowSize().width >= 840 ? density.space(24) : density.space(16),
+        paddingTop:
+          windowSize().width >= 840 ? density.space(24) : density.space(16),
       }}
     >
-      <View style={{ minHeight: 32, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+      <View
+        style={{
+          minHeight: 32,
+          flexDirection: "row",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: density.space(8),
+        }}
+      >
         <Badge
           tone={recording().enabled ? "success" : "neutral"}
           label={
@@ -123,12 +145,16 @@ export function Logs() {
           }
         />
         <View style={{ flex: 1 }} />
-        <Hint text={`${recording().archives?.length || 0} ${ui.t("个日志文件", "log files")}`} />
+        <Hint
+          text={`${recording().archives?.length || 0} ${ui.t("个日志文件", "log files")}`}
+        />
       </View>
       <If when={recordingError()}>
         <PageError id="logs-recording-error" text={recordingError() || ""} />
       </If>
-      <View style={{ marginTop: 6, marginBottom: 12 }}>
+      <View
+        style={{ marginTop: density.space(6), marginBottom: density.space(12) }}
+      >
         <Tabs
           idPrefix="logs-tab"
           value={history() ? "history" : "current"}
@@ -148,11 +174,14 @@ export function Logs() {
           <>
             <Field
               label={ui.t("搜索日志", "Search logs")}
-              placeholder={ui.t("输入关键词、等级或时间", "Search keyword, level or time")}
+              placeholder={ui.t(
+                "输入关键词、等级或时间",
+                "Search keyword, level or time",
+              )}
               value={query()}
               onChange={(value) => query.set(value)}
             />
-            <View style={{ marginTop: 12 }}>
+            <View style={{ marginTop: density.space(12) }}>
               <Tabs
                 idPrefix="logs-level"
                 value={level()}
@@ -166,13 +195,26 @@ export function Logs() {
                 onChange={(value) => level.set(value)}
               />
             </View>
-            <View style={{ minHeight: 32, flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <View
+              style={{
+                minHeight: 32,
+                flexDirection: "row",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: density.space(8),
+              }}
+            >
               <Hint
                 text={`${rows().length} / ${ui.client.state()!.logs.length} ${ui.t("条日志", "logs")}`}
               />
               <View style={{ flex: 1 }} />
               <If when={rows().length > 0}>
-                <Hint text={ui.t("点击查看完整内容", "Tap to view the full message")} />
+                <Hint
+                  text={ui.t(
+                    "点击查看完整内容",
+                    "Tap to view the full message",
+                  )}
+                />
               </If>
             </View>
             <List
@@ -180,17 +222,30 @@ export function Logs() {
               each={rows()}
               keyExtractor={(row) => row.key}
               estimatedItemSize={96}
-              style={{ flex: 1, borderWidth: 1, borderColor: palette().border, borderRadius: radius.lg, overflow: "hidden", backgroundColor: palette().panel }}
-              contentStyle={{ paddingBottom: 16 }}
+              style={{
+                flex: 1,
+                borderWidth: 1,
+                borderColor: palette().border,
+                borderRadius: radius.lg,
+                overflow: "hidden",
+                backgroundColor: palette().panel,
+              }}
+              contentStyle={{ paddingBottom: density.space(16) }}
               empty={
                 <Empty
                   icon="scroll-text"
                   title={ui.t("暂无日志", "No logs")}
                   text={
                     query()
-                      ? ui.t("调整筛选条件后继续查看。", "Adjust the filters to continue.")
+                      ? ui.t(
+                          "调整筛选条件后继续查看。",
+                          "Adjust the filters to continue.",
+                        )
                       : recording().enabled
-                        ? ui.t("核心和 VPN 事件会显示在这里。", "Core and VPN events appear here.")
+                        ? ui.t(
+                            "核心和 VPN 事件会显示在这里。",
+                            "Core and VPN events appear here.",
+                          )
                         : ui.t(
                             "开启记录后，核心和 VPN 事件会显示在这里。",
                             "Start recording to see core and VPN events.",
@@ -204,28 +259,44 @@ export function Logs() {
                   testID={`log-${row().timestamp}`}
                   role="button"
                   accessibilityLabel={meta(row())}
-                  focusStyle={focusRing()} hoverStyle={{ backgroundColor: palette().soft }} activeStyle={{ opacity: 0.85 }}
+                  focusStyle={focusRing()}
+                  hoverStyle={{ backgroundColor: palette().soft }}
+                  activeStyle={{ opacity: 0.85 }}
                   onPress={() => selected.set(row())}
                   style={{
-                    minHeight: Math.max(88, 54 * Math.max(1, fontScale()) + 20),
-                    paddingHorizontal: 12,
-                    paddingVertical: 8,
+                    minHeight: Math.max(
+                      control.compact ? 76 : 88,
+                      density.line(54) * Math.max(1, fontScale()) +
+                        density.space(20),
+                    ),
+                    paddingHorizontal: density.space(12),
+                    paddingVertical: density.space(8),
                     borderBottomWidth: 1,
                     borderBottomColor: palette().line,
                     ...feedbackStyle(),
                     backgroundColor: palette().panel,
-                    gap: 4,
+                    gap: density.space(4),
                   }}
                 >
-                  <View style={{ minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <Badge tone={levelTone(row().level)} label={row().level.toUpperCase()} />
+                  <View
+                    style={{
+                      minWidth: 0,
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: density.space(8),
+                    }}
+                  >
+                    <Badge
+                      tone={levelTone(row().level)}
+                      label={row().level.toUpperCase()}
+                    />
                     <Text
                       style={{
                         numberOfLines: 1,
                         flex: 1,
                         minWidth: 0,
-                        fontSize: 12,
-                        lineHeight: 16,
+                        fontSize: density.font(12),
+                        lineHeight: density.line(16),
                         color: palette().muted,
                       }}
                     >
@@ -233,7 +304,12 @@ export function Logs() {
                     </Text>
                   </View>
                   <Text
-                    style={{ numberOfLines: 2, fontSize: 12, lineHeight: 17, color: palette().text }}
+                    style={{
+                      numberOfLines: 2,
+                      fontSize: density.font(12),
+                      lineHeight: density.line(17),
+                      color: palette().text,
+                    }}
                   >
                     {row()
                       .message.replace(/[\n\r]/g, " ")
@@ -251,7 +327,7 @@ export function Logs() {
           keyExtractor={(row) => row.fileName}
           estimatedItemSize={80}
           style={{ flex: 1 }}
-          contentStyle={{ paddingBottom: 16 }}
+          contentStyle={{ paddingBottom: density.space(16) }}
           empty={
             <Empty
               icon="history"
@@ -263,30 +339,104 @@ export function Logs() {
             />
           }
         >
-          {(archive) => <ObjectMenu id={`archive-menu-${archive().fileName}`} title={archive().fileName}
-            commands={[
-              { label: ui.t("导出日志…", "Export log…"), icon: "download",
-                disabled: ui.client.pending() > 0 || !ui.client.domains.fresh(["logs"]), run: () => { void exportArchive(archive().fileName); } },
-              { label: ui.t("删除日志…", "Delete log…"), icon: "trash-2", danger: true,
-                disabled: archive().active || ui.client.pending() > 0 || !ui.client.domains.fresh(["logs"]), run: () => {
-                  const fileName = archive().fileName;
-                  void confirm(ui, ui.t(`删除“${fileName}”？`, `Delete “${fileName}”?`), () => {
-                    void ui.client.run<LogRecording>("logs.deleteArchive", { fileName }, ui.t(`日志已删除：${fileName}`, `Log deleted: ${fileName}`)).then(apply);
-                  }, { actionLabel: ui.t("删除日志", "Delete log") });
-                } },
-            ]} row={(menu) => <View style={{ minHeight: Math.max(76, 38 * Math.max(1, fontScale()) + 24),
-              paddingHorizontal: 12, paddingVertical: 8, gap: 12,
-              flexDirection: "row", alignItems: "center", borderBottomWidth: 1,
-              borderBottomColor: palette().line, backgroundColor: palette().panel }}>
-              <View style={{ flex: 1, minWidth: 0, gap: 4 }}>
-                <Text style={{ numberOfLines: 1, fontSize: 14, lineHeight: 20, fontWeight: "600", color: palette().text }}>{archive().fileName}</Text>
-                <Text style={{ numberOfLines: 1, fontSize: 12, lineHeight: 18, color: palette().muted, fontVariant: ["tabular-nums"] }}>
-                  {bytes(archive().bytes)} · {timestamp(archive().updatedAt) === "—" ? archive().date || "—" : timestamp(archive().updatedAt)}
-                  {archive().active ? ui.t(" · 正在写入", " · Recording") : ""}
-                </Text>
-              </View>
-              {menu}
-            </View>} />}
+          {(archive) => (
+            <ObjectMenu
+              id={`archive-menu-${archive().fileName}`}
+              title={archive().fileName}
+              commands={[
+                {
+                  label: ui.t("导出日志…", "Export log…"),
+                  icon: "download",
+                  disabled:
+                    ui.client.pending() > 0 ||
+                    !ui.client.domains.fresh(["logs"]),
+                  run: () => {
+                    void exportArchive(archive().fileName);
+                  },
+                },
+                {
+                  label: ui.t("删除日志…", "Delete log…"),
+                  icon: "trash-2",
+                  danger: true,
+                  disabled:
+                    archive().active ||
+                    ui.client.pending() > 0 ||
+                    !ui.client.domains.fresh(["logs"]),
+                  run: () => {
+                    const fileName = archive().fileName;
+                    void confirm(
+                      ui,
+                      ui.t(`删除“${fileName}”？`, `Delete “${fileName}”?`),
+                      () => {
+                        void ui.client
+                          .run<LogRecording>(
+                            "logs.deleteArchive",
+                            { fileName },
+                            ui.t(
+                              `日志已删除：${fileName}`,
+                              `Log deleted: ${fileName}`,
+                            ),
+                          )
+                          .then(apply);
+                      },
+                      { actionLabel: ui.t("删除日志", "Delete log") },
+                    );
+                  },
+                },
+              ]}
+              row={(menu) => (
+                <View
+                  style={{
+                    minHeight: Math.max(
+                      control.compact ? 64 : 76,
+                      density.line(38) * Math.max(1, fontScale()) +
+                        density.space(24),
+                    ),
+                    paddingHorizontal: density.space(12),
+                    paddingVertical: density.space(8),
+                    gap: density.space(12),
+                    flexDirection: "row",
+                    alignItems: "center",
+                    borderBottomWidth: 1,
+                    borderBottomColor: palette().line,
+                    backgroundColor: palette().panel,
+                  }}
+                >
+                  <View style={{ flex: 1, minWidth: 0, gap: density.space(4) }}>
+                    <Text
+                      style={{
+                        numberOfLines: 1,
+                        fontSize: density.font(14),
+                        lineHeight: density.line(20),
+                        fontWeight: "600",
+                        color: palette().text,
+                      }}
+                    >
+                      {archive().fileName}
+                    </Text>
+                    <Text
+                      style={{
+                        numberOfLines: 1,
+                        fontSize: density.font(12),
+                        lineHeight: density.line(18),
+                        color: palette().muted,
+                        fontVariant: ["tabular-nums"],
+                      }}
+                    >
+                      {bytes(archive().bytes)} ·{" "}
+                      {timestamp(archive().updatedAt) === "—"
+                        ? archive().date || "—"
+                        : timestamp(archive().updatedAt)}
+                      {archive().active
+                        ? ui.t(" · 正在写入", " · Recording")
+                        : ""}
+                    </Text>
+                  </View>
+                  {menu}
+                </View>
+              )}
+            />
+          )}
         </List>
       </If>
       <If when={selected()}>
@@ -294,26 +444,32 @@ export function Logs() {
           title={ui.t("日志详情", "Log details")}
           description={meta(selected()!)}
           onClose={() => selected.set(undefined)}
-          footer={<Actions>
-            <Action
-              secondary
-              label={ui.t("关闭", "Close")}
-              onPress={() => selected.set(undefined)}
-            />
-            <Action
-              label={ui.t("复制完整内容", "Copy full message")}
-              onPress={() => Clipboard.writeText(selected()!.message)}
-            />
-          </Actions>}
+          footer={
+            <Actions>
+              <Action
+                secondary
+                label={ui.t("关闭", "Close")}
+                onPress={() => selected.set(undefined)}
+              />
+              <Action
+                label={ui.t("复制完整内容", "Copy full message")}
+                onPress={() => Clipboard.writeText(selected()!.message)}
+              />
+            </Actions>
+          }
         >
-          <Badge tone={levelTone(selected()!.level)} label={selected()!.level.toUpperCase()} />
+          <Badge
+            tone={levelTone(selected()!.level)}
+            label={selected()!.level.toUpperCase()}
+          />
           <Scroll
             bounces={false}
-            style={{ height: Math.min(320, Math.max(120, windowSize().height * 0.3)) }}
+            style={{
+              height: Math.min(320, Math.max(120, windowSize().height * 0.3)),
+            }}
           >
             <Code text={selected()!.message} />
           </Scroll>
-
         </Dialog>
       </If>
     </View>

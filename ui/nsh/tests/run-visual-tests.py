@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
-from nsh_runner import run_nsh
+from nsh_runner import run_nsh, navigation_steps
 
 
 class NativeTree:
@@ -260,6 +260,8 @@ def main():
     results = []
     for width, height in [(320, 844), (390, 844), (1280, 900)]:
         for name, taps in CASES.items():
+            if width >= 840 and taps[:1] == ['nav-tools']:
+                taps = navigation_steps(taps[1].removeprefix('tool-'), width) + taps[2:]
             command = [str(args.nsh_bin.resolve()), 'trace', ENTRY, '--width', str(width), '--height', str(height), '--wait', '30']
             for selector in ['visual-hide-controls', *taps]:
                 if name == 'rule-detail' and selector == 'rule-details-rule-1':

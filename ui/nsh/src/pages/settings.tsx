@@ -1,4 +1,15 @@
-import { batch, cleanup, effect, Scroll, signal, Text, untracked, View, Clipboard } from "nsh";
+import { density } from "../theme";
+import {
+  batch,
+  cleanup,
+  effect,
+  Scroll,
+  signal,
+  Text,
+  untracked,
+  View,
+  Clipboard,
+} from "nsh";
 import {
   Action,
   Actions,
@@ -19,7 +30,12 @@ import {
   useApp,
   useLifetime,
 } from "../components";
-import type { ControllerAccess, Engine, NetworkPorts, VpnOptions } from "../model";
+import type {
+  ControllerAccess,
+  Engine,
+  NetworkPorts,
+  VpnOptions,
+} from "../model";
 import { DraftEdits, draftDecision } from "../draft";
 import { PageError } from "../page-error";
 import { control, statusColors } from "../theme";
@@ -41,8 +57,13 @@ const parsePolicy = (text: string) =>
       .map((line) => {
         const separator = line.indexOf("=");
         if (separator < 1)
-          throw new Error("DNS policy requires matcher=server1,server2 on each line");
-        return [line.slice(0, separator).trim(), lines(line.slice(separator + 1))];
+          throw new Error(
+            "DNS policy requires matcher=server1,server2 on each line",
+          );
+        return [
+          line.slice(0, separator).trim(),
+          lines(line.slice(separator + 1)),
+        ];
       }),
   );
 
@@ -59,18 +80,37 @@ export function Settings() {
     fallbacks = signal((current().vpnOptions.dnsFallbacks || []).join("\n")),
     policy = signal(formatPolicy(current().vpnOptions.dnsNameserverPolicy));
   type Section = "vpn" | "dns" | "network";
-  const edits = { vpn: new DraftEdits(), dns: new DraftEdits(), network: new DraftEdits() };
+  const edits = {
+    vpn: new DraftEdits(),
+    dns: new DraftEdits(),
+    network: new DraftEdits(),
+  };
   const dirty = signal(new Set<Section>()),
     conflict = signal(false),
     mtu = signal(String(current().vpnOptions.mtu));
   const route = RouteOwner() || ui.route();
   effect(() => {
     if (ui.route() !== route) return;
-    cleanup(ui.beforeLeave?.(() => {
-      if (["settings.vpn", "settings.dns", "settings.network"].some((command) => ui.client.isPending(command))) return false;
-      return !dirty().size || askConfirmation(ui, ui.t("丢弃未保存的网络设置？", "Discard unsaved network settings?"),
-        { actionLabel: ui.t("丢弃草稿", "Discard draft") });
-    }) || (() => {}));
+    cleanup(
+      ui.beforeLeave?.(() => {
+        if (
+          ["settings.vpn", "settings.dns", "settings.network"].some((command) =>
+            ui.client.isPending(command),
+          )
+        )
+          return false;
+        return (
+          !dirty().size ||
+          askConfirmation(
+            ui,
+            ui.t("丢弃未保存的网络设置？", "Discard unsaved network settings?"),
+            {
+              actionLabel: ui.t("丢弃草稿", "Discard draft"),
+            },
+          )
+        );
+      }) || (() => {}),
+    );
   });
   const mark = (section: Section) => {
     edits[section].edit();
@@ -137,7 +177,9 @@ export function Settings() {
       }
       previewBusy.set(true);
       void ui.client
-        .send<{ selected: string; reasons?: string[] }>("engines.decision", { options: vpn() })
+        .send<{ selected: string; reasons?: string[] }>("engines.decision", {
+          options: vpn(),
+        })
         .then((value) => {
           if (
             alive() &&
@@ -167,13 +209,18 @@ export function Settings() {
             });
         })
         .finally(() => {
-          if (alive() && generation === previewGeneration) previewBusy.set(false);
+          if (alive() && generation === previewGeneration)
+            previewBusy.set(false);
         });
     });
   });
-  const normalizeEngine = (engine: string) => engine === "sing-box" ? "singbox" : engine;
+  const normalizeEngine = (engine: string) =>
+    engine === "sing-box" ? "singbox" : engine;
   const previewFallback = () =>
-    !previewBusy() && !previewFailed() && !!enginePreview() && vpn().engine !== "auto" &&
+    !previewBusy() &&
+    !previewFailed() &&
+    !!enginePreview() &&
+    vpn().engine !== "auto" &&
     normalizeEngine(enginePreview()) !== normalizeEngine(vpn().engine);
   const previewStatus = () =>
     previewBusy()
@@ -184,13 +231,23 @@ export function Settings() {
           ? `${ui.t("下次连接：", "Next connection: ")}${enginePreview()}`
           : ui.t("尚未检查", "Not checked");
   const blocked = () =>
-    !profile() || conflict() || ui.client.pending() > 0 || !ui.client.domains.fresh(["config"]);
-  const validMtu = () => Number.isInteger(Number(mtu())) && Number(mtu()) >= 1280 && Number(mtu()) <= 65535;
+    !profile() ||
+    conflict() ||
+    ui.client.pending() > 0 ||
+    !ui.client.domains.fresh(["config"]);
+  const validMtu = () =>
+    Number.isInteger(Number(mtu())) &&
+    Number(mtu()) >= 1280 &&
+    Number(mtu()) <= 65535;
   const save = async (section: "vpn" | "dns" | "network") => {
     const ticket = edits[section].ticket();
     try {
-      let payload: Record<string, unknown> = { profileId: profile(), expectedRevision: baseline() };
-      if (section === "vpn") payload = { ...payload, options: { ...vpn(), mtu: Number(mtu()) } };
+      let payload: Record<string, unknown> = {
+        profileId: profile(),
+        expectedRevision: baseline(),
+      };
+      if (section === "vpn")
+        payload = { ...payload, options: { ...vpn(), mtu: Number(mtu()) } };
       if (section === "dns")
         payload = {
           ...payload,
@@ -215,7 +272,11 @@ export function Settings() {
       );
       // A successful write waits for the authoritative config query before its result.
       // Preserve other draft sections while advancing this draft's revision.
-      if (alive() && result !== undefined && ui.client.domains.fresh(["config"])) {
+      if (
+        alive() &&
+        result !== undefined &&
+        ui.client.domains.fresh(["config"])
+      ) {
         if (edits[section].unchangedSince(ticket))
           dirty.update((previous) => {
             const next = new Set(previous);
@@ -226,7 +287,9 @@ export function Settings() {
         conflict.set(false);
       }
     } catch (error) {
-      ui.client.error.set(error instanceof Error ? error.message : String(error));
+      ui.client.error.set(
+        error instanceof Error ? error.message : String(error),
+      );
     }
   };
   return (
@@ -238,11 +301,11 @@ export function Settings() {
             <View
               style={{
                 minHeight: 248,
-                padding: 24,
+                padding: density.space(24),
                 borderWidth: 1,
                 borderStyle: "dashed",
                 borderColor: palette().border,
-                borderRadius: 8,
+                borderRadius: density.space(8),
                 alignItems: "center",
                 justifyContent: "center",
               }}
@@ -312,7 +375,9 @@ export function Settings() {
               )}
               value={vpn().dnsHijacking}
               onChange={(dnsHijacking) => changeVpn({ dnsHijacking })}
-              disabled={ui.client.pending() > 0 || !ui.client.domains.fresh(["config"])}
+              disabled={
+                ui.client.pending() > 0 || !ui.client.domains.fresh(["config"])
+              }
             />
             <Separator />
             <Select
@@ -325,17 +390,34 @@ export function Settings() {
                 { value: "singbox", label: "sing-box" },
                 { value: "meow", label: "meow-rs" },
               ]}
-              disabled={ui.client.pending() > 0 || !ui.client.domains.fresh(["config"])}
+              disabled={
+                ui.client.pending() > 0 || !ui.client.domains.fresh(["config"])
+              }
               loading={previewBusy()}
               labelAccessory={
                 <View
                   testID="engine-preview-status"
-                  style={{ minHeight: control.icon, flexDirection: "row", alignItems: "center", gap: 4 }}
+                  style={{
+                    minHeight: control.icon,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: density.space(4),
+                  }}
                 >
-                  <If when={!previewBusy() && (previewFailed() || previewFallback())}>
+                  <If
+                    when={
+                      !previewBusy() && (previewFailed() || previewFallback())
+                    }
+                  >
                     <Text
                       testID="engine-preview-warning"
-                      style={{ numberOfLines: 1, maxWidth: 128, fontSize: 12, lineHeight: 20, color: statusColors("warning").text }}
+                      style={{
+                        numberOfLines: 1,
+                        maxWidth: 128,
+                        fontSize: density.font(12),
+                        lineHeight: density.line(20),
+                        color: statusColors("warning").text,
+                      }}
                     >
                       {previewFailed()
                         ? ui.t("检查失败", "Check failed")
@@ -345,11 +427,17 @@ export function Settings() {
                   <PageError
                     id="engine-preview-info"
                     danger={previewFailed()}
-                    text={[previewStatus(), previewReasons()].filter(Boolean).join("\n")}
+                    text={[previewStatus(), previewReasons()]
+                      .filter(Boolean)
+                      .join("\n")}
                     renderTrigger={(open) => (
                       <IconButton
                         id="engine-preview-details"
-                        icon={previewFailed() || previewFallback() ? "triangle-alert" : "info"}
+                        icon={
+                          previewFailed() || previewFallback()
+                            ? "triangle-alert"
+                            : "info"
+                        }
                         label={`${previewStatus()}，${ui.t("查看详情", "View details")}`}
                         size={24}
                         disabled={previewBusy()}
@@ -369,7 +457,9 @@ export function Settings() {
                 { value: "netstack-smoltcp", label: "smoltcp" },
                 { value: "lwip", label: "lwIP" },
               ]}
-              disabled={ui.client.pending() > 0 || !ui.client.domains.fresh(["config"])}
+              disabled={
+                ui.client.pending() > 0 || !ui.client.domains.fresh(["config"])
+              }
               onChange={(stack) => changeVpn({ stack })}
             />
             <Hint
@@ -384,8 +474,18 @@ export function Settings() {
               value={mtu()}
               placeholder="1500"
               numeric
-              description={ui.t("允许 1280–65535 的整数。", "An integer from 1280 to 65535.")}
-              error={dirty().has("vpn") && !validMtu() ? ui.t("MTU 必须是 1280–65535 的整数。", "MTU must be an integer from 1280 to 65535.") : undefined}
+              description={ui.t(
+                "允许 1280–65535 的整数。",
+                "An integer from 1280 to 65535.",
+              )}
+              error={
+                dirty().has("vpn") && !validMtu()
+                  ? ui.t(
+                      "MTU 必须是 1280–65535 的整数。",
+                      "MTU must be an integer from 1280 to 65535.",
+                    )
+                  : undefined
+              }
               disabled={blocked()}
               onChange={(value) => {
                 if (value === mtu()) return;
@@ -404,7 +504,10 @@ export function Settings() {
               />
               <Action
                 secondary
-                label={ui.t("移除不支持的系统代理设置", "Remove unsupported system proxy setting")}
+                label={ui.t(
+                  "移除不支持的系统代理设置",
+                  "Remove unsupported system proxy setting",
+                )}
                 onPress={() => changeVpn({ systemProxy: false })}
               />
             </If>
@@ -418,7 +521,10 @@ export function Settings() {
               />
               <Action
                 secondary
-                label={ui.t("移除不支持的绕过设置", "Remove unsupported bypass setting")}
+                label={ui.t(
+                  "移除不支持的绕过设置",
+                  "Remove unsupported bypass setting",
+                )}
                 onPress={() => changeVpn({ allowBypass: false })}
               />
             </If>
@@ -426,13 +532,17 @@ export function Settings() {
               label={ui.t("通过 VPN 的应用", "Applications through VPN")}
               value={(vpn().trustedApplications || []).join(", ")}
               placeholder="com.easy.hmos.abroad"
-              onChange={(text) => changeVpn({ trustedApplications: lines(text) })}
+              onChange={(text) =>
+                changeVpn({ trustedApplications: lines(text) })
+              }
             />
             <Field
               label={ui.t("绕过 VPN 的应用", "Applications bypassing VPN")}
               value={(vpn().blockedApplications || []).join(", ")}
               placeholder="com.huawei.hmos.browser"
-              onChange={(text) => changeVpn({ blockedApplications: lines(text) })}
+              onChange={(text) =>
+                changeVpn({ blockedApplications: lines(text) })
+              }
             />
             <Hint
               text={ui.t(
@@ -443,8 +553,14 @@ export function Settings() {
             <Actions>
               <Action
                 secondary
-                label={ui.t("选择出境易容器", "Select the Abroad Easy container")}
-                disabled={ui.client.pending() > 0 || !ui.client.domains.fresh(["config"])}
+                label={ui.t(
+                  "选择出境易容器",
+                  "Select the Abroad Easy container",
+                )}
+                disabled={
+                  ui.client.pending() > 0 ||
+                  !ui.client.domains.fresh(["config"])
+                }
                 onPress={() =>
                   changeVpn({
                     trustedApplications: ["com.easy.hmos.abroad"],
@@ -458,20 +574,30 @@ export function Settings() {
                 disabled={
                   ui.client.pending() > 0 ||
                   !ui.client.domains.fresh(["config"]) ||
-                  (!vpn().trustedApplications?.length && !vpn().blockedApplications?.length)
+                  (!vpn().trustedApplications?.length &&
+                    !vpn().blockedApplications?.length)
                 }
-                onPress={() => changeVpn({ trustedApplications: [], blockedApplications: [] })}
+                onPress={() =>
+                  changeVpn({
+                    trustedApplications: [],
+                    blockedApplications: [],
+                  })
+                }
               />
             </Actions>
             <Action
-              primary id="save-vpn"
+              primary
+              id="save-vpn"
               loading={ui.client.isPending("settings.vpn")}
               label={ui.t("保存 VPN 设置", "Save VPN settings")}
               disabled={
                 blocked() ||
                 !dirty().has("vpn") ||
                 !validMtu() ||
-                !!(vpn().trustedApplications?.length && vpn().blockedApplications?.length)
+                !!(
+                  vpn().trustedApplications?.length &&
+                  vpn().blockedApplications?.length
+                )
               }
               onPress={() => void save("vpn")}
             />
@@ -509,7 +635,9 @@ export function Settings() {
                 "Listen on the controller port only while VPN is connected",
               )}
               value={ports().controllerEnabled}
-              onChange={(controllerEnabled) => changePorts({ controllerEnabled })}
+              onChange={(controllerEnabled) =>
+                changePorts({ controllerEnabled })
+              }
             />
             <Field
               label={ui.t("控制器端口", "Controller port")}
@@ -549,7 +677,8 @@ export function Settings() {
               />
             </If>
             <Action
-              primary id="save-network"
+              primary
+              id="save-network"
               loading={ui.client.isPending("settings.network")}
               label={ui.t("保存网络设置", "Save network settings")}
               disabled={blocked() || !dirty().has("network")}
@@ -584,7 +713,10 @@ export function Settings() {
               height={76}
             />
             <Field
-              label={ui.t("分流策略（匹配项=服务器）", "Policy, matcher=servers")}
+              label={ui.t(
+                "分流策略（匹配项=服务器）",
+                "Policy, matcher=servers",
+              )}
               value={policy()}
               onChange={(value) => {
                 policy.set(value);
@@ -595,10 +727,13 @@ export function Settings() {
               placeholder="geosite:cn=223.5.5.5,119.29.29.29"
             />
             <Action
-              primary id="save-dns"
+              primary
+              id="save-dns"
               loading={ui.client.isPending("settings.dns")}
               label={ui.t("保存 DNS 设置", "Save DNS settings")}
-              disabled={blocked() || !dirty().has("dns") || !dnsServers().trim()}
+              disabled={
+                blocked() || !dirty().has("dns") || !dnsServers().trim()
+              }
               onPress={() => void save("dns")}
             />
           </Card>
@@ -629,7 +764,9 @@ export function Appearance() {
               { value: "zh_cn", label: "简体中文" },
               { value: "en", label: "English" },
             ]}
-            onChange={(language) => void ui.client.run("preferences.set", { language })}
+            onChange={(language) =>
+              void ui.client.run("preferences.set", { language })
+            }
           />
         </Card>
         <Card
@@ -647,7 +784,9 @@ export function Appearance() {
               { value: "light", label: ui.t("浅色", "Light") },
               { value: "dark", label: ui.t("深色", "Dark") },
             ]}
-            onChange={(theme) => void ui.client.run("preferences.set", { theme })}
+            onChange={(theme) =>
+              void ui.client.run("preferences.set", { theme })
+            }
           />
         </Card>
       </Body>

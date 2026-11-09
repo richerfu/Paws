@@ -9,16 +9,28 @@ outside presentation. See [the three-layer architecture](nsh-three-layer-archite
 - `theme.json` defines light/dark semantic colors and radius tokens.
   `src/theme.ts` maps them to application roles. Ordinary sections have a flat
   surface and an external heading; shadows belong to raised controls and overlays.
-- Phone controls use 40-point standard buttons/fields, 32-point small actions
-  and 36-point icon buttons. Action labels use 13/12-point text and tighter
-  padding. Native `hitSlop` retains 44-point button press areas without enlarging
-  the painted control. Text rows grow with font scale. Desktop controls retain their scale;
-  narrow desktop windows retain touch-sized targets. Long values wrap or have
+- Phone and Pad use one shared small scale, independent of window width:
+  40-point standard buttons/fields, 32-point small actions and 36-point icon
+  buttons. Body/action labels use 13-point text, small labels use 11-point text,
+  and spacing, radii, icons and data rows use the same compact scale. Native
+  `hitSlop` retains 44-point button press areas without enlarging
+  the painted control. Text rows grow with font scale. Desktop controls retain their scale,
+  including in narrow desktop windows. Long values wrap or have
   a complete details view, and comparable numbers
   use tabular figures.
-- The wide shell has a scrolling sidebar and a bounded workspace. Narrow windows
-  use the bottom navigation for root destinations and native Back for details.
-  Resizing retains the current route and its drafts.
+- Desktop always uses its own workspace: a 232-point scrolling sidebar, or a
+  64-point icon rail in a narrow window, with tooltips and keyboard focus.
+  Brand and content toolbars share a 64-point baseline. Root destinations are
+  direct switches; Back belongs to nested tasks. The mobile Settings hub and
+  duplicate request-history link are absent from the desktop sidebar.
+- Desktop Overview separates the connection controls and the group list into
+  two columns. Desktop nodes use a group browser and member pane. Connections and request
+  history share one workspace with tabs and aligned table columns. A narrow
+  desktop keeps the table, moving secondary columns into destination metadata.
+  Object commands use anchored menus and right click; forms are centered dialogs.
+- Phone and portrait Pad use bottom navigation for root destinations and native
+  Back for details. Landscape Pad can use the sidebar while retaining small
+  controls. Resizing retains the current route and its drafts.
 
 ## Controls and surfaces
 
@@ -60,10 +72,14 @@ outside presentation. See [the three-layer architecture](nsh-three-layer-archite
 movement 504/38. Press feedback, selection indicators, switch thumbs and
 chevrons use native animation values. Explicit disclosure uses a short layout
 transition; recurring telemetry never schedules a layout or entrance animation.
+Virtualized group/member lists keep recycled rows opaque: expansion changes the
+row data without a global create/delete fade. The chevron and row background
+still animate on the native thread.
 Menus, dialogs and navigation use their native lifecycle. Notifications and
 floating-button docking honor reduced motion, including when it changes.
 
-Desktop shortcuts are Mod+1–4 for root destinations, Mod+, for appearance and
+Desktop shortcuts are Mod+1–4 for Overview, Subscriptions, Proxy nodes and Traffic,
+Mod+, for appearance and
 Mod+R for refresh. The active YAML editor owns Mod+S (save), Mod+F (find) and
 Mod+Shift+R (reload with its discard guard). Native menus, radio groups and
 dialogs own their keyboard traversal, focus and Escape behavior.

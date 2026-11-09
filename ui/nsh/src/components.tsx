@@ -1,3 +1,4 @@
+import { density } from "./theme";
 import {
   cleanup,
   computed,
@@ -13,7 +14,8 @@ import {
   createAnimatedValue as createNativeValue,
   Easing,
   windowSize,
-  fontScale} from "nsh";
+  fontScale,
+} from "nsh";
 import {
   Dialog as NativeDialog,
   Input,
@@ -46,7 +48,13 @@ import {
 } from "./theme";
 import { Icon, type IconName } from "./icons";
 import { NotificationViewport, useNotificationLayer } from "./notifications";
-import { feedbackStyle, follow, motion, useGlyphTransition, usePressFeedback } from "./motion";
+import {
+  feedbackStyle,
+  follow,
+  motion,
+  useGlyphTransition,
+  usePressFeedback,
+} from "./motion";
 export { palette, control, radius, spacing, typography, Icon };
 export type { StatusTone };
 
@@ -103,25 +111,57 @@ export function useDomainInterests(inputs: () => DomainInput[]): void {
     if (required.length) cleanup(ui.client.domains.acquire(required));
   });
 }
-export function Card(props: { title?: string; subtitle?: string; children?: JSX.Element; flush?: boolean; right?: JSX.Element }) {
+export function Card(props: {
+  title?: string;
+  subtitle?: string;
+  children?: JSX.Element;
+  flush?: boolean;
+  right?: JSX.Element;
+}) {
   return (
     <View style={{ minWidth: 0, gap: spacing.sm }}>
       <If when={props.title || props.subtitle || props.right}>
-        <View style={{ flexDirection: "row", alignItems: "flex-end", gap: spacing.sm, paddingHorizontal: spacing.xxs }}>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "flex-end",
+            gap: spacing.sm,
+            paddingHorizontal: spacing.xxs,
+          }}
+        >
           <View style={{ flex: 1, minWidth: 0, gap: spacing.xxs }}>
             <If when={props.title}>
-              <Text role="header" style={{ color: palette().text, fontSize: 15, lineHeight: 22, fontWeight: "600" }}>
+              <Text
+                role="header"
+                style={{
+                  color: palette().text,
+                  fontSize: density.font(15),
+                  lineHeight: density.line(22),
+                  fontWeight: "600",
+                }}
+              >
                 {props.title}
               </Text>
             </If>
-            <If when={props.subtitle}><Hint text={props.subtitle!} /></If>
+            <If when={props.subtitle}>
+              <Hint text={props.subtitle!} />
+            </If>
           </View>
           {props.right}
         </View>
       </If>
-      <View style={{ minWidth: 0, padding: props.flush ? 0 : spacing.lg, gap: spacing.md,
-        borderRadius: radius.xl, borderCurve: "continuous", backgroundColor: palette().panel,
-        borderWidth: 1, borderColor: palette().border }}>
+      <View
+        style={{
+          minWidth: 0,
+          padding: props.flush ? 0 : spacing.lg,
+          gap: spacing.md,
+          borderRadius: radius.xl,
+          borderCurve: "continuous",
+          backgroundColor: palette().panel,
+          borderWidth: 1,
+          borderColor: palette().border,
+        }}
+      >
         {props.children}
       </View>
     </View>
@@ -144,18 +184,28 @@ export function Action(props: {
 }) {
   const disabled = () => !!props.disabled || !!props.loading;
   const press = usePressFeedback(disabled);
-  const glyph = useGlyphTransition(() => props.loading ? "busy" : props.icon);
+  const glyph = useGlyphTransition(() => (props.loading ? "busy" : props.icon));
   const variant = () =>
-    props.danger ? "danger" : props.primary ? "primary" : props.variant || (props.secondary ? "outline" : "default");
+    props.danger
+      ? "danger"
+      : props.primary
+        ? "primary"
+        : props.variant || (props.secondary ? "outline" : "default");
   const foreground = () =>
     variant() === "danger"
-      ? props.primary ? palette().dangerText : palette().danger
+      ? props.primary
+        ? palette().dangerText
+        : palette().danger
       : variant() === "primary"
         ? palette().primaryText
-        : variant() === "link" ? palette().accent : palette().text;
+        : variant() === "link"
+          ? palette().accent
+          : palette().text;
   const background = () =>
     variant() === "danger"
-      ? props.primary ? palette().danger : palette().dangerFill
+      ? props.primary
+        ? palette().danger
+        : palette().dangerFill
       : variant() === "primary"
         ? palette().brandFill
         : variant() === "secondary" || variant() === "default" || props.selected
@@ -184,43 +234,53 @@ export function Action(props: {
         maxWidth: "100%",
         flexShrink: 1,
         minHeight: props.small ? control.small : control.height,
-        paddingVertical: control.compact ? 4 : props.small ? 4 : 6,
-        paddingHorizontal: control.compact ? props.small ? 8 : 12 : props.small ? spacing.md : spacing.lg,
+        paddingVertical: props.small ? spacing.xxs : density.space(6),
+        paddingHorizontal: props.small ? spacing.md : spacing.lg,
         borderRadius: radius.md,
         flexDirection: "row",
-        gap: control.compact ? 6 : spacing.sm,
+        gap: spacing.sm,
         alignItems: "center",
         justifyContent: "center",
         opacity: props.loading ? 1 : props.disabled ? 0.4 : 1,
         borderWidth: 1,
-        borderColor: variant() === "ghost" || variant() === "link" || variant() === "primary" ? "transparent" : palette().border,
+        borderColor:
+          variant() === "ghost" ||
+          variant() === "link" ||
+          variant() === "primary"
+            ? "transparent"
+            : palette().border,
         backgroundColor: background(),
-        ...(variant() === "primary" ? surfaceFinish("accent")
-          : variant() === "outline" || variant() === "secondary" || variant() === "default" ? surfaceFinish("raised") : {}),
+        ...(variant() === "primary"
+          ? surfaceFinish("accent")
+          : variant() === "outline" ||
+              variant() === "secondary" ||
+              variant() === "default"
+            ? surfaceFinish("raised")
+            : {}),
         ...feedbackStyle(),
         transform: [{ scale: press.scale }],
       }}
     >
       <If when={props.loading || props.icon}>
         <View style={{ opacity: glyph, transform: [{ scale: glyph }] }}>
-      <If
-        when={props.loading}
-        else={
-          <If when={props.icon}>
-            <Icon name={props.icon!} size={control.compact ? 14 : 16} color={foreground()} />
+          <If
+            when={props.loading}
+            else={
+              <If when={props.icon}>
+                <Icon name={props.icon!} size={16} color={foreground()} />
+              </If>
+            }
+          >
+            <Spinner size={16} color={foreground()} />
           </If>
-        }
-      >
-        <Spinner size={control.compact ? 14 : 16} color={foreground()} />
-      </If>
         </View>
       </If>
       <Text
         style={{
           minWidth: 0,
           flexShrink: 1,
-          lineHeight: control.compact ? 18 : 20,
-          fontSize: props.small ? typography.xs : control.compact ? 13 : typography.sm,
+          lineHeight: density.line(20),
+          fontSize: props.small ? typography.xs : typography.sm,
           fontWeight: "500",
           color: foreground(),
         }}
@@ -243,8 +303,12 @@ export function IconButton(props: {
 }) {
   const disabled = () => !!props.disabled || !!props.loading;
   const press = usePressFeedback(disabled);
-  const glyph = useGlyphTransition(() => props.loading ? "busy" : props.icon);
-  const size = () => Math.max(control.icon, props.size || (props.small ? control.small : control.icon));
+  const glyph = useGlyphTransition(() => (props.loading ? "busy" : props.icon));
+  const size = () =>
+    Math.max(
+      control.icon,
+      props.size || (props.small ? control.small : control.icon),
+    );
   return (
     <Button
       testID={props.id}
@@ -272,32 +336,72 @@ export function IconButton(props: {
       }}
     >
       <View style={{ opacity: glyph, transform: [{ scale: glyph }] }}>
-      <If when={props.loading} else={<Icon name={props.icon} size={control.compact ? 16 : 18} color={palette().text} />}>
-        <Spinner size={control.compact ? 16 : 18} />
-      </If>
+        <If
+          when={props.loading}
+          else={<Icon name={props.icon} size={18} color={palette().text} />}
+        >
+          <Spinner size={18} />
+        </If>
       </View>
     </Button>
   );
 }
 
-export function ExternalLink(props: { label: string; href: string; id?: string; small?: boolean }) {
+export function ExternalLink(props: {
+  label: string;
+  href: string;
+  id?: string;
+  small?: boolean;
+}) {
   const ui = useApp();
-  return <Link testID={props.id} href={props.href} openWith="app"
-    hitSlop={control.hitSlop(props.small ? control.small : control.height)}
-    onOpen={(event) => { void ui.client.run("platform.openUrl", { url: event.href }); }}
-    accessibilityLabel={props.label} focusStyle={focusRing()}
-    hoverStyle={{ backgroundColor: palette().soft }} activeStyle={{ opacity: 0.8 }}
-    style={{ minHeight: props.small ? control.small : control.height, maxWidth: "100%", minWidth: 0,
-      paddingVertical: 6, paddingHorizontal: spacing.sm, flexDirection: "row", alignItems: "center",
-      gap: spacing.sm, borderRadius: radius.md, cursor: "pointer", ...feedbackStyle() }}>
-    <Text style={{ flexShrink: 1, fontSize: props.small ? 12 : 14, lineHeight: 20,
-      color: palette().accent }}>{props.label}</Text>
-    <Icon name="external-link" size={14} color={palette().muted} />
-  </Link>;
+  return (
+    <Link
+      testID={props.id}
+      href={props.href}
+      openWith="app"
+      hitSlop={control.hitSlop(props.small ? control.small : control.height)}
+      onOpen={(event) => {
+        void ui.client.run("platform.openUrl", { url: event.href });
+      }}
+      accessibilityLabel={props.label}
+      focusStyle={focusRing()}
+      hoverStyle={{ backgroundColor: palette().soft }}
+      activeStyle={{ opacity: 0.8 }}
+      style={{
+        minHeight: props.small ? control.small : control.height,
+        maxWidth: "100%",
+        minWidth: 0,
+        paddingVertical: density.space(6),
+        paddingHorizontal: spacing.sm,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: spacing.sm,
+        borderRadius: radius.md,
+        cursor: "pointer",
+        ...feedbackStyle(),
+      }}
+    >
+      <Text
+        style={{
+          flexShrink: 1,
+          fontSize: props.small ? density.font(12) : density.font(14),
+          lineHeight: density.line(20),
+          color: palette().accent,
+        }}
+      >
+        {props.label}
+      </Text>
+      <Icon name="external-link" size={14} color={palette().muted} />
+    </Link>
+  );
 }
 
 export function Separator() {
-  return <View style={{ height: 1, backgroundColor: palette().border, width: "100%" }} />;
+  return (
+    <View
+      style={{ height: 1, backgroundColor: palette().border, width: "100%" }}
+    />
+  );
 }
 export function Badge(props: {
   label: string;
@@ -316,10 +420,10 @@ export function Badge(props: {
         flexShrink: 1,
         minWidth: 0,
         maxWidth: "100%",
-        minHeight: 22,
+        minHeight: control.compact ? 20 : 22,
         borderRadius: radius.full,
         paddingHorizontal: spacing.sm,
-        paddingVertical: 2,
+        paddingVertical: density.space(2),
         borderWidth: 0,
         borderColor: colors().border,
         backgroundColor: colors().background,
@@ -329,7 +433,7 @@ export function Badge(props: {
         style={{
           minWidth: 0,
           fontSize: typography.xs,
-          lineHeight: 16,
+          lineHeight: density.line(16),
           fontWeight: "500",
           color: colors().text,
         }}
@@ -350,20 +454,28 @@ export function Tabs(props: {
     <NativeTabs
       style={{
         minHeight: control.height + 4,
-        padding: 2,
+        padding: density.space(2),
         flexDirection: "row",
         backgroundColor: palette().soft,
         borderRadius: radius.lg,
         ...surfaceFinish("track"),
       }}
-      indicatorStyle={{ top: 2, bottom: 2, borderRadius: radius.md, borderWidth: 1,
-        borderColor: palette().border, ...surfaceFinish("raised") }}
+      indicatorStyle={{
+        top: 2,
+        bottom: 2,
+        borderRadius: radius.md,
+        borderWidth: 1,
+        borderColor: palette().border,
+        ...surfaceFinish("raised"),
+      }}
     >
       <Each of={props.options} key={(option) => option.value}>
         {(option) => (
           <Tab
             focusStyle={focusRing()}
-            testID={props.idPrefix ? `${props.idPrefix}-${option().value}` : undefined}
+            testID={
+              props.idPrefix ? `${props.idPrefix}-${option().value}` : undefined
+            }
             selected={props.value === option().value}
             accessibilityLabel={option().label}
             disabled={props.disabled}
@@ -384,7 +496,10 @@ export function Tabs(props: {
               style={{
                 fontSize: typography.sm,
                 fontWeight: "500",
-                color: props.value === option().value ? palette().text : palette().muted,
+                color:
+                  props.value === option().value
+                    ? palette().text
+                    : palette().muted,
               }}
             >
               {option().label}
@@ -396,10 +511,20 @@ export function Tabs(props: {
   );
 }
 
-export function Actions(props: { children?: JSX.Element; align?: "start" | "end" }) {
+export function Actions(props: {
+  children?: JSX.Element;
+  align?: "start" | "end";
+}) {
   return (
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: spacing.sm, alignItems: "center",
-      justifyContent: props.align === "start" ? "flex-start" : "flex-end" }}>
+    <View
+      style={{
+        flexDirection: "row",
+        flexWrap: "wrap",
+        gap: spacing.sm,
+        alignItems: "center",
+        justifyContent: props.align === "start" ? "flex-start" : "flex-end",
+      }}
+    >
       {props.children}
     </View>
   );
@@ -428,7 +553,13 @@ export function Field(props: {
   return (
     <View style={{ gap: spacing.xs }}>
       <If when={props.label}>
-        <Text style={{ fontSize: typography.sm, fontWeight: "500", color: palette().text }}>
+        <Text
+          style={{
+            fontSize: typography.sm,
+            fontWeight: "500",
+            color: palette().text,
+          }}
+        >
           {props.label}
         </Text>
       </If>
@@ -452,9 +583,13 @@ export function Field(props: {
           onBlur={() => focused.set(false)}
           style={{
             width: "100%",
-            height: props.height || (props.multiline ? 120 : Math.max(control.height, 20 * Math.max(1, fontScale()) + 16)),
+            height:
+              props.height ||
+              (props.multiline
+                ? 120
+                : Math.max(control.height, 20 * Math.max(1, fontScale()) + 16)),
             fontSize: typography.sm,
-            lineHeight: 20,
+            lineHeight: density.line(20),
             color: palette().text,
             placeholderColor: palette().muted,
             paddingLeft: spacing.md,
@@ -463,18 +598,33 @@ export function Field(props: {
             opacity: props.disabled ? 0.5 : 1,
             backgroundColor: palette().field,
             borderWidth: 1,
-            borderColor: props.error ? palette().danger : focused() ? palette().ring : palette().fieldBorder,
+            borderColor: props.error
+              ? palette().danger
+              : focused()
+                ? palette().ring
+                : palette().fieldBorder,
             borderRadius: radius.md,
             ...surfaceFinish("field"),
             ...feedbackStyle(),
           }}
         />
         <If when={props.password}>
-          <View style={{ position: "absolute", right: 1, top: 0, bottom: 0, justifyContent: "center" }}>
+          <View
+            style={{
+              position: "absolute",
+              right: 1,
+              top: 0,
+              bottom: 0,
+              justifyContent: "center",
+            }}
+          >
             <IconButton
               icon={passwordVisible() ? "eye-off" : "eye"}
               size={32}
-              label={ui?.t("显示或隐藏密码", "Show or hide password") || "Show or hide password"}
+              label={
+                ui?.t("显示或隐藏密码", "Show or hide password") ||
+                "Show or hide password"
+              }
               disabled={props.disabled}
               onPress={() => passwordVisible.set(!passwordVisible())}
             />
@@ -495,7 +645,7 @@ export function Toggle(props: {
   onChange: (value: boolean) => void;
   disabled?: boolean;
 }) {
-  const position = follow(() => props.value ? 1 : 0, motion.move);
+  const position = follow(() => (props.value ? 1 : 0), motion.move);
   return (
     <Switch
       focusStyle={focusRing()}
@@ -503,18 +653,50 @@ export function Toggle(props: {
       checked={props.value}
       disabled={props.disabled}
       onChange={(event) => props.onChange(event.checked)}
-      style={{ flexDirection: "row-reverse", alignItems: "center", gap: spacing.md,
-        minHeight: control.row, opacity: props.disabled ? 0.4 : 1 }}
-      trackStyle={{ width: 44, height: 26, borderRadius: radius.full,
-        padding: 2, borderWidth: 1, borderColor: palette().border,
-        backgroundColor: position.interpolate({ inputRange: [0, 1], outputRange: [palette().soft, palette().brandFill] }),
-        ...surfaceFinish("track") }}
-      thumbStyle={{ width: 20, height: 20, borderRadius: radius.full,
-        backgroundColor: palette().panel, ...surfaceFinish("knob"),
-        transform: [{ translateX: position.interpolate({ inputRange: [0, 1], outputRange: [0, 18] }) }] }}
+      style={{
+        flexDirection: "row-reverse",
+        alignItems: "center",
+        gap: spacing.md,
+        minHeight: control.row,
+        opacity: props.disabled ? 0.4 : 1,
+      }}
+      trackStyle={{
+        width: control.compact ? 38 : 44,
+        height: control.compact ? 24 : 26,
+        borderRadius: radius.full,
+        padding: 2,
+        borderWidth: 1,
+        borderColor: palette().border,
+        backgroundColor: position.interpolate({
+          inputRange: [0, 1],
+          outputRange: [palette().soft, palette().brandFill],
+        }),
+        ...surfaceFinish("track"),
+      }}
+      thumbStyle={{
+        width: control.compact ? 18 : 20,
+        height: control.compact ? 18 : 20,
+        borderRadius: radius.full,
+        backgroundColor: palette().panel,
+        ...surfaceFinish("knob"),
+        transform: [
+          {
+            translateX: position.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0, control.compact ? 14 : 18],
+            }),
+          },
+        ],
+      }}
     >
       <View style={{ flex: 1, gap: spacing.xs }}>
-        <Text style={{ color: palette().text, fontSize: typography.sm, fontWeight: "500" }}>
+        <Text
+          style={{
+            color: palette().text,
+            fontSize: typography.sm,
+            fontWeight: "500",
+          }}
+        >
           {props.label}
         </Text>
         <If when={props.description}>
@@ -527,37 +709,73 @@ export function Toggle(props: {
 
 /** A draft choice committed by its form's Save action, unlike an immediate Switch. */
 export function Check(props: {
-  label: string; description?: string; value: boolean;
-  onChange: (value: boolean) => void; disabled?: boolean;
+  label: string;
+  description?: string;
+  value: boolean;
+  onChange: (value: boolean) => void;
+  disabled?: boolean;
 }) {
-  const selected = follow(() => props.value ? 1 : 0);
+  const selected = follow(() => (props.value ? 1 : 0));
   return (
-    <Checkbox checked={props.value} disabled={props.disabled}
-      accessibilityLabel={props.label} focusStyle={focusRing()}
+    <Checkbox
+      checked={props.value}
+      disabled={props.disabled}
+      accessibilityLabel={props.label}
+      focusStyle={focusRing()}
       onChange={(event) => props.onChange(event.checked)}
-      style={{ flexDirection: "row", alignItems: "center", gap: spacing.md,
-        minHeight: control.row, opacity: props.disabled ? 0.4 : 1 }}
-      indicatorStyle={{ width: 20, height: 20, borderRadius: radius.sm,
-        borderWidth: 1, borderColor: props.value ? palette().accent : palette().fieldBorder,
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: spacing.md,
+        minHeight: control.row,
+        opacity: props.disabled ? 0.4 : 1,
+      }}
+      indicatorStyle={{
+        width: control.compact ? 18 : 20,
+        height: control.compact ? 18 : 20,
+        borderRadius: radius.sm,
+        borderWidth: 1,
+        borderColor: props.value ? palette().accent : palette().fieldBorder,
         backgroundColor: props.value ? palette().brandFill : palette().field,
-        alignItems: "center", justifyContent: "center", ...feedbackStyle() }}
-      indicator={<View style={{ opacity: selected, transform: [{ scale: selected }] }}>
-        <Icon name="check" size={14} color={palette().primaryText} />
-      </View>}
+        alignItems: "center",
+        justifyContent: "center",
+        ...feedbackStyle(),
+      }}
+      indicator={
+        <View style={{ opacity: selected, transform: [{ scale: selected }] }}>
+          <Icon name="check" size={14} color={palette().primaryText} />
+        </View>
+      }
     >
       <View style={{ flex: 1, minWidth: 0, gap: spacing.xxs }}>
-        <Text style={{ color: palette().text, fontSize: typography.sm, lineHeight: 20 }}>{props.label}</Text>
-        <If when={props.description}><Hint text={props.description!} /></If>
+        <Text
+          style={{
+            color: palette().text,
+            fontSize: typography.sm,
+            lineHeight: density.line(20),
+          }}
+        >
+          {props.label}
+        </Text>
+        <If when={props.description}>
+          <Hint text={props.description!} />
+        </If>
       </View>
     </Checkbox>
   );
 }
 
 export function Chevron(props: { expanded: boolean; size?: number }) {
-  const angle = follow(() => props.expanded ? 180 : 0);
-  return <View style={{ pointerEvents: "none", transform: [{ rotate: angle }] }}>
-    <Icon name="chevron-down" size={props.size || 16} color={palette().muted} />
-  </View>;
+  const angle = follow(() => (props.expanded ? 180 : 0));
+  return (
+    <View style={{ pointerEvents: "none", transform: [{ rotate: angle }] }}>
+      <Icon
+        name="chevron-down"
+        size={props.size || 16}
+        color={palette().muted}
+      />
+    </View>
+  );
 }
 
 export function Detail(props: {
@@ -567,7 +785,8 @@ export function Detail(props: {
   stacked?: boolean;
   id?: string;
 }) {
-  const stacked = () => !!props.stacked || fontScale() > 1.3 || windowSize().width < 360;
+  const stacked = () =>
+    !!props.stacked || fontScale() > 1.3 || windowSize().width < 360;
   return (
     <View
       testID={props.id}
@@ -575,8 +794,8 @@ export function Detail(props: {
         minWidth: 0,
         maxWidth: "100%",
         flexDirection: stacked() ? "column" : "row",
-        gap: stacked() ? 4 : 12,
-        minHeight: 32,
+        gap: stacked() ? density.space(4) : density.space(12),
+        minHeight: control.compact ? 28 : 32,
         alignItems: stacked() ? "stretch" : "flex-start",
       }}
     >
@@ -584,8 +803,8 @@ export function Detail(props: {
         style={{
           minWidth: 0,
           flex: stacked() ? undefined : 1,
-          fontSize: 12,
-          lineHeight: 20,
+          fontSize: density.font(12),
+          lineHeight: density.line(20),
           color: palette().muted,
         }}
       >
@@ -601,32 +820,42 @@ export function Detail(props: {
           alignItems: "flex-start",
         }}
       >
-            <Text
-              style={{
-                userSelect: "text",
-                width: "100%",
-                minWidth: 0,
-                fontSize: 14,
-                lineHeight: 20,
-                fontWeight: "500",
-                color: props.tone ? statusColors(props.tone).text : palette().text,
-                textAlign: stacked() ? "left" : "right",
-              }}
-            >
-              {props.value}
-            </Text>
+        <Text
+          style={{
+            userSelect: "text",
+            width: "100%",
+            minWidth: 0,
+            fontSize: density.font(14),
+            lineHeight: density.line(20),
+            fontWeight: "500",
+            color: props.tone ? statusColors(props.tone).text : palette().text,
+            textAlign: stacked() ? "left" : "right",
+          }}
+        >
+          {props.value}
+        </Text>
       </View>
     </View>
   );
 }
-export function Empty(props: { text?: string; title?: string; icon?: IconName }) {
+export function Empty(props: {
+  text?: string;
+  title?: string;
+  icon?: IconName;
+}) {
   const ui = useApp();
   return (
-    <View style={{ padding: 36, gap: spacing.sm, alignItems: "center" }}>
+    <View
+      style={{
+        padding: density.space(36),
+        gap: spacing.sm,
+        alignItems: "center",
+      }}
+    >
       <View
         style={{
-          width: 48,
-          height: 48,
+          width: control.compact ? 40 : 48,
+          height: control.compact ? 40 : 48,
           backgroundColor: palette().soft,
           borderRadius: radius.xl,
           alignItems: "center",
@@ -634,14 +863,30 @@ export function Empty(props: { text?: string; title?: string; icon?: IconName })
           marginBottom: spacing.xxs,
         }}
       >
-        <Icon name={props.icon || "database"} size={20} color={palette().muted} />
+        <Icon
+          name={props.icon || "database"}
+          size={20}
+          color={palette().muted}
+        />
       </View>
       <If when={props.title}>
-        <Text style={{ color: palette().text, fontSize: typography.sm, fontWeight: "600" }}>
+        <Text
+          style={{
+            color: palette().text,
+            fontSize: typography.sm,
+            fontWeight: "600",
+          }}
+        >
           {props.title}
         </Text>
       </If>
-      <Text style={{ color: palette().muted, fontSize: 14, textAlign: "center" }}>
+      <Text
+        style={{
+          color: palette().muted,
+          fontSize: density.font(14),
+          textAlign: "center",
+        }}
+      >
         {props.text || ui.t("暂无数据", "No data yet")}
       </Text>
     </View>
@@ -662,12 +907,24 @@ export function Body(props: { children?: JSX.Element }) {
 }
 
 export function Loading(props: { text: string }) {
-  return <View accessible role="progressbar" accessibilityLabel={props.text}
-    style={{ flex: 1, minHeight: 160, padding: spacing.region, gap: spacing.md,
-      alignItems: "center", justifyContent: "center" }}>
-    <Spinner size={20} color={palette().muted} />
-    <Hint text={props.text} />
-  </View>;
+  return (
+    <View
+      accessible
+      role="progressbar"
+      accessibilityLabel={props.text}
+      style={{
+        flex: 1,
+        minHeight: 160,
+        padding: spacing.region,
+        gap: spacing.md,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <Spinner size={20} color={palette().muted} />
+      <Hint text={props.text} />
+    </View>
+  );
 }
 export function Hint(props: { text: string; danger?: boolean }) {
   return (
@@ -676,8 +933,8 @@ export function Hint(props: { text: string; danger?: boolean }) {
         userSelect: "text",
         minWidth: 0,
         maxWidth: "100%",
-        fontSize: 13,
-        lineHeight: 20,
+        fontSize: density.font(13),
+        lineHeight: density.line(20),
         color: props.danger ? statusColors("danger").text : palette().muted,
       }}
     >
@@ -693,8 +950,8 @@ export function Code(props: { text: string; lines?: number }) {
         numberOfLines: props.lines,
         minWidth: 0,
         maxWidth: "100%",
-        fontSize: 12,
-        lineHeight: 19,
+        fontSize: density.font(12),
+        lineHeight: density.line(19),
         color: palette().text,
         fontFamily: "monospace",
       }}
@@ -704,19 +961,38 @@ export function Code(props: { text: string; lines?: number }) {
   );
 }
 
-type ConfirmationOptions = { actionLabel: string; description?: string; destructive?: boolean };
-export async function askConfirmation(ui: AppContext, title: string, options?: ConfirmationOptions): Promise<boolean> {
+type ConfirmationOptions = {
+  actionLabel: string;
+  description?: string;
+  destructive?: boolean;
+};
+export async function askConfirmation(
+  ui: AppContext,
+  title: string,
+  options?: ConfirmationOptions,
+): Promise<boolean> {
   const route = ui.route();
-  const result = await AlertDialog.show({ title, description: options?.description, closeOnEscape: true,
+  const result = await AlertDialog.show({
+    title,
+    description: options?.description,
+    closeOnEscape: true,
     actions: [
       { id: "cancel", label: ui.t("取消", "Cancel"), role: "cancel" },
-      { id: "commit", label: options?.actionLabel || ui.t("继续", "Continue"),
-        role: options?.destructive === false ? "default" : "destructive" },
+      {
+        id: "commit",
+        label: options?.actionLabel || ui.t("继续", "Continue"),
+        role: options?.destructive === false ? "default" : "destructive",
+      },
     ],
   });
   return result.action === "commit" && ui.alive() && ui.route() === route;
 }
-export async function confirm(ui: AppContext, title: string, action: () => void, options?: ConfirmationOptions): Promise<void> {
+export async function confirm(
+  ui: AppContext,
+  title: string,
+  action: () => void,
+  options?: ConfirmationOptions,
+): Promise<void> {
   if (await askConfirmation(ui, title, options)) action();
 }
 
@@ -730,30 +1006,102 @@ export function Dialog(props: {
 }) {
   const notificationLayer = useNotificationLayer();
   return (
-    <NativeDialog open closeOnEscape closeOnBackdropPress={false} closeOnSwipe={false}
-      onCancel={props.onClose} animation="fade" style={{ flex: 1 }}>
+    <NativeDialog
+      open
+      closeOnEscape
+      closeOnBackdropPress={false}
+      closeOnSwipe={false}
+      onCancel={props.onClose}
+      animation="fade"
+      style={{ flex: 1 }}
+    >
       <View style={{ flex: 1, paddingBottom: "env(keyboard-inset-height)" }}>
-        <View onPress={props.onClose} style={{ position: "absolute", top: 0, right: 0,
-          bottom: 0, left: 0, backgroundColor: palette().scrim }} />
-        <View style={{ flex: 1, minHeight: 0, alignItems: "center", justifyContent: "center",
-          paddingHorizontal: spacing.lg, paddingVertical: spacing.xxl }}>
-          <View accessibilityLabel={props.title} style={{ width: "100%", maxWidth: props.width || 480,
-            maxHeight: "100%", minHeight: 0, borderRadius: radius.xxl, borderCurve: "continuous",
-            backgroundColor: palette().popover, borderWidth: 1, borderColor: palette().border,
-            ...surfaceFinish("overlay") }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm,
-              paddingLeft: spacing.lg, paddingRight: spacing.xxs, paddingTop: spacing.xxs }}>
-              <Text role="header" accessibilityLabel={props.title} style={{ flex: 1, minWidth: 0, numberOfLines: 2, fontSize: typography.lg,
-                lineHeight: 24, fontWeight: "600", color: palette().text }}>{props.title}</Text>
-              <IconButton icon="x" label="Close dialog" id="dialog-close" onPress={props.onClose} />
+        <View
+          onPress={props.onClose}
+          style={{
+            position: "absolute",
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0,
+            backgroundColor: palette().scrim,
+          }}
+        />
+        <View
+          style={{
+            flex: 1,
+            minHeight: 0,
+            alignItems: "center",
+            justifyContent: "center",
+            paddingHorizontal: spacing.lg,
+            paddingVertical: spacing.xxl,
+          }}
+        >
+          <View
+            accessibilityLabel={props.title}
+            style={{
+              width: "100%",
+              maxWidth: props.width || 480,
+              maxHeight: "100%",
+              minHeight: 0,
+              borderRadius: radius.xxl,
+              borderCurve: "continuous",
+              backgroundColor: palette().popover,
+              borderWidth: 1,
+              borderColor: palette().border,
+              ...surfaceFinish("overlay"),
+            }}
+          >
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: spacing.sm,
+                paddingLeft: spacing.lg,
+                paddingRight: spacing.xxs,
+                paddingTop: spacing.xxs,
+              }}
+            >
+              <Text
+                role="header"
+                accessibilityLabel={props.title}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  numberOfLines: 2,
+                  fontSize: typography.lg,
+                  lineHeight: density.line(24),
+                  fontWeight: "600",
+                  color: palette().text,
+                }}
+              >
+                {props.title}
+              </Text>
+              <IconButton
+                icon="x"
+                label="Close dialog"
+                id="dialog-close"
+                onPress={props.onClose}
+              />
             </View>
-            <Scroll bounces={false} style={{ flexShrink: 1, minHeight: 0 }}
-              contentStyle={{ padding: spacing.lg, gap: spacing.lg }}>
-              <If when={props.description}><Hint text={props.description!} /></If>
+            <Scroll
+              bounces={false}
+              style={{ flexShrink: 1, minHeight: 0 }}
+              contentStyle={{ padding: spacing.lg, gap: spacing.lg }}
+            >
+              <If when={props.description}>
+                <Hint text={props.description!} />
+              </If>
               {props.children}
             </Scroll>
             <If when={props.footer}>
-              <View style={{ padding: spacing.lg, borderTopWidth: 1, borderTopColor: palette().line }}>
+              <View
+                style={{
+                  padding: spacing.lg,
+                  borderTopWidth: 1,
+                  borderTopColor: palette().line,
+                }}
+              >
                 {props.footer}
               </View>
             </If>
@@ -780,60 +1128,178 @@ export function Select(props: {
   return (
     <View style={{ minWidth: 0, gap: spacing.xxs }}>
       <If when={props.label}>
-        <View style={{ flexDirection: "row", alignItems: "center", gap: spacing.sm }}>
-          <Text style={{ flex: 1, minWidth: 0, fontSize: typography.sm, lineHeight: 20,
-            fontWeight: "500", color: palette().text }}>{props.label}</Text>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: spacing.sm,
+          }}
+        >
+          <Text
+            style={{
+              flex: 1,
+              minWidth: 0,
+              fontSize: typography.sm,
+              lineHeight: density.line(20),
+              fontWeight: "500",
+              color: palette().text,
+            }}
+          >
+            {props.label}
+          </Text>
           {props.labelAccessory}
         </View>
       </If>
-      <Menu open={open()} onOpenChange={(event) => { if (!event.open || !disabled()) open.set(event.open); }}
-        placement="bottom" align="start" offset={4} margin={8}
+      <Menu
+        open={open()}
+        onOpenChange={(event) => {
+          if (!event.open || !disabled()) open.set(event.open);
+        }}
+        placement="bottom"
+        align="start"
+        offset={4}
+        margin={8}
         popupStyle={popupSurface()}
         popupStartingStyle={{ opacity: 0, transform: [{ translateY: -4 }] }}
         popupEndingStyle={{ opacity: 0 }}
         backdropStyle={{ backgroundColor: palette().scrim }}
-        trigger={<View testID={props.id} role="button" accessibilityLabel={props.label || "Choose an option"}
-          hitSlop={control.hitSlop(control.height)}
-          accessibilityState={{ expanded: open(), disabled: disabled(), busy: !!props.loading }}
-          disabled={disabled()} focusStyle={focusRing()}
-          hoverStyle={disabled() ? undefined : { backgroundColor: palette().soft }}
-          activeStyle={disabled() ? undefined : { opacity: 0.85 }}
-          style={{ minHeight: control.height, minWidth: 0, paddingHorizontal: spacing.md,
-            paddingVertical: spacing.sm, borderWidth: 1, borderRadius: radius.md,
-            borderColor: open() ? palette().ring : palette().fieldBorder,
-            backgroundColor: open() ? palette().soft : palette().field,
-            flexDirection: "row", alignItems: "center", gap: spacing.sm,
-            opacity: disabled() ? 0.4 : 1, ...feedbackStyle() }}>
-          <Text style={{ flex: 1, minWidth: 0, fontSize: typography.sm, lineHeight: 20, color: palette().text }}>
-            {props.options.find((option) => option.value === props.value)?.label || props.value}
-          </Text>
-          <If when={props.loading} else={<Chevron expanded={open()} />}><Spinner size={16} /></If>
-        </View>}>
+        trigger={
+          <View
+            testID={props.id}
+            role="button"
+            accessibilityLabel={props.label || "Choose an option"}
+            hitSlop={control.hitSlop(control.height)}
+            accessibilityState={{
+              expanded: open(),
+              disabled: disabled(),
+              busy: !!props.loading,
+            }}
+            disabled={disabled()}
+            focusStyle={focusRing()}
+            hoverStyle={
+              disabled() ? undefined : { backgroundColor: palette().soft }
+            }
+            activeStyle={disabled() ? undefined : { opacity: 0.85 }}
+            style={{
+              minHeight: control.height,
+              minWidth: 0,
+              paddingHorizontal: spacing.md,
+              paddingVertical: spacing.sm,
+              borderWidth: 1,
+              borderRadius: radius.md,
+              borderColor: open() ? palette().ring : palette().fieldBorder,
+              backgroundColor: open() ? palette().soft : palette().field,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: spacing.sm,
+              opacity: disabled() ? 0.4 : 1,
+              ...feedbackStyle(),
+            }}
+          >
+            <Text
+              style={{
+                flex: 1,
+                minWidth: 0,
+                fontSize: typography.sm,
+                lineHeight: density.line(20),
+                color: palette().text,
+              }}
+            >
+              {props.options.find((option) => option.value === props.value)
+                ?.label || props.value}
+            </Text>
+            <If when={props.loading} else={<Chevron expanded={open()} />}>
+              <Spinner size={16} />
+            </If>
+          </View>
+        }
+      >
         <View testID="select-popover" style={{ minWidth: 0 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", paddingLeft: spacing.md }}>
-            <Text style={{ flex: 1, minWidth: 0, fontSize: typography.xs, lineHeight: 18, color: palette().muted }}>
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              paddingLeft: spacing.md,
+            }}
+          >
+            <Text
+              style={{
+                flex: 1,
+                minWidth: 0,
+                fontSize: typography.xs,
+                lineHeight: density.line(18),
+                color: palette().muted,
+              }}
+            >
               {props.label}
             </Text>
-            <IconButton id="select-dismiss" icon="x" label="Close choices" onPress={() => open.set(false)} />
+            <IconButton
+              id="select-dismiss"
+              icon="x"
+              label="Close choices"
+              onPress={() => open.set(false)}
+            />
           </View>
-          <Scroll bounces={false} style={{ maxHeight: Math.max(88, Math.min(480, windowSize().height * 0.65)) }}>
+          <Scroll
+            bounces={false}
+            style={{
+              maxHeight: Math.max(
+                88,
+                Math.min(480, windowSize().height * 0.65),
+              ),
+            }}
+          >
             <Each of={props.options} key={(option) => option.value}>
-              {(option) => <MenuItem testID={`select-option-${option().value}`} role="menuitemradio"
-                disabled={props.disabled}
-                checked={option().value === props.value} accessibilityLabel={option().label}
-                onSelect={() => { if (option().value !== props.value) props.onChange(option().value); }}
-                focusStyle={focusRing()} hoverStyle={{ backgroundColor: palette().soft }}
-                activeStyle={{ backgroundColor: palette().soft }}
-                style={{ minHeight: control.row, paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-                  borderRadius: radius.sm, flexDirection: "row", alignItems: "center", gap: spacing.sm,
-                  backgroundColor: option().value === props.value ? palette().soft : "transparent", ...feedbackStyle() }}>
-                <Text style={{ flex: 1, minWidth: 0, fontSize: typography.sm, lineHeight: 20, color: palette().text }}>
-                  {option().label}
-                </Text>
-                <View style={{ width: 16, opacity: option().value === props.value ? 1 : 0 }}>
-                  <Icon name="check" size={16} color={palette().text} />
-                </View>
-              </MenuItem>}
+              {(option) => (
+                <MenuItem
+                  testID={`select-option-${option().value}`}
+                  role="menuitemradio"
+                  disabled={props.disabled}
+                  checked={option().value === props.value}
+                  accessibilityLabel={option().label}
+                  onSelect={() => {
+                    if (option().value !== props.value)
+                      props.onChange(option().value);
+                  }}
+                  focusStyle={focusRing()}
+                  hoverStyle={{ backgroundColor: palette().soft }}
+                  activeStyle={{ backgroundColor: palette().soft }}
+                  style={{
+                    minHeight: control.row,
+                    paddingHorizontal: spacing.md,
+                    paddingVertical: spacing.sm,
+                    borderRadius: radius.sm,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: spacing.sm,
+                    backgroundColor:
+                      option().value === props.value
+                        ? palette().soft
+                        : "transparent",
+                    ...feedbackStyle(),
+                  }}
+                >
+                  <Text
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      fontSize: typography.sm,
+                      lineHeight: density.line(20),
+                      color: palette().text,
+                    }}
+                  >
+                    {option().label}
+                  </Text>
+                  <View
+                    style={{
+                      width: 16,
+                      opacity: option().value === props.value ? 1 : 0,
+                    }}
+                  >
+                    <Icon name="check" size={16} color={palette().text} />
+                  </View>
+                </MenuItem>
+              )}
             </Each>
           </Scroll>
         </View>
@@ -843,29 +1309,91 @@ export function Select(props: {
 }
 
 export function RadioGroup(props: {
-  label: string; value: string; options: { value: string; label: string }[]; onChange: (value: string) => void;
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
 }) {
-  return <NativeRadioGroup style={{ gap: spacing.xxs }}>
-    <Each of={props.options} key={(option) => option.value}>
-      {(option) => <RadioChoice label={option().label} selected={props.value === option().value}
-        onSelect={() => { if (props.value !== option().value) props.onChange(option().value); }} />}
-    </Each>
-  </NativeRadioGroup>;
+  return (
+    <NativeRadioGroup style={{ gap: spacing.xxs }}>
+      <Each of={props.options} key={(option) => option.value}>
+        {(option) => (
+          <RadioChoice
+            label={option().label}
+            selected={props.value === option().value}
+            onSelect={() => {
+              if (props.value !== option().value)
+                props.onChange(option().value);
+            }}
+          />
+        )}
+      </Each>
+    </NativeRadioGroup>
+  );
 }
-function RadioChoice(props: { label: string; selected: boolean; onSelect: () => void }) {
-  const selected = follow(() => props.selected ? 1 : 0);
-  return <Radio focusStyle={focusRing()} accessibilityLabel={props.label} checked={props.selected}
-    onChange={props.onSelect} hoverStyle={{ backgroundColor: palette().soft }} activeStyle={{ opacity: 0.8 }}
-    style={{ minHeight: control.row, flexDirection: "row", alignItems: "center", gap: spacing.md,
-      paddingVertical: spacing.sm, paddingHorizontal: spacing.md, borderRadius: radius.md,
-      backgroundColor: props.selected ? palette().soft : "transparent", ...feedbackStyle() }}>
-    <View style={{ width: 20, height: 20, borderRadius: radius.full, borderWidth: 1,
-      borderColor: props.selected ? palette().accent : palette().fieldBorder, alignItems: "center", justifyContent: "center" }}>
-      <View style={{ width: 8, height: 8, borderRadius: radius.full, backgroundColor: palette().accent,
-        opacity: selected, transform: [{ scale: selected }] }} />
-    </View>
-    <Text style={{ flex: 1, minWidth: 0, fontSize: typography.sm, lineHeight: 20, color: palette().text }}>{props.label}</Text>
-  </Radio>;
+function RadioChoice(props: {
+  label: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const selected = follow(() => (props.selected ? 1 : 0));
+  return (
+    <Radio
+      focusStyle={focusRing()}
+      accessibilityLabel={props.label}
+      checked={props.selected}
+      onChange={props.onSelect}
+      hoverStyle={{ backgroundColor: palette().soft }}
+      activeStyle={{ opacity: 0.8 }}
+      style={{
+        minHeight: control.row,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: spacing.md,
+        paddingVertical: spacing.sm,
+        paddingHorizontal: spacing.md,
+        borderRadius: radius.md,
+        backgroundColor: props.selected ? palette().soft : "transparent",
+        ...feedbackStyle(),
+      }}
+    >
+      <View
+        style={{
+          width: control.compact ? 18 : 20,
+          height: control.compact ? 18 : 20,
+          borderRadius: radius.full,
+          borderWidth: 1,
+          borderColor: props.selected
+            ? palette().accent
+            : palette().fieldBorder,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <View
+          style={{
+            width: control.compact ? 6 : 8,
+            height: control.compact ? 6 : 8,
+            borderRadius: radius.full,
+            backgroundColor: palette().accent,
+            opacity: selected,
+            transform: [{ scale: selected }],
+          }}
+        />
+      </View>
+      <Text
+        style={{
+          flex: 1,
+          minWidth: 0,
+          fontSize: typography.sm,
+          lineHeight: density.line(20),
+          color: palette().text,
+        }}
+      >
+        {props.label}
+      </Text>
+    </Radio>
+  );
 }
 export function useLifetime(): () => boolean {
   let alive = true;
@@ -884,7 +1412,11 @@ export function translator(client: CoreClient) {
 export function Spinner(props: { size?: number; color?: string }) {
   const angle = createNativeValue(0);
   const animation = Animated.loop(
-    Animated.timing(angle, { toValue: 360, duration: 900, easing: Easing.linear }),
+    Animated.timing(angle, {
+      toValue: 360,
+      duration: 900,
+      easing: Easing.linear,
+    }),
     { resetBeforeIteration: true },
   );
   animation.start();
@@ -893,9 +1425,18 @@ export function Spinner(props: { size?: number; color?: string }) {
     <View
       role="progressbar"
       accessibilityLabel="Loading"
-      style={{ pointerEvents: "none", width: props.size || 16, height: props.size || 16, transform: [{ rotate: angle }] }}
+      style={{
+        pointerEvents: "none",
+        width: density.icon(props.size || 16),
+        height: density.icon(props.size || 16),
+        transform: [{ rotate: angle }],
+      }}
     >
-      <Icon name="loader-circle" size={props.size || 16} color={props.color || palette().text} />
+      <Icon
+        name="loader-circle"
+        size={props.size || 16}
+        color={props.color || palette().text}
+      />
     </View>
   );
 }
@@ -917,23 +1458,29 @@ export function Alert(props: {
             ? palette().warning
             : palette().border,
         borderRadius: radius.lg,
-        padding: 16,
+        padding: density.space(16),
         flexDirection: "row",
         alignItems: "flex-start",
-        gap: 12,
+        gap: density.space(12),
         backgroundColor: palette().background,
       }}
     >
       <Icon
         name={props.danger || props.warning ? "triangle-alert" : "circle-check"}
         size={16}
-        color={props.danger ? palette().danger : props.warning ? palette().warning : palette().text}
+        color={
+          props.danger
+            ? palette().danger
+            : props.warning
+              ? palette().warning
+              : palette().text
+        }
       />
-      <View style={{ flex: 1, gap: 4 }}>
+      <View style={{ flex: 1, gap: density.space(4) }}>
         <If when={props.title}>
           <Text
             style={{
-              fontSize: 14,
+              fontSize: density.font(14),
               fontWeight: "500",
               color: props.danger
                 ? palette().danger
@@ -947,8 +1494,8 @@ export function Alert(props: {
         </If>
         <Text
           style={{
-            fontSize: 14,
-            lineHeight: 20,
+            fontSize: density.font(14),
+            lineHeight: density.line(20),
             color: props.danger
               ? palette().danger
               : props.warning

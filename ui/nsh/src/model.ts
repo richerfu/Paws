@@ -253,11 +253,20 @@ export type DomainData = {
   rules: Pick<UiState, "rules"> & {
     runtimeRules?: { ruleType: string; payload: string; target: string }[] | null;
   };
-  providers: Pick<UiState, "providers"> & { runtimeAvailability?: { name: string; providerType: string; available: boolean; reason: string | null; ruleCount: number | null; updatedAt: string | null }[] };
+  providers: Pick<UiState, "providers"> & {
+    runtimeAvailability?: {
+      name: string;
+      providerType: string;
+      available: boolean;
+      reason: string | null;
+      ruleCount: number | null;
+      updatedAt: string | null;
+    }[];
+  };
   geodata: Pick<UiState, "geodata">;
   traffic: TrafficDetail;
   connections: Pick<UiState, "connections">;
-  requests: Pick<UiState, "requestHistory">;
+  requests: Pick<UiState, "requestHistory"> & { sampled?: boolean };
   logs: Pick<UiState, "logs"> & { recordingError?: string | null };
   dns: Pick<UiState, "dns">;
   about: Pick<UiState, "about">;
@@ -274,7 +283,11 @@ export type DomainQueryResult<D extends DomainName = DomainName> = DomainInteres
   revision: number;
   configRevision: number;
   data: DomainData[D];
-  observation?: { engine: Engine | null; session: string | null; issues: { field: string; reason: string }[] };
+  observation?: {
+    engine: Engine | null;
+    session: string | null;
+    issues: { field: string; reason: string }[];
+  };
 };
 export type CoreRequest = { id: number; command: string; payload: Record<string, unknown> };
 export type CoreResult = {

@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
-from nsh_runner import run_nsh
+from nsh_runner import run_nsh, navigation_steps
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -76,6 +76,14 @@ def text_fits(tree, node):
     assert cx >= -1 and cy >= -1 and cx + cw <= width + 1 and cy + ch <= height + 1, f'Text layout exceeds frame: {node["text"][:48]}'
 
 
+def validate_link_target(button, width):
+    height = button['frame'][3]
+    assert height >= (28 if width >= 840 else 32), 'Link painted size collapsed'
+    if width < 840:
+        slop = re.search(r'hit_slop: Edges \{ top: ([\d.]+)pt, right: [\d.]+pt, bottom: ([\d.]+)pt,', button['props'])
+        assert slop and height + float(slop[1]) + float(slop[2]) >= 44, 'Compact link lost its 44-point touch target'
+
+
 def validate_layout(tree, width, height, language, theme):
     visual.validate(tree, 'about', width, height)
     scroll = tree.one('about-scroll')
@@ -102,7 +110,7 @@ def validate_layout(tree, width, height, language, theme):
         source, license = tree.one(f'about-source-{index}'), tree.one(f'about-license-{index}')
         for button in (source, license):
             assert button.get('events', 0) != 0, 'Link lost native event registration'
-            assert button['frame'][3] >= (28 if width >= 840 else 44), 'Link target collapsed'
+            validate_link_target(button, width)
             contains(tree.rect(actions), tree.rect(button), 'About link actions')
             assert 'role: Link' in button.get('props', ''), 'External destination lost native Link semantics'
             assert any(n.get('text') for n in tree.descendants(button)), 'Link label missing'
@@ -122,7 +130,8 @@ def validate_layout(tree, width, height, language, theme):
     expected_label = 'Third-party components and adaptations' if language == 'en' else '第三方组件与适配说明'
     assert any(n.get('text') == expected_label for n in tree.descendants(adaptations)), 'Translated long adaptations label missing'
     for button in (source, adaptations, tree.one('about-privacy')):
-        assert button.get('events', 0) != 0 and button['frame'][3] >= (28 if width >= 840 else 44)
+        assert button.get('events', 0) != 0
+        validate_link_target(button, width)
     content_w, content_h = scroll['scrollContent']
     viewport = tree.rect(scroll)
     privacy = tree.rect(tree.one('about-privacy'))
@@ -174,7 +183,7 @@ def main():
     for width, language, theme in itertools.product((320, 390, 1280), ('zh', 'en'), ('light', 'dark')):
         height = 900 if width == 1280 else 844
         taps = (['about-preview-language'] if language == 'en' else []) + (['about-preview-theme'] if theme == 'dark' else [])
-        taps += ['about-preview-hide', 'nav-tools', 'tool-about']
+        taps += ['about-preview-hide', *navigation_steps('about', width)]
         path = args.output_dir / f'{width}-{language}-{theme}.log'
         tree, _ = trace(args.nsh_bin, path, width, height, taps)
         result = validate_layout(tree, width, height, language, theme)
@@ -196,7 +205,7 @@ def main():
     for width in (320, 390, 1280):
         height = 900 if width == 1280 else 844
         path = args.output_dir / f'{width}-privacy-route.log'
-        tree, _ = trace(args.nsh_bin, path, width, height, ['about-preview-hide', 'nav-tools', 'tool-about', 'about-privacy'])
+        tree, _ = trace(args.nsh_bin, path, width, height, ['about-preview-hide', *navigation_steps('about', width), 'about-privacy'])
         assert any(tree.visible(n) and n.get('text', '').startswith('Only public synthetic preview data.') for n in tree.nodes.values()), 'Privacy action did not navigate to real Privacy page'
         results.append({'case': 'privacyRoute', 'width': width, 'log': str(path), 'physicalScrollingProved': False})
         print(f'PASS About privacy route: {width}', flush=True)

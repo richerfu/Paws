@@ -4,12 +4,23 @@ async function fixture() {
   let readiness = { fresh: false, ready: false, config: false, configRevision: 0 };
   let blocked = 0;
   const commands: string[] = [];
-  const app = await open("./ProfileFreshness.tsx", { width: 390, height: 844, locale: "zh-CN",
-    host: { handlers: {
-      "paws.test.readiness": (value: typeof readiness) => { readiness = value; },
-      "paws.test.blocked": () => { blocked++; },
-      "paws.test.command": (command: string) => { commands.push(command); },
-    } },
+  const app = await open("./ProfileFreshness.tsx", {
+    width: 390,
+    height: 844,
+    locale: "zh-CN",
+    host: {
+      handlers: {
+        "paws.test.readiness": (value: typeof readiness) => {
+          readiness = value;
+        },
+        "paws.test.blocked": () => {
+          blocked++;
+        },
+        "paws.test.command": (command: string) => {
+          commands.push(command);
+        },
+      },
+    },
   });
   await app.press("id:nav-profiles");
   await app.waitUntil(() => readiness.ready);

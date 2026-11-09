@@ -93,6 +93,8 @@ def verify_detail(tree, width, tail, prefix="page-error"):
 
 
 def run(binary, stage, out, name, width, taps, summary_index, detail_index=None, tail_index=None):
+    if width >= 840:
+        taps = ['id:desktop-group-Proxy' if tap == 'id:group-Proxy' else tap for tap in taps]
     cmd = [str(binary), "trace", str(stage / ENTRY), "--wait", "50", "--width", str(width), "--height", "844"]
     for tap in taps:
         cmd.extend(["--tap", tap])
@@ -188,7 +190,7 @@ def run_window(binary, stage, out, width, scale, dynamic=False):
             w, h = node["frame"][2:]
             body = node.get("text", "")
             assert len(body) <= 48 and 40 <= h <= 60 * scale + 1, (log, number, w, h, body)
-            assert w <= min(width - 66, 446) + 1, (log, number, w)
+            assert w <= min(viewports[0]['frame'][2], 480) + 1, (log, number, w)
             # Count every retained descendant, including offscreen cells. This
             # is only the latest headless map, not unpublished/native Arc peaks.
             units = len(body.encode("utf-16-le")) // 2
@@ -259,8 +261,8 @@ def main():
 const fontScale = signal(1);
 (globalThis as typeof globalThis & { __pawsPageErrorSetScale?: (scale: number) => void })
   .__pawsPageErrorSetScale = (scale) => fontScale.set(scale);'''),
-        ('minHeight: rowHeight(),\n                    fontSize: 13,',
-         'minHeight: rowHeight(),\n                    fontSize: 13 * fontScale(),'),
+        ('minHeight: rowHeight(),\n                    fontSize: density.font(13),',
+         'minHeight: rowHeight(),\n                    fontSize: density.font(13) * fontScale(),'),
         ('lineHeight: DETAIL_LINE_HEIGHT,', 'lineHeight: DETAIL_LINE_HEIGHT * fontScale(),'),
     ]
     for old, new in replacements:

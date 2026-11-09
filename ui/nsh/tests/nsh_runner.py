@@ -11,6 +11,17 @@ import subprocess
 import tempfile
 
 
+def navigation_steps(page, width):
+    """Follow the production navigation for the fixture's actual idiom."""
+    if width < 840:
+        return ['nav-tools', f'tool-{page}']
+    if page == 'requests':
+        return ['desktop-nav-connections', 'activity-view-requests']
+    if page == 'advanced-diagnostics':
+        return ['desktop-nav-diagnostics', 'diagnostics-advanced']
+    return [f'desktop-nav-{page}']
+
+
 class TestStep(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
         namespace.steps = [*getattr(namespace, 'steps', []), (option_string, values)]

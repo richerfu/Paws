@@ -1,3 +1,4 @@
+import { density } from "../theme";
 import {
   cleanup,
   computed,
@@ -12,7 +13,8 @@ import {
   windowSize,
   List,
   fontScale,
-  platform} from "nsh";
+  platform,
+} from "nsh";
 import {
   Action,
   Actions,
@@ -30,7 +32,8 @@ import {
   Separator,
   Spinner,
   useApp,
-  useLifetime} from "../components";
+  useLifetime,
+} from "../components";
 import { ContextMenu, Menu, MenuItem, MenuSeparator } from "nsh/base";
 import { feedbackStyle } from "../motion";
 import { focusRing, popupSurface } from "../theme";
@@ -59,15 +62,18 @@ export function Profiles() {
       .pendingRequests()
       .some(
         (request) =>
-          (request.command === "profiles.refresh" && request.payload.profileId === profile.id) ||
-          (request.command === "profiles.refreshAll" && !!profile.subscriptionUrl),
+          (request.command === "profiles.refresh" &&
+            request.payload.profileId === profile.id) ||
+          (request.command === "profiles.refreshAll" &&
+            !!profile.subscriptionUrl),
       );
   let intent: number | undefined,
     dialogGeneration = 0;
   const cancelImport = () => {
     const current = intent;
     intent = undefined;
-    if (current !== undefined) void ui.client.run("profiles.cancelImport", { intentId: current });
+    if (current !== undefined)
+      void ui.client.run("profiles.cancelImport", { intentId: current });
     busy.set(false);
   };
   const closeImport = () => {
@@ -83,19 +89,27 @@ export function Profiles() {
     });
   });
   const profiles = computed(() =>
-    ui.client.state()!.profiles.filter((profile) => matchesProfile(profile, query())),
+    ui.client
+      .state()!
+      .profiles.filter((profile) => matchesProfile(profile, query())),
   );
   const profileAction = (
-    command: "profiles.activate" | "profiles.refresh" | "profiles.restore" | "profiles.delete",
+    command:
+      | "profiles.activate"
+      | "profiles.refresh"
+      | "profiles.restore"
+      | "profiles.delete",
     profileId: string,
   ) => {
     if (
       command === "profiles.refresh" &&
-      (ui.client.pending() > 0 || !ui.client.domains.readyForCommand(["config", "profiles"]))
+      (ui.client.pending() > 0 ||
+        !ui.client.domains.readyForCommand(["config", "profiles"]))
     )
       return;
     const name =
-      ui.client.state()!.profiles.find((profile) => profile.id === profileId)?.name || profileId;
+      ui.client.state()!.profiles.find((profile) => profile.id === profileId)
+        ?.name || profileId;
     const message =
       command === "profiles.activate"
         ? ui.t(`配置 ${name} 已启用`, `Profile ${name} activated`)
@@ -103,7 +117,10 @@ export function Profiles() {
           ? ui.t(`订阅 ${name} 已刷新`, `Subscription ${name} refreshed`)
           : command === "profiles.delete"
             ? ui.t(`配置 ${name} 已删除`, `Profile ${name} deleted`)
-            : ui.t(`配置 ${name} 已恢复备份`, `Profile ${name} backup restored`);
+            : ui.t(
+                `配置 ${name} 已恢复备份`,
+                `Profile ${name} backup restored`,
+              );
     return ui.client.run(command, { profileId }, message);
   };
   const performImport = async (
@@ -120,7 +137,9 @@ export function Profiles() {
         open.set(false);
         name.set("");
         input.set("");
-        ui.client.notice.set(ui.t("订阅已导入并启用", "Subscription imported and activated"));
+        ui.client.notice.set(
+          ui.t("订阅已导入并启用", "Subscription imported and activated"),
+        );
       }
     } catch (error) {
       if (alive() && intent === token) ui.client.error.set(String(error));
@@ -133,7 +152,10 @@ export function Profiles() {
   };
   const importContent = () => {
     if (busy() || !input().trim()) return;
-    return performImport("profiles.importUrl", { name: name().trim(), url: input().trim() });
+    return performImport("profiles.importUrl", {
+      name: name().trim(),
+      url: input().trim(),
+    });
   };
   const pick = async () => {
     const generation = dialogGeneration;
@@ -144,7 +166,10 @@ export function Profiles() {
     if (!alive() || !open() || generation !== dialogGeneration) return;
     busy.set(false);
     if (value)
-      await performImport("profiles.importContent", { name: value.name, content: value.content });
+      await performImport("profiles.importContent", {
+        name: value.name,
+        content: value.content,
+      });
   };
   const scan = async () => {
     const generation = dialogGeneration;
@@ -155,9 +180,12 @@ export function Profiles() {
       busy.set(false);
       return;
     }
-    const parsed = await ui.client.run<{ url: string; name?: string }>("profiles.parseScan", {
-      payload: value,
-    });
+    const parsed = await ui.client.run<{ url: string; name?: string }>(
+      "profiles.parseScan",
+      {
+        payload: value,
+      },
+    );
     if (!alive() || !open() || generation !== dialogGeneration) return;
     busy.set(false);
     if (parsed)
@@ -166,24 +194,34 @@ export function Profiles() {
         name: parsed.name || name().trim(),
       });
   };
-  const canSaveSubscription = () => !!editing() && !!editName().trim()
-    && ui.client.pending() === 0
-    && ui.client.domains.readyForCommand(["config", "profiles"])
-    && editing()!.revision === ui.client.state()!.configRevision;
+  const canSaveSubscription = () =>
+    !!editing() &&
+    !!editName().trim() &&
+    ui.client.pending() === 0 &&
+    ui.client.domains.readyForCommand(["config", "profiles"]) &&
+    editing()!.revision === ui.client.state()!.configRevision;
   const saveSubscription = async () => {
     const target = editing();
     if (!target || !canSaveSubscription()) return;
     const result = await ui.client.run(
       "profiles.subscription",
-      { profileId: target.id, name: editName(), url: editUrl(), expectedRevision: target.revision },
+      {
+        profileId: target.id,
+        name: editName(),
+        url: editUrl(),
+        expectedRevision: target.revision,
+      },
       ui.t("订阅信息已保存", "Subscription details saved"),
     );
-    if (alive() && editing() === target && result !== undefined) editing.set(undefined);
+    if (alive() && editing() === target && result !== undefined)
+      editing.set(undefined);
   };
   const exportYaml = async () => {
     const target = exporting();
     if (!target) return;
-    const content = await ui.client.run<string>("profiles.read", { profileId: target.id });
+    const content = await ui.client.run<string>("profiles.read", {
+      profileId: target.id,
+    });
     if (alive() && exporting() === target && content !== undefined)
       await ui.client.run(
         "platform.export",
@@ -198,34 +236,60 @@ export function Profiles() {
       target.subscriptionUrl ||
       (await ui.client.run<string>("profiles.read", { profileId: target.id }));
     if (!alive() || exporting() !== target || !text) return;
-    const image = await ui.client.run<{ source: string; pngBase64: string }>("platform.qr", {
-      text,
-    });
+    const image = await ui.client.run<{ source: string; pngBase64: string }>(
+      "platform.qr",
+      {
+        text,
+      },
+    );
     if (alive() && exporting() === target && image) qr.set(image);
   };
   const openEdit = (profile: Profile) => {
-    editing.set({ id: profile.id, revision: ui.client.state()!.configRevision });
+    editing.set({
+      id: profile.id,
+      revision: ui.client.state()!.configRevision,
+    });
     editName.set(profile.name);
     editUrl.set(profile.subscriptionUrl || "");
   };
   return (
     <View style={{ flex: 1 }}>
-      <View style={{ paddingHorizontal: windowSize().width >= 840 ? spacing.xxl : spacing.lg,
-        paddingTop: spacing.lg, paddingBottom: spacing.md }}>
-        <Field label={ui.t("搜索订阅", "Search subscriptions")} placeholder={ui.t("名称、地址、当前或备份", "Name, URL, current or backup")}
-          value={query()} onChange={(text) => query.set(text)} />
+      <View
+        style={{
+          paddingHorizontal:
+            windowSize().width >= 840 ? spacing.xxl : spacing.lg,
+          paddingTop: spacing.lg,
+          paddingBottom: spacing.md,
+        }}
+      >
+        <Field
+          label={ui.t("搜索订阅", "Search subscriptions")}
+          placeholder={ui.t(
+            "名称、地址、当前或备份",
+            "Name, URL, current or backup",
+          )}
+          value={query()}
+          onChange={(text) => query.set(text)}
+        />
       </View>
       <List
         bounces={false}
         each={profiles()}
         keyExtractor={(profile) => profile.id}
         estimatedItemSize={120}
-        style={{ flex: 1, margin: windowSize().width >= 840 ? spacing.xxl : spacing.lg,
-          marginTop: 0, borderWidth: 1, borderColor: palette().border,
-          borderRadius: radius.xl, backgroundColor: palette().panel, overflow: "hidden" }}
+        style={{
+          flex: 1,
+          margin: windowSize().width >= 840 ? spacing.xxl : spacing.lg,
+          marginTop: 0,
+          borderWidth: 1,
+          borderColor: palette().border,
+          borderRadius: radius.xl,
+          backgroundColor: palette().panel,
+          overflow: "hidden",
+        }}
         contentStyle={{ padding: 0 }}
         empty={
-          <View style={{ gap: 16, alignItems: "center" }}>
+          <View style={{ gap: density.space(16), alignItems: "center" }}>
             <View
               style={{
                 width: "100%",
@@ -243,7 +307,10 @@ export function Profiles() {
                 }
                 text={
                   query()
-                    ? ui.t("尝试其他名称或订阅地址", "Try another name or subscription URL")
+                    ? ui.t(
+                        "尝试其他名称或订阅地址",
+                        "Try another name or subscription URL",
+                      )
                     : ui.t(
                         "添加订阅以获取代理节点与规则",
                         "Add a subscription to get proxy nodes and rules",
@@ -261,11 +328,21 @@ export function Profiles() {
           </View>
         }
       >
-        {(profile) => <ProfileRow profile={profile()} refreshing={refreshing(profile())}
-          onAction={(command) => { void profileAction(command, profile().id); }}
-          onEdit={() => openEdit(profile())}
-          onExport={() => { exporting.set(profile()); qr.set(undefined); }}
-          onError={() => refreshError.set(profile().lastRefreshError || "")} />}
+        {(profile) => (
+          <ProfileRow
+            profile={profile()}
+            refreshing={refreshing(profile())}
+            onAction={(command) => {
+              void profileAction(command, profile().id);
+            }}
+            onEdit={() => openEdit(profile())}
+            onExport={() => {
+              exporting.set(profile());
+              qr.set(undefined);
+            }}
+            onError={() => refreshError.set(profile().lastRefreshError || "")}
+          />
+        )}
       </List>
       <If when={open()}>
         <Dialog
@@ -275,14 +352,26 @@ export function Profiles() {
             "Enter a subscription URL. The imported profile is saved locally.",
           )}
           onClose={closeImport}
-          footer={<Actions>
-            <Action secondary label={ui.t("取消", "Cancel")} onPress={closeImport} />
-            <Action primary id="submit-import" icon="download" loading={busy()}
-              label={ui.t("导入", "Import")} disabled={busy() || !input().trim()}
-              onPress={() => void importContent()} />
-          </Actions>}
+          footer={
+            <Actions>
+              <Action
+                secondary
+                label={ui.t("取消", "Cancel")}
+                onPress={closeImport}
+              />
+              <Action
+                primary
+                id="submit-import"
+                icon="download"
+                loading={busy()}
+                label={ui.t("导入", "Import")}
+                disabled={busy() || !input().trim()}
+                onPress={() => void importContent()}
+              />
+            </Actions>
+          }
         >
-          <View style={{ gap: 12, marginTop: 4 }}>
+          <View style={{ gap: density.space(12), marginTop: density.space(4) }}>
             <Field
               onSubmit={() => void importContent()}
               id="profile-input"
@@ -302,7 +391,10 @@ export function Profiles() {
                 name.set(text);
                 ui.client.error.set("");
               }}
-              placeholder={ui.t("留空时自动使用文件名", "Leave blank to use the filename")}
+              placeholder={ui.t(
+                "留空时自动使用文件名",
+                "Leave blank to use the filename",
+              )}
               disabled={busy()}
             />
           </View>
@@ -335,19 +427,27 @@ export function Profiles() {
           <If when={ui.client.error()}>
             <PageError id="profile-import-error" text={ui.client.error()} />
           </If>
-
         </Dialog>
       </If>
       <If when={refreshError()}>
-        <Dialog title={ui.t("刷新失败", "Refresh failed")} onClose={() => refreshError.set("")}>
+        <Dialog
+          title={ui.t("刷新失败", "Refresh failed")}
+          onClose={() => refreshError.set("")}
+        >
           <Scroll
             bounces={false}
-            style={{ height: Math.min(280, Math.max(120, windowSize().height * 0.3)) }}
+            style={{
+              height: Math.min(280, Math.max(120, windowSize().height * 0.3)),
+            }}
           >
             <PageError id="profile-refresh-failure" text={refreshError()} />
           </Scroll>
           <Actions>
-            <Action secondary label={ui.t("关闭", "Close")} onPress={() => refreshError.set("")} />
+            <Action
+              secondary
+              label={ui.t("关闭", "Close")}
+              onPress={() => refreshError.set("")}
+            />
             <Action
               label={ui.t("复制错误信息", "Copy error")}
               onPress={() => Clipboard.writeText(refreshError())}
@@ -363,12 +463,23 @@ export function Profiles() {
             "Change the name or subscription URL. Refresh manually after saving.",
           )}
           onClose={() => editing.set(undefined)}
-          footer={<Actions>
-            <Action secondary label={ui.t("取消", "Cancel")} onPress={() => editing.set(undefined)} />
-            <Action primary id="save-subscription" label={ui.t("保存修改", "Save changes")}
-              loading={ui.client.isPending("profiles.subscription")} disabled={!canSaveSubscription()}
-              onPress={() => void saveSubscription()} />
-          </Actions>}
+          footer={
+            <Actions>
+              <Action
+                secondary
+                label={ui.t("取消", "Cancel")}
+                onPress={() => editing.set(undefined)}
+              />
+              <Action
+                primary
+                id="save-subscription"
+                label={ui.t("保存修改", "Save changes")}
+                loading={ui.client.isPending("profiles.subscription")}
+                disabled={!canSaveSubscription()}
+                onPress={() => void saveSubscription()}
+              />
+            </Actions>
+          }
         >
           <Field
             label={ui.t("名称", "Name")}
@@ -393,7 +504,6 @@ export function Profiles() {
               )}
             />
           </If>
-
         </Dialog>
       </If>
       <If when={exporting()}>
@@ -408,12 +518,18 @@ export function Profiles() {
           <If
             when={!qr()}
             else={
-              <View style={{ gap: 16, alignItems: "center" }}>
+              <View style={{ gap: density.space(16), alignItems: "center" }}>
                 <Hint
                   text={
                     exporting()!.subscriptionUrl
-                      ? ui.t("扫描此二维码导入订阅地址", "Scan to import the subscription URL")
-                      : ui.t("扫描此二维码导入配置内容", "Scan to import the profile")
+                      ? ui.t(
+                          "扫描此二维码导入订阅地址",
+                          "Scan to import the subscription URL",
+                        )
+                      : ui.t(
+                          "扫描此二维码导入配置内容",
+                          "Scan to import the profile",
+                        )
                   }
                 />
                 <Image src={qr()!.source} style={{ width: 260, height: 260 }} />
@@ -447,13 +563,17 @@ export function Profiles() {
               }}
             >
               <ExportChoice
-                disabled={!ui.client.domains.readyForCommand(["config", "profiles"])}
+                disabled={
+                  !ui.client.domains.readyForCommand(["config", "profiles"])
+                }
                 icon="download"
                 label={ui.t("导出 YAML 文件", "Export YAML file")}
                 onPress={() => void exportYaml()}
               />
               <ExportChoice
-                disabled={!ui.client.domains.readyForCommand(["config", "profiles"])}
+                disabled={
+                  !ui.client.domains.readyForCommand(["config", "profiles"])
+                }
                 id={`profile-qr-${exporting()!.id}`}
                 icon="qr-code"
                 label={ui.t("导出为二维码", "Export as QR code")}
@@ -466,18 +586,33 @@ export function Profiles() {
     </View>
   );
 }
-type ProfileAction = "profiles.activate" | "profiles.refresh" | "profiles.restore" | "profiles.delete";
+type ProfileAction =
+  | "profiles.activate"
+  | "profiles.refresh"
+  | "profiles.restore"
+  | "profiles.delete";
 
 /** One object and the same commands for a visible menu, right click, and a held finger. */
 function ProfileRow(props: {
-  profile: Profile; refreshing: boolean; onAction: (command: ProfileAction) => void;
-  onEdit: () => void; onExport: () => void; onError: () => void;
+  profile: Profile;
+  refreshing: boolean;
+  onAction: (command: ProfileAction) => void;
+  onEdit: () => void;
+  onExport: () => void;
+  onError: () => void;
 }) {
-  const ui = useApp(), alive = useLifetime(), route = ui.route();
-  const open = signal(false), contextual = signal(false);
+  const ui = useApp(),
+    alive = useLifetime(),
+    route = ui.route();
+  const open = signal(false),
+    contextual = signal(false);
   let pending: { source: "menu" | "context"; action: () => void } | undefined;
   const ready = () => ui.client.domains.readyForCommand(["config", "profiles"]);
-  const height = () => Math.max(windowSize().width >= 840 ? 88 : 104, 52 * Math.max(1, fontScale()) + 32);
+  const height = () =>
+    Math.max(
+      control.compact ? (windowSize().width >= 840 ? 76 : 88) : 88,
+      density.line(52) * Math.max(1, fontScale()) + spacing.xl,
+    );
   const afterClose = (source: "menu" | "context") => {
     if (pending?.source !== source) return;
     const action = pending.action;
@@ -489,120 +624,398 @@ function ProfileRow(props: {
     open.set(false);
     contextual.set(false);
   };
-  const updated = () => props.refreshing ? ui.t("正在更新", "Updating")
-    : props.profile.lastRefreshError ? ui.t("更新失败", "Update failed")
-    : props.profile.lastRefreshAt || props.profile.updatedAt
-      ? timestamp(props.profile.lastRefreshAt || props.profile.updatedAt) : ui.t("尚未更新", "Not updated");
-  const usage = () => props.profile.subscriptionUserInfo?.totalBytes
-    ? `${bytes((props.profile.subscriptionUserInfo.uploadBytes || 0) + (props.profile.subscriptionUserInfo.downloadBytes || 0))} / ${bytes(props.profile.subscriptionUserInfo.totalBytes)}` : "";
-  const Command = (item: { source: "menu" | "context"; label: string; icon: Parameters<typeof Icon>[0]["name"];
-    id?: string; danger?: boolean; disabled?: boolean; action: () => void }) => (
-    <MenuItem testID={item.id} accessibilityLabel={item.label} disabled={!ready() || !!item.disabled}
-      onSelect={() => choose(item.source, item.action)} focusStyle={focusRing()}
-      hoverStyle={{ backgroundColor: palette().soft }} activeStyle={{ backgroundColor: palette().soft }}
-      style={{ minHeight: control.row, paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
-        borderRadius: radius.sm, flexDirection: "row", alignItems: "center", gap: spacing.md,
-        opacity: !ready() || item.disabled ? 0.4 : 1, ...feedbackStyle() }}>
-      <Icon name={item.icon} size={18} color={item.danger ? palette().danger : palette().muted} />
-      <Text style={{ flex: 1, minWidth: 0, fontSize: 14, lineHeight: 20,
-        color: item.danger ? palette().danger : palette().text }}>{item.label}</Text>
+  const updated = () =>
+    props.refreshing
+      ? ui.t("正在更新", "Updating")
+      : props.profile.lastRefreshError
+        ? ui.t("更新失败", "Update failed")
+        : props.profile.lastRefreshAt || props.profile.updatedAt
+          ? timestamp(props.profile.lastRefreshAt || props.profile.updatedAt)
+          : ui.t("尚未更新", "Not updated");
+  const usage = () =>
+    props.profile.subscriptionUserInfo?.totalBytes
+      ? `${bytes((props.profile.subscriptionUserInfo.uploadBytes || 0) + (props.profile.subscriptionUserInfo.downloadBytes || 0))} / ${bytes(props.profile.subscriptionUserInfo.totalBytes)}`
+      : "";
+  const Command = (item: {
+    source: "menu" | "context";
+    label: string;
+    icon: Parameters<typeof Icon>[0]["name"];
+    id?: string;
+    danger?: boolean;
+    disabled?: boolean;
+    action: () => void;
+  }) => (
+    <MenuItem
+      testID={item.id}
+      accessibilityLabel={item.label}
+      disabled={!ready() || !!item.disabled}
+      onSelect={() => choose(item.source, item.action)}
+      focusStyle={focusRing()}
+      hoverStyle={{ backgroundColor: palette().soft }}
+      activeStyle={{ backgroundColor: palette().soft }}
+      style={{
+        minHeight: control.row,
+        paddingHorizontal: spacing.md,
+        paddingVertical: spacing.sm,
+        borderRadius: radius.sm,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: spacing.md,
+        opacity: !ready() || item.disabled ? 0.4 : 1,
+        ...feedbackStyle(),
+      }}
+    >
+      <Icon
+        name={item.icon}
+        size={18}
+        color={item.danger ? palette().danger : palette().muted}
+      />
+      <Text
+        style={{
+          flex: 1,
+          minWidth: 0,
+          fontSize: density.font(14),
+          lineHeight: density.line(20),
+          color: item.danger ? palette().danger : palette().text,
+        }}
+      >
+        {item.label}
+      </Text>
     </MenuItem>
   );
-  const Commands = (value: { source: "menu" | "context" }) => <View>
-    <View style={{ flexDirection: "row", alignItems: "center", paddingLeft: spacing.md, gap: spacing.sm }}>
-      <Text role="header" accessibilityLabel={props.profile.name} style={{ flex: 1, minWidth: 0, numberOfLines: 2, fontSize: 13, lineHeight: 20,
-        fontWeight: "500", color: palette().muted }}>{props.profile.name}</Text>
-      <IconButton id="profile-menu-close" icon="x" label={ui.t("关闭菜单", "Close menu")}
-        onPress={() => { open.set(false); contextual.set(false); }} />
-    </View>
-    <If when={props.profile.lastRefreshError}>
-      <Command source={value.source} id="profile-refresh-error" icon="triangle-alert"
-        label={ui.t("更新错误…", "Update error…")} action={props.onError} />
-      <MenuSeparator style={{ height: 1, marginVertical: spacing.xxs, backgroundColor: palette().line }} />
-    </If>
-    <If when={!props.profile.active}>
-      <Command source={value.source} icon="circle-check" label={ui.t("设为当前订阅", "Use this subscription")}
-        action={() => props.onAction("profiles.activate")} />
-    </If>
-    <If when={props.profile.subscriptionUrl}>
-      <Command source={value.source} id={`edit-subscription-${props.profile.id}`} icon="file-pen-line"
-        label={ui.t("编辑订阅…", "Edit subscription…")} action={props.onEdit} />
-    </If>
-    <Command source={value.source} id={`edit-yaml-${props.profile.id}`} icon="file-pen-line"
-      label={ui.t("编辑 YAML…", "Edit YAML…")} action={() => ui.editProfile(props.profile.id)} />
-    <Command source={value.source} id={`profile-export-${props.profile.id}`} icon="download"
-      label={ui.t("导出…", "Export…")} action={props.onExport} />
-    <If when={props.profile.subscriptionUrl}>
-      <Command source={value.source} id={`refresh-profile-${props.profile.id}`} icon="refresh-cw"
-        label={ui.t("更新订阅", "Update subscription")} disabled={ui.client.pending() > 0 || props.refreshing}
-        action={() => props.onAction("profiles.refresh")} />
-    </If>
-    <If when={props.profile.hasBackup}>
-      <Command source={value.source} icon="history" label={ui.t("恢复上次备份…", "Restore previous backup…")}
-        action={() => { void confirm(ui, ui.t(`恢复“${props.profile.name}”的备份？`, `Restore “${props.profile.name}”?`),
-          () => props.onAction("profiles.restore"), { actionLabel: ui.t("恢复备份", "Restore backup"),
-            description: ui.t("当前配置会被上次备份替换。", "This replaces the profile with its previous backup.") }); }} />
-    </If>
-    <MenuSeparator style={{ height: 1, marginVertical: spacing.xxs, backgroundColor: palette().line }} />
-    <Command source={value.source} icon="trash-2" danger label={ui.t("删除…", "Delete…")}
-      action={() => { void confirm(ui, ui.t(`删除“${props.profile.name}”？`, `Delete “${props.profile.name}”?`),
-        () => props.onAction("profiles.delete"), { actionLabel: ui.t("删除", "Delete") }); }} />
-  </View>;
-  const trigger = <View style={{ height: height(), flexDirection: "row", alignItems: "center",
-    borderBottomWidth: 1, borderBottomColor: palette().line,
-    backgroundColor: props.profile.active || contextual() ? palette().soft : palette().panel }}>
-    <View testID={`activate-profile-${props.profile.id}`} role="button" accessibilityLabel={props.profile.name}
-      accessibilityState={{ selected: props.profile.active, disabled: ui.client.pending() > 0 || !ready() }}
-      disabled={ui.client.pending() > 0 || !ready()} focusStyle={focusRing()}
-      hoverStyle={{ backgroundColor: palette().soft }} activeStyle={{ opacity: 0.8 }}
-      onPress={() => { if (!props.profile.active) props.onAction("profiles.activate"); }}
-      style={{ flex: 1, height: height() - 1, paddingHorizontal: spacing.lg,
-        flexDirection: "row", alignItems: "center", gap: spacing.md, ...feedbackStyle() }}>
-      <If when={props.refreshing} else={<Icon name={props.profile.active ? "circle-check" : "rss"}
-        size={20} color={props.profile.active ? palette().accent : palette().muted} />}><Spinner size={20} /></If>
-      <View style={{ flex: 1, minWidth: 0, gap: spacing.xxs }}>
-        <View style={{ flexDirection: "row", gap: spacing.sm, alignItems: "center" }}>
-          <Text style={{ flex: 1, minWidth: 0, numberOfLines: 1, fontSize: 14, lineHeight: 20,
-            fontWeight: "600", color: palette().text }}>{props.profile.name}</Text>
-          <If when={props.profile.active}><Text style={{ flexShrink: 0, fontSize: 12, color: palette().muted }}>{ui.t("当前", "Current")}</Text></If>
-        </View>
-        <Text style={{ numberOfLines: 1, fontSize: 12, lineHeight: 18, color: palette().muted }}>
-          {props.profile.subscriptionUrl || props.profile.source}
+  const Commands = (value: { source: "menu" | "context" }) => (
+    <View>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          paddingLeft: spacing.md,
+          gap: spacing.sm,
+        }}
+      >
+        <Text
+          role="header"
+          accessibilityLabel={props.profile.name}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            numberOfLines: 2,
+            fontSize: density.font(13),
+            lineHeight: density.line(20),
+            fontWeight: "500",
+            color: palette().muted,
+          }}
+        >
+          {props.profile.name}
         </Text>
-        <If when={windowSize().width < 840}>
-          <Text style={{ numberOfLines: 1, fontSize: 12, lineHeight: 18,
-            color: props.profile.lastRefreshError ? palette().danger : palette().muted }}>
-            {updated()}{usage() ? ` · ${usage()}` : ""}
+        <IconButton
+          id="profile-menu-close"
+          icon="x"
+          label={ui.t("关闭菜单", "Close menu")}
+          onPress={() => {
+            open.set(false);
+            contextual.set(false);
+          }}
+        />
+      </View>
+      <If when={props.profile.lastRefreshError}>
+        <Command
+          source={value.source}
+          id="profile-refresh-error"
+          icon="triangle-alert"
+          label={ui.t("更新错误…", "Update error…")}
+          action={props.onError}
+        />
+        <MenuSeparator
+          style={{
+            height: 1,
+            marginVertical: spacing.xxs,
+            backgroundColor: palette().line,
+          }}
+        />
+      </If>
+      <If when={!props.profile.active}>
+        <Command
+          source={value.source}
+          icon="circle-check"
+          label={ui.t("设为当前订阅", "Use this subscription")}
+          action={() => props.onAction("profiles.activate")}
+        />
+      </If>
+      <If when={props.profile.subscriptionUrl}>
+        <Command
+          source={value.source}
+          id={`edit-subscription-${props.profile.id}`}
+          icon="file-pen-line"
+          label={ui.t("编辑订阅…", "Edit subscription…")}
+          action={props.onEdit}
+        />
+      </If>
+      <Command
+        source={value.source}
+        id={`edit-yaml-${props.profile.id}`}
+        icon="file-pen-line"
+        label={ui.t("编辑 YAML…", "Edit YAML…")}
+        action={() => ui.editProfile(props.profile.id)}
+      />
+      <Command
+        source={value.source}
+        id={`profile-export-${props.profile.id}`}
+        icon="download"
+        label={ui.t("导出…", "Export…")}
+        action={props.onExport}
+      />
+      <If when={props.profile.subscriptionUrl}>
+        <Command
+          source={value.source}
+          id={`refresh-profile-${props.profile.id}`}
+          icon="refresh-cw"
+          label={ui.t("更新订阅", "Update subscription")}
+          disabled={ui.client.pending() > 0 || props.refreshing}
+          action={() => props.onAction("profiles.refresh")}
+        />
+      </If>
+      <If when={props.profile.hasBackup}>
+        <Command
+          source={value.source}
+          icon="history"
+          label={ui.t("恢复上次备份…", "Restore previous backup…")}
+          action={() => {
+            void confirm(
+              ui,
+              ui.t(
+                `恢复“${props.profile.name}”的备份？`,
+                `Restore “${props.profile.name}”?`,
+              ),
+              () => props.onAction("profiles.restore"),
+              {
+                actionLabel: ui.t("恢复备份", "Restore backup"),
+                description: ui.t(
+                  "当前配置会被上次备份替换。",
+                  "This replaces the profile with its previous backup.",
+                ),
+              },
+            );
+          }}
+        />
+      </If>
+      <MenuSeparator
+        style={{
+          height: 1,
+          marginVertical: spacing.xxs,
+          backgroundColor: palette().line,
+        }}
+      />
+      <Command
+        source={value.source}
+        icon="trash-2"
+        danger
+        label={ui.t("删除…", "Delete…")}
+        action={() => {
+          void confirm(
+            ui,
+            ui.t(
+              `删除“${props.profile.name}”？`,
+              `Delete “${props.profile.name}”?`,
+            ),
+            () => props.onAction("profiles.delete"),
+            { actionLabel: ui.t("删除", "Delete") },
+          );
+        }}
+      />
+    </View>
+  );
+  const trigger = (
+    <View
+      style={{
+        height: height(),
+        flexDirection: "row",
+        alignItems: "center",
+        borderBottomWidth: 1,
+        borderBottomColor: palette().line,
+        backgroundColor:
+          props.profile.active || contextual()
+            ? palette().soft
+            : palette().panel,
+      }}
+    >
+      <View
+        testID={`activate-profile-${props.profile.id}`}
+        role="button"
+        accessibilityLabel={props.profile.name}
+        accessibilityState={{
+          selected: props.profile.active,
+          disabled: ui.client.pending() > 0 || !ready(),
+        }}
+        disabled={ui.client.pending() > 0 || !ready()}
+        focusStyle={focusRing()}
+        hoverStyle={{ backgroundColor: palette().soft }}
+        activeStyle={{ opacity: 0.8 }}
+        onPress={() => {
+          if (!props.profile.active) props.onAction("profiles.activate");
+        }}
+        style={{
+          flex: 1,
+          height: height() - 1,
+          paddingHorizontal: spacing.lg,
+          flexDirection: "row",
+          alignItems: "center",
+          gap: spacing.md,
+          ...feedbackStyle(),
+        }}
+      >
+        <If
+          when={props.refreshing}
+          else={
+            <Icon
+              name={props.profile.active ? "circle-check" : "rss"}
+              size={20}
+              color={props.profile.active ? palette().accent : palette().muted}
+            />
+          }
+        >
+          <Spinner size={20} />
+        </If>
+        <View style={{ flex: 1, minWidth: 0, gap: spacing.xxs }}>
+          <View
+            style={{
+              flexDirection: "row",
+              gap: spacing.sm,
+              alignItems: "center",
+            }}
+          >
+            <Text
+              style={{
+                flex: 1,
+                minWidth: 0,
+                numberOfLines: 1,
+                fontSize: density.font(14),
+                lineHeight: density.line(20),
+                fontWeight: "600",
+                color: palette().text,
+              }}
+            >
+              {props.profile.name}
+            </Text>
+            <If when={props.profile.active}>
+              <Text
+                style={{
+                  flexShrink: 0,
+                  fontSize: density.font(12),
+                  color: palette().muted,
+                }}
+              >
+                {ui.t("当前", "Current")}
+              </Text>
+            </If>
+          </View>
+          <Text
+            style={{
+              numberOfLines: 1,
+              fontSize: density.font(12),
+              lineHeight: density.line(18),
+              color: palette().muted,
+            }}
+          >
+            {props.profile.subscriptionUrl || props.profile.source}
           </Text>
+          <If when={windowSize().width < 840}>
+            <Text
+              style={{
+                numberOfLines: 1,
+                fontSize: density.font(12),
+                lineHeight: density.line(18),
+                color: props.profile.lastRefreshError
+                  ? palette().danger
+                  : palette().muted,
+              }}
+            >
+              {updated()}
+              {usage() ? ` · ${usage()}` : ""}
+            </Text>
+          </If>
+        </View>
+        <If when={windowSize().width >= 840}>
+          <View
+            style={{ width: 160, gap: spacing.xxs, alignItems: "flex-end" }}
+          >
+            <Text
+              style={{
+                fontSize: density.font(12),
+                lineHeight: density.line(18),
+                color: props.profile.lastRefreshError
+                  ? palette().danger
+                  : palette().muted,
+              }}
+            >
+              {updated()}
+            </Text>
+            <Text
+              style={{
+                fontSize: density.font(12),
+                lineHeight: density.line(18),
+                color: palette().muted,
+                fontVariant: ["tabular-nums"],
+              }}
+            >
+              {usage()}
+            </Text>
+          </View>
         </If>
       </View>
-      <If when={windowSize().width >= 840}>
-        <View style={{ width: 160, gap: spacing.xxs, alignItems: "flex-end" }}>
-          <Text style={{ fontSize: 12, lineHeight: 18,
-            color: props.profile.lastRefreshError ? palette().danger : palette().muted }}>{updated()}</Text>
-          <Text style={{ fontSize: 12, lineHeight: 18, color: palette().muted, fontVariant: ["tabular-nums"] }}>{usage()}</Text>
-        </View>
-      </If>
+      <Menu
+        open={open()}
+        onOpenChange={(event) => open.set(event.open && !props.refreshing)}
+        onClose={() => afterClose("menu")}
+        popupStyle={popupSurface()}
+        align="end"
+        offset={4}
+        margin={8}
+        popupStartingStyle={{ opacity: 0, transform: [{ translateY: -4 }] }}
+        popupEndingStyle={{ opacity: 0 }}
+        backdropStyle={{ backgroundColor: palette().scrim }}
+        trigger={
+          <View
+            testID={`profile-menu-${props.profile.id}`}
+            role="button"
+            hitSlop={control.hitSlop(control.icon)}
+            accessibilityLabel={ui.t("订阅操作", "Subscription actions")}
+            accessibilityState={{ expanded: open() }}
+            disabled={props.refreshing}
+            focusStyle={focusRing()}
+            hoverStyle={{ backgroundColor: palette().soft }}
+            activeStyle={{ opacity: 0.8 }}
+            style={{
+              width: control.icon,
+              height: control.icon,
+              marginRight: spacing.sm,
+              borderRadius: radius.md,
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: open() ? palette().soft : "transparent",
+            }}
+          >
+            <Icon name="ellipsis-vertical" size={18} color={palette().muted} />
+          </View>
+        }
+      >
+        <Commands source="menu" />
+      </Menu>
     </View>
-    <Menu open={open()} onOpenChange={(event) => open.set(event.open && !props.refreshing)}
-      onClose={() => afterClose("menu")} popupStyle={popupSurface()} align="end" offset={4} margin={8}
-      popupStartingStyle={{ opacity: 0, transform: [{ translateY: -4 }] }} popupEndingStyle={{ opacity: 0 }}
+  );
+  return (
+    <ContextMenu
+      disabled={props.refreshing}
+      open={contextual()}
+      onOpenChange={(event) => contextual.set(event.open)}
+      onClose={() => afterClose("context")}
+      popupStyle={popupSurface()}
       backdropStyle={{ backgroundColor: palette().scrim }}
-      trigger={<View testID={`profile-menu-${props.profile.id}`} role="button"
-        hitSlop={control.hitSlop(control.icon)}
-        accessibilityLabel={ui.t("订阅操作", "Subscription actions")}
-        accessibilityState={{ expanded: open() }} disabled={props.refreshing} focusStyle={focusRing()}
-        hoverStyle={{ backgroundColor: palette().soft }} activeStyle={{ opacity: 0.8 }}
-        style={{ width: control.icon, height: control.icon, marginRight: spacing.sm, borderRadius: radius.md,
-          alignItems: "center", justifyContent: "center", backgroundColor: open() ? palette().soft : "transparent" }}>
-        <Icon name="ellipsis-vertical" size={control.compact ? 16 : 18} color={palette().muted} />
-      </View>}><Commands source="menu" /></Menu>
-  </View>;
-  return <ContextMenu disabled={props.refreshing} open={contextual()}
-    onOpenChange={(event) => contextual.set(event.open)} onClose={() => afterClose("context")}
-    popupStyle={popupSurface()} backdropStyle={{ backgroundColor: palette().scrim }} trigger={trigger}>
-    <Commands source="context" />
-  </ContextMenu>;
+      trigger={trigger}
+    >
+      <Commands source="context" />
+    </ContextMenu>
+  );
 }
 
 function ExportChoice(props: {
@@ -634,7 +1047,7 @@ function ExportChoice(props: {
           paddingHorizontal: spacing.md,
           flexDirection: "row",
           alignItems: "center",
-          gap: 10,
+          gap: density.space(10),
           opacity: disabled() ? 0.5 : 1,
           backgroundColor: palette().panel,
         }}
@@ -654,7 +1067,7 @@ function ExportChoice(props: {
         <Text
           style={{
             color: props.danger ? palette().danger : palette().text,
-            fontSize: 14,
+            fontSize: density.font(14),
             fontWeight: "600",
           }}
         >
