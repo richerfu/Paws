@@ -1,9 +1,5 @@
 # Building Mihomo and sing-box with go-patch
 
-The Go libraries build independently. The current unmodified Meow revision
-has an OHOS export-condition error that blocks the complete application HAP;
-see the [current upstream build gate](../vendor/README.md).
-
 This guide builds the currently pinned Mihomo and sing-box libraries, then
 packages them with Rust/Meow and the native UI in an `arm64-v8a` HAP. Run the
 steps in the same shell from the Paws repository root. The bridges and patches
@@ -120,9 +116,7 @@ scripts apply them automatically. NSH, Go and gVisor use their upstream sources.
 | Both bridges | [vendor/mihomo-bridge](../vendor/mihomo-bridge/) and [vendor/sing-box-bridge](../vendor/sing-box-bridge/) | Paws entry points, platform integration and telemetry |
 
 Mihomo rebuilds `target/mihomo-ohos-build` on each invocation. It stages the
-bridge and resolves the locked gVisor dependency without a local source override. The Go build uses `-tags=with_gvisor -buildmode=c-shared`.
-Rust loads its C ABI directly; the old Mihomo N-API wrapper is not built or
-packaged by this path.
+bridge and resolves the locked gVisor dependency without a local source override. The Go build uses `-tags=with_gvisor -buildmode=c-shared`, and Rust loads its C ABI directly.
 
 sing-box archives its pinned source into an owned build stage, applies the
 declared patches and copies the bridge into staged `cmd/libtinypaws`, then builds
@@ -141,8 +135,7 @@ library; neither script patches the selected source checkout or module cache.
 
 The sing-box bridge exports `TinyPawsSingTraffic` for TCP/UDP session totals and
 elapsed-time rates. Rust engine adapters own C ABI loading and normalize traffic;
-the abilities consume the backend-neutral application binding. The obsolete
-Mihomo `libcore.so` N-API shim is not a production dependency. Rebuild native
+the abilities consume the backend-neutral application binding. Rebuild native
 engines, the Rust application binding and the matching ArkTS declarations as a
 coherent candidate; packaging must verify the actual native libraries and NSH
 UI bundle rather than relying on their filenames.
@@ -236,4 +229,4 @@ idle periods, disconnect and reconnect, and inspect the speed chart.
 | Source revision mismatch or patch rejects | Check the pinned commit and local diff. Use a fresh dedicated checkout if the existing one contains unrelated changes; do not force the patch onto another revision. |
 | Clang, sysroot or `libc++_shared.so` unavailable | Check `OHOS_NDK_HOME` against the installed native SDK and use the same DevEco installation for packaging. |
 | Module download fails | Check network/proxy access for the selected `GOPATH`; keep the compiler pinned while resolving dependency access. |
-| Missing `TinyPawsSingTraffic`, or old `updateSingBoxVpnTraffic` declarations | Rebuild sing-box and run `package-hap.sh` to rebuild Rust and refresh ArkTS declarations together. |
+| Missing `TinyPawsSingTraffic` | Rebuild sing-box and run `package-hap.sh` to rebuild Rust and refresh ArkTS declarations together. |

@@ -41,8 +41,6 @@ export declare function configureUiLocale(locale: string): void
 
 export declare function currentPlatformVpnSessionId(): string
 
-export declare function engineDecision(optionsJson: string): string
-
 export declare function engineTunMtu(optionsJson: string): number
 
 export declare function extensionTick(attemptId: string): string
@@ -88,10 +86,6 @@ export declare function queryVpnSpeed(): string
 export declare function rearmPlatformVpnAutoRecovery(error: string): void
 
 export declare function receiveAndAttachPlatformVpnHandoff(token: string): Promise<string>
-
-export declare function recordEngineHealth(session: string, success: boolean, stage: string): void
-
-export declare function recordEngineQualification(text: string): void
 
 /**
   * Called only after ArkTS has awaited HarmonyOS

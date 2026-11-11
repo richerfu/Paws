@@ -35,18 +35,6 @@ pub(super) fn error_log(message: impl Into<String>) -> LogEntry {
     }
 }
 
-pub(super) fn broadcast_log_entry(entry: &LogEntry) {
-    if let Ok(senders) = API_LOG_TXS.lock() {
-        for tx in senders.iter() {
-            let _ = tx.send(meow_api::log_stream::LogMessage {
-                level: meow_api::log_stream::LogLevel::Error,
-                payload: entry.message.clone(),
-                time: time::OffsetDateTime::now_utc(),
-            });
-        }
-    }
-}
-
 pub(super) fn install_runtime_log_layer() {
     INSTALL_RUNTIME_LOG_LAYER.call_once(|| {
         // ProfileStore renders the application's engine configuration with
@@ -156,15 +144,6 @@ where
                 push_runtime_log(&self.logs, entry);
             }
         }
-        if let Ok(senders) = API_LOG_TXS.lock() {
-            for tx in senders.iter() {
-                let _ = tx.send(meow_api::log_stream::LogMessage {
-                    level: meow_log_level(*event.metadata().level()),
-                    payload: visitor_payload(event),
-                    time: time::OffsetDateTime::now_utc(),
-                });
-            }
-        }
     }
 }
 
@@ -173,21 +152,6 @@ pub(super) fn is_vpn_log_target(target: &str) -> bool {
         || target.starts_with("paws_vpn")
         || target.starts_with("meow_")
         || target.starts_with("meow-")
-}
-
-pub(super) fn meow_log_level(level: Level) -> meow_api::log_stream::LogLevel {
-    match level {
-        Level::TRACE | Level::DEBUG => meow_api::log_stream::LogLevel::Debug,
-        Level::INFO => meow_api::log_stream::LogLevel::Info,
-        Level::WARN => meow_api::log_stream::LogLevel::Warning,
-        Level::ERROR => meow_api::log_stream::LogLevel::Error,
-    }
-}
-
-pub(super) fn visitor_payload(event: &tracing::Event<'_>) -> String {
-    let mut visitor = LogMessageVisitor::default();
-    event.record(&mut visitor);
-    visitor.finish(event.metadata().target())
 }
 
 #[derive(Default)]
@@ -443,11 +407,9 @@ mod socket_wire_tests {
         );
     }
     #[test]
-    fn wire_events_never_reach_runtime_ring_or_api_even_with_spoofed_text() {
+    fn wire_events_never_reach_runtime_ring_even_with_spoofed_text() {
         let logs = Arc::new(Mutex::new(RuntimeLogBuffer::default()));
         let subscriber = tracing_subscriber::registry().with(PawsLogLayer { logs: logs.clone() });
-        let (tx, mut rx) = tokio::sync::broadcast::channel(256);
-        API_LOG_TXS.lock().unwrap().push_back(tx.clone());
         tracing::subscriber::with_default(subscriber, || {
             // A target string resembling a probe field is not a structured probe_id.
             let span = tracing::info_span!("paws_flow", target = "probe_id=tp-0123456789abcdef-1");
@@ -455,10 +417,6 @@ mod socket_wire_tests {
             tracing::info!(target: "paws_core::wire_test", id=999, offset=0, n=2, hex="abcd", "socket-trace event=wire-write-sample");
             tracing::info!(target: "paws_core::wire_test", "wire-test-public-control");
         });
-        API_LOG_TXS
-            .lock()
-            .unwrap()
-            .retain(|sender| !sender.same_channel(&tx));
         let logs = logs.lock().unwrap();
         assert!(!logs
             .entries()
@@ -466,14 +424,5 @@ mod socket_wire_tests {
         assert!(logs
             .entries()
             .any(|entry| entry.message == "wire-test-public-control"));
-        let mut public_control = false;
-        for _ in 0..256 {
-            let Ok(message) = rx.try_recv() else {
-                break;
-            };
-            assert!(!message.payload.contains("wire-write-sample"));
-            public_control |= message.payload == "wire-test-public-control";
-        }
-        assert!(public_control);
     }
 }

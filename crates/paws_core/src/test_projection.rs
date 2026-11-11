@@ -3,24 +3,10 @@
 use super::*;
 use paws_model::RuleSummary;
 
-fn public_controller_address(state: &CoreState, standalone_meow: bool) -> Option<SocketAddr> {
-    if state.platform_vpn_running {
-        state.platform_public_controller_addr.or_else(|| {
-            (standalone_meow && state.platform_vpn_engine == Some(VpnEngine::Meow))
-                .then(|| {
-                    state
-                        .api_controller
-                        .as_ref()
-                        .map(|controller| controller.bind_addr)
-                })
-                .flatten()
-        })
-    } else {
-        state
-            .api_controller
-            .as_ref()
-            .map(|controller| controller.bind_addr)
-    }
+fn public_controller_address(state: &CoreState) -> Option<SocketAddr> {
+    state
+        .platform_public_controller_addr
+        .filter(|_| state.platform_vpn_running)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -243,8 +229,7 @@ impl CoreHandle {
     pub(crate) fn runtime_status_projection(&self) -> Result<RuntimeStatusProjection, PawsError> {
         let state = self.lock_state()?;
         let native_vpn_running = self.vpn.is_running();
-        let public_controller =
-            public_controller_address(&state, native_vpn_running && self.platform_ipc()?.is_none());
+        let public_controller = public_controller_address(&state);
         Ok(RuntimeStatusProjection {
             revisions: runtime_revisions(&state),
             vpn_lifecycle: vpn_lifecycle(
@@ -280,8 +265,7 @@ impl CoreHandle {
     pub(crate) fn snapshot(&self) -> Result<RuntimeSnapshot, PawsError> {
         let state = self.lock_state()?;
         let native_vpn_running = self.vpn.is_running();
-        let public_controller =
-            public_controller_address(&state, native_vpn_running && self.platform_ipc()?.is_none());
+        let public_controller = public_controller_address(&state);
         let active_profile = state.profiles.active_profile().map(ToOwned::to_owned);
         let profiles = profile_summaries(&state);
         let controller_diagnostics = state.controller_diagnostics.clone();

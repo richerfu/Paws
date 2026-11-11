@@ -1,6 +1,7 @@
 //! Session-fenced, individually requested live engine observations. The UI
 //! query owns the work; no collection is added to the periodic IPC payload.
 use super::*;
+use futures::StreamExt;
 use paws_engine::{
     EngineConnectionPage, EngineConnectionSummary, EngineDnsConfig, EngineDnsStatistics,
     EngineGroupSummary, EngineLogPage, EngineMemory, EngineProviderKind, EngineProviderState,

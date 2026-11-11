@@ -52,8 +52,8 @@ Redistribution of a HAP containing `libsingbox.so` must include the matching
 sing-box source, bridge source, and GPL-3.0-or-later license notice.
 
 The Rust native engine uses unmodified [meow-rs at
-`809b7a7320598b017093e234ab2fe71e9454b47e`](https://github.com/meow-rs/meow-rs/commit/809b7a7320598b017093e234ab2fe71e9454b47e)
-under the MIT license, reported as `0.29.0+809b7a7`. This revision includes
+`52d75ec0fe7eefcc427639ed2bb7ea242dc2781f`](https://github.com/meow-rs/meow-rs/commit/52d75ec0fe7eefcc427639ed2bb7ea242dc2781f)
+under the MIT license, reported as `0.29.0+52d75ec`. This revision includes
 fixes newer than the v0.29.0 release tag. All former meow-rs vendor copies and
 Cargo patches have been removed; see [vendor/README.md](vendor/README.md).
 The GeoSite category decoder in `paws_engine_go` is adapted from meow-rs.
@@ -64,7 +64,3 @@ The sing-box bridge additionally includes `physical_network.go`, `obfs_plugin.go
 `trace.go`, and `httpobfs/conn.go`; the required upstream handshake change is
 `patches/sing-box-http-obfs-handshake.patch`. Rebuilding requires applying that
 patch, as enforced by `scripts/build-sing-box-ohos.sh`.
-
-The native UI uses [arkit](https://github.com/richerfu/arkit), including its
-shadcn components, under MIT OR Apache-2.0. Its exact version is taken from the
-workspace dependency and displayed in About.

@@ -276,7 +276,7 @@ impl CoreHandle {
             }
             if let Some(provider_name) = provider {
                 if let Some(proxies) = state
-                    .controller_start
+                    .meow_runtime
                     .as_ref()
                     .filter(|_| native_meow)
                     .and_then(|config| config.proxy_providers.get(provider_name))
@@ -939,7 +939,7 @@ impl CoreHandle {
         };
         let (proxy_providers, rule_providers, auth) = {
             let state = self.lock_state()?;
-            let config = state.controller_start.as_ref().ok_or_else(|| {
+            let config = state.meow_runtime.as_ref().ok_or_else(|| {
                 PawsError::Core("Meow runtime configuration is unavailable".into())
             })?;
             (
@@ -973,7 +973,7 @@ impl CoreHandle {
         // configurations must not replace it, and stop/replacement clears it.
         let resolver = self
             .lock_state()?
-            .controller_start
+            .meow_runtime
             .as_ref()
             .and_then(|config| config.host_resolver.clone());
         if let Some(resolver) = resolver {
@@ -2114,7 +2114,6 @@ mod tests {
             core.snapshot().unwrap().config_revision,
             selected.config_revision
         );
-        assert!(!core.sync_external_controller_config().await.unwrap());
         core.refresh_telemetry().unwrap();
         assert_eq!(core.snapshot().unwrap().proxy_groups, selected.proxy_groups);
         core.unfix_proxy_via_controller("group").await.unwrap();
@@ -2141,7 +2140,6 @@ mod tests {
         core.refresh_telemetry().unwrap();
         assert_eq!(core.snapshot().unwrap().providers, refreshed.providers);
         core.lock_state().unwrap().platform_vpn_running = false;
-        assert!(!core.sync_external_controller_config().await.unwrap());
         core.refresh_telemetry().unwrap();
         let stopped = core.snapshot().unwrap();
         assert_eq!(stopped.providers, refreshed.providers);
@@ -2179,7 +2177,6 @@ mod tests {
             .unwrap();
         let selected = core.snapshot().unwrap();
         core.stop_engine("attempt-a").await.unwrap();
-        assert!(!core.sync_external_controller_config().await.unwrap());
         core.refresh_telemetry().unwrap();
         let stopped = core.snapshot().unwrap();
         assert_eq!(stopped.proxy_groups, selected.proxy_groups);

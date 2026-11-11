@@ -85,7 +85,7 @@ pub(super) fn refresh_provider_cache_metadata(providers: &mut [ProviderSummary])
 
 pub(super) fn enrich_proxy_provider_members(
     providers: &mut [ProviderSummary],
-    registry: &dashmap::DashMap<String, Arc<ProxyProvider>>,
+    registry: &HashMap<String, Arc<ProxyProvider>>,
 ) {
     for provider in providers
         .iter_mut()

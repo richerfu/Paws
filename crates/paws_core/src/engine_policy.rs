@@ -252,7 +252,7 @@ fn diagnostic_runtime(
 }
 fn engine_version(engine: VpnEngine) -> &'static str {
     match engine {
-        VpnEngine::Meow => "meow-rs 0.29.0+809b7a7 / OHOS socket bridge 3",
+        VpnEngine::Meow => "meow-rs 0.29.0+52d75ec / OHOS socket bridge 3",
         VpnEngine::SingBox => "sing-box 1.13.21 / TinyPaws OpenHarmony bridge 2",
         _ => "mihomo 1.10.0",
     }
@@ -393,7 +393,10 @@ fn compatibility_issues(raw: &str, engine: VpnEngine) -> Result<Vec<String>, Paw
 }
 
 impl CoreHandle {
-    pub fn engine_decision(&self, options_json: &str) -> Result<serde_json::Value, PawsError> {
+    pub(super) fn engine_decision(
+        &self,
+        options_json: &str,
+    ) -> Result<serde_json::Value, PawsError> {
         let options: VpnOptions = from_json(options_json)?;
         let (raw, prepared, root, node_fp, mode, selections, services) = {
             let state = self.lock_state()?;
@@ -589,7 +592,7 @@ impl CoreHandle {
         }
         write_history(root, &h)
     }
-    pub fn record_engine_health(
+    pub(super) fn record_engine_health(
         &self,
         session: &str,
         success: bool,

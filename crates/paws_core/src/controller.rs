@@ -1,76 +1,5 @@
 use super::*;
 
-pub(super) async fn track_controller_mutation(
-    AxumState(revision): AxumState<Arc<AtomicU64>>,
-    request: Request,
-    next: Next,
-) -> AxumResponse {
-    let mutation = !matches!(
-        *request.method(),
-        Method::GET | Method::HEAD | Method::OPTIONS
-    );
-    let response = next.run(request).await;
-    if mutation && response.status().is_success() {
-        revision.fetch_add(1, Ordering::AcqRel);
-    }
-    response
-}
-
-pub(super) async fn serve_api_controller(
-    listener: tokio::net::TcpListener,
-    state: Arc<meow_api::routes::AppState>,
-    revision: Arc<AtomicU64>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let app = meow_api::routes::create_router(state).layer(axum::middleware::from_fn_with_state(
-        revision,
-        track_controller_mutation,
-    ));
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-pub(super) async fn monitor_controller_memory(
-    addr: SocketAddr,
-    secret: Option<String>,
-    memory_in_use_bytes: Arc<AtomicU64>,
-    memory_limit_bytes: Arc<AtomicU64>,
-) {
-    loop {
-        let mut url = format!("ws://{addr}/memory");
-        if let Some(secret) = secret.as_deref().filter(|secret| !secret.is_empty()) {
-            if let Ok(mut parsed) = reqwest::Url::parse(&url) {
-                parsed.query_pairs_mut().append_pair("token", secret);
-                url = parsed.to_string();
-            }
-        }
-        match tokio_tungstenite::connect_async(&url).await {
-            Ok((mut socket, _)) => {
-                while let Some(frame) = socket.next().await {
-                    let payload = match frame {
-                        Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
-                            Some(text.as_bytes().to_vec())
-                        }
-                        Ok(tokio_tungstenite::tungstenite::Message::Binary(bytes)) => {
-                            Some(bytes.to_vec())
-                        }
-                        Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_) => break,
-                        _ => None,
-                    };
-                    let Some(payload) = payload else { continue };
-                    if let Ok(frame) = serde_json::from_slice::<ControllerMemoryFrame>(&payload) {
-                        memory_in_use_bytes.store(frame.inuse, Ordering::Relaxed);
-                        memory_limit_bytes.store(frame.oslimit, Ordering::Relaxed);
-                    }
-                }
-            }
-            Err(error) => {
-                tracing::debug!(%error, "waiting for meow controller memory stream");
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
-}
-
 pub fn shared_core() -> Arc<CoreHandle> {
     CoreHandle::shared()
 }
@@ -495,139 +424,6 @@ pub(super) fn tunnel_from_config_for(
     tunnel
 }
 
-pub(super) fn raw_configs_equal(left: &RawConfig, right: &RawConfig) -> Result<bool, PawsError> {
-    let left = serde_yaml::to_value(left)
-        .map_err(|error| PawsError::Core(format!("cannot inspect controller config: {error}")))?;
-    let right = serde_yaml::to_value(right)
-        .map_err(|error| PawsError::Core(format!("cannot inspect controller config: {error}")))?;
-    Ok(left == right)
-}
-
-pub(super) fn merge_external_raw_config(
-    profile_yaml: &str,
-    baseline: &RawConfig,
-    current: &RawConfig,
-) -> Result<String, PawsError> {
-    let mut profile = serde_yaml::from_str::<serde_yaml::Value>(profile_yaml)
-        .map_err(|error| PawsError::Core(format!("profile YAML parse failed: {error}")))?;
-    let profile = profile
-        .as_mapping_mut()
-        .ok_or_else(|| PawsError::Core("profile YAML root must be a mapping".to_owned()))?;
-    let baseline = serde_yaml::to_value(baseline)
-        .map_err(|error| PawsError::Core(format!("cannot serialize controller config: {error}")))?;
-    let current = serde_yaml::to_value(current)
-        .map_err(|error| PawsError::Core(format!("cannot serialize controller config: {error}")))?;
-    let baseline = baseline
-        .as_mapping()
-        .ok_or_else(|| PawsError::Core("controller baseline is not a mapping".to_owned()))?;
-    let current = current
-        .as_mapping()
-        .ok_or_else(|| PawsError::Core("controller config is not a mapping".to_owned()))?;
-
-    let mut keys = baseline
-        .keys()
-        .chain(current.keys())
-        .cloned()
-        .collect::<Vec<_>>();
-    keys.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
-    keys.dedup();
-    for key in keys {
-        let Some(name) = key.as_str() else { continue };
-        if controller_runtime_only_key(name) || baseline.get(&key) == current.get(&key) {
-            continue;
-        }
-        match current.get(&key) {
-            Some(value) if !value.is_null() => {
-                // RawConfig's typed Option fields serialize as null. They
-                // mean absent settings, whereas an explicit invalid null in
-                // imported user YAML must still fail strict field checks.
-                let mut value = value.clone();
-                omit_absent_typed_fields(&mut value);
-                profile.insert(key, value);
-            }
-            _ => {
-                profile.remove(&key);
-            }
-        }
-    }
-
-    serde_yaml::to_string(&serde_yaml::Value::Mapping(profile.clone()))
-        .map_err(|error| PawsError::Core(format!("profile YAML serialization failed: {error}")))
-}
-
-fn omit_absent_typed_fields(value: &mut serde_yaml::Value) {
-    match value {
-        serde_yaml::Value::Mapping(map) => {
-            map.retain(|_, value| !value.is_null());
-            for value in map.values_mut() {
-                omit_absent_typed_fields(value);
-            }
-        }
-        serde_yaml::Value::Sequence(values) => {
-            for value in values {
-                omit_absent_typed_fields(value);
-            }
-        }
-        _ => {}
-    }
-}
-
-pub(super) fn controller_runtime_only_key(key: &str) -> bool {
-    matches!(
-        key,
-        "port"
-            | "socks-port"
-            | "mixed-port"
-            | "allow-lan"
-            | "bind-address"
-            | "mode"
-            | "log-level"
-            | "external-controller"
-            | "external-ui"
-            | "external-ui-name"
-            | "external-ui-url"
-            | "secret"
-            | "tproxy-port"
-            | "tproxy-sni"
-            | "routing-mark"
-            | "listeners"
-            | "authentication"
-            | "skip-auth-prefixes"
-            | "max-connections"
-    )
-}
-
-pub(super) fn sync_live_controller_route(state: &mut CoreState) -> Result<(), PawsError> {
-    let Some(tunnel) = state.tunnel.clone() else {
-        return Ok(());
-    };
-    state.mode = mode_from_tunnel(tunnel.mode());
-    refresh_proxy_groups_preserving_order(state, &tunnel);
-    let Some(profile_id) = state.profiles.active_profile().map(ToOwned::to_owned) else {
-        return Ok(());
-    };
-    let persisted = state.profiles.selected_proxies(&profile_id)?;
-    let selections = state
-        .proxy_groups
-        .iter()
-        .filter_map(|group| {
-            let selected = match group.fixed.as_deref() {
-                Some(fixed) => fixed.to_owned(),
-                None => group.selected.clone()?,
-            };
-            Some((group.name.clone(), selected))
-        })
-        .collect::<Vec<_>>();
-    for (group, selected) in selections {
-        if persisted.get(&group) != Some(&selected) {
-            state
-                .profiles
-                .set_selected_proxy(&profile_id, group, selected)?;
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn restore_proxy_selections(
     tunnel: &Tunnel,
     selected_proxies: &std::collections::BTreeMap<String, String>,
@@ -747,31 +543,18 @@ pub(super) fn rule_lookup_metadata(
 #[cfg(test)]
 mod preview_tests {
     use super::*;
-    #[test]
-    fn typed_controller_merge_omits_absent_options_without_loosening_profile_source_validation() {
-        let baseline =
-            meow_config::parse_raw_yaml("dns: {nameserver: [1.1.1.1]}\nrules: ['MATCH,DIRECT']\n")
-                .unwrap();
-        let current =
-            meow_config::parse_raw_yaml("dns: {nameserver-policy: {}}\nrules: ['MATCH,DIRECT']\n")
-                .unwrap();
-        let result = merge_external_raw_config(
-            "dns: {nameserver: [1.1.1.1]}\nrules: ['MATCH,DIRECT']\n",
-            &baseline,
-            &current,
-        )
-        .unwrap();
-        let result: serde_yaml::Value = serde_yaml::from_str(&result).unwrap();
-        let dns = result.get("dns").unwrap().as_mapping().unwrap();
-        assert!(!dns.contains_key(serde_yaml::Value::String("nameserver".into())));
-        assert!(dns
-            .get(serde_yaml::Value::String("nameserver-policy".into()))
-            .unwrap()
-            .as_mapping()
-            .unwrap()
-            .is_empty());
-        assert!(dns.values().all(|value| !value.is_null()));
+
+    #[tokio::test]
+    async fn read_only_loader_validates_proxy_server_nameserver_policy_urls() {
+        let source = "dns:\n  nameserver: [1.1.1.1]\n  proxy-server-nameserver-policy:\n    '+.example.com': ['invalid://nameserver']\nrules: ['MATCH,DIRECT']\n";
+        for purpose in [MeowLoadPurpose::Preview, MeowLoadPurpose::Capability] {
+            assert!(
+                load_meow_config_for(source, purpose).await.is_err(),
+                "read-only load must reject invalid proxy-server-nameserver-policy URLs"
+            );
+        }
     }
+
     #[tokio::test]
     async fn read_only_loader_rejects_external_constructors_before_static_or_cache_loading() {
         for source in [

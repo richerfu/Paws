@@ -209,7 +209,6 @@ fi
 # rewriting that inode; install a fresh file atomically instead. A buffered
 # copy also avoids macOS copyfile's slow sparse seeks on large debug ELFs.
 mkdir -p "$NATIVE_LIB_DIR"
-rm -f "$NATIVE_LIB_DIR/libcore.so"
 NATIVE_STAGE=""
 HAP_STAGE=""
 trap 'rm -f "$NATIVE_STAGE" "$HAP_STAGE"' EXIT

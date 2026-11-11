@@ -32,35 +32,32 @@ ohos-ashmem-binding = "0.1.0"
 ohos-hilog-binding = "0.2.3"
 ohos-resource-manager-binding = "0.3.4"
 
-meow-api = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e" }
-meow-common = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e" }
-meow-config = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e", features = ["anytls", "boring-tls"] }
-meow-dns = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e", default-features = false }
-meow-listener = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e" }
-meow-proxy = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e", features = ["default", "anytls"], default-features = false }
-meow-trie = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e" }
-meow-rules = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e" }
-meow-transport = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e", default-features = false, features = ["simple-obfs"] }
-meow-tunnel = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e" }
+meow-common = { git = "https://github.com/meow-rs/meow-rs", rev = "52d75ec0fe7eefcc427639ed2bb7ea242dc2781f" }
+meow-config = { git = "https://github.com/meow-rs/meow-rs", rev = "52d75ec0fe7eefcc427639ed2bb7ea242dc2781f", features = ["anytls", "boring-tls"] }
+meow-dns = { git = "https://github.com/meow-rs/meow-rs", rev = "52d75ec0fe7eefcc427639ed2bb7ea242dc2781f", default-features = false }
+meow-listener = { git = "https://github.com/meow-rs/meow-rs", rev = "52d75ec0fe7eefcc427639ed2bb7ea242dc2781f" }
+meow-proxy = { git = "https://github.com/meow-rs/meow-rs", rev = "52d75ec0fe7eefcc427639ed2bb7ea242dc2781f", features = ["default", "anytls"], default-features = false }
+meow-trie = { git = "https://github.com/meow-rs/meow-rs", rev = "52d75ec0fe7eefcc427639ed2bb7ea242dc2781f" }
+meow-rules = { git = "https://github.com/meow-rs/meow-rs", rev = "52d75ec0fe7eefcc427639ed2bb7ea242dc2781f" }
+meow-transport = { git = "https://github.com/meow-rs/meow-rs", rev = "52d75ec0fe7eefcc427639ed2bb7ea242dc2781f", default-features = false, features = ["simple-obfs"] }
+meow-tunnel = { git = "https://github.com/meow-rs/meow-rs", rev = "52d75ec0fe7eefcc427639ed2bb7ea242dc2781f" }
 
 anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.22"
-dashmap = "6"
 futures = "0.3"
 getrandom = "0.2"
 ipnet = "2"
 libc = "0.2"
 maxminddb = { version = "0.27", features = ["mmap"] }
 regex = "1"
-lwip = { git = "https://github.com/meow-rs/meow-rs", rev = "809b7a7320598b017093e234ab2fe71e9454b47e", package = "meow-lwip" }
+lwip = { git = "https://github.com/meow-rs/meow-rs", rev = "52d75ec0fe7eefcc427639ed2bb7ea242dc2781f", package = "meow-lwip" }
 netstack-smoltcp = "0.2"
 napi-build-ohos = "1.2.0"
 napi-derive-ohos = "1.2.0"
 napi-ohos = { version = "1.2.0", features = ["napi8", "tokio_rt"] }
 once_cell = "1"
-parking_lot = "0.12"
 percent-encoding = "2"
 reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",

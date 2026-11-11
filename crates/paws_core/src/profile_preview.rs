@@ -48,26 +48,12 @@ impl CoreHandle {
         &self,
         preview: ProfilePreview,
     ) -> Result<(), PawsError> {
-        let previous = {
-            let mut state = self.lock_state()?;
-            Self::ensure_config_revision_locked(&state, preview.revision)?;
-            preview.owner.check(&state)?;
-            if self.vpn.is_running() {
-                return Err(PawsError::Core(
-                    "cannot replace a live Meow owner with profile declarations".into(),
-                ));
-            }
-            state.api_controller.take()
-        };
-        if let Some(mut previous) = previous {
-            previous.shutdown().await;
-        }
         let mut state = self.lock_state()?;
         Self::ensure_config_revision_locked(&state, preview.revision)?;
         preview.owner.check(&state)?;
         if self.vpn.is_running() {
             return Err(PawsError::Core(
-                "Meow started before profile preview commit".into(),
+                "cannot replace a live Meow owner with profile declarations".into(),
             ));
         }
         state
@@ -90,7 +76,7 @@ impl CoreHandle {
         let refresh = state.provider_refresh.clone();
         apply_provider_refresh_states(&mut state.providers, &refresh);
         state.tunnel = None;
-        state.controller_start = None;
+        state.meow_runtime = None;
         state.meow_runtime_ready = false;
         state.controller_diagnostics = Default::default();
         state.vpn_options = preview.vpn_options;

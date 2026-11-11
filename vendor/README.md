@@ -1,18 +1,9 @@
 # Native engine integrations
 
 All meow-rs packages use the unmodified Git revision
-[`809b7a7320598b017093e234ab2fe71e9454b47e`](https://github.com/meow-rs/meow-rs/commit/809b7a7320598b017093e234ab2fe71e9454b47e).
-Its declared version is 0.29.0, but it is newer than the v0.29.0 release tag.
-The release tag does **not** contain
-[`f1a67c2`](https://github.com/meow-rs/meow-rs/commit/f1a67c24806a5c9d9a05d75dca4e7f8c41e7cf58);
-the pinned revision does. Paws reports `0.29.0+809b7a7` to distinguish them.
-
-**Current OHOS build gate:** the unmodified pin fails with `E0432` in
-`meow-common/src/lib.rs`: it re-exports `apply_outbound_interface_for_peer`
-on Linux/OHOS, while the implementation excludes `target_env = "ohos"`.
-Host tests pass, but this pin cannot yet produce the complete OHOS HAP.
-No downstream fix has been applied; an upstream correction is required under
-the no-patch policy.
+[`52d75ec0fe7eefcc427639ed2bb7ea242dc2781f`](https://github.com/meow-rs/meow-rs/commit/52d75ec0fe7eefcc427639ed2bb7ea242dc2781f).
+Its declared version is 0.29.0, and it includes post-`v0.29.0` OpenHarmony and
+transport fixes. Paws reports `0.29.0+52d75ec` to distinguish it from the tag.
 
 There are no meow-rs copies in this directory and no Cargo patch table. The
 nine former `meow-*` forks have been removed. OpenHarmony socket protection,

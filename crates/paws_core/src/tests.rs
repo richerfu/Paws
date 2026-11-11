@@ -1,6 +1,5 @@
 use super::*;
 use base64::Engine;
-use futures::StreamExt;
 
 struct RunningTestEngine(VpnEngine);
 #[async_trait::async_trait]
@@ -282,11 +281,10 @@ fn notification_speed_snapshot_stays_small_with_large_rule_sets() {
             })
             .collect();
     }
-    let speeds = core.traffic_speed_snapshot().unwrap();
-    assert_eq!(speeds.upload_speed, 64);
-    assert_eq!(speeds.download_speed, 96);
-    let payload = to_json(&speeds).unwrap();
-    assert!(payload.len() < 100);
+    let payload = core.vpn_speed_json().unwrap();
+    assert!(payload.len() < 120);
+    assert!(payload.contains("\"uploadSpeed\":64"));
+    assert!(payload.contains("\"downloadSpeed\":96"));
     assert!(!payload.contains("private"));
     drop(core);
     let _ = fs::remove_dir_all(root);
@@ -767,7 +765,7 @@ fn stale_proxy_selection_completion_is_rejected_before_persistence() {
     };
 
     let error = core
-        .record_proxy_selection("GLOBAL", "DIRECT", false, expected)
+        .record_proxy_selection("GLOBAL", "DIRECT", expected)
         .expect_err("an old selector completion must not target newer configuration");
 
     assert!(matches!(error, PawsError::StaleConfigRevision { .. }));
@@ -1264,7 +1262,7 @@ rules:
     assert_eq!(
         tunnel.proxy("GLOBAL").unwrap().current().as_deref(),
         Some("HTTP-MOCK"),
-        "Meow 0.22 auto-created GLOBAL defaults to the primary outbound"
+        "meow-rs auto-created GLOBAL defaults to the primary outbound"
     );
     core.select_proxy("GLOBAL", "HTTP-MOCK").await.unwrap();
     assert_eq!(
@@ -1660,28 +1658,6 @@ fn platform_vpn_state_revision_is_strictly_monotonic() {
 }
 
 #[test]
-fn platform_vpn_start_timeout_becomes_visible_failure() {
-    let root = std::env::temp_dir().join(format!(
-        "paws-platform-vpn-timeout-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let core = CoreHandle::new_with_profile_root(&root);
-    core.set_platform_vpn_starting(true).unwrap();
-    assert!(core.expire_platform_vpn_start().unwrap());
-    let snapshot = core.snapshot().unwrap();
-    assert_eq!(snapshot.vpn_lifecycle, VpnLifecycle::Failed);
-    assert!(!snapshot.vpn_running);
-    assert!(snapshot
-        .network_protect_error
-        .as_deref()
-        .is_some_and(|error| error.contains("startup timeout")));
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
 fn platform_vpn_state_accepts_legacy_frames_without_start_transaction() {
     let state: PlatformVpnState =
         serde_json::from_str(r#"{"starting":true,"running":false,"updatedAt":1}"#).unwrap();
@@ -1839,7 +1815,6 @@ fn owner_liveness_detects_killed_extension_without_waiting_for_heartbeat() {
     }
     let mut revisions = core.subscribe_runtime_revisions();
     let before = *revisions.borrow_and_update();
-    let event_before = core.platform_vpn_event_revision();
     child.kill().unwrap();
     assert!(!child.wait().unwrap().success());
     {
@@ -1860,7 +1835,6 @@ fn owner_liveness_detects_killed_extension_without_waiting_for_heartbeat() {
     }
     assert!(revisions.has_changed().unwrap());
     assert!(revisions.borrow_and_update().status_revision > before.status_revision);
-    assert!(core.platform_vpn_event_revision() > event_before);
     let snapshot = core.snapshot().unwrap();
     assert_eq!(snapshot.vpn_lifecycle, VpnLifecycle::Failed);
     assert!(!snapshot.vpn_running);
@@ -1873,10 +1847,10 @@ fn owner_liveness_detects_killed_extension_without_waiting_for_heartbeat() {
         core.begin_platform_vpn_start().is_err(),
         "keep the exact cleanup barrier"
     );
-    let event_after = core.platform_vpn_event_revision();
+    let after_failure = *revisions.borrow_and_update();
     core.refresh_platform_vpn_owner_liveness_locked(&mut core.lock_state().unwrap())
         .unwrap();
-    assert_eq!(core.platform_vpn_event_revision(), event_after);
+    assert_eq!(*revisions.borrow_and_update(), after_failure);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1891,6 +1865,8 @@ fn owner_liveness_ignores_cleanup_and_a_rebound_journal() {
         core.set_platform_vpn_running(true).unwrap();
         let owner = current_process_identity().unwrap();
         let journal_path = root.join("runtime/platform-vpn-owner.json");
+        let mut revisions = core.subscribe_runtime_revisions();
+        let before = *revisions.borrow_and_update();
         let mut state = core.lock_state().unwrap();
         state.platform_vpn_extension_lease = None;
         if replacement {
@@ -1911,11 +1887,11 @@ fn owner_liveness_ignores_cleanup_and_a_rebound_journal() {
         } else {
             platform_owner::delete_exact(&journal_path, &attempt_id, Some(owner)).unwrap();
         }
-        let before = core.platform_vpn_event_revision();
         core.refresh_platform_vpn_owner_liveness_locked(&mut state)
             .unwrap();
         assert!(state.platform_vpn_running);
-        assert_eq!(core.platform_vpn_event_revision(), before);
+        assert!(!revisions.has_changed().unwrap());
+        assert_eq!(*revisions.borrow_and_update(), before);
         drop(state);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2375,10 +2351,6 @@ async fn watchdog_orphan_cleanup_requires_confirmed_stop_and_dead_exact_owner() 
         assert!(state.platform_watchdog_cleanup_recoverable);
     }
 
-    assert_eq!(
-        core.current_recoverable_platform_vpn_session_id().unwrap(),
-        attempt_id
-    );
     assert!(core
         .recover_platform_vpn_cleanup_after_confirmed_stop(&attempt_id)
         .await
@@ -2731,8 +2703,9 @@ fn ordinary_failure_keeps_cleanup_barrier_while_exact_owner_is_alive() {
         .fail_platform_vpn_start(&attempt_id, "native failure".to_owned())
         .unwrap());
 
+    let intent_epoch = core.lock_state().unwrap().platform_vpn_intent_epoch;
     assert_eq!(
-        core.current_recoverable_platform_vpn_session_id().unwrap(),
+        core.claim_current_platform_vpn_stop(intent_epoch).unwrap(),
         attempt_id
     );
     let journal_path = root.join("runtime/platform-vpn-owner.json");
@@ -2771,10 +2744,6 @@ async fn delivered_unattached_terminal_owner_recovers_only_after_confirmed_stop(
         state.platform_remote_state_updated_at = 23;
     }
 
-    assert_eq!(
-        core.current_recoverable_platform_vpn_session_id().unwrap(),
-        attempt_id
-    );
     let intent_epoch = core.lock_state().unwrap().platform_vpn_intent_epoch;
     assert_eq!(
         core.claim_current_platform_vpn_stop(intent_epoch).unwrap(),
@@ -2814,8 +2783,9 @@ fn delivered_terminal_owner_that_attached_still_requires_extension_cleanup() {
     core.bind_platform_vpn_start(&attempt_id).unwrap();
     assert!(core.cancel_platform_vpn_start(&attempt_id).unwrap());
 
+    let intent_epoch = core.lock_state().unwrap().platform_vpn_intent_epoch;
     assert_eq!(
-        core.current_recoverable_platform_vpn_session_id().unwrap(),
+        core.claim_current_platform_vpn_stop(intent_epoch).unwrap(),
         attempt_id
     );
     let journal_path = root.join("runtime/platform-vpn-owner.json");
@@ -3073,60 +3043,6 @@ async fn platform_start_completes_only_on_matching_connected_terminal() {
     let _ = std::fs::remove_dir_all(root);
 }
 
-#[tokio::test]
-async fn platform_attach_wait_is_exact_and_wakes_before_start_dispatch_completion() {
-    let root = std::env::temp_dir().join(format!(
-        "paws-platform-vpn-attach-wait-{}",
-        now_unix_nanos()
-    ));
-    let core = Arc::new(CoreHandle::new_with_profile_root(&root));
-    let attempt_id = core.begin_platform_vpn_start().unwrap();
-
-    assert_eq!(
-        core.await_platform_vpn_attach("older-attempt")
-            .await
-            .unwrap(),
-        PlatformAttachOutcome::Superseded
-    );
-
-    let wait_core = Arc::clone(&core);
-    let wait_attempt = attempt_id.clone();
-    let waiter =
-        tokio::spawn(async move { wait_core.await_platform_vpn_attach(&wait_attempt).await });
-    tokio::task::yield_now().await;
-    assert!(!waiter.is_finished());
-
-    core.bind_platform_vpn_start(&attempt_id).unwrap();
-    assert_eq!(
-        tokio::time::timeout(Duration::from_millis(100), waiter)
-            .await
-            .expect("extension attachment did not wake the waiter")
-            .unwrap()
-            .unwrap(),
-        PlatformAttachOutcome::Attached
-    );
-
-    let terminal_root = std::env::temp_dir().join(format!(
-        "paws-platform-vpn-attach-terminal-{}",
-        now_unix_nanos()
-    ));
-    let terminal_core = CoreHandle::new_with_profile_root(&terminal_root);
-    let terminal_attempt = terminal_core.begin_platform_vpn_start().unwrap();
-    assert!(terminal_core
-        .fail_unattached_platform_vpn_start(&terminal_attempt, "rejected".to_owned())
-        .unwrap());
-    assert_eq!(
-        terminal_core
-            .await_platform_vpn_attach(&terminal_attempt)
-            .await
-            .unwrap(),
-        PlatformAttachOutcome::Terminal
-    );
-
-    let _ = std::fs::remove_dir_all(root);
-    let _ = std::fs::remove_dir_all(terminal_root);
-}
-
 #[test]
 fn terminal_delivery_acknowledges_only_the_exact_terminal_attempt() {
     let mut cancelled = PlatformVpnState {
@@ -3171,33 +3087,6 @@ fn terminal_delivery_acknowledges_only_the_exact_terminal_attempt() {
     assert_eq!(new_owner.delivery_observed, before.delivery_observed);
     assert_eq!(new_owner.starting, before.starting);
     assert_eq!(new_owner.updated_at, before.updated_at);
-}
-
-#[tokio::test]
-async fn platform_vpn_state_changes_are_delivered_by_revisioned_events() {
-    let root = std::env::temp_dir().join(format!("paws-platform-vpn-events-{}", now_unix_nanos()));
-    let core = CoreHandle::new_with_profile_root(&root);
-    let initial_revision = core.platform_vpn_event_revision();
-
-    core.begin_platform_vpn_start().unwrap();
-    let starting_revision = core
-        .await_platform_vpn_event(initial_revision)
-        .await
-        .unwrap();
-    assert!(starting_revision > initial_revision);
-    assert_eq!(
-        core.snapshot().unwrap().vpn_lifecycle,
-        VpnLifecycle::Starting
-    );
-
-    core.set_platform_vpn_running(true).unwrap();
-    let connected_revision = core
-        .await_platform_vpn_event(starting_revision)
-        .await
-        .unwrap();
-    assert!(connected_revision > starting_revision);
-    assert!(core.snapshot().unwrap().vpn_running);
-    let _ = std::fs::remove_dir_all(root);
 }
 
 #[tokio::test]
@@ -3753,8 +3642,9 @@ async fn manual_activity_rules_persist_and_hot_update_the_existing_tunnel() {
     };
 
     let added = core
-        .apply_manual_rule(
+        .apply_manual_rule_checked(
             &profile_id,
+            core.snapshot().unwrap().config_revision,
             &ManualRuleSpec {
                 match_kind: paws_model::ManualRuleMatchKind::Domain,
                 value: "API.Example.COM.".to_owned(),
@@ -3772,8 +3662,9 @@ async fn manual_activity_rules_persist_and_hot_update_the_existing_tunnel() {
     assert!(added.rule_mode_active);
 
     let updated = core
-        .apply_manual_rule(
+        .apply_manual_rule_checked(
             &profile_id,
+            core.snapshot().unwrap().config_revision,
             &ManualRuleSpec {
                 match_kind: paws_model::ManualRuleMatchKind::Domain,
                 value: "api.example.com".to_owned(),
@@ -3888,7 +3779,7 @@ rules: [MATCH,Broken]
     assert!(!error.contains("invalid-private-uuid"), "{error}");
     let snapshot = core.snapshot().unwrap();
     assert!(!snapshot.engine_loaded);
-    assert!(core.lock_state().unwrap().api_controller.is_none());
+    assert!(!snapshot.controller_running);
     let entry = snapshot
         .logs
         .iter()
@@ -4436,24 +4327,55 @@ async fn vpn_config_updates_reload_active_snapshot() {
         .unwrap();
     core.reload_config(&profile_id).await.unwrap();
 
+    let base_options = core.snapshot().unwrap().vpn_options;
     let previous_revision = core.snapshot().unwrap().config_revision;
     let error = core
-        .set_profile_vpn_config(&profile_id, true, false, true, "lwip".to_owned())
+        .set_profile_vpn_config_checked(
+            &profile_id,
+            previous_revision,
+            VpnOptions {
+                system_proxy: true,
+                dns_hijacking: false,
+                allow_bypass: true,
+                stack: "lwip".to_owned(),
+                ..base_options.clone()
+            },
+        )
         .await
         .expect_err("unsupported application bypass must not be persisted");
     assert!(error.to_string().contains("not supported"));
     assert_eq!(core.snapshot().unwrap().config_revision, previous_revision);
 
     let error = core
-        .set_profile_vpn_config(&profile_id, true, false, false, "lwip".to_owned())
+        .set_profile_vpn_config_checked(
+            &profile_id,
+            previous_revision,
+            VpnOptions {
+                system_proxy: true,
+                dns_hijacking: false,
+                allow_bypass: false,
+                stack: "lwip".to_owned(),
+                ..base_options.clone()
+            },
+        )
         .await
         .expect_err("unsupported system proxy management must not be persisted");
     assert!(error.to_string().contains("not supported"));
     assert_eq!(core.snapshot().unwrap().config_revision, previous_revision);
 
-    core.set_profile_vpn_config(&profile_id, false, false, false, "lwip".to_owned())
-        .await
-        .unwrap();
+    core.set_profile_vpn_config_checked(
+        &profile_id,
+        previous_revision,
+        VpnOptions {
+            system_proxy: false,
+            dns_hijacking: false,
+            allow_bypass: false,
+            stack: "lwip".to_owned(),
+            ..base_options
+        },
+    )
+    .await
+    .unwrap();
 
     let snapshot = core.snapshot().unwrap();
     assert!(!snapshot.vpn_options.system_proxy);
@@ -5045,25 +4967,11 @@ async fn platform_stop_settles_meow_traffic_when_native_stats_are_unavailable() 
     assert_eq!(snapshot.traffic.download_speed, 0);
 }
 
-async fn enable_controller_for_test(
+async fn start_meow_engine_for_test(
     core: &CoreHandle,
     profile_id: &str,
 ) -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
     without_test_geodata(core, profile_id);
-    {
-        let mut state = core.lock_state().unwrap();
-        state
-            .profiles
-            .set_profile_network_config(
-                profile_id,
-                NetworkPortConfig {
-                    controller_enabled: true,
-                    ..NetworkPortConfig::default()
-                },
-                false,
-            )
-            .unwrap();
-    }
     core.reload_config(profile_id).await.unwrap();
     let mut fds = [0; 2];
     assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
@@ -5077,7 +4985,6 @@ async fn enable_controller_for_test(
     core.start_vpn(fds[0], &to_json(&VpnOptions::default()).unwrap())
         .await
         .unwrap();
-    core.sync_external_controller_config().await.unwrap();
     owned
 }
 
@@ -5122,50 +5029,7 @@ fn cold_core_restores_active_profile_service_switches_without_binding() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn controller_port_requires_setting_and_running_vpn() {
-    let root = std::env::temp_dir().join(format!(
-        "paws-core-controller-gate-test-{}",
-        now_unix_nanos()
-    ));
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let addr = listener.local_addr().unwrap();
-    drop(listener);
-    let core = CoreHandle::new_with_profile_root_and_controller(root, addr);
-    let profile_id = core
-        .import_profile_from_content(
-            "Controller gate",
-            "test",
-            "proxies: []\nproxy-groups: []\nrules: []\n",
-            None,
-        )
-        .await
-        .unwrap();
-    core.reload_config(&profile_id).await.unwrap();
-    assert!(!core.snapshot().unwrap().controller_running);
-    assert!(std::net::TcpListener::bind(addr).is_ok());
-
-    {
-        let mut state = core.lock_state().unwrap();
-        state.network_ports.controller_enabled = true;
-    }
-    core.sync_external_controller_config().await.unwrap();
-    assert!(!core.snapshot().unwrap().controller_running);
-    assert!(std::net::TcpListener::bind(addr).is_ok());
-
-    let _tun = enable_controller_for_test(&core, &profile_id).await;
-    core.sync_external_controller_config().await.unwrap();
-    assert!(core.snapshot().unwrap().controller_running);
-    let _ = wait_for_json(&format!("http://{addr}/version")).await;
-    assert!(std::net::TcpListener::bind(addr).is_err());
-
-    core.stop_vpn().await.unwrap();
-    core.sync_external_controller_config().await.unwrap();
-    assert!(!core.snapshot().unwrap().controller_running);
-    assert!(std::net::TcpListener::bind(addr).is_ok());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reload_starts_meow_external_controller() {
+async fn active_meow_engine_manages_proxies_delays_dns_and_connections() {
     let root = std::env::temp_dir().join(format!(
         "paws-core-controller-test-{}",
         std::time::SystemTime::now()
@@ -5173,14 +5037,8 @@ async fn reload_starts_meow_external_controller() {
             .unwrap()
             .as_nanos()
     ));
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let addr = listener.local_addr().unwrap();
-    drop(listener);
-
-    let core = CoreHandle::new_with_profile_root_and_controller(root, addr);
-    let yaml = format!(
-        r#"mixed-port: 7890
-external-controller: {addr}
+    let core = CoreHandle::new_with_profile_root(root);
+    let yaml = r#"mixed-port: 7890
 proxies:
   - name: HTTP-MOCK
     type: http
@@ -5200,32 +5058,12 @@ proxy-groups:
     interval: 3600
 rules:
   - MATCH,Proxy
-"#
-    );
+"#;
     let profile_id = core
-        .import_profile_from_content("Direct", "test", &yaml, None)
+        .import_profile_from_content("Direct", "test", yaml, None)
         .await
         .unwrap();
-    let _controller_tun = enable_controller_for_test(&core, &profile_id).await;
-
-    let snapshot = core.snapshot().unwrap();
-    assert!(snapshot.controller_running);
-    let addr_string = addr.to_string();
-    assert_eq!(
-        snapshot.controller_addr.as_deref(),
-        Some(addr_string.as_str())
-    );
-
-    let version = wait_for_json(&format!("http://{addr}/version")).await;
-    assert_eq!(
-        version.get("meta").and_then(serde_json::Value::as_bool),
-        Some(true)
-    );
-    let proxies = wait_for_json(&format!("http://{addr}/proxies")).await;
-    assert!(proxies
-        .get("proxies")
-        .and_then(|value| value.get("DIRECT"))
-        .is_some());
+    let _engine_tun = start_meow_engine_for_test(&core, &profile_id).await;
 
     core.select_proxy_via_controller("Proxy", "HTTP-MOCK")
         .await
@@ -5268,24 +5106,12 @@ rules:
         .find(|group| group.name == "Auto")
         .expect("URLTest group");
     assert_eq!(auto_group.fixed.as_deref(), Some(""));
-    let rules = wait_for_json(&format!("http://{addr}/rules")).await;
-    assert!(rules
-        .get("rules")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|rules| !rules.is_empty()));
     let health_url = spawn_healthcheck_http_server().await;
     let delay = core
         .test_proxy_delay_via_controller("DIRECT", Some(&health_url), Some(1000))
         .await
         .unwrap();
     assert!(delay > 0);
-    let proxies = wait_for_json(&format!("http://{addr}/proxies")).await;
-    assert!(proxies
-        .get("proxies")
-        .and_then(|value| value.get("DIRECT"))
-        .and_then(|value| value.get("history"))
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|history| !history.is_empty()));
 
     let group_health_url = spawn_healthcheck_http_server().await;
     let group_delays = core
@@ -5296,38 +5122,11 @@ rules:
     core.flush_dns_cache_via_controller().await.unwrap();
     core.flush_fake_ip_cache_via_controller().await.unwrap();
 
-    let memory = wait_for_first_json_frame(&format!("ws://{addr}/memory")).await;
-    assert!(memory.get("inuse").is_some_and(serde_json::Value::is_u64));
-    assert!(memory.get("oslimit").is_some_and(serde_json::Value::is_u64));
-
     let tunnel = {
         let state = core.lock_state().unwrap();
         state.tunnel.clone().expect("loaded tunnel")
     };
     let connection_id = track_test_connection(&tunnel, "api.example.test");
-    let traffic = wait_for_traffic_frame(&format!("ws://{addr}/traffic"), 64, 96, || {
-        tunnel.statistics().add_upload(64);
-        tunnel.statistics().add_download(96);
-    })
-    .await;
-    assert_eq!(
-        traffic.get("up").and_then(serde_json::Value::as_i64),
-        Some(64)
-    );
-    assert_eq!(
-        traffic.get("down").and_then(serde_json::Value::as_i64),
-        Some(96)
-    );
-    let connections = wait_for_json(&format!("http://{addr}/connections")).await;
-    assert_eq!(
-        connections
-            .get("connections")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|connections| connections.first())
-            .and_then(|connection| connection.get("id"))
-            .and_then(serde_json::Value::as_str),
-        Some(connection_id.as_str())
-    );
     core.close_connection_via_controller(&connection_id)
         .await
         .unwrap();
@@ -5357,52 +5156,11 @@ rules:
         .iter()
         .any(|log| log.message == "all connections closed via active meow engine: 2"));
 
-    let warning = format!(
-        "paws controller ws log test {}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/logs?level=warning"))
-        .await
-        .unwrap();
-    tracing::warn!(target: "paws_core_controller_test", "{}", warning);
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(1000);
-    let mut matched = false;
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let Some(frame) = tokio::time::timeout(remaining, ws.next())
-            .await
-            .expect("logs websocket frame")
-        else {
-            break;
-        };
-        let frame = frame
-            .expect("logs websocket receive")
-            .into_text()
-            .expect("text frame");
-        let log: serde_json::Value = serde_json::from_str(&frame).unwrap();
-        if log
-            .get("payload")
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|payload| payload.contains(&warning))
-        {
-            assert_eq!(
-                log.get("type").and_then(serde_json::Value::as_str),
-                Some("warning")
-            );
-            matched = true;
-            break;
-        }
-    }
-    assert!(matched, "logs websocket did not receive warning payload");
-
     core.set_profile_network_config(
         &profile_id,
         NetworkPortConfig {
             mixed_port: 17890,
-            controller_port: addr.port(),
+            controller_port: 19190,
             mixed_enabled: false,
             controller_enabled: true,
         },
@@ -5416,13 +5174,12 @@ rules:
         .secret
         .clone()
         .expect("LAN controller secret");
-    assert!(snapshot.controller_running);
     assert!(snapshot.controller_access.allow_lan);
     assert_eq!(
         snapshot.network_ports,
         NetworkPortConfig {
             mixed_port: 17890,
-            controller_port: addr.port(),
+            controller_port: 19190,
             mixed_enabled: false,
             controller_enabled: true,
         }
@@ -5431,138 +5188,11 @@ rules:
         snapshot.controller_access.secret.as_deref(),
         Some(secret.as_str())
     );
-    let unauthenticated = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .expect("local controller client")
-        .get(format!("http://{addr}/version"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(unauthenticated.status(), reqwest::StatusCode::UNAUTHORIZED);
-    let authenticated = wait_for_json_with_bearer(&format!("http://{addr}/version"), &secret).await;
-    assert_eq!(
-        authenticated
-            .get("meta")
-            .and_then(serde_json::Value::as_bool),
-        Some(true)
-    );
     core.flush_dns_cache_via_controller().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn external_controller_config_reload_converges_profile_and_native_snapshot() {
-    let root = std::env::temp_dir().join(format!(
-        "paws-core-controller-sync-test-{}",
-        now_unix_nanos()
-    ));
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let addr = listener.local_addr().unwrap();
-    drop(listener);
-    let core = CoreHandle::new_with_profile_root_and_controller(root, addr);
-    let original = format!(
-        r#"mixed-port: 7890
-paws:
-  vpn:
-    mtu: 1410
-proxies:
-  - name: HTTP-OLD
-    type: http
-    server: 127.0.0.1
-    port: 18080
-proxy-groups:
-  - name: OldProxy
-    type: select
-    proxies: [DIRECT, HTTP-OLD]
-rules:
-  - MATCH,OldProxy
-"#
-    );
-    let profile_id = core
-        .import_profile_from_content("Controller sync", "test", &original, None)
-        .await
-        .unwrap();
-    let _controller_tun = enable_controller_for_test(&core, &profile_id).await;
-    let _ = wait_for_json(&format!("http://{addr}/version")).await;
-    let mut fds = [0_i32; 2];
-    assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
-    let options_json = to_json(&VpnOptions::default()).unwrap();
-    core.start_vpn(fds[0], &options_json).await.unwrap();
-    assert_eq!(core.vpn.fd(), Some(fds[0]));
-
-    let replacement = r#"mode: direct
-dns: {nameserver-policy: {}}
-proxies:
-  - name: HTTP-NEW
-    type: http
-    server: 127.0.0.1
-    port: 18081
-proxy-groups:
-  - name: NewProxy
-    type: select
-    proxies: [DIRECT, HTTP-NEW]
-rules:
-  - MATCH,NewProxy
-"#;
-    let payload = base64::engine::general_purpose::STANDARD.encode(replacement);
-    let response = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .expect("local controller client")
-        .put(format!("http://{addr}/configs"))
-        .json(&serde_json::json!({ "payload": payload }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), reqwest::StatusCode::NO_CONTENT);
-
-    assert!(core.sync_external_controller_config().await.unwrap());
-    let snapshot = core.snapshot().unwrap();
-    assert!(snapshot.vpn_running);
-    assert_eq!(core.vpn.fd(), Some(fds[0]));
-    assert_eq!(snapshot.mode, RuntimeMode::Direct);
-    assert!(snapshot
-        .proxy_groups
-        .iter()
-        .any(|group| group.name == "NewProxy"));
-    assert!(!snapshot
-        .proxy_groups
-        .iter()
-        .any(|group| group.name == "OldProxy"));
-    assert!(snapshot
-        .rules
-        .iter()
-        .any(|rule| rule.line == "MATCH,NewProxy"));
-    assert_eq!(snapshot.controller_diagnostics.config_sync_count, 1);
-    assert!(snapshot
-        .controller_diagnostics
-        .last_config_sync_at
-        .is_some());
-    assert!(snapshot
-        .controller_diagnostics
-        .last_config_sync_error
-        .is_none());
-    let controller_proxies = wait_for_json(&format!("http://{addr}/proxies")).await;
-    assert!(controller_proxies
-        .get("proxies")
-        .and_then(|proxies| proxies.get("NewProxy"))
-        .is_some());
-
-    let persisted = core.profile_raw_yaml(&profile_id).unwrap();
-    assert!(persisted.contains("HTTP-NEW"));
-    assert!(!persisted.contains("HTTP-OLD"));
-    assert!(persisted.contains("paws:"));
-    assert!(persisted.contains("mtu: 1410"));
-    assert!(!persisted.contains("external-controller:"));
-    core.stop_vpn().await.unwrap();
-    unsafe {
-        libc::close(fds[0]);
-        libc::close(fds[1]);
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn controller_exposes_loaded_provider_registries() {
+async fn active_meow_engine_manages_provider_refresh_and_healthchecks() {
     let root = std::env::temp_dir().join(format!(
         "paws-core-provider-controller-test-{}",
         std::time::SystemTime::now()
@@ -5573,11 +5203,8 @@ async fn controller_exposes_loaded_provider_registries() {
     std::fs::create_dir_all(&root).unwrap();
     let import_provider_path = root.join("import-provider.yaml");
     std::fs::write(&import_provider_path, provider_proxy_yaml()).unwrap();
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let addr = listener.local_addr().unwrap();
-    drop(listener);
 
-    let core = CoreHandle::new_with_profile_root_and_controller(root.clone(), addr);
+    let core = CoreHandle::new_with_profile_root(root.clone());
     let profile_id = core
         .import_profile_from_content(
             "Provider",
@@ -5595,30 +5222,7 @@ async fn controller_exposes_loaded_provider_registries() {
     )
     .unwrap();
 
-    let _controller_tun = enable_controller_for_test(&core, &profile_id).await;
-
-    let proxy_providers = wait_for_json(&format!("http://{addr}/providers/proxies")).await;
-    assert_eq!(
-        proxy_providers
-            .get("providers")
-            .and_then(|providers| providers.get("LocalProxyProvider"))
-            .and_then(|provider| provider.get("proxies"))
-            .and_then(serde_json::Value::as_array)
-            .and_then(|proxies| proxies.first())
-            .and_then(|proxy| proxy.get("name"))
-            .and_then(serde_json::Value::as_str),
-        Some("PROVIDER-HTTP")
-    );
-
-    let rule_providers = wait_for_json(&format!("http://{addr}/providers/rules")).await;
-    assert_eq!(
-        rule_providers
-            .get("providers")
-            .and_then(|providers| providers.get("LocalRuleProvider"))
-            .and_then(|provider| provider.get("ruleCount"))
-            .and_then(serde_json::Value::as_u64),
-        Some(1)
-    );
+    let _engine_tun = start_meow_engine_for_test(&core, &profile_id).await;
 
     core.refresh_provider("LocalProxyProvider").await.unwrap();
     {
@@ -5766,11 +5370,8 @@ async fn provider_refresh_disambiguates_same_name_by_type() {
     std::fs::create_dir_all(&root).unwrap();
     let import_provider_path = root.join("import-provider.yaml");
     std::fs::write(&import_provider_path, provider_proxy_yaml()).unwrap();
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let addr = listener.local_addr().unwrap();
-    drop(listener);
 
-    let core = CoreHandle::new_with_profile_root_and_controller(root.clone(), addr);
+    let core = CoreHandle::new_with_profile_root(root.clone());
     let profile_id = core
         .import_profile_from_content(
             "Duplicate Providers",
@@ -5787,8 +5388,7 @@ async fn provider_refresh_disambiguates_same_name_by_type() {
         provider_proxy_yaml(),
     )
     .unwrap();
-    let _controller_tun = enable_controller_for_test(&core, &profile_id).await;
-    let _ = wait_for_json(&format!("http://{addr}/providers/rules")).await;
+    let _engine_tun = start_meow_engine_for_test(&core, &profile_id).await;
 
     let err = core
         .refresh_provider_of_type("rule", "Shared")
@@ -5812,7 +5412,6 @@ async fn provider_refresh_disambiguates_same_name_by_type() {
         .as_deref()
         .is_some_and(|error| error.contains("is inline")));
     assert!(proxy_provider.last_refresh_at.is_none());
-    let _ = wait_for_json(&format!("http://{addr}/providers/rules")).await;
 
     core.refresh_all_providers().await.unwrap();
     let snapshot = core.snapshot().unwrap();
@@ -6145,7 +5744,7 @@ rules:
             .expect("automatic group");
         assert_eq!(group.fixed.as_deref(), Some("DIRECT"));
 
-        core.unfix_proxy(group_name).unwrap();
+        core.unfix_proxy_via_controller(group_name).await.unwrap();
         let snapshot = core.snapshot().unwrap();
         let group = snapshot
             .proxy_groups
@@ -6413,7 +6012,15 @@ async fn subscription_userinfo_header_updates_profile_summary() {
     let core = CoreHandle::new_with_profile_root(root);
     let url = spawn_subscription_userinfo_http_server(local_protocol_profile("direct")).await;
 
-    let profile_id = core.import_profile_from_url(&url, None).await.unwrap();
+    let profile_id = core
+        .import_profile_from_url_and_activate_checked(
+            &url,
+            None,
+            core.snapshot().unwrap().config_revision,
+        )
+        .await
+        .unwrap()
+        .profile_id;
     let snapshot = core.snapshot().unwrap();
     let profile = snapshot
         .profiles
@@ -6484,7 +6091,15 @@ async fn subscription_metadata_comment_fills_missing_header_fields() {
         );
     let url = spawn_subscription_metadata_comment_http_server(body).await;
 
-    let profile_id = core.import_profile_from_url(&url, None).await.unwrap();
+    let profile_id = core
+        .import_profile_from_url_and_activate_checked(
+            &url,
+            None,
+            core.snapshot().unwrap().config_revision,
+        )
+        .await
+        .unwrap()
+        .profile_id;
     let snapshot = core.snapshot().unwrap();
     let profile = snapshot
         .profiles
@@ -7390,108 +7005,6 @@ rules:
 "#,
         import_provider_path.to_string_lossy()
     )
-}
-
-async fn wait_for_json(url: &str) -> serde_json::Value {
-    // These callers address actual loopback fixtures, never a desktop proxy.
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .expect("local controller client");
-    let mut last_error = String::new();
-    for _ in 0..40 {
-        match client.get(url).send().await {
-            Ok(response) if response.status().is_success() => {
-                return response.json().await.expect("JSON response");
-            }
-            Ok(response) => {
-                last_error = format!("HTTP {}", response.status());
-            }
-            Err(err) => {
-                last_error = err.to_string();
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    panic!("{url} did not become ready: {last_error}");
-}
-
-async fn wait_for_json_with_bearer(url: &str, secret: &str) -> serde_json::Value {
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .expect("local controller client");
-    let mut last_error = String::new();
-    for _ in 0..40 {
-        match client.get(url).bearer_auth(secret).send().await {
-            Ok(response) if response.status().is_success() => {
-                return response.json().await.expect("JSON response");
-            }
-            Ok(response) => {
-                last_error = format!("HTTP {}", response.status());
-            }
-            Err(err) => {
-                last_error = err.to_string();
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    panic!("{url} did not become ready with bearer auth: {last_error}");
-}
-
-async fn wait_for_traffic_frame(
-    url: &str,
-    expected_upload: i64,
-    expected_download: i64,
-    generate_traffic: impl FnOnce(),
-) -> serde_json::Value {
-    let (mut socket, _) = tokio_tungstenite::connect_async(url)
-        .await
-        .expect("traffic websocket connects");
-    // 0.22 establishes the rate baseline when the first client subscribes.
-    // Generate traffic after that baseline, as a real live session would.
-    generate_traffic();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let Some(frame) = tokio::time::timeout(remaining, socket.next())
-            .await
-            .expect("traffic websocket frame before timeout")
-        else {
-            break;
-        };
-        let Ok(frame) = frame else {
-            continue;
-        };
-        let Ok(text) = frame.into_text() else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-        if value.get("up").and_then(serde_json::Value::as_i64) == Some(expected_upload)
-            && value.get("down").and_then(serde_json::Value::as_i64) == Some(expected_download)
-        {
-            return value;
-        }
-    }
-    panic!(
-            "{url} did not publish expected traffic frame: up={expected_upload}, down={expected_download}"
-        );
-}
-
-async fn wait_for_first_json_frame(url: &str) -> serde_json::Value {
-    let (mut socket, _) = tokio_tungstenite::connect_async(url)
-        .await
-        .expect("websocket connects");
-    let frame = tokio::time::timeout(std::time::Duration::from_secs(3), socket.next())
-        .await
-        .expect("websocket frame before timeout")
-        .expect("websocket frame")
-        .expect("valid websocket frame")
-        .into_text()
-        .expect("text websocket frame");
-    serde_json::from_str(&frame).expect("JSON websocket frame")
 }
 
 async fn spawn_healthcheck_http_server() -> String {

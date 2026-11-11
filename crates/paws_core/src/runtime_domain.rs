@@ -250,21 +250,12 @@ impl CoreHandle {
                     vpn_running: native || state.platform_vpn_running,
                     network_protected: state.platform_network_protected,
                     network_protect_error: state.platform_network_protect_error.clone(),
-                    controller_running: if state.platform_vpn_running {
-                        state.platform_public_controller_addr.is_some()
-                    } else {
-                        state.api_controller.is_some()
-                    },
-                    controller_addr: if state.platform_vpn_running {
-                        state
-                            .platform_public_controller_addr
-                            .map(|address| address.to_string())
-                    } else {
-                        state
-                            .api_controller
-                            .as_ref()
-                            .map(|controller| controller.bind_addr.to_string())
-                    },
+                    controller_running: state.platform_vpn_running
+                        && state.platform_public_controller_addr.is_some(),
+                    controller_addr: state
+                        .platform_public_controller_addr
+                        .filter(|_| state.platform_vpn_running)
+                        .map(|address| address.to_string()),
                     exit_location: state.exit_location.clone(),
                 })
             }

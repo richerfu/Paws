@@ -822,21 +822,6 @@ impl ProfileStore {
         self.commit_staged(staged)
     }
 
-    pub fn set_profile_dns_servers(
-        &mut self,
-        profile_id: &str,
-        dns_servers: Vec<String>,
-    ) -> Result<(), PawsError> {
-        let raw_yaml = self.raw_yaml(profile_id)?;
-        let options = vpn_options_from_yaml(&raw_yaml)?;
-        self.set_profile_dns_config(
-            profile_id,
-            dns_servers,
-            options.dns_fallbacks,
-            options.dns_nameserver_policy,
-        )
-    }
-
     pub fn set_profile_dns_config(
         &mut self,
         profile_id: &str,

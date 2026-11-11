@@ -1,7 +1,23 @@
 use paws_app::{AppRequest, Application};
 use serde_json::{json, Value};
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 use tokio::io::AsyncReadExt;
+
+fn install_bundled_test_geodata(root: &Path) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../entry/src/main/resources/rawfile/geodata");
+    let geodata_dir = root.join("geodata");
+    std::fs::create_dir_all(&geodata_dir).unwrap();
+    for name in ["Country.mmdb", "GeoLite2-ASN.mmdb", "geosite.dat"] {
+        let destination = geodata_dir.join(name);
+        if destination.exists() {
+            continue;
+        }
+        if std::fs::hard_link(source.join(name), &destination).is_err() {
+            std::fs::copy(source.join(name), &destination).unwrap();
+        }
+    }
+}
 
 fn request(id: u64, command: &str, payload: Value) -> AppRequest {
     AppRequest {
@@ -38,6 +54,7 @@ async fn blocked_subscription() -> (
 #[tokio::test]
 async fn real_import_cancellation_and_diagnostics_preserve_the_transaction_boundary() {
     let root = std::env::temp_dir().join(format!("paws-app-lifecycle-{}", std::process::id()));
+    install_bundled_test_geodata(&root);
     paws_core::configure_app_home(&root).unwrap();
     let app = Arc::new(Application::shared());
     let yaml = format!(

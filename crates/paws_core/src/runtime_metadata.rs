@@ -107,35 +107,6 @@ pub(super) fn non_negative_i64_to_u64(value: i64) -> u64 {
     u64::try_from(value.max(0)).unwrap_or(0)
 }
 
-pub(super) fn controller_url(
-    addr: SocketAddr,
-    segments: &[&str],
-) -> Result<reqwest::Url, PawsError> {
-    let mut url = reqwest::Url::parse(&format!("http://{addr}/"))
-        .map_err(|err| PawsError::Core(format!("invalid controller URL: {err}")))?;
-    {
-        let mut path = url
-            .path_segments_mut()
-            .map_err(|_| PawsError::Core("controller URL cannot be a base".to_owned()))?;
-        path.clear();
-        for segment in segments {
-            path.push(segment);
-        }
-    }
-    Ok(url)
-}
-
-pub(super) fn controller_credentials(state: &CoreState) -> Option<(SocketAddr, Option<String>)> {
-    let controller = state.api_controller.as_ref()?;
-    let secret = controller
-        .raw_config
-        .read()
-        .secret
-        .clone()
-        .filter(|secret| !secret.is_empty());
-    Some((controller.client_addr, secret))
-}
-
 pub(super) use paws_engine_meow::proxy_groups_snapshot as proxy_groups_from_tunnel;
 
 pub(super) fn refresh_proxy_groups_preserving_order(state: &mut CoreState, tunnel: &Tunnel) {

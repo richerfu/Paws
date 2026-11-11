@@ -32,27 +32,6 @@ pub async fn persist_engine_session(session: String, engine: String, net_id: i32
         .await
         .map_err(to_napi_error)
 }
-#[napi]
-pub fn engine_decision(options_json: String) -> Result<String> {
-    serde_json::to_string(
-        &paws_core::shared_core()
-            .engine_decision(&options_json)
-            .map_err(to_napi_error)?,
-    )
-    .map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
-}
-#[napi]
-pub fn record_engine_health(session: String, success: bool, stage: String) -> Result<()> {
-    paws_core::shared_core()
-        .record_engine_health(&session, success, &stage)
-        .map_err(to_napi_error)
-}
-#[napi]
-pub fn record_engine_qualification(text: String) -> Result<()> {
-    paws_core::shared_core()
-        .record_engine_qualification(&text)
-        .map_err(to_napi_error)
-}
 
 #[napi]
 pub async fn validate_engine_startup(session: String) -> Result<String> {

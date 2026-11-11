@@ -187,7 +187,12 @@ impl<'a> MeowPreviewLoader<'a> {
         {
             meow_dns::upstream::NameServerEntry::parse(value).map_err(construction)?;
         }
-        for value in dns.nameserver_policy.iter().flat_map(|map| map.values()) {
+        for value in dns
+            .nameserver_policy
+            .iter()
+            .chain(dns.proxy_server_nameserver_policy.iter())
+            .flat_map(|map| map.values())
+        {
             for url in value.as_urls() {
                 meow_dns::upstream::NameServerEntry::parse(url).map_err(construction)?;
             }
