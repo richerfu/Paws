@@ -30,7 +30,7 @@ pub(super) fn about_snapshot() -> AboutSnapshot {
         meow_rs_version: MEOW_RS_VERSION.to_owned(),
         mihomo_version: MIHOMO_VERSION.to_owned(),
         sing_box_version: SING_BOX_VERSION.to_owned(),
-        ui_runtime: "nsh-ohos".to_owned(),
+        ui_runtime: "nsh-platform-harmonyos".to_owned(),
         ui_runtime_version: UI_RUNTIME_VERSION.to_owned(),
         rust_version: RUST_VERSION.to_owned(),
         privacy_summary: vec![

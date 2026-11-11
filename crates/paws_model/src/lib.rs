@@ -660,7 +660,7 @@ impl Default for AboutSnapshot {
             meow_rs_version: "unknown".to_owned(),
             mihomo_version: "unknown".to_owned(),
             sing_box_version: "unknown".to_owned(),
-            ui_runtime: "nsh-ohos".to_owned(),
+            ui_runtime: "nsh-platform-harmonyos".to_owned(),
             ui_runtime_version: "local".to_owned(),
             rust_version: "unknown".to_owned(),
             privacy_summary: Vec::new(),

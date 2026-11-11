@@ -241,7 +241,7 @@ fn core_snapshot_is_json() {
         from_json::<RuntimeSnapshot>(&json).unwrap().about,
         snapshot.about
     );
-    assert_eq!(snapshot.about.ui_runtime, "nsh-ohos");
+    assert_eq!(snapshot.about.ui_runtime, "nsh-platform-harmonyos");
     assert_eq!(snapshot.about.ui_runtime_version, UI_RUNTIME_VERSION);
     assert!(!snapshot.about.privacy_summary.is_empty());
     assert!(snapshot.about.privacy_summary.iter().any(|note| {

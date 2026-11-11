@@ -199,7 +199,7 @@ export function fixture(): UiState {
       mihomoVersion: "1.10.0",
       singBoxVersion: "1.13.21",
       rustVersion: "1.90",
-      uiRuntime: "nsh-ohos",
+      uiRuntime: "nsh-platform-harmonyos",
       uiRuntimeVersion: "fixture",
       privacySummary: ["Test privacy summary"],
       exitIpServices: [],
