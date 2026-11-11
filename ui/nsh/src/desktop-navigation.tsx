@@ -111,18 +111,32 @@ export function DesktopNavigation(props: {
         !expanded() ? (
           <Tooltip
             style={{
-              maxWidth: 240,
+              maxWidth: 260,
               paddingHorizontal: spacing.md,
               paddingVertical: spacing.sm,
               borderRadius: radius.md,
+              borderCurve: "continuous",
               backgroundColor: palette().popover,
               borderWidth: 1,
               borderColor: palette().border,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: spacing.sm,
             }}
           >
             <Text style={{ fontSize: density.font(13), color: palette().text }}>
               {props.t(item.destination.zh, item.destination.en)}
             </Text>
+            <If when={platform.desktop && !!item.shortcut}>
+              <Text
+                style={{
+                  fontSize: density.font(11),
+                  color: palette().muted,
+                }}
+              >
+                {keymap.label(`mod+${item.shortcut}`)}
+              </Text>
+            </If>
           </Tooltip>
         ) : undefined
       }
@@ -145,6 +159,7 @@ export function DesktopNavigation(props: {
         justifyContent: expanded() ? "flex-start" : "center",
         gap: spacing.md,
         borderRadius: radius.md,
+        borderCurve: "continuous",
         backgroundColor: selected(item.destination.page)
           ? palette().raised
           : "transparent",
@@ -203,6 +218,28 @@ export function DesktopNavigation(props: {
     >
       <Button
         testID="desktop-toggle-sidebar"
+        tooltip={
+          !expanded() ? (
+            <Tooltip
+              style={{
+                maxWidth: 240,
+                paddingHorizontal: spacing.md,
+                paddingVertical: spacing.sm,
+                borderRadius: radius.md,
+                borderCurve: "continuous",
+                backgroundColor: palette().popover,
+                borderWidth: 1,
+                borderColor: palette().border,
+              }}
+            >
+              <Text
+                style={{ fontSize: density.font(13), color: palette().text }}
+              >
+                {props.t("展开导航栏", "Expand sidebar")}
+              </Text>
+            </Tooltip>
+          ) : undefined
+        }
         accessibilityLabel={
           expanded()
             ? props.t("收起导航栏", "Collapse sidebar")
@@ -211,6 +248,7 @@ export function DesktopNavigation(props: {
         onPress={() => preference.set(!expanded())}
         focusStyle={focusRing()}
         hoverStyle={{ backgroundColor: palette().soft }}
+        activeStyle={{ backgroundColor: palette().soft }}
         style={{
           minHeight: 64,
           paddingHorizontal: expanded() ? 24 : 20,

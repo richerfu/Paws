@@ -245,6 +245,7 @@ export function ProfileEditor(props: { profileId: string }) {
             <IconButton
               id="editor-find"
               icon="search"
+              shortcut="mod+f"
               label={ui.t("查找", "Find")}
               disabled={!loaded()}
               onPress={toggleFind}
@@ -299,6 +300,9 @@ export function ProfileEditor(props: { profileId: string }) {
           <Field
             id="editor-search"
             autoFocus
+            leadingIcon="search"
+            clearable
+            returnKeyType="search"
             label={ui.t("查找配置内容", "Find in profile")}
             value={query()}
             onChange={(value) => query.set(value)}
@@ -323,7 +327,23 @@ export function ProfileEditor(props: { profileId: string }) {
               disabled={!query() || !matches().count}
               onPress={() => void editor.run("findNext")}
             />
-            <Hint text={`${matches().count} ${ui.t("处匹配", "matches")}`} />
+            <Text
+              style={{
+                fontSize: density.font(13),
+                lineHeight: density.line(20),
+                color: palette().muted,
+                fontVariant: ["tabular-nums"],
+              }}
+            >
+              {`${matches().count} ${ui.t("处匹配", "matches")}`}
+            </Text>
+            <IconButton
+              icon="x"
+              small
+              tooltip={false}
+              label={ui.t("关闭查找", "Close find")}
+              onPress={toggleFind}
+            />
           </Actions>
         </If>
         <If when={conflict()}>
@@ -401,6 +421,7 @@ export function ProfileEditor(props: { profileId: string }) {
             minHeight: 0,
             marginHorizontal: density.space(16),
             borderRadius: radius.lg,
+            borderCurve: "continuous",
             borderWidth: 1,
             borderColor: palette().border,
             backgroundColor: palette().panel,
@@ -409,13 +430,23 @@ export function ProfileEditor(props: { profileId: string }) {
       </If>
       <View
         style={{
+          marginTop: density.space(8),
           paddingHorizontal: density.space(16),
           paddingVertical: density.space(8),
+          borderTopWidth: 1,
+          borderTopColor: palette().line,
         }}
       >
-        <Hint
-          text={`${statistics().lines} ${ui.t("行", "lines")} · ${statistics().characters} ${ui.t("字符", "characters")} · YAML`}
-        />
+        <Text
+          style={{
+            fontSize: density.font(12),
+            lineHeight: density.line(18),
+            color: palette().muted,
+            fontVariant: ["tabular-nums"],
+          }}
+        >
+          {`${statistics().lines} ${ui.t("行", "lines")} · ${statistics().characters} ${ui.t("字符", "characters")} · YAML`}
+        </Text>
       </View>
     </View>
   );

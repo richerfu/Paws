@@ -40,7 +40,14 @@ export function ActivityTableHeader() {
           {ui.t("规则", "Rule")}
         </Text>
       </If>
-      <Text style={{ width: 120, fontSize: 12, color: palette().muted }}>
+      <Text
+        style={{
+          width: 120,
+          fontSize: 12,
+          textAlign: "right",
+          color: palette().muted,
+        }}
+      >
         {ui.t("传输", "Transfer")}
       </Text>
       <Text style={{ width: 72, fontSize: 12, color: palette().muted }}>
@@ -82,7 +89,8 @@ export function ActivityTableRow(props: {
         accessibilityLabel={host()}
         onPress={props.onDetails}
         focusStyle={focusRing()}
-        hoverStyle={{ backgroundColor: palette().soft }}
+        hoverStyle={{ backgroundColor: palette().hover }}
+        activeStyle={{ backgroundColor: palette().soft }}
         style={{
           flex: 2,
           minWidth: 0,
@@ -90,6 +98,7 @@ export function ActivityTableRow(props: {
           justifyContent: "center",
           gap: spacing.xxs,
           borderRadius: radius.sm,
+          borderCurve: "continuous",
         }}
       >
         <Text
@@ -126,6 +135,7 @@ export function ActivityTableRow(props: {
               numberOfLines: 1,
               fontSize: 12,
               lineHeight: 18,
+              fontVariant: ["tabular-nums"],
               color: palette().muted,
             }}
           >
@@ -181,7 +191,7 @@ export function ActivityTableRow(props: {
           {props.connection.rule}
         </Text>
       </If>
-      <View style={{ width: 120, gap: spacing.xxs }}>
+      <View style={{ width: 120, alignItems: "flex-end", gap: spacing.xxs }}>
         <Text
           style={{
             fontSize: 12,

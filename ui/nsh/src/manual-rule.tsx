@@ -75,6 +75,14 @@ export function ManualRuleDialog(props: {
     );
   });
   const busy = signal(false);
+  const canSave = computed(
+    () =>
+      !busy() &&
+      ui.client.domains.fresh(["config", "rules", "summary"]) &&
+      Boolean(value().trim()) &&
+      Boolean(ui.client.state()!.activeProfile) &&
+      baseline === ui.client.state()!.configRevision,
+  );
   const save = async () => {
     busy.set(true);
     const result = await ui.client.run<{
@@ -127,13 +135,7 @@ export function ManualRuleDialog(props: {
             id="save-manual-rule"
             label={ui.t("保存规则", "Save rule")}
             loading={busy()}
-            disabled={
-              busy() ||
-              !ui.client.domains.fresh(["config", "rules", "summary"]) ||
-              !value().trim() ||
-              !ui.client.state()!.activeProfile ||
-              baseline !== ui.client.state()!.configRevision
-            }
+            disabled={!canSave()}
             onPress={() => void save()}
           />
         </If>
@@ -187,6 +189,10 @@ export function ManualRuleDialog(props: {
           label={ui.t("匹配内容", "Match value")}
           value={value()}
           onChange={(next) => value.set(next)}
+          returnKeyType="done"
+          onSubmit={() => {
+            if (canSave()) void save();
+          }}
           disabled={busy()}
           placeholder={kind() === "ip-cidr" ? "203.0.113.1/32" : "example.com"}
         />
@@ -210,6 +216,7 @@ export function ManualRuleDialog(props: {
             borderWidth: 1,
             borderColor: palette().border,
             borderRadius: radius.lg,
+            borderCurve: "continuous",
             backgroundColor: palette().soft,
           }}
         >

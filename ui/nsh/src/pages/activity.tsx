@@ -4,7 +4,6 @@ import {
   signal,
   Text,
   View,
-  Clipboard,
   windowSize,
   fontScale,
   List,
@@ -16,6 +15,7 @@ import {
   Actions,
   Badge,
   control,
+  copyText,
   Detail,
   Dialog,
   Empty,
@@ -24,6 +24,7 @@ import {
   Hint,
   palette,
   radius,
+  SearchField,
   Tabs,
   useApp,
 } from "../components";
@@ -94,7 +95,7 @@ export function Activity(props: { history?: boolean }) {
               minWidth: platform.desktop ? 220 : 0,
             }}
           >
-            <Field
+            <SearchField
               label={ui.t("搜索连接", "Search connections")}
               placeholder={ui.t(
                 "输入域名、规则、代理或网络",
@@ -132,6 +133,8 @@ export function Activity(props: { history?: boolean }) {
       </View>
       <List
         bounces={false}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
         each={rows()}
         keyExtractor={(row) => row.id}
         estimatedItemSize={table() ? 72 : control.compact ? 104 : 128}
@@ -140,6 +143,7 @@ export function Activity(props: { history?: boolean }) {
           borderWidth: 1,
           borderColor: palette().border,
           borderRadius: radius.lg,
+          borderCurve: "continuous",
           backgroundColor: palette().panel,
           overflow: "hidden",
         }}
@@ -171,8 +175,10 @@ export function Activity(props: { history?: boolean }) {
                 label: ui.t("复制地址", "Copy address"),
                 icon: "file-text",
                 run: () =>
-                  Clipboard.writeText(
+                  copyText(
+                    ui,
                     row().domain || row().host || row().destinationIp,
+                    ui.t("已复制地址", "Address copied"),
                   ),
               },
               {
@@ -230,7 +236,8 @@ export function Activity(props: { history?: boolean }) {
                           row().domain || row().host || row().destinationIp
                         }
                         focusStyle={focusRing()}
-                        hoverStyle={{ backgroundColor: palette().soft }}
+                        hoverStyle={{ backgroundColor: palette().hover }}
+                        activeStyle={{ backgroundColor: palette().soft }}
                         onPress={() =>
                           props.history
                             ? ui.navigate(
@@ -247,6 +254,7 @@ export function Activity(props: { history?: boolean }) {
                           flex: 1,
                           minWidth: 0,
                           borderRadius: radius.sm,
+                          borderCurve: "continuous",
                           ...feedbackStyle(),
                         }}
                       >
@@ -351,12 +359,19 @@ export function Activity(props: { history?: boolean }) {
           footer={
             <Actions>
               <Action
+                secondary
+                label={ui.t("关闭", "Close")}
+                onPress={() => selected.set(undefined)}
+              />
+              <Action
                 label={ui.t("复制地址", "Copy address")}
                 onPress={() =>
-                  Clipboard.writeText(
+                  copyText(
+                    ui,
                     selected()!.domain ||
                       selected()!.host ||
                       selected()!.destinationIp,
+                    ui.t("已复制地址", "Address copied"),
                   )
                 }
               />

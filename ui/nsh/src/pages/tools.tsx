@@ -6,6 +6,7 @@ import {
   Body,
   Card,
   confirm,
+  copyText,
   Detail,
   Field,
   ExternalLink,
@@ -159,7 +160,12 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
 export function Tools() {
   const ui = useApp();
   return (
-    <Scroll bounces={false} style={{ flex: 1 }}>
+    <Scroll
+      bounces={false}
+      keyboardDismissMode="on-drag"
+      keyboardShouldPersistTaps="handled"
+      style={{ flex: 1 }}
+    >
       <Body>
         <Each of={sections}>
           {(section) => (
@@ -167,6 +173,7 @@ export function Tools() {
               style={{ gap: density.space(8), marginBottom: density.space(4) }}
             >
               <Text
+                role="header"
                 style={{
                   color: palette().muted,
                   fontSize: density.font(14),
@@ -181,6 +188,7 @@ export function Tools() {
                   borderWidth: 1,
                   borderColor: palette().border,
                   borderRadius: radius.lg,
+                  borderCurve: "continuous",
                   overflow: "hidden",
                   backgroundColor: palette().panel,
                 }}
@@ -189,14 +197,13 @@ export function Tools() {
                   {(tool, index) => (
                     <>
                       <View
-                        class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
                         testID={`tool-${tool().page}`}
                         role="button"
                         accessibilityLabel={ui.t(tool().zh, tool().en)}
                         onPress={() => ui.navigate(tool().page)}
                         focusStyle={focusRing()}
-                        hoverStyle={{ backgroundColor: palette().soft }}
-                        activeStyle={{ opacity: 0.85 }}
+                        hoverStyle={{ backgroundColor: palette().hover }}
+                        activeStyle={{ backgroundColor: palette().soft }}
                         style={{
                           minHeight: control.height >= 44 ? 76 : 64,
                           ...feedbackStyle(),
@@ -211,6 +218,7 @@ export function Tools() {
                             width: 34,
                             height: 34,
                             borderRadius: radius.md,
+                            borderCurve: "continuous",
                             backgroundColor: palette().soft,
                             alignItems: "center",
                             justifyContent: "center",
@@ -380,7 +388,12 @@ export function Diagnostics() {
       ? health()
       : null;
   return (
-    <Scroll bounces={false} style={{ flex: 1 }}>
+    <Scroll
+      bounces={false}
+      keyboardDismissMode="on-drag"
+      keyboardShouldPersistTaps="handled"
+      style={{ flex: 1 }}
+    >
       <Body>
         <Actions>
           <Action
@@ -535,6 +548,7 @@ export function Diagnostics() {
           <Field
             label={ui.t("探测地址", "Probe URL")}
             value={url()}
+            keyboardType="url"
             disabled={busy()}
             onChange={(value) => {
               changed = true;
@@ -565,7 +579,11 @@ export function Diagnostics() {
             onPress={() => void probe()}
           />
           <If when={result()}>
-            <Hint text={result()} />
+            <Detail
+              tone="success"
+              label={ui.t("最近探测", "Last probe")}
+              value={result()}
+            />
           </If>
         </Card>
         <Card
@@ -639,7 +657,12 @@ export function AdvancedDiagnostics() {
       );
   };
   return (
-    <Scroll bounces={false} style={{ flex: 1 }}>
+    <Scroll
+      bounces={false}
+      keyboardDismissMode="on-drag"
+      keyboardShouldPersistTaps="handled"
+      style={{ flex: 1 }}
+    >
       <Body>
         <Card
           title={ui.t("域名 DoH 策略", "Domain DoH policy")}
@@ -712,17 +735,32 @@ export function AdvancedDiagnostics() {
               multiline
               readonly
             />
-            <Action
-              secondary
-              label={ui.t("导出报告", "Export report")}
-              disabled={busy()}
-              onPress={() =>
-                void ui.client.run("platform.export", {
-                  name: "Paws-diagnostics.json",
-                  content: report(),
-                })
-              }
-            />
+            <Actions>
+              <Action
+                secondary
+                icon="file-text"
+                label={ui.t("复制报告", "Copy report")}
+                onPress={() =>
+                  copyText(
+                    ui,
+                    report(),
+                    ui.t("已复制诊断报告", "Diagnostic report copied"),
+                  )
+                }
+              />
+              <Action
+                secondary
+                icon="download"
+                label={ui.t("导出报告", "Export report")}
+                disabled={busy()}
+                onPress={() =>
+                  void ui.client.run("platform.export", {
+                    name: "Paws-diagnostics.json",
+                    content: report(),
+                  })
+                }
+              />
+            </Actions>
           </If>
         </Card>
         <Card
@@ -789,7 +827,12 @@ export function Backups() {
       ui.t("操作已完成", "Operation completed"),
     );
   return (
-    <Scroll bounces={false} style={{ flex: 1 }}>
+    <Scroll
+      bounces={false}
+      keyboardDismissMode="on-drag"
+      keyboardShouldPersistTaps="handled"
+      style={{ flex: 1 }}
+    >
       <Body>
         <Card
           title={ui.t("本地备份", "Local backup")}
@@ -840,6 +883,7 @@ export function Backups() {
           <Field
             label={ui.t("备份文件地址", "Backup file URL")}
             value={url()}
+            keyboardType="url"
             onChange={(text) => url.set(text)}
             placeholder="https://example.com/Paws-backup.json"
           />
@@ -871,6 +915,7 @@ export function Backups() {
           />
           <Actions>
             <Action
+              primary
               loading={ui.client.isPending("backups.webdavUpload")}
               label={ui.t("上传备份", "Upload backup")}
               disabled={!validUrl() || ui.client.pending() > 0}
@@ -976,7 +1021,10 @@ export function About() {
               width: 56,
               height: 56,
               backgroundColor: palette().soft,
+              borderWidth: 1,
+              borderColor: palette().border,
               borderRadius: radius.xxl,
+              borderCurve: "continuous",
               alignItems: "center",
               justifyContent: "center",
             }}
@@ -1119,7 +1167,12 @@ export function Privacy() {
   const ui = useApp(),
     about = () => ui.client.state()!.about;
   return (
-    <Scroll bounces={false} style={{ flex: 1 }}>
+    <Scroll
+      bounces={false}
+      keyboardDismissMode="on-drag"
+      keyboardShouldPersistTaps="handled"
+      style={{ flex: 1 }}
+    >
       <Body>
         <Card title={ui.t("隐私与数据处理", "Privacy & data handling")}>
           <Each of={about().privacySummary}>

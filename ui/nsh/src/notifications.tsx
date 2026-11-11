@@ -18,9 +18,11 @@ import { Icon } from "./icons";
 import { motion } from "./motion";
 import { control, focusRing, palette, radius, surfaceFinish } from "./theme";
 
+export type NotificationTone = "info" | "warning" | "danger";
 export type Notification = {
   id: number;
   message: string;
+  tone: NotificationTone;
   created: number;
   leaving: boolean;
 };
@@ -38,7 +40,7 @@ export class NotificationCenter {
     private readonly duration = 2200,
     private readonly exit = 260,
   ) {}
-  publish(message: string): number {
+  publish(message: string, tone: NotificationTone = "info"): number {
     const id = ++this.nextId;
     const current = this.items();
     if (current.length === 32) {
@@ -47,7 +49,7 @@ export class NotificationCenter {
     }
     this.items.set([
       ...current.slice(-31),
-      { id, message, created: Date.now(), leaving: false },
+      { id, message, tone, created: Date.now(), leaving: false },
     ]);
     this.timers.set(
       id,
@@ -101,6 +103,7 @@ export function useNotificationLayer(): number {
 export function NotificationViewport(props: {
   owner?: number;
   modal?: boolean;
+  dismissLabel?: string;
 }) {
   const center = Notifications();
   if (!center) return;
@@ -152,6 +155,7 @@ export function NotificationViewport(props: {
                 center={center}
                 item={entry().item}
                 index={entry().index}
+                dismissLabel={props.dismissLabel}
               />
             )}
           </Each>
@@ -165,6 +169,7 @@ function ToastCard(props: {
   center: NotificationCenter;
   item: Notification;
   index: number;
+  dismissLabel?: string;
 }) {
   const x = createNativeValue(0),
     y = createNativeValue(0);
@@ -255,8 +260,14 @@ function ToastCard(props: {
         paddingLeft: density.space(12),
         paddingRight: density.space(8),
         borderWidth: 1,
-        borderColor: palette().border,
+        borderColor:
+          props.item.tone === "danger"
+            ? palette().danger
+            : props.item.tone === "warning"
+              ? palette().warning
+              : palette().border,
         borderRadius: radius.xl,
+        borderCurve: "continuous",
         backgroundColor: palette().panel,
         ...surfaceFinish("overlay"),
         flexDirection: "row",
@@ -270,7 +281,21 @@ function ToastCard(props: {
         <View
           style={{ width: 28, height: control.icon, justifyContent: "center" }}
         >
-          <Icon name="info" size={16} color={palette().accent} />
+          <Icon
+            name={
+              props.item.tone === "danger" || props.item.tone === "warning"
+                ? "triangle-alert"
+                : "info"
+            }
+            size={16}
+            color={
+              props.item.tone === "danger"
+                ? palette().danger
+                : props.item.tone === "warning"
+                  ? palette().warning
+                  : palette().accent
+            }
+          />
         </View>
         <Text
           style={{
@@ -288,9 +313,10 @@ function ToastCard(props: {
           testID={`dismiss-toast-${props.item.id}`}
           class="focus-visible:ring-2 focus-visible:ring-ring"
           role="button"
-          accessibilityLabel="Dismiss notification"
+          accessibilityLabel={props.dismissLabel || "Dismiss notification"}
           focusStyle={focusRing()}
           hoverStyle={{ backgroundColor: palette().soft }}
+          activeStyle={{ backgroundColor: palette().soft }}
           onPress={() => props.center.dismiss(props.item.id)}
           style={{
             width: control.icon,
@@ -298,6 +324,7 @@ function ToastCard(props: {
             alignItems: "center",
             justifyContent: "center",
             borderRadius: density.space(6),
+            borderCurve: "continuous",
           }}
         >
           <Icon name="x" size={16} color={palette().muted} />

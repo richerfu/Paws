@@ -27,7 +27,7 @@ import {
   Tabs,
   useApp,
 } from "../components";
-import { bytes, timestamp } from "../locale";
+import { bytes } from "../locale";
 import type { Mode } from "../model";
 import { connectionState } from "../connection-state";
 import { PageError } from "../page-error";
@@ -98,7 +98,7 @@ export function VpnPowerButton(
           alignItems: "center",
           justifyContent: "center",
           backgroundColor: stop() ? palette().brandFill : token("primary"),
-          ...(stop() ? surfaceFinish("accent") : surfaceFinish("light")),
+          ...(props.pan ? surfaceFinish("floating") : {}),
           opacity: pressDisabled() && !starting() && !stopping() ? 0.5 : 1,
           transform: [{ scale: press.scale }],
           ...feedbackStyle(),
@@ -226,19 +226,27 @@ export function Dashboard() {
           }}
         >
           <View
-            class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
             testID="connection-row"
             role="button"
             accessibilityLabel={label()}
             disabled={unavailable()}
             onPress={toggle}
+            focusStyle={focusRing()}
+            hoverStyle={
+              unavailable() ? undefined : { backgroundColor: palette().soft }
+            }
+            activeStyle={
+              unavailable() ? undefined : { backgroundColor: palette().soft }
+            }
             style={{
               flex: 1,
               minHeight: Math.max(64, 40 * Math.max(1, fontScale()) + 16),
+              paddingHorizontal: density.space(6),
               flexDirection: "row",
               alignItems: "center",
               gap: density.space(12),
               borderRadius: radius.md,
+              borderCurve: "continuous",
               ...feedbackStyle(),
             }}
           >
@@ -247,6 +255,7 @@ export function Dashboard() {
                 width: 40,
                 height: 40,
                 borderRadius: radius.lg,
+                borderCurve: "continuous",
                 backgroundColor: palette().soft,
                 alignItems: "center",
                 justifyContent: "center",
@@ -335,6 +344,7 @@ export function Dashboard() {
             borderWidth: 1,
             borderColor: palette().border,
             borderRadius: radius.lg,
+            borderCurve: "continuous",
             backgroundColor: palette().panel,
             paddingHorizontal: density.space(12),
           }}
@@ -351,6 +361,7 @@ export function Dashboard() {
             icon="network"
             label={ui.t("出口 IP", "Exit IP")}
             value={exit()}
+            tabular
           />
         </View>
         <If when={current().networkProtectError}>
@@ -374,6 +385,7 @@ export function Dashboard() {
         >
           <View style={{ flex: 1 }}>
             <Text
+              role="header"
               style={{
                 fontSize: density.font(14),
                 lineHeight: density.line(20),
@@ -388,6 +400,7 @@ export function Dashboard() {
                 fontSize: density.font(12),
                 lineHeight: density.line(16),
                 color: palette().muted,
+                fontVariant: ["tabular-nums"],
               }}
             >
               {summary().global} {ui.t("个全局节点", "global nodes")} ·{" "}
@@ -445,6 +458,7 @@ function ConnectionRow(props: {
   label: string;
   value: string;
   lines?: number;
+  tabular?: boolean;
   id?: string;
 }) {
   return (
@@ -461,7 +475,8 @@ function ConnectionRow(props: {
       <Icon name={props.icon} size={15} color={palette().muted} />
       <Text
         style={{
-          width: 68,
+          minWidth: 68,
+          flexShrink: 0,
           color: palette().muted,
           fontSize: density.font(12),
           lineHeight: density.line(20),
@@ -482,6 +497,7 @@ function ConnectionRow(props: {
           fontSize: density.font(14),
           lineHeight: density.line(20),
           fontWeight: "500",
+          fontVariant: props.tabular ? ["tabular-nums"] : undefined,
         }}
       >
         {props.value}
@@ -561,6 +577,7 @@ export function Traffic() {
             borderWidth: 1,
             borderColor: palette().border,
             borderRadius: radius.lg,
+            borderCurve: "continuous",
             backgroundColor: palette().panel,
             flexDirection: windowSize().width < 480 ? "column" : "row",
             alignItems: "stretch",
@@ -609,6 +626,9 @@ export function Traffic() {
             testID="traffic-chart"
             accessible
             accessibilityLabel={ui.t("最近流量趋势", "Recent traffic history")}
+            accessibilityValue={{
+              text: `${ui.t("峰值下载", "Peak download")} ${bytes(peakDownload())}/s, ${ui.t("峰值上传", "Peak upload")} ${bytes(peakUpload())}/s`,
+            }}
             style={{
               height: 112,
               paddingHorizontal: density.space(8),
@@ -636,7 +656,10 @@ export function Traffic() {
                       flex: 1,
                       borderTopLeftRadius: 2,
                       borderTopRightRadius: 2,
-                      height: (point().downloadSpeed / peak()) * 104,
+                      height:
+                        point().downloadSpeed > 0
+                          ? Math.max(2, (point().downloadSpeed / peak()) * 104)
+                          : 0,
                       backgroundColor: palette().chartDownload,
                     }}
                   />
@@ -645,7 +668,10 @@ export function Traffic() {
                       flex: 1,
                       borderTopLeftRadius: 2,
                       borderTopRightRadius: 2,
-                      height: (point().uploadSpeed / peak()) * 104,
+                      height:
+                        point().uploadSpeed > 0
+                          ? Math.max(2, (point().uploadSpeed / peak()) * 104)
+                          : 0,
                       backgroundColor: palette().chartUpload,
                     }}
                   />
@@ -883,20 +909,6 @@ export function Traffic() {
                   : ui.t("未提供", "Not provided")
             }
           />
-          <Detail
-            label={ui.t("配置同步次数", "Configuration syncs")}
-            value={String(current().controllerDiagnostics.configSyncCount)}
-          />
-          <Detail
-            label={ui.t("上次同步", "Last sync")}
-            value={timestamp(current().controllerDiagnostics.lastConfigSyncAt)}
-          />
-          <If when={current().controllerDiagnostics.lastConfigSyncError}>
-            <PageError
-              id="traffic-config-sync-error"
-              text={current().controllerDiagnostics.lastConfigSyncError || ""}
-            />
-          </If>
         </Card>
       </Body>
     </Scroll>
@@ -905,6 +917,7 @@ export function Traffic() {
 function SectionTitle(props: { label: string }) {
   return (
     <Text
+      role="header"
       style={{
         fontSize: density.font(14),
         fontWeight: "600",
@@ -928,6 +941,7 @@ function UsageCard(props: { title: string; upload: number; download: number }) {
         borderWidth: 1,
         borderColor: palette().border,
         borderRadius: radius.lg,
+        borderCurve: "continuous",
         backgroundColor: palette().panel,
       }}
     >
@@ -997,6 +1011,7 @@ function SpeedMetric(props: { download?: boolean; value: number }) {
           width: 38,
           height: 38,
           borderRadius: radius.md,
+          borderCurve: "continuous",
           backgroundColor: palette().soft,
           alignItems: "center",
           justifyContent: "center",
@@ -1019,6 +1034,7 @@ function SpeedMetric(props: { download?: boolean; value: number }) {
             numberOfLines: 1,
             color: palette().text,
             fontSize: density.font(20),
+            lineHeight: density.line(26),
             fontWeight: "600",
             fontVariant: ["tabular-nums"],
           }}

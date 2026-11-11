@@ -8,7 +8,6 @@ import {
   untracked,
   View,
   windowSize,
-  Clipboard,
   Scroll,
   List,
 } from "nsh";
@@ -20,6 +19,7 @@ import {
   Code,
   control,
   confirm,
+  copyText,
   Detail,
   Dialog,
   Empty,
@@ -27,6 +27,7 @@ import {
   Hint,
   Icon,
   IconButton,
+  SearchField,
   Spinner,
   palette,
   radius,
@@ -192,7 +193,7 @@ export function Resources() {
       }}
     >
       <View style={{ marginBottom: density.space(12) }}>
-        <Field
+        <SearchField
           label={ui.t("搜索资源", "Search resources")}
           placeholder={ui.t(
             "输入资源名、规则、路径、类型或状态",
@@ -205,6 +206,8 @@ export function Resources() {
       <List
         testID="resources-list"
         bounces={false}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
         each={rows()}
         keyExtractor={(row) => row.key}
         estimatedItemSize={112}
@@ -274,9 +277,9 @@ export function Resources() {
             <If when={row().kind === "geo-header"}>
               <View
                 style={{
-                  minHeight: 48,
-                  marginTop: density.space(16),
-                  paddingHorizontal: density.space(16),
+                  minHeight: 40,
+                  marginTop: density.space(12),
+                  paddingHorizontal: density.space(4),
                   flexDirection: "row",
                   alignItems: "center",
                 }}
@@ -302,8 +305,8 @@ export function Resources() {
                 role="button"
                 accessibilityLabel={row().file!.name}
                 focusStyle={focusRing()}
-                hoverStyle={{ backgroundColor: palette().soft }}
-                activeStyle={{ opacity: 0.85 }}
+                hoverStyle={{ backgroundColor: palette().hover }}
+                activeStyle={{ backgroundColor: palette().soft }}
                 onPress={() => geodata.set(row().file)}
                 style={{
                   minHeight: Math.max(
@@ -320,6 +323,7 @@ export function Resources() {
                   borderWidth: 1,
                   borderColor: palette().border,
                   borderRadius: radius.lg,
+                  borderCurve: "continuous",
                   backgroundColor: palette().panel,
                 }}
               >
@@ -328,6 +332,7 @@ export function Resources() {
                     width: 36,
                     height: 36,
                     borderRadius: radius.lg,
+                    borderCurve: "continuous",
                     backgroundColor: palette().soft,
                     alignItems: "center",
                     justifyContent: "center",
@@ -374,16 +379,28 @@ export function Resources() {
               </View>
             </If>
             <If when={row().kind === "provider-header"}>
-              <Text
+              <View
                 style={{
-                  fontSize: density.font(14),
-                  fontWeight: "600",
-                  color: palette().text,
+                  minHeight: 40,
                   marginTop: density.space(12),
+                  paddingHorizontal: density.space(4),
+                  flexDirection: "row",
+                  alignItems: "center",
                 }}
               >
-                Provider
-              </Text>
+                <Text
+                  role="header"
+                  style={{
+                    flex: 1,
+                    fontSize: density.font(14),
+                    fontWeight: "600",
+                    color: palette().text,
+                  }}
+                >
+                  Provider
+                </Text>
+                <Hint text={String(providers().length)} />
+              </View>
             </If>
             <If when={row().kind === "provider"}>
               <ProviderCard
@@ -413,7 +430,8 @@ export function Resources() {
               <View
                 style={{
                   minHeight: control.height + 16,
-                  marginTop: density.space(16),
+                  marginTop: density.space(12),
+                  paddingHorizontal: density.space(4),
                   flexWrap: "wrap",
                   flexDirection: "row",
                   alignItems: "center",
@@ -421,6 +439,7 @@ export function Resources() {
                 }}
               >
                 <Text
+                  role="header"
                   style={{
                     flex: 1,
                     fontSize: density.font(14),
@@ -502,10 +521,12 @@ export function Resources() {
                     small
                     label={ui.t("复制", "Copy")}
                     onPress={() =>
-                      Clipboard.writeText(
+                      copyText(
+                        ui,
                         [rule().ruleType, rule().payload, rule().target]
                           .filter(Boolean)
                           .join(","),
+                        ui.t("已复制规则", "Rule copied"),
                       )
                     }
                   />
@@ -525,6 +546,25 @@ export function Resources() {
         <Dialog
           title={ui.t("规则详情", "Rule details")}
           onClose={() => selectedRule.set(undefined)}
+          footer={
+            <Actions>
+              <Action
+                secondary
+                label={ui.t("关闭", "Close")}
+                onPress={() => selectedRule.set(undefined)}
+              />
+              <Action
+                label={ui.t("复制完整规则", "Copy full rule")}
+                onPress={() =>
+                  copyText(
+                    ui,
+                    selectedRule()!.line,
+                    ui.t("已复制规则", "Rule copied"),
+                  )
+                }
+              />
+            </Actions>
+          }
         >
           <Detail
             label={ui.t("状态", "Status")}
@@ -543,17 +583,6 @@ export function Resources() {
           >
             <Code text={selectedRule()!.line} />
           </Scroll>
-          <Actions>
-            <Action
-              secondary
-              label={ui.t("关闭", "Close")}
-              onPress={() => selectedRule.set(undefined)}
-            />
-            <Action
-              label={ui.t("复制完整规则", "Copy full rule")}
-              onPress={() => Clipboard.writeText(selectedRule()!.line)}
-            />
-          </Actions>
         </Dialog>
       </If>
       <If when={manual()}>
@@ -570,10 +599,23 @@ export function Resources() {
             "Preview the current profile with the shared rule compiler; this is not an observed routing decision from the running engine.",
           )}
           onClose={closeLookup}
+          footer={
+            <Action
+              loading={lookupBusy()}
+              primary
+              label={ui.t("查询", "Look up")}
+              disabled={
+                lookupBusy() || !lookup().trim() || !current().activeProfile
+              }
+              onPress={() => void ruleLookup()}
+            />
+          }
         >
           <Field
             id="rule-lookup-query"
             label={ui.t("域名或 IP", "Domain or IP")}
+            clearable
+            returnKeyType="search"
             onSubmit={() => void ruleLookup()}
             value={lookup()}
             placeholder="example.com / 203.0.113.1"
@@ -603,6 +645,7 @@ export function Resources() {
                   : palette().border,
                 backgroundColor: palette().soft,
                 borderRadius: radius.lg,
+                borderCurve: "continuous",
               }}
             >
               <Hint
@@ -642,15 +685,6 @@ export function Resources() {
           <If when={ui.client.error()}>
             <PageError id="rule-lookup-error" text={ui.client.error()} />
           </If>
-          <Action
-            loading={lookupBusy()}
-            primary
-            label={ui.t("查询", "Look up")}
-            disabled={
-              lookupBusy() || !lookup().trim() || !current().activeProfile
-            }
-            onPress={() => void ruleLookup()}
-          />
         </Dialog>
       </If>
       <If when={selectedProvider()}>
@@ -840,7 +874,8 @@ function RuleRow(props: {
         {
           label: ui.t("复制完整规则", "Copy full rule"),
           icon: "file-text",
-          run: () => Clipboard.writeText(rule().line),
+          run: () =>
+            copyText(ui, rule().line, ui.t("已复制规则", "Rule copied")),
         },
         {
           id: `rule-up-${rule().id}`,
@@ -914,9 +949,12 @@ function RuleRow(props: {
             ),
             padding: density.space(12),
             gap: density.space(8),
-            borderBottomWidth: 1,
-            borderBottomColor: palette().line,
+            borderWidth: 1,
+            borderColor: palette().border,
+            borderRadius: radius.lg,
+            borderCurve: "continuous",
             backgroundColor: palette().panel,
+            opacity: rule().enabled ? 1 : 0.65,
             flexDirection: "row",
             alignItems: "center",
           }}
@@ -937,13 +975,16 @@ function RuleRow(props: {
             accessibilityLabel={ui.t("查看完整规则", "View complete rule")}
             onPress={props.onDetails}
             focusStyle={focusRing()}
-            hoverStyle={{ backgroundColor: palette().soft }}
+            hoverStyle={{ backgroundColor: palette().hover }}
+            activeStyle={{ backgroundColor: palette().soft }}
             style={{
               flex: 1,
               minWidth: 0,
               minHeight: control.height,
               justifyContent: "center",
               gap: density.space(4),
+              borderRadius: radius.sm,
+              borderCurve: "continuous",
             }}
           >
             <Code text={rule().line} lines={2} />
@@ -1044,8 +1085,10 @@ function ProviderCard(props: { provider: Provider; onDetails: () => void }) {
             gap: density.space(12),
             flexDirection: "row",
             alignItems: "center",
-            borderBottomWidth: 1,
-            borderBottomColor: palette().line,
+            borderWidth: 1,
+            borderColor: palette().border,
+            borderRadius: radius.lg,
+            borderCurve: "continuous",
             backgroundColor: palette().panel,
           }}
         >
@@ -1059,7 +1102,8 @@ function ProviderCard(props: { provider: Provider; onDetails: () => void }) {
             role="button"
             onPress={props.onDetails}
             focusStyle={focusRing()}
-            hoverStyle={{ backgroundColor: palette().soft }}
+            hoverStyle={{ backgroundColor: palette().hover }}
+            activeStyle={{ backgroundColor: palette().soft }}
             accessibilityLabel={provider().name}
             style={{
               flex: 1,
@@ -1067,6 +1111,8 @@ function ProviderCard(props: { provider: Provider; onDetails: () => void }) {
               minHeight: control.height,
               justifyContent: "center",
               gap: density.space(4),
+              borderRadius: radius.sm,
+              borderCurve: "continuous",
             }}
           >
             <Text

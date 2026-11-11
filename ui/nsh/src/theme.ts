@@ -141,6 +141,7 @@ const names = {
   brandFill: "brand-fill",
   accentFill: "brand-tint",
   soft: "muted",
+  hover: "hover",
   field: "field",
   fieldBorder: "input",
   raised: "raised",
@@ -171,12 +172,12 @@ export function palette() {
 export function surfaceFinish(kind: keyof typeof finishes.light) {
   return (colorScheme() === "dark" ? finishes.dark : finishes.light)[kind];
 }
-export function focusRing(): ViewStyle {
+export function focusRing(inset = true): ViewStyle {
   return {
     outlineStyle: "solid",
     outlineWidth: 2,
     outlineColor: colors.ring,
-    outlineOffset: -2,
+    outlineOffset: inset ? -2 : 2,
   };
 }
 export function popupSurface(): ViewStyle {

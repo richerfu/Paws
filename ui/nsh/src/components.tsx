@@ -1,9 +1,13 @@
 import { density } from "./theme";
 import {
+  Clipboard,
   cleanup,
   computed,
   context,
   effect,
+  keymap,
+  platform,
+  reduceMotion,
   Scroll,
   signal,
   Text,
@@ -19,6 +23,7 @@ import {
 import {
   Dialog as NativeDialog,
   Input,
+  type InputProps,
   Button,
   Switch,
   Checkbox,
@@ -30,6 +35,7 @@ import {
   Tabs as NativeTabs,
   Radio,
   RadioGroup as NativeRadioGroup,
+  Tooltip,
 } from "nsh/base";
 import type { CoreClient } from "./client";
 import type { DomainInput } from "./model";
@@ -91,6 +97,7 @@ export type AppContext = {
   consumeResourceIntent: (id: number) => boolean;
   logRecording: Signal<boolean>;
   logRecordingIntent: Signal<number>;
+  refreshProfiles?: () => Promise<void>;
   editProfile: (id: string) => void;
   beforeLeave?: (guard: () => boolean | Promise<boolean>) => () => void;
   t: (zh: string, en: string) => string;
@@ -101,6 +108,10 @@ export function useApp(): AppContext {
   const value = App();
   if (!value) throw new Error("Paws UI context is missing");
   return value;
+}
+export function copyText(ui: AppContext, text: string, notice: string): void {
+  Clipboard.writeText(text);
+  ui.client.notice.set(notice);
 }
 export function useDomainInterests(inputs: () => DomainInput[]): void {
   const ui = useApp(),
@@ -213,19 +224,38 @@ export function Action(props: {
           : variant() === "outline"
             ? palette().raised
             : "transparent";
+  const solid = () =>
+    variant() === "primary" || (variant() === "danger" && !!props.primary);
   return (
     <Button
       testID={props.id}
       hitSlop={control.hitSlop(props.small ? control.small : control.height)}
       focusStyle={focusRing()}
-      hoverStyle={disabled() ? undefined : { opacity: 0.9 }}
+      hoverStyle={
+        disabled()
+          ? undefined
+          : solid()
+            ? { opacity: 0.92 }
+            : {
+                backgroundColor:
+                  variant() === "ghost" || variant() === "link"
+                    ? palette().soft
+                    : palette().hover,
+              }
+      }
       selected={props.selected}
       selectedStyle={{ borderWidth: 1, borderColor: palette().accent }}
       accessibilityLabel={props.label}
       disabled={disabled()}
       onPressDown={press.down}
       onPressUp={press.up}
-      activeStyle={disabled() ? undefined : { opacity: 0.86 }}
+      activeStyle={
+        disabled()
+          ? undefined
+          : solid()
+            ? { opacity: 0.86 }
+            : { backgroundColor: palette().soft }
+      }
       onPress={() => {
         if (!disabled()) props.onPress();
       }}
@@ -237,6 +267,7 @@ export function Action(props: {
         paddingVertical: props.small ? spacing.xxs : density.space(6),
         paddingHorizontal: props.small ? spacing.md : spacing.lg,
         borderRadius: radius.md,
+        borderCurve: "continuous",
         flexDirection: "row",
         gap: spacing.sm,
         alignItems: "center",
@@ -250,13 +281,6 @@ export function Action(props: {
             ? "transparent"
             : palette().border,
         backgroundColor: background(),
-        ...(variant() === "primary"
-          ? surfaceFinish("accent")
-          : variant() === "outline" ||
-              variant() === "secondary" ||
-              variant() === "default"
-            ? surfaceFinish("raised")
-            : {}),
         ...feedbackStyle(),
         transform: [{ scale: press.scale }],
       }}
@@ -300,6 +324,8 @@ export function IconButton(props: {
   small?: boolean;
   size?: number;
   loading?: boolean;
+  shortcut?: string;
+  tooltip?: boolean;
 }) {
   const disabled = () => !!props.disabled || !!props.loading;
   const press = usePressFeedback(disabled);
@@ -312,6 +338,39 @@ export function IconButton(props: {
   return (
     <Button
       testID={props.id}
+      tooltip={
+        platform.desktop && !disabled() && props.tooltip !== false ? (
+          <Tooltip
+            style={{
+              maxWidth: 260,
+              paddingHorizontal: spacing.sm,
+              paddingVertical: density.space(4),
+              borderRadius: radius.md,
+              borderCurve: "continuous",
+              backgroundColor: palette().popover,
+              borderWidth: 1,
+              borderColor: palette().border,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: spacing.xs,
+            }}
+          >
+            <Text style={{ fontSize: density.font(12), color: palette().text }}>
+              {props.label}
+            </Text>
+            <If when={props.shortcut}>
+              <Text
+                style={{
+                  fontSize: density.font(11),
+                  color: palette().muted,
+                }}
+              >
+                {keymap.label(props.shortcut!)}
+              </Text>
+            </If>
+          </Tooltip>
+        ) : undefined
+      }
       hitSlop={control.hitSlop(size())}
       focusStyle={focusRing()}
       hoverStyle={disabled() ? undefined : { backgroundColor: palette().soft }}
@@ -322,11 +381,12 @@ export function IconButton(props: {
       onPress={() => {
         if (!disabled()) props.onPress();
       }}
-      activeStyle={disabled() ? undefined : { opacity: 0.8 }}
+      activeStyle={disabled() ? undefined : { backgroundColor: palette().soft }}
       style={{
         width: size(),
         height: size(),
         borderRadius: radius.md,
+        borderCurve: "continuous",
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: "transparent",
@@ -366,7 +426,7 @@ export function ExternalLink(props: {
       accessibilityLabel={props.label}
       focusStyle={focusRing()}
       hoverStyle={{ backgroundColor: palette().soft }}
-      activeStyle={{ opacity: 0.8 }}
+      activeStyle={{ backgroundColor: palette().soft }}
       style={{
         minHeight: props.small ? control.small : control.height,
         maxWidth: "100%",
@@ -377,6 +437,7 @@ export function ExternalLink(props: {
         alignItems: "center",
         gap: spacing.sm,
         borderRadius: radius.md,
+        borderCurve: "continuous",
         cursor: "pointer",
         ...feedbackStyle(),
       }}
@@ -458,15 +519,17 @@ export function Tabs(props: {
         flexDirection: "row",
         backgroundColor: palette().soft,
         borderRadius: radius.lg,
-        ...surfaceFinish("track"),
+        borderCurve: "continuous",
       }}
       indicatorStyle={{
         top: 2,
         bottom: 2,
-        borderRadius: radius.md,
+        borderRadius: Math.max(0, radius.lg - density.space(2)),
+        borderCurve: "continuous",
+        backgroundColor: palette().panel,
         borderWidth: 1,
         borderColor: palette().border,
-        ...surfaceFinish("raised"),
+        ...surfaceFinish("pill"),
       }}
     >
       <Each of={props.options} key={(option) => option.value}>
@@ -486,7 +549,8 @@ export function Tabs(props: {
               alignItems: "center",
               justifyContent: "center",
               paddingHorizontal: spacing.sm,
-              borderRadius: radius.md,
+              borderRadius: Math.max(0, radius.lg - density.space(2)),
+              borderCurve: "continuous",
               backgroundColor: "transparent",
               opacity: props.disabled ? 0.5 : 1,
               ...feedbackStyle(),
@@ -540,6 +604,11 @@ export function Field(props: {
   multiline?: boolean;
   password?: boolean;
   numeric?: boolean;
+  clearable?: boolean;
+  leadingIcon?: IconName;
+  keyboardType?: InputProps["keyboardType"];
+  returnKeyType?: InputProps["returnKeyType"];
+  onCompositionChange?: InputProps["onCompositionChange"];
   disabled?: boolean;
   readonly?: boolean;
   description?: string;
@@ -550,6 +619,12 @@ export function Field(props: {
   const focused = signal(false),
     passwordVisible = signal(false),
     ui = App();
+  const showClear = () =>
+    !!props.clearable &&
+    !!props.value &&
+    !props.password &&
+    !props.disabled &&
+    !props.readonly;
   return (
     <View style={{ gap: spacing.xs }}>
       <If when={props.label}>
@@ -566,9 +641,15 @@ export function Field(props: {
       <View style={{ position: "relative" }}>
         <Input
           testID={props.id}
-          accessibilityLabel={props.label || props.placeholder || "Text input"}
+          accessibilityLabel={
+            props.label ||
+            props.placeholder ||
+            ui?.t("文本输入", "Text input") ||
+            "Text input"
+          }
           value={props.value}
           onChange={(event) => props.onChange(event.value)}
+          onCompositionChange={props.onCompositionChange}
           onSubmit={props.multiline ? undefined : props.onSubmit}
           autoFocus={props.autoFocus}
           placeholder={props.placeholder}
@@ -578,7 +659,10 @@ export function Field(props: {
           readonly={props.readonly || props.disabled}
           autoCapitalize="none"
           autoCorrect={false}
-          keyboardType={props.numeric ? "number-pad" : "default"}
+          keyboardType={
+            props.numeric ? "number-pad" : props.keyboardType || "default"
+          }
+          returnKeyType={props.returnKeyType}
           onFocus={() => focused.set(true)}
           onBlur={() => focused.set(false)}
           style={{
@@ -592,8 +676,11 @@ export function Field(props: {
             lineHeight: density.line(20),
             color: palette().text,
             placeholderColor: palette().muted,
-            paddingLeft: spacing.md,
-            paddingRight: props.password ? control.icon + 4 : spacing.md,
+            paddingLeft: props.leadingIcon
+              ? spacing.md + density.space(22)
+              : spacing.md,
+            paddingRight:
+              props.password || showClear() ? control.icon + 4 : spacing.md,
             paddingVertical: props.multiline ? spacing.sm : spacing.xxs,
             opacity: props.disabled ? 0.5 : 1,
             backgroundColor: palette().field,
@@ -604,10 +691,24 @@ export function Field(props: {
                 ? palette().ring
                 : palette().fieldBorder,
             borderRadius: radius.md,
-            ...surfaceFinish("field"),
+            borderCurve: "continuous",
             ...feedbackStyle(),
           }}
         />
+        <If when={props.leadingIcon}>
+          <View
+            style={{
+              pointerEvents: "none",
+              position: "absolute",
+              left: spacing.md,
+              top: 0,
+              bottom: 0,
+              justifyContent: "center",
+            }}
+          >
+            <Icon name={props.leadingIcon!} size={15} color={palette().muted} />
+          </View>
+        </If>
         <If when={props.password}>
           <View
             style={{
@@ -621,6 +722,7 @@ export function Field(props: {
             <IconButton
               icon={passwordVisible() ? "eye-off" : "eye"}
               size={32}
+              tooltip={false}
               label={
                 ui?.t("显示或隐藏密码", "Show or hide password") ||
                 "Show or hide password"
@@ -630,11 +732,71 @@ export function Field(props: {
             />
           </View>
         </If>
+        <If when={showClear()}>
+          <View
+            style={{
+              position: "absolute",
+              right: 1,
+              top: 0,
+              bottom: 0,
+              justifyContent: "center",
+            }}
+          >
+            <IconButton
+              icon="x"
+              size={32}
+              tooltip={false}
+              label={ui?.t("清除输入", "Clear input") || "Clear input"}
+              onPress={() => props.onChange("")}
+            />
+          </View>
+        </If>
       </View>
       <If when={props.error || props.description}>
         <Hint danger={!!props.error} text={props.error || props.description!} />
       </If>
     </View>
+  );
+}
+
+export function SearchField(props: {
+  label?: string;
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit?: () => void;
+  autoFocus?: boolean;
+  placeholder?: string;
+  disabled?: boolean;
+  id?: string;
+}) {
+  const composing = signal(false),
+    draft = signal(props.value);
+  effect(() => {
+    const external = props.value;
+    if (!composing()) draft.set(external);
+  });
+  return (
+    <Field
+      id={props.id}
+      label={props.label || ""}
+      value={draft()}
+      onChange={(next) => {
+        draft.set(next);
+        if (!composing()) props.onChange(next);
+      }}
+      onCompositionChange={(event) => {
+        composing.set(event.composing);
+        draft.set(event.text);
+        if (!event.composing) props.onChange(event.text);
+      }}
+      onSubmit={props.onSubmit}
+      autoFocus={props.autoFocus}
+      placeholder={props.placeholder}
+      disabled={props.disabled}
+      leadingIcon="search"
+      clearable
+      returnKeyType="search"
+    />
   );
 }
 
@@ -671,7 +833,6 @@ export function Toggle(props: {
           inputRange: [0, 1],
           outputRange: [palette().soft, palette().brandFill],
         }),
-        ...surfaceFinish("track"),
       }}
       thumbStyle={{
         width: control.compact ? 18 : 20,
@@ -734,6 +895,7 @@ export function Check(props: {
         width: control.compact ? 18 : 20,
         height: control.compact ? 18 : 20,
         borderRadius: radius.sm,
+        borderCurve: "continuous",
         borderWidth: 1,
         borderColor: props.value ? palette().accent : palette().fieldBorder,
         backgroundColor: props.value ? palette().brandFill : palette().field,
@@ -828,6 +990,7 @@ export function Detail(props: {
             fontSize: density.font(14),
             lineHeight: density.line(20),
             fontWeight: "500",
+            fontVariant: ["tabular-nums"],
             color: props.tone ? statusColors(props.tone).text : palette().text,
             textAlign: stacked() ? "left" : "right",
           }}
@@ -858,6 +1021,7 @@ export function Empty(props: {
           height: control.compact ? 40 : 48,
           backgroundColor: palette().soft,
           borderRadius: radius.xl,
+          borderCurve: "continuous",
           alignItems: "center",
           justifyContent: "center",
           marginBottom: spacing.xxs,
@@ -1004,6 +1168,7 @@ export function Dialog(props: {
   footer?: JSX.Element;
   width?: number;
 }) {
+  const ui = App();
   const notificationLayer = useNotificationLayer();
   return (
     <NativeDialog
@@ -1058,8 +1223,10 @@ export function Dialog(props: {
                 alignItems: "center",
                 gap: spacing.sm,
                 paddingLeft: spacing.lg,
-                paddingRight: spacing.xxs,
-                paddingTop: spacing.xxs,
+                paddingRight: spacing.xs,
+                paddingVertical: spacing.xs,
+                borderBottomWidth: 1,
+                borderBottomColor: palette().line,
               }}
             >
               <Text
@@ -1079,13 +1246,16 @@ export function Dialog(props: {
               </Text>
               <IconButton
                 icon="x"
-                label="Close dialog"
+                tooltip={false}
+                label={ui?.t("关闭对话框", "Close dialog") || "Close dialog"}
                 id="dialog-close"
                 onPress={props.onClose}
               />
             </View>
             <Scroll
               bounces={false}
+              keyboardDismissMode="on-drag"
+              keyboardShouldPersistTaps="handled"
               style={{ flexShrink: 1, minHeight: 0 }}
               contentStyle={{ padding: spacing.lg, gap: spacing.lg }}
             >
@@ -1107,7 +1277,11 @@ export function Dialog(props: {
             </If>
           </View>
         </View>
-        <NotificationViewport owner={notificationLayer} modal />
+        <NotificationViewport
+          owner={notificationLayer}
+          modal
+          dismissLabel={ui?.t("关闭通知", "Dismiss notification")}
+        />
       </View>
     </NativeDialog>
   );
@@ -1123,8 +1297,12 @@ export function Select(props: {
   labelAccessory?: JSX.Element;
   id?: string;
 }) {
+  const ui = App();
   const open = signal(false);
   const disabled = () => !!props.disabled;
+  const selectedLabel = () =>
+    props.options.find((option) => option.value === props.value)?.label ||
+    props.value;
   return (
     <View style={{ minWidth: 0, gap: spacing.xxs }}>
       <If when={props.label}>
@@ -1167,7 +1345,12 @@ export function Select(props: {
           <View
             testID={props.id}
             role="button"
-            accessibilityLabel={props.label || "Choose an option"}
+            accessibilityLabel={
+              props.label ||
+              ui?.t("选择选项", "Choose an option") ||
+              "Choose an option"
+            }
+            accessibilityValue={{ text: selectedLabel() }}
             hitSlop={control.hitSlop(control.height)}
             accessibilityState={{
               expanded: open(),
@@ -1179,7 +1362,9 @@ export function Select(props: {
             hoverStyle={
               disabled() ? undefined : { backgroundColor: palette().soft }
             }
-            activeStyle={disabled() ? undefined : { opacity: 0.85 }}
+            activeStyle={
+              disabled() ? undefined : { backgroundColor: palette().soft }
+            }
             style={{
               minHeight: control.height,
               minWidth: 0,
@@ -1187,6 +1372,7 @@ export function Select(props: {
               paddingVertical: spacing.sm,
               borderWidth: 1,
               borderRadius: radius.md,
+              borderCurve: "continuous",
               borderColor: open() ? palette().ring : palette().fieldBorder,
               backgroundColor: open() ? palette().soft : palette().field,
               flexDirection: "row",
@@ -1205,8 +1391,7 @@ export function Select(props: {
                 color: palette().text,
               }}
             >
-              {props.options.find((option) => option.value === props.value)
-                ?.label || props.value}
+              {selectedLabel()}
             </Text>
             <If when={props.loading} else={<Chevron expanded={open()} />}>
               <Spinner size={16} />
@@ -1236,12 +1421,14 @@ export function Select(props: {
             <IconButton
               id="select-dismiss"
               icon="x"
-              label="Close choices"
+              tooltip={false}
+              label={ui?.t("关闭选项", "Close choices") || "Close choices"}
               onPress={() => open.set(false)}
             />
           </View>
           <Scroll
             bounces={false}
+            keyboardShouldPersistTaps="handled"
             style={{
               maxHeight: Math.max(
                 88,
@@ -1269,6 +1456,7 @@ export function Select(props: {
                     paddingHorizontal: spacing.md,
                     paddingVertical: spacing.sm,
                     borderRadius: radius.sm,
+                    borderCurve: "continuous",
                     flexDirection: "row",
                     alignItems: "center",
                     gap: spacing.sm,
@@ -1344,7 +1532,7 @@ function RadioChoice(props: {
       checked={props.selected}
       onChange={props.onSelect}
       hoverStyle={{ backgroundColor: palette().soft }}
-      activeStyle={{ opacity: 0.8 }}
+      activeStyle={{ backgroundColor: palette().soft }}
       style={{
         minHeight: control.row,
         flexDirection: "row",
@@ -1353,6 +1541,7 @@ function RadioChoice(props: {
         paddingVertical: spacing.sm,
         paddingHorizontal: spacing.md,
         borderRadius: radius.md,
+        borderCurve: "continuous",
         backgroundColor: props.selected ? palette().soft : "transparent",
         ...feedbackStyle(),
       }}
@@ -1410,6 +1599,7 @@ export function translator(client: CoreClient) {
 }
 
 export function Spinner(props: { size?: number; color?: string }) {
+  const ui = App();
   const angle = createNativeValue(0);
   const animation = Animated.loop(
     Animated.timing(angle, {
@@ -1419,12 +1609,19 @@ export function Spinner(props: { size?: number; color?: string }) {
     }),
     { resetBeforeIteration: true },
   );
-  animation.start();
+  effect(() => {
+    if (reduceMotion()) {
+      animation.stop();
+      angle.set(0);
+    } else {
+      animation.start();
+    }
+  });
   cleanup(() => animation.stop());
   return (
     <View
       role="progressbar"
-      accessibilityLabel="Loading"
+      accessibilityLabel={ui?.t("正在加载", "Loading") || "Loading"}
       style={{
         pointerEvents: "none",
         width: density.icon(props.size || 16),
@@ -1447,6 +1644,8 @@ export function Alert(props: {
   warning?: boolean;
   children?: JSX.Element;
 }) {
+  const tone = (): StatusTone =>
+    props.danger ? "danger" : props.warning ? "warning" : "neutral";
   return (
     <View
       role="alert"
@@ -1458,11 +1657,15 @@ export function Alert(props: {
             ? palette().warning
             : palette().border,
         borderRadius: radius.lg,
+        borderCurve: "continuous",
         padding: density.space(16),
         flexDirection: "row",
         alignItems: "flex-start",
         gap: density.space(12),
-        backgroundColor: palette().background,
+        backgroundColor:
+          props.danger || props.warning
+            ? statusColors(tone()).background
+            : palette().panel,
       }}
     >
       <Icon
@@ -1481,7 +1684,7 @@ export function Alert(props: {
           <Text
             style={{
               fontSize: density.font(14),
-              fontWeight: "500",
+              fontWeight: "600",
               color: props.danger
                 ? palette().danger
                 : props.warning
@@ -1496,11 +1699,7 @@ export function Alert(props: {
           style={{
             fontSize: density.font(14),
             lineHeight: density.line(20),
-            color: props.danger
-              ? palette().danger
-              : props.warning
-                ? palette().warning
-                : palette().text,
+            color: palette().text,
           }}
         >
           {props.text}

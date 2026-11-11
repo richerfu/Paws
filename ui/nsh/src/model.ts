@@ -137,9 +137,6 @@ export type UiState = {
     memoryError?: string | null;
     memoryInUseBytes: number;
     memoryLimitBytes: number;
-    configSyncCount: number;
-    lastConfigSyncAt?: string;
-    lastConfigSyncError?: string;
   };
   controllerAccess: ControllerAccess;
   networkPorts: NetworkPorts;

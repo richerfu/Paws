@@ -1,6 +1,14 @@
 import { density } from "./theme";
-import { Scroll, signal, Text, View, windowSize, type JSX } from "nsh";
-import { ContextMenu, Menu, MenuItem } from "nsh/base";
+import {
+  platform,
+  Scroll,
+  signal,
+  Text,
+  View,
+  windowSize,
+  type JSX,
+} from "nsh";
+import { ContextMenu, Menu, MenuItem, MenuSeparator } from "nsh/base";
 import {
   control,
   Icon,
@@ -49,36 +57,40 @@ export function ObjectMenu(props: {
   };
   const Commands = (value: { source: "menu" | "context" }) => (
     <View>
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          paddingLeft: spacing.md,
-        }}
-      >
-        <Text
-          role="header"
-          accessibilityLabel={props.title}
+      <If when={!(platform.desktop && value.source === "context")}>
+        <View
           style={{
-            flex: 1,
-            minWidth: 0,
-            numberOfLines: 2,
-            fontSize: density.font(13),
-            lineHeight: density.line(20),
-            color: palette().muted,
+            flexDirection: "row",
+            alignItems: "center",
+            paddingLeft: spacing.md,
           }}
         >
-          {props.title}
-        </Text>
-        <IconButton
-          id={`${props.id}-close`}
-          icon="x"
-          label={ui.t("关闭菜单", "Close menu")}
-          onPress={close}
-        />
-      </View>
+          <Text
+            role="header"
+            accessibilityLabel={props.title}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              numberOfLines: 2,
+              fontSize: density.font(13),
+              lineHeight: density.line(20),
+              color: palette().muted,
+            }}
+          >
+            {props.title}
+          </Text>
+          <IconButton
+            id={`${props.id}-close`}
+            icon="x"
+            tooltip={false}
+            label={ui.t("关闭菜单", "Close menu")}
+            onPress={close}
+          />
+        </View>
+      </If>
       <Scroll
         bounces={false}
+        keyboardShouldPersistTaps="handled"
         style={{
           maxHeight: Math.max(88, Math.min(480, windowSize().height * 0.65)),
         }}
@@ -87,47 +99,65 @@ export function ObjectMenu(props: {
           of={props.commands}
           key={(command) => command.id || command.label}
         >
-          {(command) => (
-            <MenuItem
-              testID={command().id}
-              disabled={command().disabled}
-              accessibilityLabel={command().label}
-              onSelect={() => {
-                pending = { source: value.source, run: command().run };
-                close();
-              }}
-              focusStyle={focusRing()}
-              hoverStyle={{ backgroundColor: palette().soft }}
-              activeStyle={{ backgroundColor: palette().soft }}
-              style={{
-                minHeight: control.row,
-                paddingHorizontal: spacing.md,
-                paddingVertical: spacing.sm,
-                borderRadius: radius.sm,
-                flexDirection: "row",
-                alignItems: "center",
-                gap: spacing.md,
-                opacity: command().disabled ? 0.4 : 1,
-                ...feedbackStyle(),
-              }}
-            >
-              <Icon
-                name={command().icon}
-                size={18}
-                color={command().danger ? palette().danger : palette().muted}
-              />
-              <Text
+          {(command, index) => (
+            <>
+              <If
+                when={
+                  !!command().danger &&
+                  index() > 0 &&
+                  !props.commands[index() - 1]?.danger
+                }
+              >
+                <MenuSeparator
+                  style={{
+                    height: 1,
+                    marginVertical: density.space(4),
+                    backgroundColor: palette().line,
+                  }}
+                />
+              </If>
+              <MenuItem
+                testID={command().id}
+                disabled={command().disabled}
+                accessibilityLabel={command().label}
+                onSelect={() => {
+                  pending = { source: value.source, run: command().run };
+                  close();
+                }}
+                focusStyle={focusRing()}
+                hoverStyle={{ backgroundColor: palette().soft }}
+                activeStyle={{ backgroundColor: palette().soft }}
                 style={{
-                  flex: 1,
-                  minWidth: 0,
-                  fontSize: density.font(14),
-                  lineHeight: density.line(20),
-                  color: command().danger ? palette().danger : palette().text,
+                  minHeight: control.row,
+                  paddingHorizontal: spacing.md,
+                  paddingVertical: spacing.sm,
+                  borderRadius: radius.sm,
+                  borderCurve: "continuous",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: spacing.md,
+                  opacity: command().disabled ? 0.4 : 1,
+                  ...feedbackStyle(),
                 }}
               >
-                {command().label}
-              </Text>
-            </MenuItem>
+                <Icon
+                  name={command().icon}
+                  size={18}
+                  color={command().danger ? palette().danger : palette().muted}
+                />
+                <Text
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    fontSize: density.font(14),
+                    lineHeight: density.line(20),
+                    color: command().danger ? palette().danger : palette().text,
+                  }}
+                >
+                  {command().label}
+                </Text>
+              </MenuItem>
+            </>
           )}
         </Each>
       </Scroll>
@@ -157,12 +187,13 @@ export function ObjectMenu(props: {
           accessibilityState={{ expanded: open() }}
           focusStyle={focusRing()}
           hoverStyle={{ backgroundColor: palette().soft }}
-          activeStyle={{ opacity: 0.8 }}
+          activeStyle={{ backgroundColor: palette().soft }}
           style={{
             width: control.icon,
             height: control.icon,
             flexShrink: 0,
             borderRadius: radius.md,
+            borderCurve: "continuous",
             alignItems: "center",
             justifyContent: "center",
             backgroundColor: open() ? palette().soft : "transparent",

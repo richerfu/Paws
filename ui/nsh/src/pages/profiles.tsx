@@ -9,7 +9,6 @@ import {
   untracked,
   View,
   Image,
-  Clipboard,
   windowSize,
   List,
   fontScale,
@@ -18,7 +17,9 @@ import {
 import {
   Action,
   Actions,
+  Badge,
   confirm,
+  copyText,
   Dialog,
   Empty,
   Field,
@@ -27,6 +28,7 @@ import {
   IconButton,
   palette,
   radius,
+  SearchField,
   control,
   spacing,
   Separator,
@@ -51,6 +53,7 @@ export function Profiles() {
     open = signal(false);
   const alive = useLifetime(),
     busy = signal(false),
+    importOp = signal<"" | "url" | "file" | "scan">(""),
     editing = signal<{ id: string; revision: number } | undefined>(),
     editName = signal(""),
     editUrl = signal("");
@@ -75,6 +78,7 @@ export function Profiles() {
     if (current !== undefined)
       void ui.client.run("profiles.cancelImport", { intentId: current });
     busy.set(false);
+    importOp.set("");
   };
   const closeImport = () => {
     dialogGeneration++;
@@ -147,11 +151,13 @@ export function Profiles() {
       if (alive() && intent === token) {
         intent = undefined;
         busy.set(false);
+        importOp.set("");
       }
     }
   };
   const importContent = () => {
     if (busy() || !input().trim()) return;
+    importOp.set("url");
     return performImport("profiles.importUrl", {
       name: name().trim(),
       url: input().trim(),
@@ -160,6 +166,7 @@ export function Profiles() {
   const pick = async () => {
     const generation = dialogGeneration;
     busy.set(true);
+    importOp.set("file");
     const value = await ui.client.run<{ name: string; content: string } | null>(
       "platform.importFile",
     );
@@ -170,14 +177,17 @@ export function Profiles() {
         name: value.name,
         content: value.content,
       });
+    else importOp.set("");
   };
   const scan = async () => {
     const generation = dialogGeneration;
     busy.set(true);
+    importOp.set("scan");
     const value = await ui.client.run<string | null>("platform.scan");
     if (!alive() || !open() || generation !== dialogGeneration) return;
     if (!value) {
       busy.set(false);
+      importOp.set("");
       return;
     }
     const parsed = await ui.client.run<{ url: string; name?: string }>(
@@ -193,6 +203,7 @@ export function Profiles() {
         url: parsed.url,
         name: parsed.name || name().trim(),
       });
+    else importOp.set("");
   };
   const canSaveSubscription = () =>
     !!editing() &&
@@ -262,7 +273,7 @@ export function Profiles() {
           paddingBottom: spacing.md,
         }}
       >
-        <Field
+        <SearchField
           label={ui.t("搜索订阅", "Search subscriptions")}
           placeholder={ui.t(
             "名称、地址、当前或备份",
@@ -274,6 +285,12 @@ export function Profiles() {
       </View>
       <List
         bounces={false}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
+        refreshing={ui.client.isPending("profiles.refreshAll")}
+        onRefresh={
+          ui.refreshProfiles ? () => void ui.refreshProfiles!() : undefined
+        }
         each={profiles()}
         keyExtractor={(profile) => profile.id}
         estimatedItemSize={120}
@@ -284,20 +301,20 @@ export function Profiles() {
           borderWidth: 1,
           borderColor: palette().border,
           borderRadius: radius.xl,
+          borderCurve: "continuous",
           backgroundColor: palette().panel,
           overflow: "hidden",
         }}
         contentStyle={{ padding: 0 }}
         empty={
-          <View style={{ gap: density.space(16), alignItems: "center" }}>
-            <View
-              style={{
-                width: "100%",
-                borderWidth: 1,
-                borderColor: palette().border,
-                borderRadius: radius.lg,
-              }}
-            >
+          <View
+            style={{
+              padding: spacing.lg,
+              gap: density.space(16),
+              alignItems: "center",
+            }}
+          >
+            <View style={{ width: "100%" }}>
               <Empty
                 icon={query() ? "search" : "rss"}
                 title={
@@ -320,6 +337,7 @@ export function Profiles() {
             </View>
             <If when={!query()}>
               <Action
+                primary
                 icon="plus"
                 label={ui.t("添加订阅", "Add subscription")}
                 onPress={() => open.set(true)}
@@ -363,7 +381,7 @@ export function Profiles() {
                 primary
                 id="submit-import"
                 icon="download"
-                loading={busy()}
+                loading={importOp() === "url"}
                 label={ui.t("导入", "Import")}
                 disabled={busy() || !input().trim()}
                 onPress={() => void importContent()}
@@ -371,10 +389,11 @@ export function Profiles() {
             </Actions>
           }
         >
-          <View style={{ gap: density.space(12), marginTop: density.space(4) }}>
+          <View style={{ gap: density.space(12) }}>
             <Field
               onSubmit={() => void importContent()}
               id="profile-input"
+              keyboardType="url"
               label={ui.t("订阅地址", "Subscription URL")}
               value={input()}
               onChange={(text) => {
@@ -398,12 +417,14 @@ export function Profiles() {
               disabled={busy()}
             />
           </View>
+          <Separator />
           <View
             style={{
               flexDirection: "row",
+              flexWrap: "wrap",
               alignItems: "center",
               justifyContent: "space-between",
-              marginTop: -8,
+              gap: spacing.sm,
             }}
           >
             <Action
@@ -411,7 +432,7 @@ export function Profiles() {
               small
               icon="file-up"
               label={ui.t("从本地文件导入", "Import a local file")}
-              loading={busy()}
+              loading={importOp() === "file"}
               disabled={busy()}
               onPress={() => void pick()}
             />
@@ -420,6 +441,7 @@ export function Profiles() {
               small
               icon="scan-qr-code"
               label={ui.t("扫码添加", "Scan to add")}
+              loading={importOp() === "scan"}
               disabled={busy()}
               onPress={() => void scan()}
             />
@@ -433,6 +455,25 @@ export function Profiles() {
         <Dialog
           title={ui.t("刷新失败", "Refresh failed")}
           onClose={() => refreshError.set("")}
+          footer={
+            <Actions>
+              <Action
+                secondary
+                label={ui.t("关闭", "Close")}
+                onPress={() => refreshError.set("")}
+              />
+              <Action
+                label={ui.t("复制错误信息", "Copy error")}
+                onPress={() =>
+                  copyText(
+                    ui,
+                    refreshError(),
+                    ui.t("错误信息已复制", "Error copied"),
+                  )
+                }
+              />
+            </Actions>
+          }
         >
           <Scroll
             bounces={false}
@@ -442,17 +483,6 @@ export function Profiles() {
           >
             <PageError id="profile-refresh-failure" text={refreshError()} />
           </Scroll>
-          <Actions>
-            <Action
-              secondary
-              label={ui.t("关闭", "Close")}
-              onPress={() => refreshError.set("")}
-            />
-            <Action
-              label={ui.t("复制错误信息", "Copy error")}
-              onPress={() => Clipboard.writeText(refreshError())}
-            />
-          </Actions>
         </Dialog>
       </If>
       <If when={editing()}>
@@ -490,6 +520,7 @@ export function Profiles() {
           />
           <Field
             label={ui.t("订阅地址", "Subscription URL")}
+            keyboardType="url"
             onSubmit={() => void saveSubscription()}
             value={editUrl()}
             placeholder="https://"
@@ -532,7 +563,24 @@ export function Profiles() {
                         )
                   }
                 />
-                <Image src={qr()!.source} style={{ width: 260, height: 260 }} />
+                <View
+                  style={{
+                    padding: 12,
+                    borderRadius: radius.lg,
+                    borderCurve: "continuous",
+                    backgroundColor: "#ffffff",
+                    borderWidth: 1,
+                    borderColor: palette().border,
+                  }}
+                >
+                  <Image
+                    src={qr()!.source}
+                    style={{
+                      width: Math.max(140, Math.min(220, windowSize().width - 104)),
+                      height: Math.max(140, Math.min(220, windowSize().width - 104)),
+                    }}
+                  />
+                </View>
                 <Actions>
                   <Action
                     secondary
@@ -540,6 +588,7 @@ export function Profiles() {
                     onPress={() => qr.set(undefined)}
                   />
                   <Action
+                    primary
                     id="export-profile-qr"
                     label={ui.t("保存二维码图片", "Save QR image")}
                     onPress={() =>
@@ -559,6 +608,7 @@ export function Profiles() {
                 borderWidth: 1,
                 borderColor: palette().border,
                 borderRadius: radius.lg,
+                borderCurve: "continuous",
                 overflow: "hidden",
               }}
             >
@@ -571,6 +621,7 @@ export function Profiles() {
                 onPress={() => void exportYaml()}
               />
               <ExportChoice
+                last
                 disabled={
                   !ui.client.domains.readyForCommand(["config", "profiles"])
                 }
@@ -658,6 +709,7 @@ function ProfileRow(props: {
         paddingHorizontal: spacing.md,
         paddingVertical: spacing.sm,
         borderRadius: radius.sm,
+        borderCurve: "continuous",
         flexDirection: "row",
         alignItems: "center",
         gap: spacing.md,
@@ -685,39 +737,42 @@ function ProfileRow(props: {
   );
   const Commands = (value: { source: "menu" | "context" }) => (
     <View>
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          paddingLeft: spacing.md,
-          gap: spacing.sm,
-        }}
-      >
-        <Text
-          role="header"
-          accessibilityLabel={props.profile.name}
+      <If when={!(platform.desktop && value.source === "context")}>
+        <View
           style={{
-            flex: 1,
-            minWidth: 0,
-            numberOfLines: 2,
-            fontSize: density.font(13),
-            lineHeight: density.line(20),
-            fontWeight: "500",
-            color: palette().muted,
+            flexDirection: "row",
+            alignItems: "center",
+            paddingLeft: spacing.md,
+            gap: spacing.sm,
           }}
         >
-          {props.profile.name}
-        </Text>
-        <IconButton
-          id="profile-menu-close"
-          icon="x"
-          label={ui.t("关闭菜单", "Close menu")}
-          onPress={() => {
-            open.set(false);
-            contextual.set(false);
-          }}
-        />
-      </View>
+          <Text
+            role="header"
+            accessibilityLabel={props.profile.name}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              numberOfLines: 2,
+              fontSize: density.font(13),
+              lineHeight: density.line(20),
+              fontWeight: "500",
+              color: palette().muted,
+            }}
+          >
+            {props.profile.name}
+          </Text>
+          <IconButton
+            id="profile-menu-close"
+            icon="x"
+            tooltip={false}
+            label={ui.t("关闭菜单", "Close menu")}
+            onPress={() => {
+              open.set(false);
+              contextual.set(false);
+            }}
+          />
+        </View>
+      </If>
       <If when={props.profile.lastRefreshError}>
         <Command
           source={value.source}
@@ -850,7 +905,7 @@ function ProfileRow(props: {
         disabled={ui.client.pending() > 0 || !ready()}
         focusStyle={focusRing()}
         hoverStyle={{ backgroundColor: palette().soft }}
-        activeStyle={{ opacity: 0.8 }}
+        activeStyle={{ backgroundColor: palette().soft }}
         onPress={() => {
           if (!props.profile.active) props.onAction("profiles.activate");
         }}
@@ -898,20 +953,13 @@ function ProfileRow(props: {
               {props.profile.name}
             </Text>
             <If when={props.profile.active}>
-              <Text
-                style={{
-                  flexShrink: 0,
-                  fontSize: density.font(12),
-                  color: palette().muted,
-                }}
-              >
-                {ui.t("当前", "Current")}
-              </Text>
+              <Badge tone="success" label={ui.t("当前", "Current")} />
             </If>
           </View>
           <Text
             style={{
               numberOfLines: 1,
+              textOverflow: "ellipsis-middle",
               fontSize: density.font(12),
               lineHeight: density.line(18),
               color: palette().muted,
@@ -925,6 +973,7 @@ function ProfileRow(props: {
                 numberOfLines: 1,
                 fontSize: density.font(12),
                 lineHeight: density.line(18),
+                fontVariant: ["tabular-nums"],
                 color: props.profile.lastRefreshError
                   ? palette().danger
                   : palette().muted,
@@ -943,6 +992,7 @@ function ProfileRow(props: {
               style={{
                 fontSize: density.font(12),
                 lineHeight: density.line(18),
+                fontVariant: ["tabular-nums"],
                 color: props.profile.lastRefreshError
                   ? palette().danger
                   : palette().muted,
@@ -984,12 +1034,13 @@ function ProfileRow(props: {
             disabled={props.refreshing}
             focusStyle={focusRing()}
             hoverStyle={{ backgroundColor: palette().soft }}
-            activeStyle={{ opacity: 0.8 }}
+            activeStyle={{ backgroundColor: palette().soft }}
             style={{
               width: control.icon,
               height: control.icon,
               marginRight: spacing.sm,
               borderRadius: radius.md,
+              borderCurve: "continuous",
               alignItems: "center",
               justifyContent: "center",
               backgroundColor: open() ? palette().soft : "transparent",
@@ -1023,6 +1074,7 @@ function ExportChoice(props: {
   label: string;
   onPress: () => void;
   danger?: boolean;
+  last?: boolean;
   id?: string;
   disabled?: boolean;
   loading?: boolean;
@@ -1031,7 +1083,6 @@ function ExportChoice(props: {
   return (
     <>
       <View
-        class="hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
         testID={props.id}
         role="button"
         accessibilityLabel={props.label}
@@ -1040,7 +1091,11 @@ function ExportChoice(props: {
         onPress={() => {
           if (!disabled()) props.onPress();
         }}
-        activeStyle={{ opacity: 0.65 }}
+        focusStyle={focusRing()}
+        hoverStyle={disabled() ? undefined : { backgroundColor: palette().soft }}
+        activeStyle={
+          disabled() ? undefined : { backgroundColor: palette().soft }
+        }
         style={{
           minHeight: control.row,
           paddingVertical: spacing.sm,
@@ -1050,6 +1105,7 @@ function ExportChoice(props: {
           gap: density.space(10),
           opacity: disabled() ? 0.5 : 1,
           backgroundColor: palette().panel,
+          ...feedbackStyle(),
         }}
       >
         <If
@@ -1074,7 +1130,9 @@ function ExportChoice(props: {
           {props.label}
         </Text>
       </View>
-      <Separator />
+      <If when={!props.last}>
+        <Separator />
+      </If>
     </>
   );
 }

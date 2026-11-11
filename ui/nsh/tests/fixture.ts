@@ -46,7 +46,7 @@ export function fixture(): UiState {
     vpnRunning: false,
     networkProtected: false,
     controllerRunning: false,
-    controllerDiagnostics: { memoryInUseBytes: 0, memoryLimitBytes: 0, configSyncCount: 0 },
+    controllerDiagnostics: { memoryInUseBytes: 0, memoryLimitBytes: 0 },
     controllerAccess: { allowLan: false },
     networkPorts: {
       mixedPort: 7890,
@@ -195,7 +195,7 @@ export function fixture(): UiState {
     about: {
       appVersion: "test",
       coreVersion: "test",
-      meowRsVersion: "0.29.0+809b7a7",
+      meowRsVersion: "0.29.0+52d75ec",
       mihomoVersion: "1.10.0",
       singBoxVersion: "1.13.21",
       rustVersion: "1.90",

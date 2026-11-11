@@ -8,7 +8,6 @@ import {
   Text,
   untracked,
   View,
-  Clipboard,
   windowSize,
   List,
 } from "nsh";
@@ -19,12 +18,13 @@ import {
   Code,
   confirm,
   control,
+  copyText,
   Dialog,
   Empty,
-  Field,
   Hint,
   palette,
   radius,
+  SearchField,
   Tabs,
   useApp,
   useLifetime,
@@ -172,7 +172,7 @@ export function Logs() {
         when={history()}
         else={
           <>
-            <Field
+            <SearchField
               label={ui.t("搜索日志", "Search logs")}
               placeholder={ui.t(
                 "输入关键词、等级或时间",
@@ -219,6 +219,8 @@ export function Logs() {
             </View>
             <List
               bounces={false}
+              keyboardDismissMode="on-drag"
+              keyboardShouldPersistTaps="handled"
               each={rows()}
               keyExtractor={(row) => row.key}
               estimatedItemSize={96}
@@ -227,6 +229,7 @@ export function Logs() {
                 borderWidth: 1,
                 borderColor: palette().border,
                 borderRadius: radius.lg,
+                borderCurve: "continuous",
                 overflow: "hidden",
                 backgroundColor: palette().panel,
               }}
@@ -260,8 +263,8 @@ export function Logs() {
                   role="button"
                   accessibilityLabel={meta(row())}
                   focusStyle={focusRing()}
-                  hoverStyle={{ backgroundColor: palette().soft }}
-                  activeStyle={{ opacity: 0.85 }}
+                  hoverStyle={{ backgroundColor: palette().hover }}
+                  activeStyle={{ backgroundColor: palette().soft }}
                   onPress={() => selected.set(row())}
                   style={{
                     minHeight: Math.max(
@@ -297,6 +300,7 @@ export function Logs() {
                         minWidth: 0,
                         fontSize: density.font(12),
                         lineHeight: density.line(16),
+                        fontVariant: ["tabular-nums"],
                         color: palette().muted,
                       }}
                     >
@@ -323,10 +327,20 @@ export function Logs() {
       >
         <List
           bounces={false}
+          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="handled"
           each={recording().archives || []}
           keyExtractor={(row) => row.fileName}
           estimatedItemSize={80}
-          style={{ flex: 1 }}
+          style={{
+            flex: 1,
+            borderWidth: 1,
+            borderColor: palette().border,
+            borderRadius: radius.lg,
+            borderCurve: "continuous",
+            overflow: "hidden",
+            backgroundColor: palette().panel,
+          }}
           contentStyle={{ paddingBottom: density.space(16) }}
           empty={
             <Empty
@@ -453,7 +467,13 @@ export function Logs() {
               />
               <Action
                 label={ui.t("复制完整内容", "Copy full message")}
-                onPress={() => Clipboard.writeText(selected()!.message)}
+                onPress={() =>
+                  copyText(
+                    ui,
+                    selected()!.message,
+                    ui.t("已复制日志", "Log copied"),
+                  )
+                }
               />
             </Actions>
           }

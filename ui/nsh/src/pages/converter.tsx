@@ -1,12 +1,14 @@
-import { cleanup, Scroll, signal, Clipboard } from "nsh";
+import { cleanup, Scroll, signal } from "nsh";
 import {
   Action,
   Actions,
   Body,
   Card,
+  copyText,
   Field,
   Hint,
   Select,
+  Separator,
   Tabs,
   Check,
   useApp,
@@ -44,10 +46,7 @@ export function Converter() {
   });
   const change = (patch: Partial<ConverterDraft>) => state.change(patch);
   const busy = () => operation() !== "";
-  const copy = (text: string, notice: string) => {
-    Clipboard.writeText(text);
-    ui.client.notice.set(notice);
-  };
+  const copy = (text: string, notice: string) => copyText(ui, text, notice);
   const run = async (name: string, action: () => Promise<void>) => {
     if (busy()) return;
     operation.set(name);
@@ -144,7 +143,12 @@ export function Converter() {
         version.set(value);
     });
   return (
-    <Scroll bounces={false} style={{ flex: 1 }}>
+    <Scroll
+      bounces={false}
+      keyboardDismissMode="on-drag"
+      keyboardShouldPersistTaps="handled"
+      style={{ flex: 1 }}
+    >
       <Body>
         <If when={!draft()}>
           <Card title={ui.t("转换规则", "Conversion rules")}>
@@ -228,6 +232,7 @@ export function Converter() {
                     label={ui.t("转换后端", "Conversion backend")}
                     value={draft()!.backend}
                     placeholder="http://127.0.0.1:25500/sub?"
+                    keyboardType="url"
                     disabled={busy()}
                     onChange={(backend) => {
                       version.set("");
@@ -273,6 +278,7 @@ export function Converter() {
                       "可选择预设，也可直接输入 URL",
                       "Choose a preset or enter a URL",
                     )}
+                    keyboardType="url"
                     disabled={busy()}
                     onChange={(remote_config) => change({ remote_config })}
                   />
@@ -333,96 +339,132 @@ export function Converter() {
                 >
                   <Each
                     of={[
-                      [
-                        "node_list",
-                        "输出为 Node List",
-                        "Output as Node List",
-                        "只返回节点列表",
-                        "Return nodes only",
-                      ],
-                      [
-                        "emoji",
-                        "Emoji",
-                        "Emoji",
-                        "为节点名添加地区 Emoji",
-                        "Add region emoji to node names",
-                      ],
-                      [
-                        "scv",
-                        "跳过证书验证",
-                        "Skip certificate verification",
-                        "scv",
-                        "scv",
-                      ],
-                      ["udp", "启用 UDP", "Enable UDP", "udp", "udp"],
-                      ["tfo", "TCP Fast Open", "TCP Fast Open", "tfo", "tfo"],
-                      [
-                        "append_type",
-                        "附加节点类型",
-                        "Append node type",
-                        "append_type",
-                        "append_type",
-                      ],
-                      ["sort", "排序节点", "Sort nodes", "sort", "sort"],
-                      [
-                        "fdn",
-                        "过滤非法节点",
-                        "Filter invalid nodes",
-                        "fdn",
-                        "fdn",
-                      ],
-                      [
-                        "expand",
-                        "展开规则",
-                        "Expand rules",
-                        "expand",
-                        "expand",
-                      ],
-                      [
-                        "surge_doh",
-                        "Surge DoH",
-                        "Surge DoH",
-                        "surge.doh",
-                        "surge.doh",
-                      ],
-                      [
-                        "clash_doh",
-                        "Clash DoH",
-                        "Clash DoH",
-                        "clash.doh",
-                        "clash.doh",
-                      ],
-                      [
-                        "new_name",
-                        "Clash 新字段",
-                        "New Clash field names",
-                        "new_name",
-                        "new_name",
-                      ],
-                      [
-                        "insert",
-                        "插入默认节点",
-                        "Insert default nodes",
-                        "insert / insert_url",
-                        "insert / insert_url",
-                      ],
+                      {
+                        zh: "节点与传输协议",
+                        en: "Nodes and transport",
+                        options: [
+                          [
+                            "node_list",
+                            "输出为 Node List",
+                            "Output as Node List",
+                            "只返回节点列表",
+                            "Return nodes only",
+                          ],
+                          [
+                            "emoji",
+                            "Emoji",
+                            "Emoji",
+                            "为节点名添加地区 Emoji",
+                            "Add region emoji to node names",
+                          ],
+                          [
+                            "append_type",
+                            "附加节点类型",
+                            "Append node type",
+                            "append_type",
+                            "append_type",
+                          ],
+                          [
+                            "scv",
+                            "跳过证书验证",
+                            "Skip certificate verification",
+                            "scv",
+                            "scv",
+                          ],
+                          ["udp", "启用 UDP", "Enable UDP", "udp", "udp"],
+                          [
+                            "tfo",
+                            "TCP Fast Open",
+                            "TCP Fast Open",
+                            "tfo",
+                            "tfo",
+                          ],
+                        ],
+                      },
+                      {
+                        zh: "筛选、排序与规则",
+                        en: "Filtering, sorting and rules",
+                        options: [
+                          ["sort", "排序节点", "Sort nodes", "sort", "sort"],
+                          [
+                            "fdn",
+                            "过滤非法节点",
+                            "Filter invalid nodes",
+                            "fdn",
+                            "fdn",
+                          ],
+                          [
+                            "expand",
+                            "展开规则",
+                            "Expand rules",
+                            "expand",
+                            "expand",
+                          ],
+                          [
+                            "insert",
+                            "插入默认节点",
+                            "Insert default nodes",
+                            "insert / insert_url",
+                            "insert / insert_url",
+                          ],
+                        ],
+                      },
+                      {
+                        zh: "客户端兼容字段",
+                        en: "Client compatibility",
+                        options: [
+                          [
+                            "surge_doh",
+                            "Surge DoH",
+                            "Surge DoH",
+                            "surge.doh",
+                            "surge.doh",
+                          ],
+                          [
+                            "clash_doh",
+                            "Clash DoH",
+                            "Clash DoH",
+                            "clash.doh",
+                            "clash.doh",
+                          ],
+                          [
+                            "new_name",
+                            "Clash 新字段",
+                            "New Clash field names",
+                            "new_name",
+                            "new_name",
+                          ],
+                        ],
+                      },
                     ]}
                   >
-                    {(option) => (
-                      <Check
-                        label={ui.t(option()[1], option()[2])}
-                        description={ui.t(option()[3], option()[4])}
-                        disabled={busy()}
-                        value={!!draft()![option()[0] as keyof ConverterDraft]}
-                        onChange={(value) =>
-                          change({
-                            [option()[0]]: value,
-                            ...(option()[0] === "udp"
-                              ? { need_udp: true }
-                              : {}),
-                          })
-                        }
-                      />
+                    {(group, groupIndex) => (
+                      <>
+                        <If when={groupIndex() > 0}>
+                          <Separator />
+                        </If>
+                        <Hint text={ui.t(group().zh, group().en)} />
+                        <Each of={group().options}>
+                          {(option) => (
+                            <Check
+                              label={ui.t(option()[1], option()[2])}
+                              description={ui.t(option()[3], option()[4])}
+                              disabled={busy()}
+                              value={
+                                !!draft()![option()[0] as keyof ConverterDraft]
+                              }
+                              onChange={(value) =>
+                                change({
+                                  [option()[0]]: value,
+                                  ...(option()[0] === "udp"
+                                    ? { need_udp: true }
+                                    : {}),
+                                })
+                              }
+                            />
+                          )}
+                        </Each>
+                      </>
                     )}
                   </Each>
                 </Card>
@@ -539,12 +581,14 @@ export function Converter() {
               <Field
                 label={ui.t("短链服务", "Short URL service")}
                 value={draft()!.short_url_api}
+                keyboardType="url"
                 disabled={busy()}
                 onChange={(short_url_api) => change({ short_url_api })}
               />
               <Field
                 label={ui.t("配置上传服务", "Config upload service")}
                 value={draft()!.config_upload_api}
+                keyboardType="url"
                 disabled={busy()}
                 onChange={(config_upload_api) => change({ config_upload_api })}
               />

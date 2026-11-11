@@ -14,15 +14,16 @@ import {
   Chevron,
   control,
   Empty,
-  Field,
   Hint,
   Icon,
   palette,
   radius,
+  SearchField,
   spacing,
   Spinner,
   useApp,
   useDomainInterests,
+  useLifetime,
 } from "../components";
 import { includes } from "../locale";
 import { focusRing, statusColors } from "../theme";
@@ -190,6 +191,8 @@ export function ProxyGroupList(props: {
     <List
       testID={props.summary ? "summary-groups-list" : "proxy-groups-list"}
       bounces={false}
+      keyboardDismissMode="on-drag"
+      keyboardShouldPersistTaps="handled"
       each={rows()}
       keyExtractor={(row) => row.key}
       estimatedItemSize={groupHeight()}
@@ -199,6 +202,7 @@ export function ProxyGroupList(props: {
         borderWidth: 1,
         borderColor: palette().border,
         borderRadius: radius.lg,
+        borderCurve: "continuous",
         backgroundColor: palette().panel,
         overflow: "hidden",
       }}
@@ -268,7 +272,9 @@ export function ProxyGroupList(props: {
                   }}
                   style={{
                     height: nodeHeight(),
-                    paddingLeft: density.space(20),
+                    paddingLeft: props.groupKey
+                      ? density.space(16)
+                      : density.space(28),
                     paddingRight: density.space(12),
                     borderBottomWidth: 1,
                     borderBottomColor: palette().border,
@@ -348,6 +354,7 @@ export function ProxyGroupList(props: {
                         paddingVertical: density.space(4),
                         paddingHorizontal: density.space(7),
                         borderRadius: density.space(6),
+                        borderCurve: "continuous",
                         backgroundColor: statusColors(
                           latencyTone(item().proxy!),
                         ).background,
@@ -430,6 +437,7 @@ export function ProxyGroupList(props: {
                     width: 28,
                     height: 28,
                     borderRadius: radius.sm,
+                    borderCurve: "continuous",
                     backgroundColor: palette().soft,
                     alignItems: "center",
                     justifyContent: "center",
@@ -549,11 +557,24 @@ export function ProxyGroupList(props: {
 
 export function Proxies() {
   const ui = useApp(),
+    alive = useLifetime(),
     query = signal(""),
-    activeGroup = signal("");
+    activeGroup = signal(""),
+    testingGroup = signal("");
   const groups = () => ui.client.state()!.proxyGroups;
   const selectedGroup = () =>
     groups().find((group) => group.name === activeGroup()) || groups()[0];
+  const testSelectedGroup = async () => {
+    const target = selectedGroup();
+    if (!target || testingGroup() || !ui.client.domains.fresh(["proxies"]))
+      return;
+    testingGroup.set(target.name);
+    try {
+      await ui.client.run("proxies.testGroup", { group: target.name });
+    } finally {
+      if (alive()) testingGroup.set("");
+    }
+  };
   const summary = () =>
     proxyGroupSummary(
       groups().filter(
@@ -584,7 +605,7 @@ export function Proxies() {
           windowSize().width >= 840 ? density.space(24) : density.space(16),
       }}
     >
-      <Field
+      <SearchField
         label={ui.t("搜索节点", "Search nodes")}
         value={query()}
         onChange={(value) => query.set(value)}
@@ -593,10 +614,32 @@ export function Proxies() {
           "Search node, type, latency or current",
         )}
       />
-      <View style={{ height: 34, justifyContent: "center" }}>
+      <View
+        style={{
+          minHeight: 34,
+          paddingVertical: density.space(4),
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: spacing.sm,
+        }}
+      >
         <Hint
           text={`${summary().global} ${ui.t("个全局节点", "global nodes")} · ${summary().groups} ${ui.t("个策略组", "policy groups")}`}
         />
+        <If when={platform.desktop && !!selectedGroup()}>
+          <Action
+            variant="ghost"
+            small
+            icon="zap"
+            loading={testingGroup() === selectedGroup()?.name}
+            disabled={
+              !!testingGroup() || !ui.client.domains.fresh(["proxies"])
+            }
+            label={ui.t("测速当前分组", "Test group")}
+            onPress={() => void testSelectedGroup()}
+          />
+        </If>
       </View>
       <If
         when={platform.desktop}
@@ -617,9 +660,12 @@ export function Proxies() {
             keyExtractor={(group) => group.name}
             estimatedItemSize={64}
             bounces={false}
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
             style={{
               width: windowSize().width >= 1000 ? 224 : 164,
               borderRadius: radius.lg,
+              borderCurve: "continuous",
               borderWidth: 1,
               borderColor: palette().border,
               backgroundColor: palette().panel,
@@ -644,6 +690,7 @@ export function Proxies() {
                   padding: spacing.md,
                   gap: spacing.xxs,
                   borderRadius: radius.md,
+                  borderCurve: "continuous",
                   backgroundColor:
                     group().name === selectedGroup()?.name
                       ? palette().raised
@@ -659,18 +706,24 @@ export function Proxies() {
                     numberOfLines: 1,
                   }}
                 >
-                  {group().name}
+                  {group().name.toUpperCase() === "GLOBAL"
+                    ? ui.t("全局节点", "Global nodes")
+                    : group().name}
                 </Text>
                 <Text
                   style={{
                     fontSize: 12,
                     lineHeight: 18,
                     color: palette().muted,
+                    fontVariant: ["tabular-nums"],
                     numberOfLines: 1,
                   }}
                 >
+                  {selectedMember(group())
+                    ? `${selectedMember(group())} · `
+                    : ""}
                   {groupMembers(groups(), group()).length}{" "}
-                  {ui.t("个节点", "nodes")} · {group().groupType}
+                  {ui.t("个节点", "nodes")}
                 </Text>
               </View>
             )}

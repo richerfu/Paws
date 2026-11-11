@@ -1,5 +1,6 @@
 import { density } from "./theme";
 import {
+  announce,
   cleanup,
   computed,
   effect,
@@ -79,6 +80,7 @@ import {
 } from "./notifications";
 import { pageDomains } from "./page-data";
 import { PageError } from "./page-error";
+import { isChinese } from "./locale";
 import type { DomainInput } from "./model";
 
 const primary: { page: Page; zh: string; en: string; icon: IconName }[] = [
@@ -134,14 +136,18 @@ export function PawsApp(props: {
   embeddedGateway?: boolean;
 }) {
   const notifications = new NotificationCenter();
-  for (const source of [
-    props.client.error,
-    props.client.warning,
-    props.client.notice,
-  ])
+  for (const [source, tone] of [
+    [props.client.error, "danger"],
+    [props.client.warning, "warning"],
+    [props.client.notice, "info"],
+  ] as const)
     effect(() => {
       const message = source();
-      if (message) untracked(() => notifications.publish(message));
+      if (!message) return;
+      untracked(() => {
+        notifications.publish(message, tone);
+        if (tone !== "info") announce(message);
+      });
     });
   cleanup(() => notifications.dispose());
   const nav = createNavStack<{ name: Page; query?: string }>([
@@ -201,6 +207,41 @@ export function PawsApp(props: {
         if (parent) nav.setRoutes([{ name: parent }]);
       }
     });
+  const t = translator(props.client);
+  const refreshProfiles = async () => {
+    if (
+      props.client.pending() > 0 ||
+      !props.client.domains.readyForCommand(["config", "profiles"])
+    )
+      return;
+    const attempted = new Set(
+      props.client
+        .state()
+        ?.profiles.filter((profile) => profile.subscriptionUrl)
+        .map((profile) => profile.id),
+    );
+    const result = await props.client.run("profiles.refreshAll");
+    if (
+      !alive() ||
+      result === undefined ||
+      props.client.warning() ||
+      !props.client.domains.readyForCommand(["config", "profiles"])
+    )
+      return;
+    const failed = props.client
+      .state()!
+      .profiles.filter(
+        (profile) => attempted.has(profile.id) && profile.lastRefreshError,
+      ).length;
+    props.client.notice.set(
+      attempted.size
+        ? t(
+            `全部订阅刷新完成：${attempted.size - failed} 成功，${failed} 失败`,
+            `Subscriptions refreshed: ${attempted.size - failed} succeeded, ${failed} failed`,
+          )
+        : t("全部订阅没有可刷新的订阅", "No subscriptions to refresh"),
+    );
+  };
   const ui: AppContext = {
     client: props.client,
     page,
@@ -223,7 +264,8 @@ export function PawsApp(props: {
     },
     logRecording,
     logRecordingIntent,
-    t: translator(props.client),
+    refreshProfiles,
+    t,
     editProfile: (id) => navigate("editor", id),
     beforeLeave: (check) => {
       const guard = { route: route(), check };
@@ -258,40 +300,6 @@ export function PawsApp(props: {
   cleanup(() => {
     stopHardwareBack();
   });
-  const refreshProfiles = async () => {
-    if (
-      props.client.pending() > 0 ||
-      !props.client.domains.readyForCommand(["config", "profiles"])
-    )
-      return;
-    const attempted = new Set(
-      props.client
-        .state()
-        ?.profiles.filter((profile) => profile.subscriptionUrl)
-        .map((profile) => profile.id),
-    );
-    const result = await props.client.run("profiles.refreshAll");
-    if (
-      !alive() ||
-      result === undefined ||
-      props.client.warning() ||
-      !props.client.domains.readyForCommand(["config", "profiles"])
-    )
-      return;
-    const failed = props.client
-      .state()!
-      .profiles.filter(
-        (profile) => attempted.has(profile.id) && profile.lastRefreshError,
-      ).length;
-    props.client.notice.set(
-      attempted.size
-        ? ui.t(
-            `全部订阅刷新完成：${attempted.size - failed} 成功，${failed} 失败`,
-            `Subscriptions refreshed: ${attempted.size - failed} succeeded, ${failed} failed`,
-          )
-        : ui.t("全部订阅没有可刷新的订阅", "No subscriptions to refresh"),
-    );
-  };
   if (platform.desktop) {
     for (let index = 0; index < desktopPrimary.length; index++)
       cleanup(
@@ -364,7 +372,9 @@ export function PawsApp(props: {
                     fontSize: density.font(20),
                     lineHeight: density.line(28),
                     fontWeight: "600",
-                    letterSpacing: -0.3,
+                    letterSpacing: isChinese(props.client.preferences())
+                      ? 0
+                      : -0.3,
                   }}
                 >
                   {platform.desktop &&
@@ -376,6 +386,7 @@ export function PawsApp(props: {
                   <IconButton
                     id="refresh-profiles"
                     icon="refresh-cw"
+                    shortcut="mod+r"
                     label={ui.t("全部更新", "Refresh all")}
                     loading={props.client.isPending("profiles.refreshAll")}
                     disabled={
@@ -477,7 +488,10 @@ export function PawsApp(props: {
                         ? ui.t("停止记录日志", "Stop recording logs")
                         : ui.t("开始记录日志", "Record logs")
                     }
-                    disabled={props.client.pending() > 0}
+                    disabled={
+                      props.client.isPending("logs.setRecording") ||
+                      props.client.isPending("logs.recordingStatus")
+                    }
                     onPress={() =>
                       logRecordingIntent.set(logRecordingIntent() + 1)
                     }
@@ -486,7 +500,10 @@ export function PawsApp(props: {
                 <If when={page() === "converter"}>
                   <IconButton
                     icon="github"
-                    label="sub-web"
+                    label={ui.t(
+                      "打开 sub-web 仓库",
+                      "Open sub-web repository",
+                    )}
                     onPress={() =>
                       void props.client.run("platform.openUrl", {
                         url: "https://github.com/CareyWang/sub-web",
@@ -763,6 +780,7 @@ export function PawsApp(props: {
               top: spacing.xxs,
               bottom: spacing.xxs,
               borderRadius: radius.md,
+              borderCurve: "continuous",
               backgroundColor: palette().soft,
             }}
           >
@@ -774,7 +792,7 @@ export function PawsApp(props: {
                   accessibilityLabel={ui.t(tab().zh, tab().en)}
                   onPress={() => navigate(tab().page)}
                   focusStyle={focusRing()}
-                  activeStyle={{ opacity: 0.8 }}
+                  activeStyle={{ backgroundColor: palette().soft }}
                   style={{
                     flex: 1,
                     minHeight: control.compact ? 44 : 52,
@@ -782,6 +800,7 @@ export function PawsApp(props: {
                     justifyContent: "center",
                     gap: spacing.xxs,
                     borderRadius: radius.md,
+                    borderCurve: "continuous",
                     ...feedbackStyle(),
                   }}
                 >
@@ -795,6 +814,7 @@ export function PawsApp(props: {
                     }
                   />
                   <Text
+                    maxFontSizeMultiplier={1.2}
                     style={{
                       fontSize: density.font(12),
                       lineHeight: density.line(16),
@@ -815,7 +835,9 @@ export function PawsApp(props: {
         <FloatingVpnPowerButton
           visible={!wide() && page() === "dashboard" && !!props.client.state()}
         />
-        <NotificationViewport />
+        <NotificationViewport
+          dismissLabel={ui.t("关闭通知", "Dismiss notification")}
+        />
       </>
     );
     return (

@@ -8,7 +8,6 @@ import {
   Text,
   untracked,
   View,
-  Clipboard,
 } from "nsh";
 import {
   Action,
@@ -16,6 +15,7 @@ import {
   askConfirmation,
   Body,
   Card,
+  copyText,
   Detail,
   Empty,
   Field,
@@ -25,6 +25,7 @@ import {
   RouteOwner,
   Select,
   palette,
+  radius,
   Separator,
   Check,
   useApp,
@@ -239,6 +240,14 @@ export function Settings() {
     Number.isInteger(Number(mtu())) &&
     Number(mtu()) >= 1280 &&
     Number(mtu()) <= 65535;
+  const validPort = (value: string) =>
+    Number.isInteger(Number(value)) &&
+    Number(value) >= 1024 &&
+    Number(value) <= 65535;
+  const validNetwork = () =>
+    validPort(mixedPort()) &&
+    validPort(controllerPort()) &&
+    Number(mixedPort()) !== Number(controllerPort());
   const save = async (section: "vpn" | "dns" | "network") => {
     const ticket = edits[section].ticket();
     try {
@@ -293,7 +302,12 @@ export function Settings() {
     }
   };
   return (
-    <Scroll bounces={false} style={{ flex: 1 }}>
+    <Scroll
+      bounces={false}
+      keyboardDismissMode="on-drag"
+      keyboardShouldPersistTaps="handled"
+      style={{ flex: 1 }}
+    >
       <Body>
         <If
           when={profile()}
@@ -305,7 +319,8 @@ export function Settings() {
                 borderWidth: 1,
                 borderStyle: "dashed",
                 borderColor: palette().border,
-                borderRadius: density.space(8),
+                borderRadius: radius.xl,
+                borderCurve: "continuous",
                 alignItems: "center",
                 justifyContent: "center",
               }}
@@ -623,6 +638,14 @@ export function Settings() {
               value={mixedPort()}
               placeholder="7890"
               numeric
+              error={
+                dirty().has("network") && !validPort(mixedPort())
+                  ? ui.t(
+                      "端口必须是 1024–65535 的整数。",
+                      "Port must be an integer from 1024 to 65535.",
+                    )
+                  : undefined
+              }
               onChange={(value) => {
                 mixedPort.set(value);
                 mark("network");
@@ -644,6 +667,20 @@ export function Settings() {
               value={controllerPort()}
               placeholder="9090"
               numeric
+              error={
+                dirty().has("network") && !validPort(controllerPort())
+                  ? ui.t(
+                      "端口必须是 1024–65535 的整数。",
+                      "Port must be an integer from 1024 to 65535.",
+                    )
+                  : dirty().has("network") &&
+                      Number(mixedPort()) === Number(controllerPort())
+                    ? ui.t(
+                        "控制器端口不能与混合代理端口相同。",
+                        "Controller port must differ from mixed proxy port.",
+                      )
+                    : undefined
+              }
               onChange={(value) => {
                 controllerPort.set(value);
                 mark("network");
@@ -673,7 +710,13 @@ export function Settings() {
                 small
                 label={ui.t("复制", "Copy")}
                 disabled={!controller().secret}
-                onPress={() => Clipboard.writeText(controller().secret || "")}
+                onPress={() =>
+                  copyText(
+                    ui,
+                    controller().secret || "",
+                    ui.t("已复制访问密钥", "Access secret copied"),
+                  )
+                }
               />
             </If>
             <Action
@@ -681,7 +724,9 @@ export function Settings() {
               id="save-network"
               loading={ui.client.isPending("settings.network")}
               label={ui.t("保存网络设置", "Save network settings")}
-              disabled={blocked() || !dirty().has("network")}
+              disabled={
+                blocked() || !dirty().has("network") || !validNetwork()
+              }
               onPress={() => void save("network")}
             />
           </Card>
