@@ -1,14 +1,14 @@
-import { Want } from '@kit.AbilityKit';
+import { Want } from "@kit.AbilityKit";
 
-export const PAWS_BUNDLE_NAME: string = 'com.richerfu.paws';
-export const PAWS_MODULE_NAME: string = 'entry';
-export const PAWS_ENTRY_ABILITY: string = 'EntryAbility';
-export const PAWS_VPN_ABILITY: string = 'PawsVpnExtensionAbility';
+export const PAWS_BUNDLE_NAME: string = "com.richerfu.paws";
+export const PAWS_MODULE_NAME: string = "entry";
+export const PAWS_ENTRY_ABILITY: string = "EntryAbility";
+export const PAWS_VPN_ABILITY: string = "PawsVpnExtensionAbility";
 
 let pawsBundleName: string = PAWS_BUNDLE_NAME;
 
 export function setPawsBundleName(bundleName?: string): void {
-  const value = bundleName?.trim() ?? '';
+  const value = bundleName?.trim() ?? "";
   pawsBundleName = value.length > 0 ? value : PAWS_BUNDLE_NAME;
 }
 
@@ -46,9 +46,12 @@ export class RouteInfo {
   public isDefaultRoute: boolean;
 
   constructor(destination: LinkAddress, isDefaultRoute: boolean) {
-    this.interface = 'vpn-tun';
+    this.interface = "vpn-tun";
     this.destination = destination;
-    this.gateway = new NetAddress(destination.address.family === 2 ? '::' : '0.0.0.0', destination.address.family);
+    this.gateway = new NetAddress(
+      destination.address.family === 2 ? "::" : "0.0.0.0",
+      destination.address.family,
+    );
     this.hasGateway = false;
     this.isDefaultRoute = isDefaultRoute;
   }
@@ -73,32 +76,29 @@ export interface VpnOptions {
 }
 
 const DEFAULT_DNS_NAMESERVER_POLICY: Record<string, string[]> = {
-  'geosite:cn': ['223.5.5.5', '119.29.29.29'],
-  'geosite:geolocation-!cn': ['1.1.1.1', '8.8.8.8'],
+  "geosite:cn": ["223.5.5.5", "119.29.29.29"],
+  "geosite:geolocation-!cn": ["1.1.1.1", "8.8.8.8"],
 };
 
 // Applications installed inside Huawei's ANCO/出境易 container use virtual
 // package identities which the public VPN allow-list API cannot resolve. When
 // either container host is selected, use the device-wide route so the ANCO
 // bridge can attach its data sockets to the VPN as well as its DNS broker.
-const ANCO_HOST_PACKAGES: string[] = [
-  'com.easy.hmos.abroad',
-  'com.huawei.shell_assistant',
-];
+const ANCO_HOST_PACKAGES: string[] = ["com.easy.hmos.abroad", "com.huawei.shell_assistant"];
 
 const DEFAULT_OPTIONS: VpnOptions = {
-  engine: 'auto',
-  addresses: ['172.19.0.1/30'],
+  engine: "auto",
+  addresses: ["172.19.0.1/30"],
   mtu: 1500,
   ipv6: false,
   systemProxy: false,
   dnsHijacking: true,
   allowBypass: false,
-  stack: 'netstack-smoltcp',
-  routes: ['0.0.0.0/0'],
-  dnsAddresses: ['172.19.0.2'],
-  dnsServers: ['223.5.5.5', '119.29.29.29'],
-  dnsFallbacks: ['1.1.1.1', '8.8.8.8'],
+  stack: "netstack-smoltcp",
+  routes: ["0.0.0.0/0"],
+  dnsAddresses: ["172.19.0.2"],
+  dnsServers: ["223.5.5.5", "119.29.29.29"],
+  dnsFallbacks: ["1.1.1.1", "8.8.8.8"],
   dnsNameserverPolicy: DEFAULT_DNS_NAMESERVER_POLICY,
 };
 
@@ -120,7 +120,8 @@ export class PawsVpnConfig {
     if (options.trustedApplications?.length) {
       const trusted = [...options.trustedApplications];
       const useAncoCompatibilityRoute = trusted.some((bundleName: string): boolean =>
-        ANCO_HOST_PACKAGES.includes(bundleName));
+        ANCO_HOST_PACKAGES.includes(bundleName),
+      );
       // Do not materialize an own property with value `undefined`. The
       // HarmonyOS VPN binder validates every present field and reports an
       // undefined optional property as "is not array". ANCO container apps
@@ -136,37 +137,41 @@ export class PawsVpnConfig {
       // VpnExtension.VpnConfig exposes no HTTP/system proxy field. Paws also
       // does not hold the privileged SettingsData authority needed to mutate
       // the device-wide proxy, so accepting this flag would be a false claim.
-      throw new Error('systemProxy is not supported by the HarmonyOS VPN API');
+      throw new Error("systemProxy is not supported by the HarmonyOS VPN API");
     }
     if (options.allowBypass === true) {
       // HarmonyOS VpnConfig has package allow/block lists, but no global
       // "allow applications to bypass this VPN" capability. Reject this
       // profile instead of silently claiming the persisted setting is active.
-      throw new Error('allowBypass is not supported by the HarmonyOS VPN API');
+      throw new Error("allowBypass is not supported by the HarmonyOS VPN API");
     }
-    const addresses = options.addresses?.length ? options.addresses : ['172.19.0.1/30'];
-    const routes = options.routes?.length ? options.routes : ['0.0.0.0/0'];
-    this.addresses = addresses.map((value: string) => parseLinkAddress(value, addressDefaultPrefix(value)));
+    const addresses = options.addresses?.length ? options.addresses : ["172.19.0.1/30"];
+    const routes = options.routes?.length ? options.routes : ["0.0.0.0/0"];
+    this.addresses = addresses.map((value: string) =>
+      parseLinkAddress(value, addressDefaultPrefix(value)),
+    );
     this.routes = routes.map((value: string) => {
       const route = parseLinkAddress(value, routeDefaultPrefix(value));
       return new RouteInfo(route, route.prefixLength === 0);
     });
-    this.dnsAddresses = options.dnsAddresses?.length ? options.dnsAddresses : ['172.19.0.2'];
+    this.dnsAddresses = options.dnsAddresses?.length ? options.dnsAddresses : ["172.19.0.2"];
     this.mtu = mtuOverride ?? options.mtu ?? 1500;
-    this.isIPv4Accepted = this.addresses.some((address: LinkAddress) => address.address.family === 1) ||
+    this.isIPv4Accepted =
+      this.addresses.some((address: LinkAddress) => address.address.family === 1) ||
       this.routes.some((route: RouteInfo) => route.destination.address.family === 1);
-    this.isIPv6Accepted = (options.ipv6 ?? false) ||
+    this.isIPv6Accepted =
+      (options.ipv6 ?? false) ||
       this.addresses.some((address: LinkAddress) => address.address.family === 2) ||
       this.routes.some((route: RouteInfo) => route.destination.address.family === 2);
     this.isBlocking = false;
   }
 }
 
-const PAWS_ASHMEM_FD_KEY = 'pawsPlatformAshmem';
-const PAWS_NOTIFICATION_FD_KEY = 'pawsPlatformNotification';
-const PAWS_START_ATTEMPT_ID_KEY = 'pawsStartAttemptId';
-const PAWS_HANDOFF_TOKEN_KEY = 'pawsHandoffToken';
-const PAWS_SYSTEM_PARAMETERS_KEY = 'myParams';
+const PAWS_ASHMEM_FD_KEY = "pawsPlatformAshmem";
+const PAWS_NOTIFICATION_FD_KEY = "pawsPlatformNotification";
+const PAWS_START_ATTEMPT_ID_KEY = "pawsStartAttemptId";
+const PAWS_HANDOFF_TOKEN_KEY = "pawsHandoffToken";
+const PAWS_SYSTEM_PARAMETERS_KEY = "myParams";
 
 export interface PawsPlatformSharedMemoryFds {
   ashmemFd: number;
@@ -174,7 +179,7 @@ export interface PawsPlatformSharedMemoryFds {
 }
 
 class PawsWantFileDescriptor {
-  public type: string = 'FD';
+  public type: string = "FD";
   public value: number;
 
   constructor(value: number) {
@@ -197,7 +202,7 @@ export function buildVpnWant(
   startAttemptId?: string,
 ): Want {
   const parameters: PawsVpnWantParameters = {
-    optionsJson: optionsJson ?? '',
+    optionsJson: optionsJson ?? "",
   };
   if (sharedMemory) {
     parameters[PAWS_ASHMEM_FD_KEY] = new PawsWantFileDescriptor(sharedMemory.ashmemFd);
@@ -207,7 +212,7 @@ export function buildVpnWant(
     parameters[PAWS_START_ATTEMPT_ID_KEY] = startAttemptId;
   }
   return {
-    deviceId: '',
+    deviceId: "",
     bundleName: currentPawsBundleName(),
     moduleName: PAWS_MODULE_NAME,
     abilityName: PAWS_VPN_ABILITY,
@@ -222,7 +227,7 @@ export function buildVpnBootstrapWant(startAttemptId: string, handoffToken: stri
     pawsHandoffToken: handoffToken,
   };
   return {
-    deviceId: '',
+    deviceId: "",
     bundleName: currentPawsBundleName(),
     moduleName: PAWS_MODULE_NAME,
     abilityName: PAWS_VPN_ABILITY,
@@ -240,11 +245,11 @@ function readVpnParameters(want?: Want): Record<string, Object> | undefined {
   if (!parameters) {
     return undefined;
   }
-  if (typeof parameters['optionsJson'] === 'string') {
+  if (typeof parameters["optionsJson"] === "string") {
     return parameters;
   }
   const nested = parameters[PAWS_SYSTEM_PARAMETERS_KEY];
-  if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
+  if (typeof nested === "object" && nested !== null && !Array.isArray(nested)) {
     return nested as Record<string, Object>;
   }
   return parameters;
@@ -269,26 +274,26 @@ export function readPlatformSharedMemoryFds(want: Want): PawsPlatformSharedMemor
 
 export function readPlatformStartAttemptId(want?: Want): string {
   const value = readVpnParameters(want)?.[PAWS_START_ATTEMPT_ID_KEY];
-  if (typeof value === 'string' && value.length > 0) {
+  if (typeof value === "string" && value.length > 0) {
     return value;
   }
-  throw new Error('VPN extension request is missing start attempt id');
+  throw new Error("VPN extension request is missing start attempt id");
 }
 
 export function readPlatformHandoffToken(want?: Want): string {
   const value = readVpnParameters(want)?.[PAWS_HANDOFF_TOKEN_KEY];
-  if (typeof value === 'string' && value.length > 0) {
+  if (typeof value === "string" && value.length > 0) {
     return value;
   }
-  throw new Error('VPN extension request is missing handoff token');
+  throw new Error("VPN extension request is missing handoff token");
 }
 
 export function readOptionsJson(want?: Want): string {
-  const value = readVpnParameters(want)?.['optionsJson'];
-  if (typeof value === 'string' && value.length > 0) {
+  const value = readVpnParameters(want)?.["optionsJson"];
+  if (typeof value === "string" && value.length > 0) {
     return value;
   }
-  throw new Error('VPN extension request is missing options JSON');
+  throw new Error("VPN extension request is missing options JSON");
 }
 
 function readFileDescriptorParameter(
@@ -296,14 +301,14 @@ function readFileDescriptorParameter(
   key: string,
 ): number | undefined {
   const descriptor = parameters?.[key] as PawsWantFileDescriptor | undefined;
-  if (!descriptor || descriptor.type !== 'FD' || !isValidFileDescriptor(descriptor.value)) {
+  if (!descriptor || descriptor.type !== "FD" || !isValidFileDescriptor(descriptor.value)) {
     return undefined;
   }
   return descriptor.value;
 }
 
 function isValidFileDescriptor(value?: number): boolean {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 export function parseOptions(optionsJson: string): VpnOptions {
@@ -313,8 +318,8 @@ export function parseOptions(optionsJson: string): VpnOptions {
   } catch (err) {
     throw new Error(`invalid VPN options JSON: ${String(err)}`);
   }
-  if (value === null || Array.isArray(value) || typeof value !== 'object') {
-    throw new Error('VPN options JSON must be an object');
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    throw new Error("VPN options JSON must be an object");
   }
   const options = value as VpnOptions;
   validateOptions(options);
@@ -322,32 +327,38 @@ export function parseOptions(optionsJson: string): VpnOptions {
 }
 
 function validateOptions(options: VpnOptions): void {
-  validateOptionalStringArray('trustedApplications', options.trustedApplications);
-  validateOptionalStringArray('blockedApplications', options.blockedApplications);
+  validateOptionalStringArray("trustedApplications", options.trustedApplications);
+  validateOptionalStringArray("blockedApplications", options.blockedApplications);
   if (options.trustedApplications?.length && options.blockedApplications?.length) {
-    throw new Error('Choose either VPN trustlist or blocklist, not both');
+    throw new Error("Choose either VPN trustlist or blocklist, not both");
   }
-  validateOptionalStringArray('addresses', options.addresses);
-  validateOptionalStringArray('routes', options.routes);
-  validateOptionalStringArray('dnsAddresses', options.dnsAddresses);
-  validateOptionalStringArray('dnsServers', options.dnsServers);
-  validateOptionalStringArray('dnsFallbacks', options.dnsFallbacks);
-  validateOptionalBoolean('ipv6', options.ipv6);
-  validateOptionalBoolean('systemProxy', options.systemProxy);
-  validateOptionalBoolean('dnsHijacking', options.dnsHijacking);
-  validateOptionalBoolean('allowBypass', options.allowBypass);
-  if (options.mtu !== undefined &&
-    (!Number.isInteger(options.mtu) || options.mtu <= 0 || options.mtu > 65535)) {
-    throw new Error('VPN option mtu must be an integer between 1 and 65535');
+  validateOptionalStringArray("addresses", options.addresses);
+  validateOptionalStringArray("routes", options.routes);
+  validateOptionalStringArray("dnsAddresses", options.dnsAddresses);
+  validateOptionalStringArray("dnsServers", options.dnsServers);
+  validateOptionalStringArray("dnsFallbacks", options.dnsFallbacks);
+  validateOptionalBoolean("ipv6", options.ipv6);
+  validateOptionalBoolean("systemProxy", options.systemProxy);
+  validateOptionalBoolean("dnsHijacking", options.dnsHijacking);
+  validateOptionalBoolean("allowBypass", options.allowBypass);
+  if (
+    options.mtu !== undefined &&
+    (!Number.isInteger(options.mtu) || options.mtu <= 0 || options.mtu > 65535)
+  ) {
+    throw new Error("VPN option mtu must be an integer between 1 and 65535");
   }
-  if (options.stack !== undefined &&
-    options.stack !== 'netstack-smoltcp' && options.stack !== 'smoltcp' && options.stack !== 'lwip') {
+  if (
+    options.stack !== undefined &&
+    options.stack !== "netstack-smoltcp" &&
+    options.stack !== "smoltcp" &&
+    options.stack !== "lwip"
+  ) {
     throw new Error(`unsupported VPN network stack '${String(options.stack)}'`);
   }
   if (options.dnsNameserverPolicy !== undefined) {
     const policy = options.dnsNameserverPolicy;
-    if (policy === null || Array.isArray(policy) || typeof policy !== 'object') {
-      throw new Error('VPN option dnsNameserverPolicy must be an object of string arrays');
+    if (policy === null || Array.isArray(policy) || typeof policy !== "object") {
+      throw new Error("VPN option dnsNameserverPolicy must be an object of string arrays");
     }
     Object.keys(policy).forEach((key: string): void => {
       validateOptionalStringArray(`dnsNameserverPolicy.${key}`, policy[key]);
@@ -359,26 +370,28 @@ function validateOptionalStringArray(name: string, value?: string[]): void {
   if (value === undefined) {
     return;
   }
-  if (!Array.isArray(value) ||
-    !value.every((item: string): boolean => typeof item === 'string' && item.trim().length > 0)) {
+  if (
+    !Array.isArray(value) ||
+    !value.every((item: string): boolean => typeof item === "string" && item.trim().length > 0)
+  ) {
     throw new Error(`VPN option ${name} must be an array of non-empty strings`);
   }
 }
 
 function validateOptionalBoolean(name: string, value?: boolean): void {
-  if (value !== undefined && typeof value !== 'boolean') {
+  if (value !== undefined && typeof value !== "boolean") {
     throw new Error(`VPN option ${name} must be boolean`);
   }
 }
 
 export function parseLinkAddress(value: string, defaultPrefix: number): LinkAddress {
   const input = value.trim();
-  const parts = input.split('/');
+  const parts = input.split("/");
   if (parts.length > 2 || parts[0].length === 0) {
     throw new Error(`invalid IP prefix '${value}'`);
   }
   const address = parts[0];
-  const family = address.includes(':') ? 2 : 1;
+  const family = address.includes(":") ? 2 : 1;
   if ((family === 1 && !isValidIpv4(address)) || (family === 2 && !isValidIpv6(address))) {
     throw new Error(`invalid IP address '${address}'`);
   }
@@ -397,32 +410,35 @@ export function parseLinkAddress(value: string, defaultPrefix: number): LinkAddr
 }
 
 function isValidIpv4(address: string): boolean {
-  const parts = address.split('.');
-  return parts.length === 4 && parts.every((part: string): boolean => {
-    if (!/^(0|[1-9][0-9]{0,2})$/.test(part)) {
-      return false;
-    }
-    const octet = Number(part);
-    return Number.isInteger(octet) && octet >= 0 && octet <= 255;
-  });
+  const parts = address.split(".");
+  return (
+    parts.length === 4 &&
+    parts.every((part: string): boolean => {
+      if (!/^(0|[1-9][0-9]{0,2})$/.test(part)) {
+        return false;
+      }
+      const octet = Number(part);
+      return Number.isInteger(octet) && octet >= 0 && octet <= 255;
+    })
+  );
 }
 
 function isValidIpv6(address: string): boolean {
-  if (address.length === 0 || address.includes(':::')) {
+  if (address.length === 0 || address.includes(":::")) {
     return false;
   }
-  const compressed = address.indexOf('::');
-  if (compressed >= 0 && address.indexOf('::', compressed + 2) >= 0) {
+  const compressed = address.indexOf("::");
+  if (compressed >= 0 && address.indexOf("::", compressed + 2) >= 0) {
     return false;
   }
-  const sides = compressed >= 0 ? address.split('::') : [address];
-  const left = sides[0].length > 0 ? sides[0].split(':') : [];
-  const right = sides.length > 1 && sides[1].length > 0 ? sides[1].split(':') : [];
+  const sides = compressed >= 0 ? address.split("::") : [address];
+  const left = sides[0].length > 0 ? sides[0].split(":") : [];
+  const right = sides.length > 1 && sides[1].length > 0 ? sides[1].split(":") : [];
   const all = left.concat(right);
   let units = 0;
   for (let index = 0; index < all.length; index += 1) {
     const part = all[index];
-    if (part.includes('.')) {
+    if (part.includes(".")) {
       if (index !== all.length - 1 || !isValidIpv4(part)) {
         return false;
       }
@@ -438,9 +454,9 @@ function isValidIpv6(address: string): boolean {
 }
 
 export function addressDefaultPrefix(value: string): number {
-  return value.includes(':') ? 128 : 32;
+  return value.includes(":") ? 128 : 32;
 }
 
 export function routeDefaultPrefix(value: string): number {
-  return value.includes(':') ? 128 : 32;
+  return value.includes(":") ? 128 : 32;
 }

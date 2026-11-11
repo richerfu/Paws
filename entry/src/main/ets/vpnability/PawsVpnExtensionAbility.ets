@@ -1,10 +1,10 @@
-import { SystemExitRecorder } from './SystemExitRecorder';
-import { updateTinyPawsForms } from '../widget/TinyPawsFormUpdate';
-import { LifecycleJournal } from './LifecycleJournal';
-import { AbilityConstant, Want, bundleManager } from '@kit.AbilityKit';
-import { connection, vpnExtension, VpnExtensionAbility } from '@kit.NetworkKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
-import pawsUi from 'libpaws_ui.so';
+import { SystemExitRecorder } from "./SystemExitRecorder";
+import { updateTinyPawsForms } from "../widget/TinyPawsFormUpdate";
+import { LifecycleJournal } from "./LifecycleJournal";
+import { AbilityConstant, Want, bundleManager } from "@kit.AbilityKit";
+import { connection, vpnExtension, VpnExtensionAbility } from "@kit.NetworkKit";
+import { hilog } from "@kit.PerformanceAnalysisKit";
+import pawsUi from "libpaws_ui.so";
 import {
   PawsVpnConfig,
   PawsPlatformSharedMemoryFds,
@@ -14,12 +14,12 @@ import {
   readPlatformStartAttemptId,
   readOptionsJson,
   setPawsBundleName,
-} from './VpnConfig';
+} from "./VpnConfig";
 
-import { getPhysicalNetwork } from './UnderlyingNetwork';
+import { getPhysicalNetwork } from "./UnderlyingNetwork";
 
 const LOG_DOMAIN: number = 0x0000;
-const LOG_TAG: string = 'PawsVpn';
+const LOG_TAG: string = "PawsVpn";
 const PLATFORM_OPERATION_TIMEOUT_MS: number = 30000;
 
 interface PawsPlatformVpnHandoffPayload {
@@ -33,28 +33,32 @@ interface NativePrepareResult {
 }
 
 function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
-  return new Promise<T>((resolve: (value: T) => void, reject: (reason?: Object | string) => void): void => {
-    let settled = false;
-    const timer = setTimeout((): void => {
-      if (!settled) {
-        settled = true;
-        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
-      }
-    }, timeoutMs);
-    operation.then((value: T): void => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        resolve(value);
-      }
-    }).catch((err: Error): void => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        reject(err);
-      }
-    });
-  });
+  return new Promise<T>(
+    (resolve: (value: T) => void, reject: (reason?: Object | string) => void): void => {
+      let settled = false;
+      const timer = setTimeout((): void => {
+        if (!settled) {
+          settled = true;
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }
+      }, timeoutMs);
+      operation
+        .then((value: T): void => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve(value);
+          }
+        })
+        .catch((err: Error): void => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            reject(err);
+          }
+        });
+    },
+  );
 }
 
 interface PawsErrorLike {
@@ -66,25 +70,25 @@ interface PawsErrorLike {
 
 function describeError(err: Error | Object | string | number | boolean | null | undefined): string {
   if (err instanceof Error) {
-    return `${err.name}: ${err.message}${err.stack ? ` ${err.stack}` : ''}`;
+    return `${err.name}: ${err.message}${err.stack ? ` ${err.stack}` : ""}`;
   }
-  if (typeof err === 'string') {
+  if (typeof err === "string") {
     return err;
   }
-  if (typeof err === 'number' || typeof err === 'boolean') {
+  if (typeof err === "number" || typeof err === "boolean") {
     return err.toString();
   }
   if (!err) {
-    return '';
+    return "";
   }
   const like = err as PawsErrorLike;
-  if (typeof like.message === 'string' && like.message.length > 0) {
-    const code = typeof like.code === 'number' ? `code=${like.code} ` : '';
-    const name = typeof like.name === 'string' && like.name.length > 0 ? `${like.name}: ` : '';
-    return `${code}${name}${like.message}${like.stack ? ` ${like.stack}` : ''}`;
+  if (typeof like.message === "string" && like.message.length > 0) {
+    const code = typeof like.code === "number" ? `code=${like.code} ` : "";
+    const name = typeof like.name === "string" && like.name.length > 0 ? `${like.name}: ` : "";
+    return `${code}${name}${like.message}${like.stack ? ` ${like.stack}` : ""}`;
   }
   const json = JSON.stringify(err);
-  return json && json !== '{}' ? json : err.toString();
+  return json && json !== "{}" ? json : err.toString();
 }
 
 export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
@@ -95,9 +99,9 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   private platformSubscriptionActive: boolean = false;
   private platformSubscriptionGeneration: number = 0;
   private requestGeneration: number = 0;
-  private inFlightAttemptId: string = '';
-  private pendingHandoffAttemptId: string = '';
-  private activeAttemptId: string = '';
+  private inFlightAttemptId: string = "";
+  private pendingHandoffAttemptId: string = "";
+  private activeAttemptId: string = "";
   private journal: LifecycleJournal = new LifecycleJournal();
   private systemExitRecorder: SystemExitRecorder = new SystemExitRecorder();
   private heartbeatTimer: number = -1;
@@ -106,13 +110,13 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   private pendingPlatformOperation?: Promise<void>;
   private pendingPlatformOperationConnection?: vpnExtension.VpnConnection;
   private pendingNativePrepare?: Promise<void>;
-  private pendingNativePrepareAttemptId: string = '';
+  private pendingNativePrepareAttemptId: string = "";
   private pendingCleanup?: Promise<string>;
   private pendingCleanupConnection?: vpnExtension.VpnConnection;
-  private activeEngine: string = '';
-  private activeOptionsJson: string = '';
+  private activeEngine: string = "";
+  private activeOptionsJson: string = "";
   private activeUnderlyingNetId: number = 0;
-  private lastEnginePlan: string = '';
+  private lastEnginePlan: string = "";
   private telemetryPending: boolean = false;
   private observationsPending: boolean = false;
   private telemetryGeneration: number = 0;
@@ -129,11 +133,15 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     super.onCreate(want);
     this.configureNativeHome();
     this.journal.open(this.context.filesDir);
-    try { this.systemExitRecorder.start(this.context.filesDir, undefined, true); }
-    catch (_) { hilog.warn(LOG_DOMAIN, LOG_TAG, 'VPN system exit recorder unavailable'); }
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'onCreate');
+    try {
+      this.systemExitRecorder.start(this.context.filesDir, undefined, true);
+    } catch (_) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, "VPN system exit recorder unavailable");
+    }
+    hilog.info(LOG_DOMAIN, LOG_TAG, "onCreate");
     this.engineResolverToken = pawsUi.registerEngineProcessResolver(
-      (protocol: number, source: string, target: string): number => this.resolveUid(protocol, source, target),
+      (protocol: number, source: string, target: string): number =>
+        this.resolveUid(protocol, source, target),
       (uid: number): string => this.resolvePackage(uid),
     );
     this.startFromWant(want);
@@ -144,9 +152,9 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   }
 
   public onDestroy(): void {
-    this.journal.record('extension-destroy-requested', this.tunFd >= 0);
+    this.journal.record("extension-destroy-requested", this.tunFd >= 0);
     this.requestGeneration += 1;
-    this.pendingHandoffAttemptId = '';
+    this.pendingHandoffAttemptId = "";
     this.stopHeartbeat();
     this.stopPlatformSubscription();
     this.stopDefaultNetworkMonitor();
@@ -155,7 +163,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       this.engineResolverToken = -1;
     }
     this.destroyVpn().catch((err: Error): void => {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'onDestroy cleanup failed %{public}s', describeError(err));
+      hilog.error(LOG_DOMAIN, LOG_TAG, "onDestroy cleanup failed %{public}s", describeError(err));
     });
   }
 
@@ -169,7 +177,12 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       pawsUi.configureAppHome(`${this.context.filesDir}/paws`);
       return true;
     } catch (err) {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'configure native home failed %{public}s', describeError(err));
+      hilog.error(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "configure native home failed %{public}s",
+        describeError(err),
+      );
       return false;
     }
   }
@@ -190,8 +203,12 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
           readPlatformHandoffToken(want),
         );
       } catch (err) {
-        hilog.error(LOG_DOMAIN, LOG_TAG,
-          'descriptor-free VPN bootstrap rejected %{public}s', describeError(err));
+        hilog.error(
+          LOG_DOMAIN,
+          LOG_TAG,
+          "descriptor-free VPN bootstrap rejected %{public}s",
+          describeError(err),
+        );
       }
       return;
     }
@@ -201,43 +218,56 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       attemptId = readPlatformStartAttemptId(want);
       optionsJson = readOptionsJson(want);
     } catch (err) {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN request rejected %{public}s', describeError(err));
+      hilog.error(LOG_DOMAIN, LOG_TAG, "VPN request rejected %{public}s", describeError(err));
       return;
     }
     this.queueRequest(attemptId, optionsJson, sharedMemory);
   }
 
   private receivePlatformHandoff(attemptId: string, token: string): void {
-    if (attemptId === this.pendingHandoffAttemptId || attemptId === this.inFlightAttemptId ||
-      attemptId === this.activeAttemptId) {
+    if (
+      attemptId === this.pendingHandoffAttemptId ||
+      attemptId === this.inFlightAttemptId ||
+      attemptId === this.activeAttemptId
+    ) {
       return;
     }
     this.pendingHandoffAttemptId = attemptId;
-    hilog.info(LOG_DOMAIN, LOG_TAG,
-      'waiting for VPN session FD handoff attempt %{public}s', attemptId);
-    pawsUi.receiveAndAttachPlatformVpnHandoff(token).then(
-      (payloadJson: string): void => {
+    hilog.info(
+      LOG_DOMAIN,
+      LOG_TAG,
+      "waiting for VPN session FD handoff attempt %{public}s",
+      attemptId,
+    );
+    pawsUi
+      .receiveAndAttachPlatformVpnHandoff(token)
+      .then((payloadJson: string): void => {
         const payload = JSON.parse(payloadJson) as PawsPlatformVpnHandoffPayload;
-        if (payload.attemptId !== attemptId || typeof payload.optionsJson !== 'string') {
-          throw new Error('VPN session FD handoff payload does not match bootstrap attempt');
+        if (payload.attemptId !== attemptId || typeof payload.optionsJson !== "string") {
+          throw new Error("VPN session FD handoff payload does not match bootstrap attempt");
         }
-        hilog.info(LOG_DOMAIN, LOG_TAG,
-          'received and attached VPN session FD handoff attempt %{public}s', attemptId);
+        hilog.info(
+          LOG_DOMAIN,
+          LOG_TAG,
+          "received and attached VPN session FD handoff attempt %{public}s",
+          attemptId,
+        );
         this.queueRequest(attemptId, payload.optionsJson);
-      },
-    ).catch((err: Error): void => {
-      const message = describeError(err) || 'VPN session FD handoff failed';
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN session FD handoff failed %{public}s', message);
-      try {
-        pawsUi.failUnattachedPlatformVpnStart(attemptId, message);
-      } catch (_innerErr) {
-        // The attempt may already have been superseded by the UI.
-      }
-    }).finally((): void => {
-      if (this.pendingHandoffAttemptId === attemptId) {
-        this.pendingHandoffAttemptId = '';
-      }
-    });
+      })
+      .catch((err: Error): void => {
+        const message = describeError(err) || "VPN session FD handoff failed";
+        hilog.error(LOG_DOMAIN, LOG_TAG, "VPN session FD handoff failed %{public}s", message);
+        try {
+          pawsUi.failUnattachedPlatformVpnStart(attemptId, message);
+        } catch (_innerErr) {
+          // The attempt may already have been superseded by the UI.
+        }
+      })
+      .finally((): void => {
+        if (this.pendingHandoffAttemptId === attemptId) {
+          this.pendingHandoffAttemptId = "";
+        }
+      });
   }
 
   private queueRequest(
@@ -245,8 +275,10 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     optionsJson: string,
     sharedMemory?: PawsPlatformSharedMemoryFds,
   ): void {
-    if (sharedMemory && !this.isLatestWant(
-      sharedMemory.ashmemFd, sharedMemory.notificationFd, attemptId)) {
+    if (
+      sharedMemory &&
+      !this.isLatestWant(sharedMemory.ashmemFd, sharedMemory.notificationFd, attemptId)
+    ) {
       return;
     }
     if (attemptId === this.inFlightAttemptId || attemptId === this.activeAttemptId) {
@@ -254,38 +286,40 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     }
     const generation = ++this.requestGeneration;
     this.inFlightAttemptId = attemptId;
-    this.requestChain = this.requestChain.then(async (): Promise<void> => {
-      await this.handleRequest(
-        attemptId,
-        optionsJson,
-        generation,
-        sharedMemory,
-      );
-    }).catch(async (err: Error): Promise<void> => {
-      if (generation !== this.requestGeneration || this.inFlightAttemptId !== attemptId) {
-        return;
-      }
-      const message = describeError(err) || 'VPN startup pipeline failed';
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN startup pipeline failed %{public}s', message);
-      if (this.activeAttemptId === attemptId) {
-        this.recordVpnFailureForAttempt(attemptId, message);
-        await this.destroyVpn();
-      } else {
-        // Validation/attach/bind can fail before this process adopts the
-        // owner. Settle only the matching still-unattached UI transaction;
-        // the exact core callback rejects a terminal or replaced attempt.
-        try {
-          pawsUi.failUnattachedPlatformVpnStart(attemptId, message);
-        } catch (innerErr) {
-          hilog.error(LOG_DOMAIN, LOG_TAG, 'publish unattached VPN failure failed %{public}s',
-            describeError(innerErr));
+    this.requestChain = this.requestChain
+      .then(async (): Promise<void> => {
+        await this.handleRequest(attemptId, optionsJson, generation, sharedMemory);
+      })
+      .catch(async (err: Error): Promise<void> => {
+        if (generation !== this.requestGeneration || this.inFlightAttemptId !== attemptId) {
+          return;
         }
-      }
-    }).finally((): void => {
-      if (generation === this.requestGeneration && this.inFlightAttemptId === attemptId) {
-        this.inFlightAttemptId = '';
-      }
-    });
+        const message = describeError(err) || "VPN startup pipeline failed";
+        hilog.error(LOG_DOMAIN, LOG_TAG, "VPN startup pipeline failed %{public}s", message);
+        if (this.activeAttemptId === attemptId) {
+          this.recordVpnFailureForAttempt(attemptId, message);
+          await this.destroyVpn();
+        } else {
+          // Validation/attach/bind can fail before this process adopts the
+          // owner. Settle only the matching still-unattached UI transaction;
+          // the exact core callback rejects a terminal or replaced attempt.
+          try {
+            pawsUi.failUnattachedPlatformVpnStart(attemptId, message);
+          } catch (innerErr) {
+            hilog.error(
+              LOG_DOMAIN,
+              LOG_TAG,
+              "publish unattached VPN failure failed %{public}s",
+              describeError(innerErr),
+            );
+          }
+        }
+      })
+      .finally((): void => {
+        if (generation === this.requestGeneration && this.inFlightAttemptId === attemptId) {
+          this.inFlightAttemptId = "";
+        }
+      });
   }
 
   private async handleRequest(
@@ -298,9 +332,11 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       return;
     }
     await this.waitForPendingCleanup();
-    if (generation !== this.requestGeneration ||
-      (sharedMemory !== undefined && !this.isLatestWant(
-        sharedMemory.ashmemFd, sharedMemory.notificationFd, attemptId))) {
+    if (
+      generation !== this.requestGeneration ||
+      (sharedMemory !== undefined &&
+        !this.isLatestWant(sharedMemory.ashmemFd, sharedMemory.notificationFd, attemptId))
+    ) {
       return;
     }
     if (this.activeAttemptId.length > 0 && this.activeAttemptId !== attemptId) {
@@ -322,7 +358,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     hilog.info(
       LOG_DOMAIN,
       LOG_TAG,
-      'bound VPN owner attempt %{public}s process %{public}s',
+      "bound VPN owner attempt %{public}s process %{public}s",
       attemptId,
       ownerIdentity,
     );
@@ -334,20 +370,23 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     // bind re-synchronizes that lane; consume the terminal state before
     // creating native or VpnConnection resources and acknowledge cleanup.
     const boundLifecycle = pawsUi.extensionTick(attemptId);
-    if (boundLifecycle === 'failed' || boundLifecycle === 'disconnected' ||
-      boundLifecycle === 'stopping') {
+    if (
+      boundLifecycle === "failed" ||
+      boundLifecycle === "disconnected" ||
+      boundLifecycle === "stopping"
+    ) {
       await this.destroyVpn();
       return;
     }
 
     if (this.tunFd >= 0 && this.vpnConnection) {
-      if (boundLifecycle === 'connected') {
+      if (boundLifecycle === "connected") {
         this.startTelemetry();
         this.startHeartbeat(generation, attemptId);
         return;
       }
       await this.destroyVpn();
-      throw new Error('existing native VPN owner is no longer connected');
+      throw new Error("existing native VPN owner is no longer connected");
     }
 
     this.starting = true;
@@ -366,15 +405,13 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       return true;
     } catch (err) {
       try {
-        if (pawsUi.acknowledgeTerminalPlatformVpnStartDelivery(
-          ashmemFd,
-          notificationFd,
-          attemptId,
-        )) {
+        if (
+          pawsUi.acknowledgeTerminalPlatformVpnStartDelivery(ashmemFd, notificationFd, attemptId)
+        ) {
           hilog.info(
             LOG_DOMAIN,
             LOG_TAG,
-            'acknowledged delivery of terminal VPN request %{public}s',
+            "acknowledged delivery of terminal VPN request %{public}s",
             attemptId,
           );
         }
@@ -382,12 +419,17 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
         hilog.warn(
           LOG_DOMAIN,
           LOG_TAG,
-          'terminal VPN delivery acknowledgement failed %{public}s',
+          "terminal VPN delivery acknowledgement failed %{public}s",
           describeError(ackErr),
         );
       }
-      hilog.warn(LOG_DOMAIN, LOG_TAG, 'ignored stale VPN request %{public}s %{public}s',
-        attemptId, describeError(err));
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "ignored stale VPN request %{public}s %{public}s",
+        attemptId,
+        describeError(err),
+      );
       return false;
     }
   }
@@ -401,9 +443,11 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     attemptId: string,
     connection?: vpnExtension.VpnConnection,
   ): void {
-    if (!this.isCurrentRequest(generation, attemptId) ||
-      (connection !== undefined && this.vpnConnection !== connection)) {
-      throw new Error('stale VPN request generation');
+    if (
+      !this.isCurrentRequest(generation, attemptId) ||
+      (connection !== undefined && this.vpnConnection !== connection)
+    ) {
+      throw new Error("stale VPN request generation");
     }
   }
 
@@ -413,11 +457,13 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     label: string,
   ): Promise<T> {
     let settled = false;
-    const barrier: Promise<void> = operation.then((_value: T): void => {
-      settled = true;
-    }).catch((_err: Error): void => {
-      settled = true;
-    });
+    const barrier: Promise<void> = operation
+      .then((_value: T): void => {
+        settled = true;
+      })
+      .catch((_err: Error): void => {
+        settled = true;
+      });
     this.pendingPlatformOperation = barrier;
     this.pendingPlatformOperationConnection = connection;
     try {
@@ -439,7 +485,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     await this.waitForPendingCleanup();
     this.requireCurrentRequest(generation, attemptId);
     if (!pawsUi.setPlatformVpnStarting(attemptId, true)) {
-      throw new Error('platform VPN start attempt is no longer active');
+      throw new Error("platform VPN start attempt is no longer active");
     }
 
     const options = parseOptions(optionsJson);
@@ -451,7 +497,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       underlyingNetId = underlyingNetwork.netId;
       pawsUi.setPhysicalNetwork(underlyingNetId);
       if (underlyingNetId <= 0) {
-        throw new Error('could not resolve the underlying physical network');
+        throw new Error("could not resolve the underlying physical network");
       }
     }
     const vpnOwner = vpnExtension.createVpnConnection(this.context);
@@ -464,73 +510,105 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     } catch (err) {
       throw new Error(`VpnConnection.create rejected synchronously: ${describeError(err)}`);
     }
-    const fd = await this.awaitPlatformOperation(vpnOwner, createOperation, 'VpnConnection.create');
+    const fd = await this.awaitPlatformOperation(vpnOwner, createOperation, "VpnConnection.create");
     if (!this.isCurrentRequest(generation, attemptId) || this.vpnConnection !== vpnOwner) {
       await this.destroyVpn();
-      throw new Error('stale VPN request generation after TUN create');
+      throw new Error("stale VPN request generation after TUN create");
     }
     this.tunFd = fd;
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'created tun fd %{public}d', fd);
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase create finished in %{public}d ms', Date.now() - startedAt);
+    hilog.info(LOG_DOMAIN, LOG_TAG, "created tun fd %{public}d", fd);
+    hilog.info(
+      LOG_DOMAIN,
+      LOG_TAG,
+      "VPN phase create finished in %{public}d ms",
+      Date.now() - startedAt,
+    );
 
     const protectStartedAt = Date.now();
     try {
-      await this.awaitPlatformOperation(vpnOwner, vpnOwner.protectProcessNet(),
-        'VpnConnection.protectProcessNet');
+      await this.awaitPlatformOperation(
+        vpnOwner,
+        vpnOwner.protectProcessNet(),
+        "VpnConnection.protectProcessNet",
+      );
       this.requireCurrentRequest(generation, attemptId, vpnOwner);
       if (!pawsUi.setPlatformNetworkProtected(attemptId, true)) {
-        throw new Error('platform VPN protection result belongs to a stale attempt');
+        throw new Error("platform VPN protection result belongs to a stale attempt");
       }
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'protected process network');
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase protect finished in %{public}d ms', Date.now() - protectStartedAt);
+      hilog.info(LOG_DOMAIN, LOG_TAG, "protected process network");
+      hilog.info(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "VPN phase protect finished in %{public}d ms",
+        Date.now() - protectStartedAt,
+      );
     } catch (err) {
-      const message = describeError(err) || 'protect process network failed';
+      const message = describeError(err) || "protect process network failed";
       pawsUi.setPlatformNetworkProtected(attemptId, false, message);
       throw new Error(message);
     }
 
     // Config/provider IO must use the protected physical network.
     const prepareStartedAt = Date.now();
-    const nativePrepare: Promise<NativePrepareResult> =
-      pawsUi.prepareEngine(optionsJson, attemptId).then((planJson: string): NativePrepareResult => ({
-        error: '', planJson,
-      }))
-      .catch((err: Error): NativePrepareResult => ({
-        error: describeError(err) || 'prepare native VPN failed',
-        planJson: '',
-      }));
-    const nativePrepareBarrier: Promise<void> = nativePrepare.then((_result: NativePrepareResult): void => {});
+    const nativePrepare: Promise<NativePrepareResult> = pawsUi
+      .prepareEngine(optionsJson, attemptId)
+      .then(
+        (planJson: string): NativePrepareResult => ({
+          error: "",
+          planJson,
+        }),
+      )
+      .catch(
+        (err: Error): NativePrepareResult => ({
+          error: describeError(err) || "prepare native VPN failed",
+          planJson: "",
+        }),
+      );
+    const nativePrepareBarrier: Promise<void> = nativePrepare.then(
+      (_result: NativePrepareResult): void => {},
+    );
     this.pendingNativePrepare = nativePrepareBarrier;
     this.pendingNativePrepareAttemptId = attemptId;
     nativePrepareBarrier.finally((): void => {
       if (this.pendingNativePrepare === nativePrepareBarrier) {
         this.pendingNativePrepare = undefined;
-        this.pendingNativePrepareAttemptId = '';
+        this.pendingNativePrepareAttemptId = "";
       }
     });
 
-    const prepareResult = await this.awaitPlatformOperation(vpnOwner, nativePrepare, 'native VPN prepare');
+    const prepareResult = await this.awaitPlatformOperation(
+      vpnOwner,
+      nativePrepare,
+      "native VPN prepare",
+    );
     if (prepareResult.error.length > 0) {
       throw new Error(prepareResult.error);
     }
     this.requireCurrentRequest(generation, attemptId, vpnOwner);
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN phase config finished in %{public}d ms', Date.now() - prepareStartedAt);
+    hilog.info(
+      LOG_DOMAIN,
+      LOG_TAG,
+      "VPN phase config finished in %{public}d ms",
+      Date.now() - prepareStartedAt,
+    );
     this.activeEngine = engine;
     this.activeOptionsJson = optionsJson;
     this.activeUnderlyingNetId = underlyingNetId;
-    await this.awaitPlatformOperation(vpnOwner,
+    await this.awaitPlatformOperation(
+      vpnOwner,
       pawsUi.startEngine(fd, underlyingNetId, optionsJson, attemptId, prepareResult.planJson),
-      'native VPN start');
+      "native VPN start",
+    );
     this.lastEnginePlan = prepareResult.planJson;
-    this.trimEngineMemory('engine-start');
+    this.trimEngineMemory("engine-start");
     this.requireCurrentRequest(generation, attemptId, vpnOwner);
     const lifecycle = pawsUi.extensionTick(attemptId);
-    if (lifecycle !== 'connected') {
+    if (lifecycle !== "connected") {
       throw new Error(`native VPN worker entered ${lifecycle}`);
     }
     await pawsUi.persistEngineSession(attemptId, engine, underlyingNetId);
-    this.journal.record('vpn-connected', true);
-    updateTinyPawsForms(this.context.filesDir, 'VPN 已建立 · 联网状态请在应用检测');
+    this.journal.record("vpn-connected", true);
+    updateTinyPawsForms(this.context.filesDir, "VPN 已建立 · 联网状态请在应用检测");
     this.startTelemetry();
     this.startHeartbeat(generation, attemptId);
     try {
@@ -538,17 +616,22 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     } catch (err) {
       // Network-change reconciliation improves handovers but is not allowed to
       // invalidate an already established system VPN on older SDK builds.
-      hilog.warn(LOG_DOMAIN, LOG_TAG, 'default network monitor start skipped %{public}s', describeError(err));
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "default network monitor start skipped %{public}s",
+        describeError(err),
+      );
     }
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN started in %{public}d ms', Date.now() - startedAt);
+    hilog.info(LOG_DOMAIN, LOG_TAG, "VPN started in %{public}d ms", Date.now() - startedAt);
   }
 
   private toNetAddress(addr: string): connection.NetAddress {
-    const separator = addr.lastIndexOf(':');
+    const separator = addr.lastIndexOf(":");
     const host = addr.slice(0, separator);
     const port = Number(addr.slice(separator + 1));
-    const address = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
-    const family = address.includes(':') ? 2 : 1;
+    const address = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+    const family = address.includes(":") ? 2 : 1;
     return { address, family, port };
   }
 
@@ -569,18 +652,18 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       try {
         this.uidBundleNameMap.set(uid, bundleManager.getBundleNameByUidSync(uid));
       } catch (_) {
-        this.uidBundleNameMap.set(uid, '');
+        this.uidBundleNameMap.set(uid, "");
       }
     }
-    return this.uidBundleNameMap.get(uid) ?? '';
+    return this.uidBundleNameMap.get(uid) ?? "";
   }
 
   private recordVpnFailureForAttempt(attemptId: string, message: string): void {
-    this.journal.record('vpn-failure', this.tunFd >= 0);
+    this.journal.record("vpn-failure", this.tunFd >= 0);
     try {
       pawsUi.setPlatformVpnFailed(attemptId, message);
     } catch (err) {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'record VPN failure failed %{public}s', describeError(err));
+      hilog.error(LOG_DOMAIN, LOG_TAG, "record VPN failure failed %{public}s", describeError(err));
     }
   }
 
@@ -592,19 +675,23 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       if (connection === undefined || connection === this.pendingCleanupConnection) {
         return this.pendingCleanup;
       }
-      return Promise.resolve('a previous VpnConnection cleanup is still pending');
+      return Promise.resolve("a previous VpnConnection cleanup is still pending");
     }
-    const pendingOperation = connection !== undefined &&
-      this.pendingPlatformOperationConnection === connection ? this.pendingPlatformOperation : undefined;
+    const pendingOperation =
+      connection !== undefined && this.pendingPlatformOperationConnection === connection
+        ? this.pendingPlatformOperation
+        : undefined;
     if (pendingOperation) {
       this.pendingPlatformOperation = undefined;
       this.pendingPlatformOperationConnection = undefined;
     }
-    const pendingNativePrepare = attemptId.length > 0 &&
-      this.pendingNativePrepareAttemptId === attemptId ? this.pendingNativePrepare : undefined;
+    const pendingNativePrepare =
+      attemptId.length > 0 && this.pendingNativePrepareAttemptId === attemptId
+        ? this.pendingNativePrepare
+        : undefined;
     if (pendingNativePrepare) {
       this.pendingNativePrepare = undefined;
-      this.pendingNativePrepareAttemptId = '';
+      this.pendingNativePrepareAttemptId = "";
     }
     const cleanup: Promise<string> = (async (): Promise<string> => {
       const errors: string[] = [];
@@ -635,12 +722,12 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       if (errors.length === 0 && attemptId.length > 0) {
         try {
           if (!pawsUi.completePlatformVpnCleanup(attemptId)) {
-            errors.push('platform VPN cleanup acknowledgement rejected');
+            errors.push("platform VPN cleanup acknowledgement rejected");
           } else {
             hilog.info(
               LOG_DOMAIN,
               LOG_TAG,
-              'VPN cleanup acknowledged after native join and connection destroy attempt %{public}s',
+              "VPN cleanup acknowledged after native join and connection destroy attempt %{public}s",
               attemptId,
             );
           }
@@ -648,7 +735,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
           errors.push(`platform VPN cleanup acknowledgement: ${describeError(err)}`);
         }
       }
-      return errors.join('; ');
+      return errors.join("; ");
     })();
     this.pendingCleanup = cleanup;
     this.pendingCleanupConnection = connection;
@@ -660,11 +747,16 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     if (!cleanup) {
       return;
     }
-    let error = '';
+    let error = "";
     try {
-      error = await withTimeout(cleanup, PLATFORM_OPERATION_TIMEOUT_MS, 'pending VPN cleanup');
+      error = await withTimeout(cleanup, PLATFORM_OPERATION_TIMEOUT_MS, "pending VPN cleanup");
     } catch (err) {
-      hilog.warn(LOG_DOMAIN, LOG_TAG, 'pending VPN cleanup timed out, releasing barrier %{public}s', describeError(err));
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "pending VPN cleanup timed out, releasing barrier %{public}s",
+        describeError(err),
+      );
       if (this.pendingCleanup === cleanup) {
         this.pendingCleanup = undefined;
         this.pendingCleanupConnection = undefined;
@@ -687,22 +779,22 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     this.stopTelemetry();
     const connection = this.vpnConnection;
     const attemptId = this.activeAttemptId;
-    this.activeEngine = '';
-    this.activeOptionsJson = '';
+    this.activeEngine = "";
+    this.activeOptionsJson = "";
     this.activeUnderlyingNetId = 0;
-    this.lastEnginePlan = '';
+    this.lastEnginePlan = "";
     this.vpnConnection = undefined;
     this.tunFd = -1;
     this.starting = false;
-    this.activeAttemptId = '';
+    this.activeAttemptId = "";
     const cleanup = this.beginVpnCleanup(connection, attemptId);
     try {
-      const error = await withTimeout(cleanup, PLATFORM_OPERATION_TIMEOUT_MS, 'VPN cleanup');
+      const error = await withTimeout(cleanup, PLATFORM_OPERATION_TIMEOUT_MS, "VPN cleanup");
       if (error.length > 0) {
         throw new Error(error);
       }
-      this.journal.record('vpn-cleanup-complete', false);
-      updateTinyPawsForms(this.context.filesDir, 'VPN 已停止');
+      this.journal.record("vpn-cleanup-complete", false);
+      updateTinyPawsForms(this.context.filesDir, "VPN 已停止");
       if (this.pendingCleanup === cleanup) {
         this.pendingCleanup = undefined;
         this.pendingCleanupConnection = undefined;
@@ -710,7 +802,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     } catch (err) {
       // Keep pendingCleanup installed. A later request awaits the same Promise
       // and cannot create a classic VPN that a late destroy could tear down.
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'VPN cleanup pending %{public}s', describeError(err));
+      hilog.error(LOG_DOMAIN, LOG_TAG, "VPN cleanup pending %{public}s", describeError(err));
     }
   }
 
@@ -731,7 +823,12 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     try {
       pawsUi.cancelPlatformChangeWait();
     } catch (err) {
-      hilog.warn(LOG_DOMAIN, LOG_TAG, 'cancel platform change wait failed %{public}s', describeError(err));
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "cancel platform change wait failed %{public}s",
+        describeError(err),
+      );
     }
   }
 
@@ -748,7 +845,10 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
           // engines previously prepared/reloaded first, delaying cooperative
           // teardown or throwing before the terminal state could be observed.
           this.reconcileExtensionTerminal();
-          if (!this.platformSubscriptionActive || generation !== this.platformSubscriptionGeneration) {
+          if (
+            !this.platformSubscriptionActive ||
+            generation !== this.platformSubscriptionGeneration
+          ) {
             return;
           }
           try {
@@ -758,7 +858,12 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
           } catch (err) {
             // A config error must not disconnect the control subscription;
             // later Stop frames still need to reach this exact owner.
-            hilog.warn(LOG_DOMAIN, LOG_TAG, 'VPN config synchronization failed %{public}s', describeError(err));
+            hilog.warn(
+              LOG_DOMAIN,
+              LOG_TAG,
+              "VPN config synchronization failed %{public}s",
+              describeError(err),
+            );
           }
           this.reconcileExtensionTerminal();
           if (!changed) {
@@ -768,7 +873,12 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
           }
         }
       } catch (err) {
-        hilog.error(LOG_DOMAIN, LOG_TAG, 'platform subscription failed %{public}s', describeError(err));
+        hilog.error(
+          LOG_DOMAIN,
+          LOG_TAG,
+          "platform subscription failed %{public}s",
+          describeError(err),
+        );
         if (generation === this.platformSubscriptionGeneration) {
           this.platformSubscriptionActive = false;
         }
@@ -780,14 +890,27 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     const attemptId = this.activeAttemptId;
     const generation = this.requestGeneration;
     const run = async (): Promise<void> => {
-      if (!this.isCurrentRequest(generation, attemptId) || this.tunFd < 0) { return; }
+      if (!this.isCurrentRequest(generation, attemptId) || this.tunFd < 0) {
+        return;
+      }
       const planJson = await pawsUi.prepareEngine(this.activeOptionsJson, attemptId);
-      if (!this.isCurrentRequest(generation, attemptId)) { return; }
-      if (!force && planJson === this.lastEnginePlan) { return; }
-      await pawsUi.reloadEngine(this.activeOptionsJson, attemptId, planJson, this.activeUnderlyingNetId);
-      if (this.isCurrentRequest(generation, attemptId)) { this.lastEnginePlan = planJson; }
-      this.trimEngineMemory('engine-reload');
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'engine config synchronized from platform control');
+      if (!this.isCurrentRequest(generation, attemptId)) {
+        return;
+      }
+      if (!force && planJson === this.lastEnginePlan) {
+        return;
+      }
+      await pawsUi.reloadEngine(
+        this.activeOptionsJson,
+        attemptId,
+        planJson,
+        this.activeUnderlyingNetId,
+      );
+      if (this.isCurrentRequest(generation, attemptId)) {
+        this.lastEnginePlan = planJson;
+      }
+      this.trimEngineMemory("engine-reload");
+      hilog.info(LOG_DOMAIN, LOG_TAG, "engine config synchronized from platform control");
     };
     const next = this.reloadChain.then(run, run);
     this.reloadChain = next.catch((): void => {});
@@ -809,7 +932,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       this.reconcileExtensionTerminal();
       this.heartbeatTicks += 1;
       if (this.heartbeatTicks % 20 === 0) {
-        this.trimEngineMemory('heartbeat');
+        this.trimEngineMemory("heartbeat");
       }
     }, 3000);
   }
@@ -830,32 +953,43 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   private startDefaultNetworkMonitor(generation: number, attemptId: string): void {
     this.stopDefaultNetworkMonitor();
     const monitor = connection.createNetConnection({
-      netCapabilities: { bearerTypes: [], networkCap: [connection.NetCap.NET_CAPABILITY_INTERNET, connection.NetCap.NET_CAPABILITY_NOT_VPN] },
+      netCapabilities: {
+        bearerTypes: [],
+        networkCap: [
+          connection.NetCap.NET_CAPABILITY_INTERNET,
+          connection.NetCap.NET_CAPABILITY_NOT_VPN,
+        ],
+      },
     });
     const monitorGeneration = ++this.networkMonitorGeneration;
     this.defaultNetworkConnection = monitor;
     this.networkMonitorStartedAt = Date.now();
     this.knownNetworkIds.clear();
-    monitor.on('netAvailable', (handle: connection.NetHandle): void => {
+    monitor.on("netAvailable", (handle: connection.NetHandle): void => {
       if (handle.netId !== undefined) {
         this.knownNetworkIds.add(handle.netId);
       }
-      this.scheduleDefaultNetworkRefresh(generation, attemptId, monitorGeneration, 'available');
+      this.scheduleDefaultNetworkRefresh(generation, attemptId, monitorGeneration, "available");
     });
-    monitor.on('netLost', (handle: connection.NetHandle): void => {
+    monitor.on("netLost", (handle: connection.NetHandle): void => {
       if (handle.netId !== undefined) {
         this.knownNetworkIds.delete(handle.netId);
       }
-      this.scheduleDefaultNetworkRefresh(generation, attemptId, monitorGeneration, 'lost');
+      this.scheduleDefaultNetworkRefresh(generation, attemptId, monitorGeneration, "lost");
     });
     monitor.register((err?: Error): void => {
       if (err) {
-        hilog.warn(LOG_DOMAIN, LOG_TAG, 'default network monitor unavailable %{public}s', describeError(err));
+        hilog.warn(
+          LOG_DOMAIN,
+          LOG_TAG,
+          "default network monitor unavailable %{public}s",
+          describeError(err),
+        );
         if (this.defaultNetworkConnection === monitor) {
           this.defaultNetworkConnection = undefined;
         }
       } else {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'default network monitor registered');
+        hilog.info(LOG_DOMAIN, LOG_TAG, "default network monitor registered");
       }
     });
   }
@@ -866,9 +1000,11 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     monitorGeneration: number,
     reason: string,
   ): void {
-    if (monitorGeneration !== this.networkMonitorGeneration ||
+    if (
+      monitorGeneration !== this.networkMonitorGeneration ||
       !this.isCurrentRequest(generation, attemptId) ||
-      Date.now() - this.networkMonitorStartedAt < 3000) {
+      Date.now() - this.networkMonitorStartedAt < 3000
+    ) {
       return;
     }
     if (this.networkRefreshTimer >= 0) {
@@ -876,10 +1012,16 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     }
     this.networkRefreshTimer = setTimeout((): void => {
       this.networkRefreshTimer = -1;
-      this.refreshAfterDefaultNetworkChange(generation, attemptId, monitorGeneration, reason)
-        .catch((err: Error): void => {
-          hilog.warn(LOG_DOMAIN, LOG_TAG, 'default network refresh failed %{public}s', describeError(err));
-        });
+      this.refreshAfterDefaultNetworkChange(generation, attemptId, monitorGeneration, reason).catch(
+        (err: Error): void => {
+          hilog.warn(
+            LOG_DOMAIN,
+            LOG_TAG,
+            "default network refresh failed %{public}s",
+            describeError(err),
+          );
+        },
+      );
     }, 1500);
   }
 
@@ -889,8 +1031,10 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     monitorGeneration: number,
     reason: string,
   ): Promise<void> {
-    if (monitorGeneration !== this.networkMonitorGeneration ||
-      !this.isCurrentRequest(generation, attemptId)) {
+    if (
+      monitorGeneration !== this.networkMonitorGeneration ||
+      !this.isCurrentRequest(generation, attemptId)
+    ) {
       return;
     }
     const physicalNetwork = await getPhysicalNetwork();
@@ -901,11 +1045,11 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     pawsUi.setPhysicalNetwork(physicalNetwork.netId);
     await this.reloadActiveEngine(true);
     this.journal.record(`network-${reason}-reconciled`, true);
-    updateTinyPawsForms(this.context.filesDir, '网络已切换 · VPN 连接已刷新');
+    updateTinyPawsForms(this.context.filesDir, "网络已切换 · VPN 连接已刷新");
     hilog.info(
       LOG_DOMAIN,
       LOG_TAG,
-      'default network %{public}s reconciled engine=%{public}s networks=%{public}d',
+      "default network %{public}s reconciled engine=%{public}s networks=%{public}d",
       reason,
       this.activeEngine,
       this.knownNetworkIds.size,
@@ -924,7 +1068,12 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     if (monitor) {
       monitor.unregister((err?: Error): void => {
         if (err) {
-          hilog.info(LOG_DOMAIN, LOG_TAG, 'default network monitor unregister skipped %{public}s', describeError(err));
+          hilog.info(
+            LOG_DOMAIN,
+            LOG_TAG,
+            "default network monitor unregister skipped %{public}s",
+            describeError(err),
+          );
         }
       });
     }
@@ -940,11 +1089,11 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     try {
       lifecycle = pawsUi.extensionTick(attemptId);
     } catch (err) {
-      const message = describeError(err) || 'extension heartbeat failed';
+      const message = describeError(err) || "extension heartbeat failed";
       this.recordVpnFailureForAttempt(attemptId, message);
-      lifecycle = 'failed';
+      lifecycle = "failed";
     }
-    if (lifecycle !== 'failed' && lifecycle !== 'disconnected' && lifecycle !== 'stopping') {
+    if (lifecycle !== "failed" && lifecycle !== "disconnected" && lifecycle !== "stopping") {
       return;
     }
     this.stopHeartbeat();
@@ -979,33 +1128,74 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   }
 
   private persistTelemetry(generation: number, attemptId: string): void {
-    if (generation !== this.telemetryGeneration || attemptId !== this.activeAttemptId || !attemptId || this.telemetryPending) { return; }
+    if (
+      generation !== this.telemetryGeneration ||
+      attemptId !== this.activeAttemptId ||
+      !attemptId ||
+      this.telemetryPending
+    ) {
+      return;
+    }
     this.telemetryPending = true;
-    pawsUi.pollEngineTraffic().catch((err: Error): void => {
-      if (generation === this.telemetryGeneration && attemptId === this.activeAttemptId) {
-        hilog.warn(LOG_DOMAIN, LOG_TAG, 'persist VPN telemetry failed %{public}s', describeError(err));
-      }
-    }).finally((): void => {
-      if (generation === this.telemetryGeneration && attemptId === this.activeAttemptId) { this.telemetryPending = false; }
-    });
+    pawsUi
+      .pollEngineTraffic()
+      .catch((err: Error): void => {
+        if (generation === this.telemetryGeneration && attemptId === this.activeAttemptId) {
+          hilog.warn(
+            LOG_DOMAIN,
+            LOG_TAG,
+            "persist VPN telemetry failed %{public}s",
+            describeError(err),
+          );
+        }
+      })
+      .finally((): void => {
+        if (generation === this.telemetryGeneration && attemptId === this.activeAttemptId) {
+          this.telemetryPending = false;
+        }
+      });
   }
 
   private persistObservations(generation: number, attemptId: string): void {
-    if (generation !== this.telemetryGeneration || attemptId !== this.activeAttemptId || !attemptId || this.observationsPending) { return; }
+    if (
+      generation !== this.telemetryGeneration ||
+      attemptId !== this.activeAttemptId ||
+      !attemptId ||
+      this.observationsPending
+    ) {
+      return;
+    }
     this.observationsPending = true;
-    pawsUi.pollEngineObservations().catch((err: Error): void => {
-      if (generation === this.telemetryGeneration && attemptId === this.activeAttemptId) {
-        hilog.warn(LOG_DOMAIN, LOG_TAG, 'observe VPN runtime failed %{public}s', describeError(err));
-      }
-    }).finally((): void => {
-      if (generation === this.telemetryGeneration && attemptId === this.activeAttemptId) { this.observationsPending = false; }
-    });
+    pawsUi
+      .pollEngineObservations()
+      .catch((err: Error): void => {
+        if (generation === this.telemetryGeneration && attemptId === this.activeAttemptId) {
+          hilog.warn(
+            LOG_DOMAIN,
+            LOG_TAG,
+            "observe VPN runtime failed %{public}s",
+            describeError(err),
+          );
+        }
+      })
+      .finally((): void => {
+        if (generation === this.telemetryGeneration && attemptId === this.activeAttemptId) {
+          this.observationsPending = false;
+        }
+      });
   }
 
   private trimEngineMemory(reason: string): void {
-    try { pawsUi.trimEngineMemory(); }
-    catch (err) {
-      hilog.warn(LOG_DOMAIN, LOG_TAG, 'trim engine memory (%{public}s) failed %{public}s', reason, describeError(err));
+    try {
+      pawsUi.trimEngineMemory();
+    } catch (err) {
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "trim engine memory (%{public}s) failed %{public}s",
+        reason,
+        describeError(err),
+      );
     }
   }
 }

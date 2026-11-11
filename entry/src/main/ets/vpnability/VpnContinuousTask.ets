@@ -1,17 +1,13 @@
-import { common, wantAgent, WantAgent } from '@kit.AbilityKit';
-import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
-import { notificationManager } from '@kit.NotificationKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
-import pawsUi from 'libpaws_ui.so';
-import {
-  currentPawsBundleName,
-  PAWS_ENTRY_ABILITY,
-  PAWS_MODULE_NAME,
-} from './VpnConfig';
+import { common, wantAgent, WantAgent } from "@kit.AbilityKit";
+import { backgroundTaskManager } from "@kit.BackgroundTasksKit";
+import { notificationManager } from "@kit.NotificationKit";
+import { hilog } from "@kit.PerformanceAnalysisKit";
+import pawsUi from "libpaws_ui.so";
+import { currentPawsBundleName, PAWS_ENTRY_ABILITY, PAWS_MODULE_NAME } from "./VpnConfig";
 
 const LOG_DOMAIN: number = 0x0000;
-const LOG_TAG: string = 'PawsBackground';
-const BACKGROUND_MODE: string = 'dataTransfer';
+const LOG_TAG: string = "PawsBackground";
+const BACKGROUND_MODE: string = "dataTransfer";
 const PROGRESS_UPDATE_INTERVAL_MS: number = 30 * 1000;
 const PROGRESS_WINDOW_BYTES: number = 100 * 1024 * 1024;
 
@@ -42,26 +38,27 @@ export class VpnContinuousTask {
   private cancelHandler?: (info: backgroundTaskManager.ContinuousTaskCancelInfo) => void;
   private tickHandler?: () => void;
 
-  private readonly cancellationListener =
-    (info: backgroundTaskManager.ContinuousTaskCancelInfo): void => {
-      const activeId = this.taskNotification?.continuousTaskId;
-      if (activeId !== undefined && info.id !== activeId) {
-        return;
-      }
-      hilog.warn(
-        LOG_DOMAIN,
-        LOG_TAG,
-        'continuous VPN task cancelled id=%{public}d reason=%{public}d detail=%{public}s',
-        info.id,
-        info.reason,
-        info.detailedReason === undefined ? '' : info.detailedReason.toString(),
-      );
-      this.clearLocalState();
-      const handler = this.cancelHandler;
-      if (!this.stopping && handler !== undefined) {
-        handler(info);
-      }
-    };
+  private readonly cancellationListener = (
+    info: backgroundTaskManager.ContinuousTaskCancelInfo,
+  ): void => {
+    const activeId = this.taskNotification?.continuousTaskId;
+    if (activeId !== undefined && info.id !== activeId) {
+      return;
+    }
+    hilog.warn(
+      LOG_DOMAIN,
+      LOG_TAG,
+      "continuous VPN task cancelled id=%{public}d reason=%{public}d detail=%{public}s",
+      info.id,
+      info.reason,
+      info.detailedReason === undefined ? "" : info.detailedReason.toString(),
+    );
+    this.clearLocalState();
+    const handler = this.cancelHandler;
+    if (!this.stopping && handler !== undefined) {
+      handler(info);
+    }
+  };
 
   start(
     context: common.UIAbilityContext,
@@ -74,8 +71,12 @@ export class VpnContinuousTask {
     if (this.taskNotification !== undefined) {
       if (this.wantAgent !== undefined) {
         this.publishProgress(this.taskNotification, this.wantAgent).catch((err: Error): void => {
-          hilog.warn(LOG_DOMAIN, LOG_TAG,
-            'continuous VPN progress refresh failed %{public}s', String(err));
+          hilog.warn(
+            LOG_DOMAIN,
+            LOG_TAG,
+            "continuous VPN progress refresh failed %{public}s",
+            String(err),
+          );
         });
       }
       return Promise.resolve();
@@ -85,15 +86,18 @@ export class VpnContinuousTask {
     }
     const request = this.startInternal(context);
     this.startRequest = request;
-    request.then((): void => {
-      if (this.startRequest === request) {
-        this.startRequest = undefined;
-      }
-    }, (): void => {
-      if (this.startRequest === request) {
-        this.startRequest = undefined;
-      }
-    });
+    request.then(
+      (): void => {
+        if (this.startRequest === request) {
+          this.startRequest = undefined;
+        }
+      },
+      (): void => {
+        if (this.startRequest === request) {
+          this.startRequest = undefined;
+        }
+      },
+    );
     return request;
   }
 
@@ -110,10 +114,10 @@ export class VpnContinuousTask {
         await backgroundTaskManager.stopBackgroundRunning(context);
       }
       if (wasRequested) {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'continuous VPN task stopped');
+        hilog.info(LOG_DOMAIN, LOG_TAG, "continuous VPN task stopped");
       }
     } finally {
-      backgroundTaskManager.off('continuousTaskCancel', this.cancellationListener);
+      backgroundTaskManager.off("continuousTaskCancel", this.cancellationListener);
       this.taskNotification = undefined;
       this.wantAgent = undefined;
       this.cancelHandler = undefined;
@@ -125,8 +129,8 @@ export class VpnContinuousTask {
 
   private async startInternal(context: common.UIAbilityContext): Promise<void> {
     const agent = await this.createWantAgent();
-    backgroundTaskManager.off('continuousTaskCancel', this.cancellationListener);
-    backgroundTaskManager.on('continuousTaskCancel', this.cancellationListener);
+    backgroundTaskManager.off("continuousTaskCancel", this.cancellationListener);
+    backgroundTaskManager.on("continuousTaskCancel", this.cancellationListener);
     try {
       const task = await backgroundTaskManager.startBackgroundRunning(
         context,
@@ -140,8 +144,12 @@ export class VpnContinuousTask {
         const currentTask = this.taskNotification;
         if (currentTask !== undefined) {
           this.publishProgress(currentTask, agent).catch((err: Error): void => {
-            hilog.warn(LOG_DOMAIN, LOG_TAG,
-              'continuous VPN progress update failed %{public}s', String(err));
+            hilog.warn(
+              LOG_DOMAIN,
+              LOG_TAG,
+              "continuous VPN progress update failed %{public}s",
+              String(err),
+            );
           });
         }
         const tick = this.tickHandler;
@@ -149,20 +157,24 @@ export class VpnContinuousTask {
           try {
             tick();
           } catch (err) {
-            hilog.warn(LOG_DOMAIN, LOG_TAG,
-              'continuous VPN tick handler failed %{public}s', String(err));
+            hilog.warn(
+              LOG_DOMAIN,
+              LOG_TAG,
+              "continuous VPN tick handler failed %{public}s",
+              String(err),
+            );
           }
         }
       }, PROGRESS_UPDATE_INTERVAL_MS);
       hilog.info(
         LOG_DOMAIN,
         LOG_TAG,
-        'continuous VPN task started notification=%{public}d task=%{public}s mode=dataTransfer',
+        "continuous VPN task started notification=%{public}d task=%{public}s mode=dataTransfer",
         task.notificationId,
-        task.continuousTaskId === undefined ? '' : task.continuousTaskId.toString(),
+        task.continuousTaskId === undefined ? "" : task.continuousTaskId.toString(),
       );
     } catch (err) {
-      backgroundTaskManager.off('continuousTaskCancel', this.cancellationListener);
+      backgroundTaskManager.off("continuousTaskCancel", this.cancellationListener);
       if (this.taskNotification !== undefined) {
         await backgroundTaskManager.stopBackgroundRunning(context).catch((): void => {});
       }
@@ -173,12 +185,14 @@ export class VpnContinuousTask {
 
   private createWantAgent(): Promise<WantAgent> {
     return wantAgent.getWantAgent({
-      wants: [{
-        bundleName: currentPawsBundleName(),
-        moduleName: PAWS_MODULE_NAME,
-        abilityName: PAWS_ENTRY_ABILITY,
-        parameters: { pawsContinuousTask: true },
-      }],
+      wants: [
+        {
+          bundleName: currentPawsBundleName(),
+          moduleName: PAWS_MODULE_NAME,
+          abilityName: PAWS_ENTRY_ABILITY,
+          parameters: { pawsContinuousTask: true },
+        },
+      ],
       actionType: wantAgent.OperationType.START_ABILITY,
       requestCode: 17043,
       actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG],
@@ -191,7 +205,7 @@ export class VpnContinuousTask {
   ): Promise<void> {
     const traffic = this.readTraffic();
     const total = Math.max(0, (traffic.downloadBytes ?? 0) + (traffic.uploadBytes ?? 0));
-    const progress = Math.floor((total % PROGRESS_WINDOW_BYTES) * 100 / PROGRESS_WINDOW_BYTES);
+    const progress = Math.floor(((total % PROGRESS_WINDOW_BYTES) * 100) / PROGRESS_WINDOW_BYTES);
     const text = `↓ ${formatSpeed(traffic.downloadSpeed)} · ↑ ${formatSpeed(traffic.uploadSpeed)}`;
     const totalText = `累计 ${formatBytes(total)}`;
     const request: notificationManager.NotificationRequest = {
@@ -206,7 +220,7 @@ export class VpnContinuousTask {
           notificationManager.ContentType.NOTIFICATION_CONTENT_SYSTEM_LIVE_VIEW,
         systemLiveView: {
           typeCode: 8,
-          title: 'Paws · VPN 正在传输数据',
+          title: "Paws · VPN 正在传输数据",
           text: `${text} · ${totalText}`,
           progress: {
             maxValue: 100,
@@ -216,9 +230,9 @@ export class VpnContinuousTask {
         },
       },
       template: {
-        name: 'downloadTemplate',
+        name: "downloadTemplate",
         data: {
-          title: 'Paws · VPN 正在运行',
+          title: "Paws · VPN 正在运行",
           fileName: `${text} · ${totalText}`,
           progressValue: progress,
         },
@@ -228,7 +242,7 @@ export class VpnContinuousTask {
     hilog.info(
       LOG_DOMAIN,
       LOG_TAG,
-      'continuous VPN progress notification=%{public}d bytes=%{public}d progress=%{public}d',
+      "continuous VPN progress notification=%{public}d bytes=%{public}d progress=%{public}d",
       task.notificationId,
       total,
       progress,
@@ -240,8 +254,12 @@ export class VpnContinuousTask {
       const snapshot = JSON.parse(pawsUi.queryVpnSpeed()) as PawsRuntimeSnapshot;
       return snapshot.traffic ?? {};
     } catch (err) {
-      hilog.warn(LOG_DOMAIN, LOG_TAG,
-        'continuous VPN task could not read traffic %{public}s', String(err));
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "continuous VPN task could not read traffic %{public}s",
+        String(err),
+      );
       return {};
     }
   }

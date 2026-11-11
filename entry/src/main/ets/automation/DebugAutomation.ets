@@ -1,10 +1,10 @@
-import { Want } from '@kit.AbilityKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
-import pawsUi from 'libpaws_ui.so';
-import { describeError } from '../common/Errors';
+import { Want } from "@kit.AbilityKit";
+import { hilog } from "@kit.PerformanceAnalysisKit";
+import pawsUi from "libpaws_ui.so";
+import { describeError } from "../common/Errors";
 
 const LOG_DOMAIN: number = 0x0000;
-const LOG_TAG: string = 'PawsAutomation';
+const LOG_TAG: string = "PawsAutomation";
 
 interface PawsAutomationParams {
   pawsProfileContent?: string;
@@ -44,208 +44,245 @@ export function runDebugAutomation(
     return Promise.resolve();
   }
   return run(want, startVpn).catch((err: Error) => {
-    hilog.error(LOG_DOMAIN, LOG_TAG, 'debug automation failed %{public}s', describeError(err));
-    throw new Error(describeError(err) || 'debug automation failed');
+    hilog.error(LOG_DOMAIN, LOG_TAG, "debug automation failed %{public}s", describeError(err));
+    throw new Error(describeError(err) || "debug automation failed");
   });
 }
 
-async function run(
-  want: Want,
-  startVpn: (optionsJson: string) => Promise<void>,
-): Promise<void> {
+async function run(want: Want, startVpn: (optionsJson: string) => Promise<void>): Promise<void> {
   const profileContent = automationProfileContent(want);
-  const profileUrl = wantString(want, 'pawsProfileUrl');
-  const profileName = wantString(want, 'pawsProfileName') || 'Paws Smoke Profile';
-  const delayProxy = wantString(want, 'pawsDelayProxy');
-  const echoProxy = wantString(want, 'pawsEchoProxy');
-  const mode = wantString(want, 'pawsMode');
-  const selectGroup = wantString(want, 'pawsSelectGroup');
-  const selectProxy = wantString(want, 'pawsSelectProxy');
-  const selectionRequested = automationParam(want, 'pawsSelectGroup') !== undefined ||
-    automationParam(want, 'pawsSelectProxy') !== undefined;
+  const profileUrl = wantString(want, "pawsProfileUrl");
+  const profileName = wantString(want, "pawsProfileName") || "Paws Smoke Profile";
+  const delayProxy = wantString(want, "pawsDelayProxy");
+  const echoProxy = wantString(want, "pawsEchoProxy");
+  const mode = wantString(want, "pawsMode");
+  const selectGroup = wantString(want, "pawsSelectGroup");
+  const selectProxy = wantString(want, "pawsSelectProxy");
+  const selectionRequested =
+    automationParam(want, "pawsSelectGroup") !== undefined ||
+    automationParam(want, "pawsSelectProxy") !== undefined;
   if (selectionRequested && (selectGroup.trim().length === 0 || selectProxy.trim().length === 0)) {
-    throw new Error('diagnostic proxy selection requires both pawsSelectGroup and pawsSelectProxy');
+    throw new Error("diagnostic proxy selection requires both pawsSelectGroup and pawsSelectProxy");
   }
   if (
     profileContent.length === 0 &&
     profileUrl.length === 0 &&
-    !wantBool(want, 'pawsAutoStartVpn') &&
+    !wantBool(want, "pawsAutoStartVpn") &&
     delayProxy.length === 0 &&
     echoProxy.length === 0 &&
     mode.length === 0 &&
     !selectionRequested &&
-    !wantBool(want, 'pawsVerifyAppHttp')
+    !wantBool(want, "pawsVerifyAppHttp")
   ) {
     return;
   }
 
-  let profileId = '';
+  let profileId = "";
   if (profileContent.length > 0) {
-    profileId =
-      await pawsUi.importProfileFromContentAndActivate(profileName, 'harmony-smoke', profileContent);
+    profileId = await pawsUi.importProfileFromContentAndActivate(
+      profileName,
+      "harmony-smoke",
+      profileContent,
+    );
   } else if (profileUrl.length > 0) {
     profileId = await pawsUi.importProfileFromUrlAndActivate(profileUrl, profileName);
   }
 
   if (profileId.length > 0) {
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation profile ready %{public}s', profileId);
+    hilog.info(LOG_DOMAIN, LOG_TAG, "debug automation profile ready %{public}s", profileId);
   }
 
   if (mode.length > 0) {
-    if (!['rule', 'global', 'direct'].includes(mode)) { throw new Error('invalid diagnostic mode'); }
+    if (!["rule", "global", "direct"].includes(mode)) {
+      throw new Error("invalid diagnostic mode");
+    }
     await pawsUi.setMode(mode);
   }
 
   if (selectionRequested) {
     await pawsUi.selectProxy(selectGroup, selectProxy);
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation proxy selection committed');
+    hilog.info(LOG_DOMAIN, LOG_TAG, "debug automation proxy selection committed");
   }
 
-  if (wantBool(want, 'pawsAutoStartVpn')) {
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation requested VPN start');
+  if (wantBool(want, "pawsAutoStartVpn")) {
+    hilog.info(LOG_DOMAIN, LOG_TAG, "debug automation requested VPN start");
     let optionsJson = activeVpnOptionsJson();
-    const engine = wantString(want, 'pawsEngine');
+    const engine = wantString(want, "pawsEngine");
     if (engine.length > 0) {
-      if (!['mihomo', 'meow', 'sing-box'].includes(engine)) { throw new Error('invalid diagnostic engine'); }
+      if (!["mihomo", "meow", "sing-box"].includes(engine)) {
+        throw new Error("invalid diagnostic engine");
+      }
       const options = JSON.parse(optionsJson) as Record<string, Object>;
-      options['engine'] = engine === 'sing-box' ? 'singbox' : engine;
+      options["engine"] = engine === "sing-box" ? "singbox" : engine;
       optionsJson = JSON.stringify(options);
     }
     const vpnStart: Promise<void> = startVpn(optionsJson);
-    if (wantBool(want, 'pawsWaitForVpnBeforeProbes') || wantBool(want, 'pawsVerifyAppHttp')) {
+    if (wantBool(want, "pawsWaitForVpnBeforeProbes") || wantBool(want, "pawsVerifyAppHttp")) {
       await vpnStart;
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation VPN connected before probes');
+      hilog.info(LOG_DOMAIN, LOG_TAG, "debug automation VPN connected before probes");
     } else {
       vpnStart.catch((err: Error) => {
-        hilog.error(LOG_DOMAIN, LOG_TAG, 'debug automation VPN start failed %{public}s', err.message);
+        hilog.error(
+          LOG_DOMAIN,
+          LOG_TAG,
+          "debug automation VPN start failed %{public}s",
+          err.message,
+        );
       });
     }
   }
 
   await runDebugDelay(want);
   await runDebugEcho(want);
-  if (wantBool(want, 'pawsVerifyAppHttp')) {
+  if (wantBool(want, "pawsVerifyAppHttp")) {
     const result = await pawsUi.verifyAppHttpRegression();
-    hilog.info(LOG_DOMAIN, LOG_TAG, 'app HTTP acceptance %{public}s', result);
+    hilog.info(LOG_DOMAIN, LOG_TAG, "app HTTP acceptance %{public}s", result);
   }
 }
 
 function activeVpnOptionsJson(): string {
   const optionsJson = pawsUi.queryActiveVpnOptions();
   const options = JSON.parse(optionsJson) as Record<string, Object>;
-  if (!options || typeof options !== 'object' || Array.isArray(options)) {
-    throw new Error('active VPN options are unavailable');
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new Error("active VPN options are unavailable");
   }
   return optionsJson;
 }
 
 async function runDebugDelay(want: Want): Promise<void> {
-  const proxy = wantString(want, 'pawsDelayProxy');
+  const proxy = wantString(want, "pawsDelayProxy");
   if (proxy.length === 0) {
     return;
   }
-  const url = wantString(want, 'pawsDelayUrl');
-  const timeoutMs = wantNumber(want, 'pawsDelayTimeoutMs') || 5000;
-  const expectFailure = wantBool(want, 'pawsExpectDelayFailure');
+  const url = wantString(want, "pawsDelayUrl");
+  const timeoutMs = wantNumber(want, "pawsDelayTimeoutMs") || 5000;
+  const expectFailure = wantBool(want, "pawsExpectDelayFailure");
   let delay: number;
   try {
     delay = await pawsUi.testProxyDelay(proxy, url.length > 0 ? url : undefined, timeoutMs);
   } catch (err) {
     if (expectFailure) {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation delay failed as expected %{public}s',
-        describeError(err));
+      hilog.info(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "debug automation delay failed as expected %{public}s",
+        describeError(err),
+      );
       return;
     }
-    hilog.error(LOG_DOMAIN, LOG_TAG, 'debug automation delay failed %{public}s', describeError(err));
-    throw new Error(describeError(err) || 'debug automation delay failed');
+    hilog.error(
+      LOG_DOMAIN,
+      LOG_TAG,
+      "debug automation delay failed %{public}s",
+      describeError(err),
+    );
+    throw new Error(describeError(err) || "debug automation delay failed");
   }
   if (expectFailure) {
     throw new Error(`delay unexpectedly succeeded in ${delay} ms`);
   }
-  hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation delay result %{public}s %{public}d', proxy, delay);
+  hilog.info(
+    LOG_DOMAIN,
+    LOG_TAG,
+    "debug automation delay result %{public}s %{public}d",
+    proxy,
+    delay,
+  );
 }
 
 async function runDebugEcho(want: Want): Promise<void> {
-  const proxy = wantString(want, 'pawsEchoProxy');
+  const proxy = wantString(want, "pawsEchoProxy");
   if (proxy.length === 0) {
     return;
   }
-  const url = wantString(want, 'pawsEchoUrl');
+  const url = wantString(want, "pawsEchoUrl");
   if (url.length === 0) {
-    throw new Error('debug echo URL is required');
+    throw new Error("debug echo URL is required");
   }
-  const payload = wantString(want, 'pawsEchoPayload') || 'paws-echo-payload';
-  const timeoutMs = wantNumber(want, 'pawsEchoTimeoutMs') || 5000;
-  const expectFailure = wantBool(want, 'pawsExpectEchoFailure');
+  const payload = wantString(want, "pawsEchoPayload") || "paws-echo-payload";
+  const timeoutMs = wantNumber(want, "pawsEchoTimeoutMs") || 5000;
+  const expectFailure = wantBool(want, "pawsExpectEchoFailure");
   let echoed: string;
   try {
     echoed = await pawsUi.testProxyEcho(proxy, url, payload, timeoutMs);
   } catch (err) {
     if (expectFailure) {
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation echo failed as expected %{public}s',
-        describeError(err));
+      hilog.info(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "debug automation echo failed as expected %{public}s",
+        describeError(err),
+      );
       return;
     }
-    hilog.error(LOG_DOMAIN, LOG_TAG, 'debug automation echo failed %{public}s', describeError(err));
-    throw new Error(describeError(err) || 'debug automation echo failed');
+    hilog.error(LOG_DOMAIN, LOG_TAG, "debug automation echo failed %{public}s", describeError(err));
+    throw new Error(describeError(err) || "debug automation echo failed");
   }
   if (expectFailure) {
     throw new Error(`echo unexpectedly succeeded: ${echoed}`);
   }
   if (echoed !== payload) {
-    throw new Error('echo payload mismatch');
+    throw new Error("echo payload mismatch");
   }
-  hilog.info(LOG_DOMAIN, LOG_TAG, 'debug automation echo result %{public}s %{public}d',
-    proxy, echoed.length);
+  hilog.info(
+    LOG_DOMAIN,
+    LOG_TAG,
+    "debug automation echo result %{public}s %{public}d",
+    proxy,
+    echoed.length,
+  );
 }
 
-function automationParam(want: Want, key: keyof PawsAutomationParams): string | number | boolean | undefined {
+function automationParam(
+  want: Want,
+  key: keyof PawsAutomationParams,
+): string | number | boolean | undefined {
   const params = want.parameters as PawsAutomationParams | undefined;
   if (!params) {
     return undefined;
   }
   switch (key) {
-    case 'pawsProfileContent':
+    case "pawsProfileContent":
       return params.pawsProfileContent;
-    case 'pawsProfileContentBase64':
+    case "pawsProfileContentBase64":
       return params.pawsProfileContentBase64;
-    case 'pawsProfileContentEscaped':
+    case "pawsProfileContentEscaped":
       return params.pawsProfileContentEscaped;
-    case 'pawsProfileUrl':
+    case "pawsProfileUrl":
       return params.pawsProfileUrl;
-    case 'pawsProfileName':
+    case "pawsProfileName":
       return params.pawsProfileName;
-    case 'pawsEngine':
+    case "pawsEngine":
       return params.pawsEngine;
-    case 'pawsMode':
+    case "pawsMode":
       return params.pawsMode;
-    case 'pawsSelectGroup':
+    case "pawsSelectGroup":
       return params.pawsSelectGroup;
-    case 'pawsSelectProxy':
+    case "pawsSelectProxy":
       return params.pawsSelectProxy;
-    case 'pawsAutoStartVpn':
+    case "pawsAutoStartVpn":
       return params.pawsAutoStartVpn;
-    case 'pawsWaitForVpnBeforeProbes':
+    case "pawsWaitForVpnBeforeProbes":
       return params.pawsWaitForVpnBeforeProbes;
-    case 'pawsDelayProxy':
+    case "pawsDelayProxy":
       return params.pawsDelayProxy;
-    case 'pawsDelayUrl':
+    case "pawsDelayUrl":
       return params.pawsDelayUrl;
-    case 'pawsDelayTimeoutMs':
+    case "pawsDelayTimeoutMs":
       return params.pawsDelayTimeoutMs;
-    case 'pawsExpectDelayFailure':
+    case "pawsExpectDelayFailure":
       return params.pawsExpectDelayFailure;
-    case 'pawsEchoProxy':
+    case "pawsEchoProxy":
       return params.pawsEchoProxy;
-    case 'pawsEchoUrl':
+    case "pawsEchoUrl":
       return params.pawsEchoUrl;
-    case 'pawsEchoPayload':
+    case "pawsEchoPayload":
       return params.pawsEchoPayload;
-    case 'pawsEchoTimeoutMs':
+    case "pawsEchoTimeoutMs":
       return params.pawsEchoTimeoutMs;
-    case 'pawsExpectEchoFailure':
+    case "pawsExpectEchoFailure":
       return params.pawsExpectEchoFailure;
-    case 'pawsVerifyAppHttp':
+    case "pawsVerifyAppHttp":
       return params.pawsVerifyAppHttp;
     default:
       return undefined;
@@ -254,20 +291,20 @@ function automationParam(want: Want, key: keyof PawsAutomationParams): string | 
 
 function wantString(want: Want, key: keyof PawsAutomationParams): string {
   const value = automationParam(want, key);
-  return typeof value === 'string' ? value : '';
+  return typeof value === "string" ? value : "";
 }
 
 function wantBool(want: Want, key: keyof PawsAutomationParams): boolean {
   const value = automationParam(want, key);
-  return value === true || value === 'true' || value === '1' || value === 'yes';
+  return value === true || value === "true" || value === "1" || value === "yes";
 }
 
 function wantNumber(want: Want, key: keyof PawsAutomationParams): number {
   const value = automationParam(want, key);
-  if (typeof value === 'number') {
+  if (typeof value === "number") {
     return value;
   }
-  if (typeof value === 'string' && value.length > 0) {
+  if (typeof value === "string" && value.length > 0) {
     const parsed = Number.parseInt(value, 10);
     return Number.isFinite(parsed) ? parsed : 0;
   }
@@ -275,27 +312,27 @@ function wantNumber(want: Want, key: keyof PawsAutomationParams): number {
 }
 
 function automationProfileContent(want: Want): string {
-  const raw = wantString(want, 'pawsProfileContent');
+  const raw = wantString(want, "pawsProfileContent");
   if (raw.length > 0) {
     return raw;
   }
-  const base64 = wantString(want, 'pawsProfileContentBase64');
+  const base64 = wantString(want, "pawsProfileContentBase64");
   if (base64.length > 0) {
     return decodeBase64Utf8(base64);
   }
-  const escaped = wantString(want, 'pawsProfileContentEscaped');
-  return escaped.length > 0 ? escaped.replace(/\\n/g, '\n') : '';
+  const escaped = wantString(want, "pawsProfileContentEscaped");
+  return escaped.length > 0 ? escaped.replace(/\\n/g, "\n") : "";
 }
 
 function decodeBase64Utf8(value: string): string {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/').replace(/\s/g, '');
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const normalized = value.replace(/-/g, "+").replace(/_/g, "/").replace(/\s/g, "");
   const bytes: number[] = [];
   let buffer = 0;
   let bits = 0;
   for (let index = 0; index < normalized.length; index += 1) {
     const char = normalized.charAt(index);
-    if (char === '=') {
+    if (char === "=") {
       break;
     }
     const digit = alphabet.indexOf(char);
@@ -313,8 +350,8 @@ function decodeBase64Utf8(value: string): string {
 }
 
 function decodeUtf8(bytes: number[]): string {
-  let result = '';
-  for (let index = 0; index < bytes.length;) {
+  let result = "";
+  for (let index = 0; index < bytes.length; ) {
     const first = bytes[index];
     if (first < 0x80) {
       result += String.fromCharCode(first);
@@ -337,7 +374,7 @@ function decodeUtf8(bytes: number[]): string {
       result += String.fromCharCode(0xd800 + (offset >> 10), 0xdc00 + (offset & 0x3ff));
       index += 4;
     } else {
-      result += '\uFFFD';
+      result += "\uFFFD";
       index += 1;
     }
   }

@@ -1,5 +1,5 @@
-import { describe, beforeAll, beforeEach, afterEach, afterAll, it, expect } from '@ohos/hypium';
-import { Want } from '@kit.AbilityKit';
+import { describe, beforeAll, beforeEach, afterEach, afterAll, it, expect } from "@ohos/hypium";
+import { Want } from "@kit.AbilityKit";
 import {
   buildVpnWant,
   currentPawsBundleName,
@@ -14,21 +14,18 @@ import {
   readPlatformSharedMemoryFds,
   readPlatformStartAttemptId,
   setPawsBundleName,
-} from '../main/ets/vpnability/VpnConfig';
+} from "../main/ets/vpnability/VpnConfig";
 
 export default function localUnitTest() {
-  describe('vpnConfigUnitTest', () => {
-    beforeAll(() => {
-    });
+  describe("vpnConfigUnitTest", () => {
+    beforeAll(() => {});
     beforeEach(() => {
       setPawsBundleName(PAWS_BUNDLE_NAME);
     });
-    afterEach(() => {
-    });
-    afterAll(() => {
-    });
+    afterEach(() => {});
+    afterAll(() => {});
 
-    it('buildsVpnWantForExtensionAbility', 0, () => {
+    it("buildsVpnWantForExtensionAbility", 0, () => {
       const want = buildVpnWant('{"mtu":1400}');
       expect(want.bundleName).assertEqual(PAWS_BUNDLE_NAME);
       expect(want.moduleName).assertEqual(PAWS_MODULE_NAME);
@@ -36,16 +33,16 @@ export default function localUnitTest() {
       expect(want.parameters?.optionsJson).assertEqual('{"mtu":1400}');
     });
 
-    it('usesRuntimeBundleNameForVpnWant', 0, () => {
-      setPawsBundleName(' com.example.paws.debug ');
-      expect(currentPawsBundleName()).assertEqual('com.example.paws.debug');
-      expect(buildVpnWant().bundleName).assertEqual('com.example.paws.debug');
+    it("usesRuntimeBundleNameForVpnWant", 0, () => {
+      setPawsBundleName(" com.example.paws.debug ");
+      expect(currentPawsBundleName()).assertEqual("com.example.paws.debug");
+      expect(buildVpnWant().bundleName).assertEqual("com.example.paws.debug");
 
-      setPawsBundleName('');
+      setPawsBundleName("");
       expect(currentPawsBundleName()).assertEqual(PAWS_BUNDLE_NAME);
     });
 
-    it('parsesOptionsAndRejectsMalformedInput', 0, () => {
+    it("parsesOptionsAndRejectsMalformedInput", 0, () => {
       let missingRejected = false;
       let malformedRejected = false;
       try {
@@ -54,7 +51,7 @@ export default function localUnitTest() {
         missingRejected = true;
       }
       try {
-        parseOptions('bad-json');
+        parseOptions("bad-json");
       } catch (_err) {
         malformedRejected = true;
       }
@@ -64,7 +61,7 @@ export default function localUnitTest() {
       expect(parseOptions('{"mtu":1400,"ipv6":true}').ipv6).assertTrue();
     });
 
-    it('rejectsMalformedVpnOptionFields', 0, () => {
+    it("rejectsMalformedVpnOptionFields", 0, () => {
       const invalidOptions = [
         '{"addresses":"172.19.0.1/30"}',
         '{"routes":[1]}',
@@ -85,22 +82,22 @@ export default function localUnitTest() {
       });
     });
 
-    it('keepsDefaultDnsInSyncWithRustModel', 0, () => {
+    it("keepsDefaultDnsInSyncWithRustModel", 0, () => {
       const options = parseOptions(DEFAULT_OPTIONS_JSON);
-      expect(options.dnsAddresses?.[0]).assertEqual('172.19.0.2');
-      expect(options.dnsServers?.[0]).assertEqual('223.5.5.5');
-      expect(options.dnsServers?.[1]).assertEqual('119.29.29.29');
-      expect(options.dnsFallbacks?.[0]).assertEqual('1.1.1.1');
-      expect(options.dnsFallbacks?.[1]).assertEqual('8.8.8.8');
-      expect(options.dnsNameserverPolicy?.['geosite:cn']?.[0]).assertEqual('223.5.5.5');
-      expect(options.dnsNameserverPolicy?.['geosite:geolocation-!cn']?.[0]).assertEqual('1.1.1.1');
+      expect(options.dnsAddresses?.[0]).assertEqual("172.19.0.2");
+      expect(options.dnsServers?.[0]).assertEqual("223.5.5.5");
+      expect(options.dnsServers?.[1]).assertEqual("119.29.29.29");
+      expect(options.dnsFallbacks?.[0]).assertEqual("1.1.1.1");
+      expect(options.dnsFallbacks?.[1]).assertEqual("8.8.8.8");
+      expect(options.dnsNameserverPolicy?.["geosite:cn"]?.[0]).assertEqual("223.5.5.5");
+      expect(options.dnsNameserverPolicy?.["geosite:geolocation-!cn"]?.[0]).assertEqual("1.1.1.1");
     });
 
-    it('buildsVpnConfigForIpv4AndIpv6', 0, () => {
+    it("buildsVpnConfigForIpv4AndIpv6", 0, () => {
       const config = new PawsVpnConfig({
-        addresses: ['172.19.0.1/30', 'fdfe:dcba:9876::1/126'],
-        routes: ['0.0.0.0/0', '::/0'],
-        dnsAddresses: ['172.19.0.2'],
+        addresses: ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+        routes: ["0.0.0.0/0", "::/0"],
+        dnsAddresses: ["172.19.0.2"],
         mtu: 1400,
         ipv6: true,
       });
@@ -113,18 +110,24 @@ export default function localUnitTest() {
       expect(config.isIPv6Accepted).assertTrue();
     });
 
-    it('parsesLinkAddresses', 0, () => {
-      const ipv4 = parseLinkAddress('198.18.0.1/16', 32);
+    it("parsesLinkAddresses", 0, () => {
+      const ipv4 = parseLinkAddress("198.18.0.1/16", 32);
       expect(ipv4.address.family).assertEqual(1);
       expect(ipv4.prefixLength).assertEqual(16);
-      const ipv6 = parseLinkAddress('fdfe:dcba:9876::1/126', 128);
+      const ipv6 = parseLinkAddress("fdfe:dcba:9876::1/126", 128);
       expect(ipv6.address.family).assertEqual(2);
       expect(ipv6.prefixLength).assertEqual(126);
-      const invalidValues = ['10.0.0.1/99', '10.0.0.1/no', '10.0.0.1/24junk', '999.2.3.4/24', '::1/129'];
+      const invalidValues = [
+        "10.0.0.1/99",
+        "10.0.0.1/no",
+        "10.0.0.1/24junk",
+        "999.2.3.4/24",
+        "::1/129",
+      ];
       invalidValues.forEach((value: string): void => {
         let rejected = false;
         try {
-          parseLinkAddress(value, value.includes(':') ? 128 : 32);
+          parseLinkAddress(value, value.includes(":") ? 128 : 32);
         } catch (_err) {
           rejected = true;
         }
@@ -132,7 +135,7 @@ export default function localUnitTest() {
       });
     });
 
-    it('rejectsUnsupportedGlobalBypass', 0, () => {
+    it("rejectsUnsupportedGlobalBypass", 0, () => {
       let rejected = false;
       try {
         new PawsVpnConfig({ allowBypass: true });
@@ -142,7 +145,7 @@ export default function localUnitTest() {
       expect(rejected).assertTrue();
     });
 
-    it('rejectsUnsupportedSystemProxy', 0, () => {
+    it("rejectsUnsupportedSystemProxy", 0, () => {
       let rejected = false;
       try {
         new PawsVpnConfig({ systemProxy: true });
@@ -152,11 +155,11 @@ export default function localUnitTest() {
       expect(rejected).assertTrue();
     });
 
-    it('readsDirectVpnExtensionWant', 0, () => {
+    it("readsDirectVpnExtensionWant", 0, () => {
       const want = {
         parameters: {
           optionsJson: '{"addresses":["172.19.0.1/30"]}',
-          pawsStartAttemptId: 'attempt-direct',
+          pawsStartAttemptId: "attempt-direct",
         },
         fds: {
           pawsPlatformAshmem: 21,
@@ -166,25 +169,25 @@ export default function localUnitTest() {
 
       const sharedMemory = readPlatformSharedMemoryFds(want);
       expect(readOptionsJson(want)).assertEqual('{"addresses":["172.19.0.1/30"]}');
-      expect(readPlatformStartAttemptId(want)).assertEqual('attempt-direct');
+      expect(readPlatformStartAttemptId(want)).assertEqual("attempt-direct");
       expect(sharedMemory?.ashmemFd).assertEqual(21);
       expect(sharedMemory?.notificationFd).assertEqual(22);
     });
 
-    it('readsFirstAuthorizationVpnExtensionWant', 0, () => {
+    it("readsFirstAuthorizationVpnExtensionWant", 0, () => {
       const want = {
         parameters: {
           callingUid: 20010048,
           callingPid: 1234,
           myParams: {
             optionsJson: '{"addresses":["172.19.0.1/30"]}',
-            pawsStartAttemptId: 'attempt-first-authorization',
+            pawsStartAttemptId: "attempt-first-authorization",
             pawsPlatformAshmem: {
-              type: 'FD',
+              type: "FD",
               value: 31,
             },
             pawsPlatformNotification: {
-              type: 'FD',
+              type: "FD",
               value: 32,
             },
           },
@@ -193,22 +196,22 @@ export default function localUnitTest() {
 
       const sharedMemory = readPlatformSharedMemoryFds(want);
       expect(readOptionsJson(want)).assertEqual('{"addresses":["172.19.0.1/30"]}');
-      expect(readPlatformStartAttemptId(want)).assertEqual('attempt-first-authorization');
+      expect(readPlatformStartAttemptId(want)).assertEqual("attempt-first-authorization");
       expect(sharedMemory?.ashmemFd).assertEqual(31);
       expect(sharedMemory?.notificationFd).assertEqual(32);
     });
 
-    it('rejectsMalformedNestedFileDescriptors', 0, () => {
+    it("rejectsMalformedNestedFileDescriptors", 0, () => {
       const want = {
         parameters: {
           myParams: {
             optionsJson: '{"addresses":["172.19.0.1/30"]}',
             pawsPlatformAshmem: {
-              type: 'not-an-fd',
+              type: "not-an-fd",
               value: 31,
             },
             pawsPlatformNotification: {
-              type: 'FD',
+              type: "FD",
               value: -1,
             },
           },
