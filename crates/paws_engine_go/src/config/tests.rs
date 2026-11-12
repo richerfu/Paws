@@ -409,3 +409,63 @@ fn renderer_validates_provider_sources_through_the_native_shared_schema_without_
         assert!(!error.contains("private.synthetic.test"));
     }
 }
+
+#[test]
+fn runtime_dns_hardening_detours_poisoned_foreign_resolvers_and_sets_domestic_proxy_bootstrap() {
+    let source = r#"
+mode: rule
+dns:
+  enable: true
+  nameserver: ['223.5.5.5', '119.29.29.29']
+  fallback: ['1.1.1.1', 'https://dns.google/dns-query']
+  nameserver-policy:
+    'geosite:cn': ['223.5.5.5']
+    'geosite:geolocation-!cn': ['1.1.1.1', '8.8.8.8']
+proxies:
+  - {name: node, type: socks5, server: proxy.example.test, port: 1080}
+proxy-groups:
+  - {name: Proxy, type: select, proxies: [node, DIRECT]}
+rules: ['MATCH,Proxy']
+"#;
+    let mihomo_yaml = render_mihomo_runtime_yaml(source, &public_services()).unwrap();
+    let mihomo_doc: serde_yaml::Value = serde_yaml::from_str(&mihomo_yaml).unwrap();
+    assert_eq!(
+        mihomo_doc["dns"]["proxy-server-nameserver"],
+        serde_yaml::from_str::<serde_yaml::Value>("['223.5.5.5', '119.29.29.29']").unwrap()
+    );
+    assert_eq!(
+        mihomo_doc["dns"]["fallback"],
+        serde_yaml::from_str::<serde_yaml::Value>(
+            "['tcp://1.1.1.1:53#Proxy', 'https://8.8.8.8/dns-query#Proxy']"
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        mihomo_doc["dns"]["nameserver-policy"]["geosite:geolocation-!cn"],
+        serde_yaml::from_str::<serde_yaml::Value>(
+            "['tcp://1.1.1.1:53#Proxy', 'tcp://8.8.8.8:53#Proxy']"
+        )
+        .unwrap()
+    );
+
+    let sing_config = render(source);
+    assert_eq!(
+        sing_config["paws_runtime"]["dnsConfig"]["fallbacks"],
+        json!(["tcp://1.1.1.1:53#Proxy", "https://8.8.8.8/dns-query#Proxy"])
+    );
+    assert_eq!(
+        sing_config["paws_runtime"]["dnsConfig"]["nameserverPolicy"]["geosite:geolocation-!cn"],
+        json!(["tcp://1.1.1.1:53#Proxy", "tcp://8.8.8.8:53#Proxy"])
+    );
+
+    let meow_yaml =
+        harden_runtime_dns_yaml(source, Some(RuntimeMode::Rule), &BTreeMap::new(), true).unwrap();
+    let meow_doc: serde_yaml::Value = serde_yaml::from_str(&meow_yaml).unwrap();
+    assert_eq!(
+        meow_doc["dns"]["fallback"],
+        serde_yaml::from_str::<serde_yaml::Value>(
+            "['tcp://1.1.1.1:53#Proxy', 'tcp://8.8.8.8:53#Proxy']"
+        )
+        .unwrap()
+    );
+}

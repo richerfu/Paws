@@ -784,7 +784,15 @@ export class VpnPlugin extends AsyncPluginBase {
     if (!this.isStartupHealthCurrent(sessionId, generation, intentEpoch)) {
       return;
     }
-    if (health.rollbackToBaseline && health.actualEngine !== "mihomo") {
+    let requestedAuto = true;
+    try {
+      const parsedOptions = JSON.parse(optionsJson) as Record<string, Object>;
+      const requestedEngine = parsedOptions["engine"];
+      if (typeof requestedEngine === "string" && requestedEngine.length > 0) {
+        requestedAuto = requestedEngine === "auto";
+      }
+    } catch (_) {}
+    if (requestedAuto && health.rollbackToBaseline && health.actualEngine !== "mihomo") {
       hilog.warn(
         LOG_DOMAIN,
         LOG_TAG,

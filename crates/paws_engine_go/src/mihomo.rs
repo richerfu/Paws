@@ -18,6 +18,7 @@ mod native {
     type Setup = unsafe extern "C" fn(*mut c_void, *mut c_char, *mut c_char);
     type StartTun =
         unsafe extern "C" fn(*mut c_void, c_int, *mut c_char, *mut c_char, *mut c_char) -> bool;
+    type SetPhysicalNetwork = unsafe extern "C" fn(i32);
     type VoidCall = unsafe extern "C" fn();
     type Stop = unsafe extern "C" fn() -> *mut c_char;
     type CopyLog = unsafe extern "C" fn(*mut c_char, usize) -> usize;
@@ -26,6 +27,7 @@ mod native {
         _handle: *mut c_void,
         setup: Setup,
         start: StartTun,
+        set_physical_network: SetPhysicalNetwork,
         stop: Stop,
         traffic: Traffic,
         total: Traffic,
@@ -147,6 +149,7 @@ mod native {
                     _handle: handle,
                     setup: symbol(handle, b"quickSetup\0")?,
                     start: symbol(handle, b"startTUN\0")?,
+                    set_physical_network: symbol(handle, b"TinyPawsMihomoSetPhysicalNetwork\0")?,
                     stop: symbol(handle, b"TinyPawsMihomoStop\0")?,
                     traffic: symbol(handle, b"getTraffic\0")?,
                     total: symbol(handle, b"getTotalTraffic\0")?,
@@ -232,12 +235,18 @@ mod native {
     }
     pub async fn start(request: &EngineStart, init: &str, config: &str) -> Result<(), String> {
         physical_network().store(request.underlying_network, Ordering::Release);
+        unsafe { (api()?.set_physical_network)(request.underlying_network) };
         setup(init, config).await?;
         let options = &request.options;
+        // HarmonyOS SELinux denies fstat() on the borrowed vpn-tun fd (breaking
+        // fdbased gVisor), and VpnConnection.protectProcessNet() bypasses vpn-tun
+        // for un-bound kernel loopback sockets in mihomo's system/mixed stack.
+        // Use mihomo's userspace mipstack ("mips") by default on OpenHarmony.
         let stack = match options.stack.as_str() {
             "gvisor" => "gvisor",
             "system" => "system",
-            _ => "mixed",
+            "mixed" => "mixed",
+            _ => "mips",
         };
         let addresses = if options.addresses.is_empty() {
             "172.19.0.1/30".into()
@@ -284,11 +293,16 @@ mod native {
     }
     pub async fn reload(init: &str, config: &str, net_id: i32) -> Result<(), String> {
         physical_network().store(net_id, Ordering::Release);
+        unsafe { (api()?.set_physical_network)(net_id) };
         setup(init, config).await
     }
     pub fn stop() -> Result<(), String> {
         let error = unsafe { (api()?.stop)() };
         if error.is_null() {
+            physical_network().store(0, Ordering::Release);
+            if let Ok(api) = api() {
+                unsafe { (api.set_physical_network)(0) };
+            }
             return Ok(());
         }
         let message = unsafe { CStr::from_ptr(error) }

@@ -75,6 +75,8 @@ struct PreparedEngine {
     config_revision: u64,
     options: VpnOptions,
     #[serde(default)]
+    config_fingerprint: String,
+    #[serde(default)]
     controller_endpoint: Option<paws_engine::EngineControllerEndpoint>,
     #[serde(default)]
     config_json: String,
@@ -105,6 +107,7 @@ impl PreparedEngine {
             attempt_id: attempt_id.into(),
             config_revision,
             options,
+            config_fingerprint: String::new(),
             controller_endpoint: None,
             config_json: String::new(),
             work_dir: PathBuf::new(),
@@ -478,19 +481,101 @@ impl CoreHandle {
         // MTU can truncate valid packets in an MTU-sized native read buffer.
         Ok(options.mtu)
     }
+    fn compute_engine_reload_fingerprint(
+        &self,
+        engine: VpnEngine,
+        options_json: &str,
+        attempt_id: &str,
+    ) -> Result<String, PawsError> {
+        use sha2::{Digest, Sha256};
+        let options: VpnOptions = from_json(options_json)?;
+        let normalized_options = to_json(&options)?;
+        let remote_control = self
+            .platform_ipc()?
+            .and_then(|platform| platform.read_remote().ok().flatten())
+            .and_then(|envelope| envelope.control);
+        let mut state = self.lock_state()?;
+        self.sync_platform_vpn_state_locked(&mut state);
+        ensure_platform_attempt_active(&state, attempt_id)?;
+        let profile_id = state
+            .profiles
+            .active_profile()
+            .ok_or_else(|| PawsError::Core("activate a profile before starting VPN".to_owned()))?
+            .to_owned();
+        let mut hasher = Sha256::new();
+        hasher.update(engine.as_str().as_bytes());
+        hasher.update([0]);
+        hasher.update(attempt_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(state.config_revision.to_le_bytes());
+        hasher.update([0]);
+        hasher.update(profile_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(normalized_options.as_bytes());
+        if engine != VpnEngine::Meow {
+            let control = remote_control
+                .filter(|control| control.active_profile.as_deref() == Some(profile_id.as_str()));
+            let mode = control.as_ref().map_or(state.mode, |control| control.mode);
+            let runtime_yaml = state
+                .profiles
+                .render_runtime_yaml(&profile_id, mode, &options)?;
+            let selections = control
+                .map(|control| control.proxy_selections)
+                .unwrap_or(state.profiles.selected_proxies(&profile_id)?);
+            let pinned_yaml =
+                engine_policy::pin_benchmark_runtime_yaml(&runtime_yaml, &selections)?;
+            let services_json = serde_json::to_string(&paws_engine::EngineNetworkServices {
+                ports: state.network_ports,
+                access: state.controller_access.clone(),
+            })
+            .map_err(|error| PawsError::Core(error.to_string()))?;
+            hasher.update([0]);
+            hasher.update(mode.as_str().as_bytes());
+            hasher.update([0]);
+            hasher.update(pinned_yaml.as_bytes());
+            hasher.update([0]);
+            hasher.update(services_json.as_bytes());
+            if mode == RuntimeMode::Global {
+                hasher.update([0]);
+                if let Some(global) = selections.get("GLOBAL") {
+                    hasher.update(global.as_bytes());
+                }
+            }
+        }
+        Ok(format!("{:x}", hasher.finalize()))
+    }
     pub async fn prepare_engine(
         &self,
         options_json: &str,
         attempt_id: &str,
     ) -> Result<String, PawsError> {
+        self.prepare_engine_if_changed(options_json, attempt_id, None)
+            .await
+    }
+    pub async fn prepare_engine_if_changed(
+        &self,
+        options_json: &str,
+        attempt_id: &str,
+        previous_fingerprint: Option<&str>,
+    ) -> Result<String, PawsError> {
         let engine = VpnEngine::try_from(self.resolve_vpn_engine(options_json)?.as_str())?;
+        if let Some(previous) = previous_fingerprint.filter(|value| !value.is_empty()) {
+            let current =
+                self.compute_engine_reload_fingerprint(engine, options_json, attempt_id)?;
+            if current == previous {
+                return Ok(String::new());
+            }
+        }
         if engine == VpnEngine::Meow {
             self.prepare_platform_vpn(attempt_id).await?;
         }
         let _config = self.config_reload_lock.lock().await;
+        let fingerprint =
+            self.compute_engine_reload_fingerprint(engine, options_json, attempt_id)?;
         let revision = self.lock_state()?.config_revision;
         let mut plan =
             PreparedEngine::native(engine, attempt_id, revision, from_json(options_json)?);
+        plan.config_fingerprint = fingerprint;
         match engine {
             VpnEngine::Meow => {}
             VpnEngine::Mihomo => {
@@ -559,6 +644,9 @@ impl CoreHandle {
             self.validate_engine_plan(options_json, attempt_id, plan_json)?;
         let source_started_at = now_unix_nanos();
         if engine == VpnEngine::Meow {
+            if net_id > 0 {
+                crate::network_binding::configure_physical_network(net_id)?;
+            }
             self.start_platform_vpn_checked(fd, options_json, attempt_id, Some(expected_revision))
                 .await?;
             self.engine_observation_lane.resume();
@@ -639,6 +727,9 @@ impl CoreHandle {
             Self::ensure_config_revision_locked(&state, expected_revision)?;
         }
         if engine == VpnEngine::Meow {
+            if net_id > 0 {
+                crate::network_binding::configure_physical_network(net_id)?;
+            }
             // Session provider leases are retired on stop. Every real reload
             // builds fresh Live objects, never rebinds the previous registry.
             let profile = self
@@ -2250,6 +2341,63 @@ mod tests {
                 ui.snapshot().unwrap().proxy_groups[0].proxies[0].delay_ms,
                 Some(37)
             );
+        }
+        server.abort();
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn prepare_engine_if_changed_skips_secret_rotation_on_unchanged_or_selector_only_updates()
+    {
+        let (endpoint, server) = management_server(None).await;
+        let (core, root) = managed_core(endpoint).await;
+        for engine in [VpnEngine::Mihomo, VpnEngine::SingBox] {
+            let options = VpnOptions {
+                engine,
+                ..Default::default()
+            };
+            let options_json = to_json(&options).unwrap();
+            let first = core
+                .prepare_engine_if_changed(&options_json, "attempt-a", None)
+                .await
+                .unwrap();
+            let parsed: serde_json::Value = from_json(&first).unwrap();
+            let fp = parsed["configFingerprint"].as_str().unwrap().to_owned();
+            assert!(!fp.is_empty());
+            assert_eq!(
+                core.prepare_engine_if_changed(&options_json, "attempt-a", Some(&fp))
+                    .await
+                    .unwrap(),
+                ""
+            );
+            {
+                let mut state = core.lock_state().unwrap();
+                let profile_id = state.profiles.active_profile().unwrap().to_owned();
+                state
+                    .profiles
+                    .set_selected_proxy(&profile_id, "group", "node")
+                    .unwrap();
+            }
+            assert_eq!(
+                core.prepare_engine_if_changed(&options_json, "attempt-a", Some(&fp))
+                    .await
+                    .unwrap(),
+                "",
+                "live selector changes in Rule mode must not restart or rotate {engine:?}"
+            );
+            {
+                let mut state = core.lock_state().unwrap();
+                state.mode = RuntimeMode::Direct;
+            }
+            let after_mode = core
+                .prepare_engine_if_changed(&options_json, "attempt-a", Some(&fp))
+                .await
+                .unwrap();
+            assert!(!after_mode.is_empty());
+            {
+                let mut state = core.lock_state().unwrap();
+                state.mode = RuntimeMode::Rule;
+            }
         }
         server.abort();
         let _ = fs::remove_dir_all(root);

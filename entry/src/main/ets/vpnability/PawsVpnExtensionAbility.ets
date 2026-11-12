@@ -117,6 +117,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
   private activeOptionsJson: string = "";
   private activeUnderlyingNetId: number = 0;
   private lastEnginePlan: string = "";
+  private lastEngineFingerprint: string = "";
   private telemetryPending: boolean = false;
   private observationsPending: boolean = false;
   private telemetryGeneration: number = 0;
@@ -600,6 +601,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       "native VPN start",
     );
     this.lastEnginePlan = prepareResult.planJson;
+    this.lastEngineFingerprint = this.extractPlanFingerprint(prepareResult.planJson);
     this.trimEngineMemory("engine-start");
     this.requireCurrentRequest(generation, attemptId, vpnOwner);
     const lifecycle = pawsUi.extensionTick(attemptId);
@@ -783,6 +785,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     this.activeOptionsJson = "";
     this.activeUnderlyingNetId = 0;
     this.lastEnginePlan = "";
+    this.lastEngineFingerprint = "";
     this.vpnConnection = undefined;
     this.tunFd = -1;
     this.starting = false;
@@ -886,18 +889,40 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     }
   }
 
+  private extractPlanFingerprint(planJson: string): string {
+    if (planJson.length === 0) {
+      return "";
+    }
+    try {
+      const parsed = JSON.parse(planJson) as Record<string, Object>;
+      const fp = parsed["configFingerprint"];
+      return typeof fp === "string" ? fp : "";
+    } catch (_) {
+      return "";
+    }
+  }
+
   private async reloadActiveEngine(force: boolean): Promise<void> {
     const attemptId = this.activeAttemptId;
     const generation = this.requestGeneration;
     const run = async (): Promise<void> => {
-      if (!this.isCurrentRequest(generation, attemptId) || this.tunFd < 0) {
+      if (
+        !this.isCurrentRequest(generation, attemptId) ||
+        this.tunFd < 0 ||
+        this.starting ||
+        this.lastEnginePlan.length === 0
+      ) {
         return;
       }
-      const planJson = await pawsUi.prepareEngine(this.activeOptionsJson, attemptId);
+      const planJson = await pawsUi.prepareEngine(
+        this.activeOptionsJson,
+        attemptId,
+        force ? undefined : this.lastEngineFingerprint,
+      );
       if (!this.isCurrentRequest(generation, attemptId)) {
         return;
       }
-      if (!force && planJson === this.lastEnginePlan) {
+      if (!force && (planJson.length === 0 || planJson === this.lastEnginePlan)) {
         return;
       }
       await pawsUi.reloadEngine(
@@ -908,6 +933,7 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
       );
       if (this.isCurrentRequest(generation, attemptId)) {
         this.lastEnginePlan = planJson;
+        this.lastEngineFingerprint = this.extractPlanFingerprint(planJson);
       }
       this.trimEngineMemory("engine-reload");
       hilog.info(LOG_DOMAIN, LOG_TAG, "engine config synchronized from platform control");
@@ -974,6 +1000,9 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     monitor.on("netLost", (handle: connection.NetHandle): void => {
       if (handle.netId !== undefined) {
         this.knownNetworkIds.delete(handle.netId);
+        if (this.activeUnderlyingNetId > 0 && handle.netId !== this.activeUnderlyingNetId) {
+          return;
+        }
       }
       this.scheduleDefaultNetworkRefresh(generation, attemptId, monitorGeneration, "lost");
     });
@@ -1037,21 +1066,44 @@ export default class PawsVpnExtensionAbility extends VpnExtensionAbility {
     ) {
       return;
     }
-    const physicalNetwork = await getPhysicalNetwork();
-    if (physicalNetwork.netId <= 0) {
+    let resolvedNetId: number = 0;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const physicalNetwork = await getPhysicalNetwork();
+        resolvedNetId = physicalNetwork.netId;
+      } catch (_) {
+        resolvedNetId = 0;
+      }
+      if (resolvedNetId > 0) {
+        break;
+      }
+      if (attempt < 2) {
+        await new Promise<void>((resolve: () => void): void => {
+          setTimeout(resolve, 500);
+        });
+      }
+      if (
+        monitorGeneration !== this.networkMonitorGeneration ||
+        !this.isCurrentRequest(generation, attemptId)
+      ) {
+        return;
+      }
+    }
+    if (resolvedNetId <= 0 || resolvedNetId === this.activeUnderlyingNetId) {
       return;
     }
-    this.activeUnderlyingNetId = physicalNetwork.netId;
-    pawsUi.setPhysicalNetwork(physicalNetwork.netId);
+    this.activeUnderlyingNetId = resolvedNetId;
+    pawsUi.setPhysicalNetwork(resolvedNetId);
     await this.reloadActiveEngine(true);
     this.journal.record(`network-${reason}-reconciled`, true);
     updateTinyPawsForms(this.context.filesDir, "网络已切换 · VPN 连接已刷新");
     hilog.info(
       LOG_DOMAIN,
       LOG_TAG,
-      "default network %{public}s reconciled engine=%{public}s networks=%{public}d",
+      "default network %{public}s reconciled engine=%{public}s netId=%{public}d networks=%{public}d",
       reason,
       this.activeEngine,
+      resolvedNetId,
       this.knownNetworkIds.size,
     );
   }

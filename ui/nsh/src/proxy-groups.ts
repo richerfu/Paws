@@ -28,13 +28,17 @@ export function primarySelectedGroupLeaf(groups: ProxyGroup[]): string | undefin
 }
 export function groupMembers(groups: Pick<ProxyGroup, "name">[], group: ProxyGroup) {
   if (group.name.toUpperCase() !== "GLOBAL") return group.proxies;
-  const nodes = group.proxies.filter(
-    (proxy) =>
-      !groups.some((group) => group.name === proxy.name) &&
-      !["direct", "reject", "rejectdrop"].includes(
-        proxy.proxyType.toLowerCase().replace(/[^a-z0-9]/g, ""),
-      ),
-  );
+  const groupNames = new Set(groups.map((item) => item.name));
+  const nodes = group.proxies.filter((proxy) => {
+    if (groupNames.has(proxy.name)) return false;
+    const kind = proxy.proxyType.toLowerCase();
+    return (
+      kind !== "direct" &&
+      kind !== "reject" &&
+      kind !== "rejectdrop" &&
+      kind !== "reject-drop"
+    );
+  });
   return nodes.length ? nodes : group.proxies.filter((proxy) => proxy.name === "DIRECT");
 }
 export function selectableGroup(group: Pick<ProxyGroup, "groupType">): boolean {

@@ -107,11 +107,11 @@ func (th *TunHandler) handleProtect(fd int) error {
 	th.mu.RLock()
 	defer th.mu.RUnlock()
 
-	if th.listener == nil || th.callback == nil {
-		// The tun routes are already live at this point (Android establishes
-		// them before it hands the fd over), so an unprotected socket would be
-		// routed straight back into the tunnel and hang until it times out.
-		// Failing it here costs nothing and is at least visible.
+	if th.callback == nil {
+		// The tun routes are already live at this point (Android/OpenHarmony
+		// establishes them before handing the fd over), so an unprotected socket
+		// would loop back into the tunnel. Note th.listener is still nil while
+		// t.Start runs; th.callback is valid from TunHandler construction until clear().
 		return errTunNotReady
 	}
 
@@ -169,7 +169,18 @@ func installHooks() {
 			}
 			th := activeTunHandler.Load()
 			if th == nil {
-				return nil
+				if runtime.GOOS != "openharmony" {
+					return nil
+				}
+				var protectErr error
+				if err := conn.Control(func(fd uintptr) {
+					if !protect(nil, int(fd)) {
+						protectErr = errProtectRefused
+					}
+				}); err != nil {
+					return err
+				}
+				return protectErr
 			}
 			var protectErr error
 			if err := conn.Control(func(fd uintptr) {
@@ -266,9 +277,22 @@ var (
 	dnsUpdateSeq atomic.Uint64
 )
 
-func handleUpdateDns(value string) {
+func handleUpdateDnsSync(value string) {
 	// mihomo turns the [""] that Split returns for no servers into a "udp://:"
 	// nameserver, which keeps the system resolver off its default fallback.
+	var addr []string
+	if value != "" {
+		addr = strings.Split(value, ",")
+	}
+	dnsUpdateSeq.Add(1)
+	dnsUpdateMu.Lock()
+	defer dnsUpdateMu.Unlock()
+	log.Infoln("[DNS] updateDns %s", value)
+	dns.UpdateSystemDNS(addr)
+	dns.FlushCacheWithDefaultResolver()
+}
+
+func handleUpdateDns(value string) {
 	var addr []string
 	if value != "" {
 		addr = strings.Split(value, ",")
@@ -298,6 +322,7 @@ func (response MethodResponse) send() {
 }
 
 func init() {
+	installHooks()
 	registerMethod(updateDnsMethod, withArguments(func(value *string, response MethodResponse) {
 		handleUpdateDns(*value)
 		response.success(true)

@@ -88,6 +88,8 @@ pub fn render_mihomo_runtime_yaml(
     root.insert(key("geo-auto-update"), serde_yaml::Value::Bool(false));
     root.remove(key("geo-update-interval"));
     repair_mihomo_dns_detours(root);
+    let runtime_mode = runtime_mode_from_mapping(root);
+    harden_runtime_dns_mapping(root, runtime_mode, &BTreeMap::new(), false);
     let tun = root
         .entry(key("tun"))
         .or_insert_with(|| serde_yaml::Value::Mapping(serde_yaml::Mapping::new()));
@@ -95,24 +97,14 @@ pub fn render_mihomo_runtime_yaml(
         EngineError::InvalidConfig("profile field 'tun' must be a mapping".to_owned())
     })?;
     tun.insert(key("enable"), serde_yaml::Value::Bool(false));
-    tun.insert(key("stack"), serde_yaml::Value::String("gvisor".to_owned()));
+    tun.insert(key("stack"), serde_yaml::Value::String("mips".to_owned()));
     tun.insert(key("auto-route"), serde_yaml::Value::Bool(false));
     serde_yaml::to_string(&value).map_err(|error| EngineError::InvalidConfig(error.to_string()))
 }
 
 fn repair_mihomo_dns_detours(root: &mut serde_yaml::Mapping) {
     let key = |name: &str| serde_yaml::Value::String(name.to_owned());
-    let route_names = ["proxy-groups", "proxies"]
-        .into_iter()
-        .filter_map(|field| {
-            root.get(key(field))
-                .and_then(serde_yaml::Value::as_sequence)
-        })
-        .flatten()
-        .filter_map(serde_yaml::Value::as_mapping)
-        .filter_map(|item| item.get(key("name")).and_then(serde_yaml::Value::as_str))
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
+    let route_names = declared_route_names(root);
     let Some(dns) = root
         .get_mut(key("dns"))
         .and_then(serde_yaml::Value::as_mapping_mut)
@@ -195,6 +187,350 @@ fn repair_mihomo_dns_detours(root: &mut serde_yaml::Mapping) {
     }
 }
 
+pub fn harden_runtime_dns_yaml(
+    runtime_yaml: &str,
+    mode: Option<RuntimeMode>,
+    selections: &BTreeMap<String, String>,
+    plain_tcp_only_detour: bool,
+) -> Result<String, EngineError> {
+    let mut value: serde_yaml::Value = serde_yaml::from_str(runtime_yaml)
+        .map_err(|error| EngineError::InvalidConfig(error.to_string()))?;
+    let Some(root) = value.as_mapping_mut() else {
+        return Ok(runtime_yaml.to_owned());
+    };
+    repair_mihomo_dns_detours(root);
+    let resolved_mode = mode.unwrap_or_else(|| runtime_mode_from_mapping(root));
+    harden_runtime_dns_mapping(root, resolved_mode, selections, plain_tcp_only_detour);
+    serde_yaml::to_string(&value).map_err(|error| EngineError::InvalidConfig(error.to_string()))
+}
+
+fn runtime_mode_from_mapping(root: &serde_yaml::Mapping) -> RuntimeMode {
+    match yaml_string(root, "mode")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "direct" => RuntimeMode::Direct,
+        "global" => RuntimeMode::Global,
+        _ => RuntimeMode::Rule,
+    }
+}
+
+fn declared_field_names(root: &serde_yaml::Mapping, field: &str) -> Vec<String> {
+    yaml_field(root, field)
+        .and_then(serde_yaml::Value::as_sequence)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_yaml::Value::as_mapping)
+        .filter_map(|item| yaml_field(item, "name").and_then(serde_yaml::Value::as_str))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn declared_route_names(root: &serde_yaml::Mapping) -> Vec<String> {
+    let mut names = declared_field_names(root, "proxy-groups");
+    names.extend(declared_field_names(root, "proxies"));
+    names
+}
+
+fn resolve_declared_route(route_names: &[String], candidate: &str) -> Option<String> {
+    let candidate = candidate.trim();
+    if candidate.is_empty()
+        || matches!(
+            candidate.to_ascii_uppercase().as_str(),
+            "DIRECT" | "REJECT" | "REJECT-DROP" | "PASS" | "COMPATIBLE"
+        )
+    {
+        return None;
+    }
+    route_names
+        .iter()
+        .find(|name| {
+            name.as_str() == candidate
+                || name
+                    .trim_start_matches(|character: char| !character.is_alphanumeric())
+                    .trim()
+                    == candidate
+        })
+        .cloned()
+}
+
+fn preferred_dns_detour(
+    root: &serde_yaml::Mapping,
+    mode: RuntimeMode,
+    selections: &BTreeMap<String, String>,
+) -> Option<String> {
+    if mode == RuntimeMode::Direct {
+        return None;
+    }
+    let group_names = declared_field_names(root, "proxy-groups");
+    let proxy_names = declared_field_names(root, "proxies");
+    if group_names.is_empty() && proxy_names.is_empty() {
+        return None;
+    }
+    let mut all_routes = group_names.clone();
+    all_routes.extend(proxy_names.clone());
+    if mode == RuntimeMode::Global {
+        if let Some(selected) = selections
+            .get("GLOBAL")
+            .and_then(|target| resolve_declared_route(&all_routes, target))
+        {
+            return Some(selected);
+        }
+    } else if let Some(rules) = yaml_field(root, "rules").and_then(serde_yaml::Value::as_sequence) {
+        for entry in rules.iter().rev().filter_map(serde_yaml::Value::as_str) {
+            let mut parts = entry.split(',');
+            let Some(kind) = parts.next() else {
+                continue;
+            };
+            if matches!(kind.trim().to_ascii_uppercase().as_str(), "MATCH" | "FINAL") {
+                if let Some(target) = parts
+                    .next()
+                    .and_then(|target| resolve_declared_route(&all_routes, target))
+                {
+                    return Some(target);
+                }
+            }
+        }
+    }
+    group_names
+        .into_iter()
+        .next()
+        .or_else(|| proxy_names.into_iter().next())
+}
+
+fn poisoned_foreign_dns_canonical_ip(host: &str) -> Option<&'static str> {
+    match host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "1.1.1.1" | "cloudflare-dns.com" | "one.one.one.one" => Some("1.1.1.1"),
+        "1.0.0.1" => Some("1.0.0.1"),
+        "8.8.8.8" | "dns.google" => Some("8.8.8.8"),
+        "8.8.4.4" => Some("8.8.4.4"),
+        "9.9.9.9" | "dns.quad9.net" => Some("9.9.9.9"),
+        "149.112.112.112" => Some("149.112.112.112"),
+        "208.67.222.222" => Some("208.67.222.222"),
+        "208.67.220.220" => Some("208.67.220.220"),
+        "2606:4700:4700::1111" => Some("[2606:4700:4700::1111]"),
+        "2606:4700:4700::1001" => Some("[2606:4700:4700::1001]"),
+        "2001:4860:4860::8888" => Some("[2001:4860:4860::8888]"),
+        "2001:4860:4860::8844" => Some("[2001:4860:4860::8844]"),
+        _ => None,
+    }
+}
+
+fn rewrite_dns_server_entry(
+    raw: &str,
+    default_detour: &str,
+    route_names: &[String],
+    plain_tcp_only_detour: bool,
+) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() || matches!(raw, "system" | "local" | "dhcp://system") {
+        return None;
+    }
+    if let Some((address_part, explicit_fragment)) = raw.split_once('#') {
+        if !plain_tcp_only_detour {
+            return None;
+        }
+        let detour = resolve_declared_route(route_names, explicit_fragment)?;
+        let normalized = if address_part.contains("://") {
+            address_part.to_owned()
+        } else if let Ok(ip) = address_part.parse::<IpAddr>() {
+            format!("udp://{}", std::net::SocketAddr::new(ip, 53))
+        } else {
+            format!("udp://{address_part}")
+        };
+        let url = reqwest::Url::parse(&normalized).ok()?;
+        if matches!(url.scheme(), "udp" | "tcp") {
+            return None;
+        }
+        let host = url
+            .host_str()?
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let tcp_host = if let Some(canonical) = poisoned_foreign_dns_canonical_ip(host) {
+            canonical.to_owned()
+        } else if let Ok(ip) = host.parse::<IpAddr>() {
+            if ip.is_ipv6() {
+                format!("[{ip}]")
+            } else {
+                ip.to_string()
+            }
+        } else {
+            return None;
+        };
+        return Some(format!("tcp://{tcp_host}:53#{detour}"));
+    }
+
+    let normalized = if raw.contains("://") {
+        raw.to_owned()
+    } else if let Ok(ip) = raw.parse::<IpAddr>() {
+        format!("udp://{}", std::net::SocketAddr::new(ip, 53))
+    } else if resolve_declared_route(route_names, raw).is_some() {
+        return None;
+    } else {
+        format!("udp://{raw}")
+    };
+    let url = reqwest::Url::parse(&normalized).ok()?;
+    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        return None;
+    }
+    let host = url.host_str()?;
+    let canonical_host = poisoned_foreign_dns_canonical_ip(host)?;
+    match url.scheme() {
+        "udp" | "tcp" => {
+            let port = url.port().unwrap_or(53);
+            if port == 0 || !matches!(url.path(), "" | "/") || url.query().is_some() {
+                return None;
+            }
+            Some(format!("tcp://{canonical_host}:{port}#{default_detour}"))
+        }
+        "https" | "h3" => {
+            let port = url.port();
+            if port == Some(0) {
+                return None;
+            }
+            if plain_tcp_only_detour {
+                return Some(format!("tcp://{canonical_host}:53#{default_detour}"));
+            }
+            let port_suffix = port.map(|p| format!(":{p}")).unwrap_or_default();
+            let path = if url.path().is_empty() || url.path() == "/" {
+                "/dns-query"
+            } else {
+                url.path()
+            };
+            let query = url.query().map(|q| format!("?{q}")).unwrap_or_default();
+            Some(format!(
+                "{}://{canonical_host}{port_suffix}{path}{query}#{default_detour}",
+                url.scheme()
+            ))
+        }
+        "tls" | "quic" => {
+            let port = url.port();
+            if port == Some(0) || !matches!(url.path(), "" | "/") || url.query().is_some() {
+                return None;
+            }
+            if plain_tcp_only_detour {
+                return Some(format!("tcp://{canonical_host}:53#{default_detour}"));
+            }
+            let port_suffix = port.map(|p| format!(":{p}")).unwrap_or_default();
+            Some(format!(
+                "{}://{canonical_host}{port_suffix}#{default_detour}",
+                url.scheme()
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn rewrite_dns_value_in_place(
+    value: &mut serde_yaml::Value,
+    default_detour: &str,
+    route_names: &[String],
+    plain_tcp_only_detour: bool,
+) {
+    match value {
+        serde_yaml::Value::String(raw) => {
+            if let Some(rewritten) =
+                rewrite_dns_server_entry(raw, default_detour, route_names, plain_tcp_only_detour)
+            {
+                *raw = rewritten;
+            }
+        }
+        serde_yaml::Value::Sequence(items) => {
+            let has_group_shorthand = items.iter().filter_map(serde_yaml::Value::as_str).any(|s| {
+                let s = s.trim();
+                !s.contains("://")
+                    && !s.contains('#')
+                    && s.parse::<IpAddr>().is_err()
+                    && resolve_declared_route(route_names, s).is_some()
+            });
+            if has_group_shorthand {
+                return;
+            }
+            for item in items.iter_mut() {
+                if let serde_yaml::Value::String(raw) = item {
+                    if let Some(rewritten) = rewrite_dns_server_entry(
+                        raw,
+                        default_detour,
+                        route_names,
+                        plain_tcp_only_detour,
+                    ) {
+                        *raw = rewritten;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn harden_runtime_dns_mapping(
+    root: &mut serde_yaml::Mapping,
+    mode: RuntimeMode,
+    selections: &BTreeMap<String, String>,
+    plain_tcp_only_detour: bool,
+) {
+    let route_names = declared_route_names(root);
+    let Some(detour) = preferred_dns_detour(root, mode, selections) else {
+        return;
+    };
+    let key = |name: &str| serde_yaml::Value::String(name.to_owned());
+    let Some(dns) = root
+        .get_mut(key("dns"))
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    else {
+        return;
+    };
+    if dns.get(key("enable")).and_then(serde_yaml::Value::as_bool) == Some(false) {
+        return;
+    }
+    let domestic_bootstrap = || {
+        serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::String("223.5.5.5".to_owned()),
+            serde_yaml::Value::String("119.29.29.29".to_owned()),
+        ])
+    };
+    for bootstrap_field in ["default-nameserver", "proxy-server-nameserver"] {
+        let missing_or_empty = match dns.get(key(bootstrap_field)) {
+            None | Some(serde_yaml::Value::Null) => true,
+            Some(serde_yaml::Value::Sequence(seq)) => seq.is_empty(),
+            _ => false,
+        };
+        if missing_or_empty {
+            dns.insert(key(bootstrap_field), domestic_bootstrap());
+        }
+    }
+    for list_field in ["nameserver", "fallback"] {
+        if let Some(value) = dns.get_mut(key(list_field)) {
+            rewrite_dns_value_in_place(value, &detour, &route_names, plain_tcp_only_detour);
+        }
+    }
+    if let Some(policy) = dns
+        .get_mut(key("nameserver-policy"))
+        .and_then(serde_yaml::Value::as_mapping_mut)
+    {
+        for (matcher, servers) in policy.iter_mut() {
+            let is_domestic_matcher = matcher.as_str().is_some_and(|m| {
+                matches!(
+                    m.trim().to_ascii_lowercase().as_str(),
+                    "geosite:cn" | "geosite:private" | "geosite:apple-cn" | "geosite:steam@cn"
+                )
+            });
+            if !is_domestic_matcher {
+                rewrite_dns_value_in_place(servers, &detour, &route_names, plain_tcp_only_detour);
+            }
+        }
+    }
+}
+
 pub struct RenderedSingBoxConfig {
     pub config_json: String,
     pub proxy_count: usize,
@@ -243,8 +579,14 @@ pub fn render_sing_box_runtime_json(
     services: &EngineNetworkServices,
 ) -> Result<RenderedSingBoxConfig, EngineError> {
     services.validate()?;
-    let value: serde_yaml::Value = serde_yaml::from_str(runtime_yaml)
+    let mut value: serde_yaml::Value = serde_yaml::from_str(runtime_yaml)
         .map_err(|error| EngineError::InvalidConfig(error.to_string()))?;
+    {
+        let root_mut = value.as_mapping_mut().ok_or_else(|| {
+            EngineError::InvalidConfig("profile root must be a YAML map".to_owned())
+        })?;
+        harden_runtime_dns_mapping(root_mut, mode, selections, false);
+    }
     let root = value
         .as_mapping()
         .ok_or_else(|| EngineError::InvalidConfig("profile root must be a YAML map".to_owned()))?;
