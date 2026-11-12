@@ -137,8 +137,8 @@ def main():
           (10, "provider-row-proxy-Second provider", True), (10, "provider-row-proxy-Test provider", False), (13, "provider-row-proxy-Second provider", False)], ["PASS REFRESH: error", "PASS REFRESH: idle"]),
         ("diagnostics-refresh", [hide, "nav-tools", "tool-diagnostics", "refresh-assert-one", "refresh-release-success", "refresh-assert-health-initial", "refresh-checks", "refresh-assert-one", "refresh-release-failure", "refresh-assert-error", "refresh-checks", "refresh-release-success", "refresh-assert-health-refreshed"],
          [(3, "refresh-checks", True), (6, "refresh-checks", False), (7, "refresh-checks", True), (10, "refresh-checks", False), (11, "refresh-checks", True), (13, "refresh-checks", False)], ["PASS REFRESH: error", "PASS REFRESH: health-initial", "PASS REFRESH: health-refreshed"]),
-        ("report-failure-retry", [hide, "nav-tools", "tool-advanced-diagnostics", "generate-report", "refresh-assert-one", "refresh-release-failure", "refresh-assert-error", "generate-report", "refresh-release-success", "refresh-assert-idle"],
-         [(4, "generate-report", True), (7, "generate-report", False), (8, "generate-report", True), (10, "generate-report", False)], ["PASS REFRESH: error", "PASS REFRESH: idle"]),
+        ("report-failure-retry", [hide, "nav-tools", "tool-diagnostics", "refresh-assert-one", "refresh-release-success", "diagnostics-advanced", "generate-report", "refresh-assert-one", "refresh-release-failure", "refresh-assert-error", "generate-report", "refresh-release-success", "refresh-assert-idle"],
+         [(7, "generate-report", True), (10, "generate-report", False), (11, "generate-report", True), (13, "generate-report", False)], ["PASS REFRESH: error", "PASS REFRESH: idle"]),
         ("pending-page-unmount", [hide, "nav-tools", "tool-resources", "provider-menu-proxy-Test provider", "refresh-provider-proxy-Test provider", "refresh-hide-app", "refresh-release-success", "refresh-assert-idle"],
          [(5, "provider-row-proxy-Test provider", True)], ["PASS REFRESH: idle"]),
     ]

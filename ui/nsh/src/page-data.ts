@@ -15,6 +15,7 @@ export function pageDomains(page: Page): DomainInput[] {
     case "proxy-group":
       return ["proxies"];
     case "traffic":
+    case "dns-diagnostics":
       return ["traffic", "dns"];
     case "resources":
       return ["rules", "providers", "geodata", "summary"];

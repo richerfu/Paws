@@ -1,11 +1,9 @@
 import { density, typography } from "../theme";
 import {
   computed,
-  fontScale,
   Scroll,
   Text,
   View,
-  windowSize,
   platform,
   type JSX,
   type ViewProps,
@@ -598,7 +596,6 @@ export function Traffic() {
     layout = useLayout(),
     current = () => ui.client.state()!;
   const detail = () => ui.client.domains.data("traffic")!;
-  const profile = () => detail().activeProfileUsage;
   const connections = () => detail().connectionSummary;
   const history = computed(() => current().trafficHistory.slice(-24));
   const peakDownload = computed(() =>
@@ -678,7 +675,7 @@ export function Traffic() {
             </View>
             <View style={{ gap: spacing.sm }}>
               <SectionHeader
-                title={ui.t("速率历史", "Speed history")}
+                title={ui.t("速率", "Speed")}
                 meta={`${history().length} ${ui.t("个采样", "samples")}`}
               />
               <ListSurface style={{ padding: spacing.md, gap: spacing.sm }}>
@@ -772,29 +769,6 @@ export function Traffic() {
                 </If>
               </ListSurface>
             </View>
-            <View style={{ gap: spacing.sm }}>
-              <SectionHeader title={ui.t("流量用量", "Traffic usage")} />
-              <View
-                style={{
-                  flexDirection:
-                    windowSize().width < 360 || fontScale() > 1.3
-                      ? "column"
-                      : "row",
-                  gap: spacing.md,
-                }}
-              >
-                <UsageCard
-                  title={ui.t("当前配置", "Current profile")}
-                  upload={profile()?.uploadBytes}
-                  download={profile()?.downloadBytes}
-                />
-                <UsageCard
-                  title={ui.t("本次会话", "This session")}
-                  upload={current().traffic.uploadBytes}
-                  download={current().traffic.downloadBytes}
-                />
-              </View>
-            </View>
           </View>
           <View
             style={{
@@ -805,7 +779,63 @@ export function Traffic() {
           >
             <View style={{ gap: spacing.sm }}>
               <SectionHeader
-                title={ui.t("DNS 与缓存", "DNS and cache")}
+                title={ui.t("连接与诊断", "Connections and diagnostics")}
+                meta={
+                  ui.client.domains.data("traffic")
+                    ?.connectionSummaryAvailable === false
+                    ? unavailable()
+                    : `${connections().count} ${ui.t("个活跃", "active")}`
+                }
+              />
+              <ListSurface>
+                <ListRow
+                  id="traffic-connections"
+                  icon="list-filter"
+                  title={ui.t("连接与请求", "Connections & requests")}
+                  subtitle={
+                    ui.client.domains.data("traffic")
+                      ?.connectionSummaryAvailable === false
+                      ? unavailable()
+                      : `${ui.t("总下载", "Downloaded")} ${bytes(connections().downloadBytes)} · ${ui.t("总上传", "Uploaded")} ${bytes(connections().uploadBytes)}`
+                  }
+                  chevron
+                  divider
+                  onPress={() => ui.navigate("connections")}
+                />
+                <ListRow
+                  id="traffic-dns"
+                  icon="globe"
+                  title={ui.t("DNS 与控制器诊断", "DNS and controller diagnostics")}
+                  subtitle={
+                    current().dns.statisticsAvailable
+                      ? `${ui.t("缓存命中", "Cache hits")} ${current().dns.cacheHits} / ${current().dns.cacheHits + current().dns.cacheMisses}`
+                      : unavailable()
+                  }
+                  chevron
+                  onPress={() => ui.navigate("dns-diagnostics")}
+                />
+              </ListSurface>
+            </View>
+          </View>
+        </View>
+      </Body>
+    </Scroll>
+  );
+}
+
+
+export function DnsDiagnostics() {
+  const ui = useApp(),
+    current = () => ui.client.state()!;
+  const unavailable = () =>
+    ui.t("当前内核未提供统计", "Statistics unavailable from this engine");
+  return (
+    <Scroll bounces={false} style={{ flex: 1 }}>
+      <Body>
+        <View style={{ gap: spacing.section }}>
+            <View style={{ gap: spacing.sm }}>
+              <SectionHeader
+                title={ui.t("DNS", "DNS")}
                 meta={
                   current().dns.configurationError
                     ? unavailable()
@@ -993,75 +1023,7 @@ export function Traffic() {
             </View>
             <View style={{ gap: spacing.sm }}>
               <SectionHeader
-                title={ui.t("当前连接", "Current connections")}
-                meta={
-                  ui.client.domains.data("traffic")
-                    ?.connectionSummaryAvailable === false
-                    ? unavailable()
-                    : `${connections().count} ${ui.t("个连接", "connections")}`
-                }
-              />
-              <ListSurface>
-                <TrafficRow>
-                  <Detail
-                    label={ui.t("总下载", "Total download")}
-                    value={
-                      ui.client.domains.data("traffic")
-                        ?.connectionSummaryAvailable === false
-                        ? unavailable()
-                        : bytes(connections().downloadBytes)
-                    }
-                  />
-                </TrafficRow>
-                <TrafficRow>
-                  <Detail
-                    label={ui.t("总上传", "Total upload")}
-                    value={
-                      ui.client.domains.data("traffic")
-                        ?.connectionSummaryAvailable === false
-                        ? unavailable()
-                        : bytes(connections().uploadBytes)
-                    }
-                  />
-                </TrafficRow>
-                <If
-                  when={
-                    ui.client.domains.data("traffic")
-                      ?.connectionSummaryAvailable !== false &&
-                    connections().count === 0
-                  }
-                >
-                  <TrafficRow>
-                    <Hint
-                      text={ui.t(
-                        "VPN 产生的 TCP 和 UDP 会话会显示在这里。",
-                        "TCP and UDP sessions from the VPN appear here.",
-                      )}
-                    />
-                  </TrafficRow>
-                </If>
-                <Each of={connections().recent} key={(row) => row.id}>
-                  {(row) => (
-                    <TrafficRow>
-                      <Detail
-                        stacked
-                        label={row().domain || row().host || row().destinationIp}
-                        value={`${bytes(row().downloadBytes)} ↓ · ${bytes(row().uploadBytes)} ↑`}
-                      />
-                    </TrafficRow>
-                  )}
-                </Each>
-                <ListRow
-                  id="traffic-connections"
-                  title={ui.t("连接与请求", "Connections & requests")}
-                  chevron
-                  onPress={() => ui.navigate("connections")}
-                />
-              </ListSurface>
-            </View>
-            <View style={{ gap: spacing.sm }}>
-              <SectionHeader
-                title={ui.t("控制器诊断", "Controller diagnostics")}
+                title={ui.t("控制器", "Controller")}
                 meta={
                   current().controllerAddr || ui.t("未启动", "Not started")
                 }
@@ -1112,7 +1074,6 @@ export function Traffic() {
                 </TrafficRow>
               </ListSurface>
             </View>
-          </View>
         </View>
       </Body>
     </Scroll>
@@ -1130,78 +1091,6 @@ function TrafficRow(props: { last?: boolean; children?: JSX.Element }) {
       }}
     >
       {props.children}
-    </View>
-  );
-}
-
-function UsageCard(props: {
-  title: string;
-  upload?: number;
-  download?: number;
-}) {
-  return (
-    <View
-      style={{
-        flex: 1,
-        minWidth: 0,
-        padding: spacing.md,
-        gap: density.space(8),
-        borderWidth: 1,
-        borderColor: palette().border,
-        borderRadius: radius.xl,
-        borderCurve: "continuous",
-        backgroundColor: palette().panel,
-        ...surfaceFinish("card"),
-      }}
-    >
-      <Text
-        style={{
-          numberOfLines: 1,
-          fontSize: density.font(13),
-          fontWeight: "600",
-          color: palette().muted,
-        }}
-      >
-        {props.title}
-      </Text>
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          gap: density.space(6),
-        }}
-      >
-        <Icon name="arrow-up" size={14} color={palette().chartUpload} />
-        <Text
-          style={{
-            fontSize: density.font(14),
-            fontWeight: "500",
-            color: palette().text,
-            fontVariant: ["tabular-nums"],
-          }}
-        >
-          {props.upload === undefined ? "—" : bytes(props.upload)}
-        </Text>
-      </View>
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          gap: density.space(6),
-        }}
-      >
-        <Icon name="arrow-down" size={14} color={palette().chartDownload} />
-        <Text
-          style={{
-            fontSize: density.font(14),
-            fontWeight: "500",
-            color: palette().text,
-            fontVariant: ["tabular-nums"],
-          }}
-        >
-          {props.download === undefined ? "—" : bytes(props.download)}
-        </Text>
-      </View>
     </View>
   );
 }

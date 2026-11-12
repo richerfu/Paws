@@ -1130,23 +1130,25 @@ function ProfileRow(props: {
               <Badge tone="brand" label={ui.t("当前", "Current")} />
             </If>
           </View>
-          <Text
-            style={{
-              numberOfLines: 1,
-              textOverflow: "ellipsis-middle",
-              fontSize: density.font(12),
-              lineHeight: density.line(18),
-              color: palette().muted,
-            }}
-          >
-            {props.profile.subscriptionUrl || props.profile.source}
-          </Text>
+          <If when={!(props.compact || windowSize().width < 840)}>
+            <Text
+              style={{
+                numberOfLines: 1,
+                textOverflow: "ellipsis-middle",
+                fontSize: typography.note,
+                lineHeight: density.line(platform.desktop ? 16 : 18),
+                color: palette().muted,
+              }}
+            >
+              {props.profile.subscriptionUrl || props.profile.source}
+            </Text>
+          </If>
           <If when={props.compact || windowSize().width < 840}>
             <Text
               style={{
                 numberOfLines: 1,
-                fontSize: density.font(12),
-                lineHeight: density.line(18),
+                fontSize: typography.note,
+                lineHeight: density.line(platform.desktop ? 16 : 18),
                 fontVariant: ["tabular-nums"],
                 color: props.profile.lastRefreshError
                   ? palette().danger
@@ -1154,7 +1156,6 @@ function ProfileRow(props: {
               }}
             >
               {updated()}
-              {usage() ? ` · ${usage()}` : ""}
             </Text>
           </If>
           <If when={!!props.profile.subscriptionUserInfo?.totalBytes && !props.detail}>
@@ -1168,6 +1169,19 @@ function ProfileRow(props: {
                 )}
               />
             </View>
+          </If>
+          <If when={(props.compact || windowSize().width < 840) && !!usage()}>
+            <Text
+              style={{
+                numberOfLines: 1,
+                fontSize: typography.note,
+                lineHeight: density.line(platform.desktop ? 16 : 18),
+                fontVariant: ["tabular-nums"],
+                color: palette().muted,
+              }}
+            >
+              {usage()}
+            </Text>
           </If>
         </View>
         <If when={!props.compact && windowSize().width >= 840}>

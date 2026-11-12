@@ -74,6 +74,7 @@ export type Page =
   | "proxies"
   | "proxy-group"
   | "traffic"
+  | "dns-diagnostics"
   | "tools"
   | "settings"
   | "appearance"

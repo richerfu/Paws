@@ -38,8 +38,8 @@ type Tool = {
   page: Page;
   zh: string;
   en: string;
-  descriptionZh: string;
-  descriptionEn: string;
+  descriptionZh?: string;
+  descriptionEn?: string;
   icon: IconName;
 };
 const sections: { zh: string; en: string; rows: Tool[] }[] = [
@@ -51,16 +51,16 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
         page: "settings",
         zh: "网络设置",
         en: "Network settings",
-        descriptionZh: "VPN、DNS 与网络栈",
-        descriptionEn: "VPN, DNS and network stack",
+        descriptionZh: "VPN、DNS、端口",
+        descriptionEn: "VPN, DNS and ports",
         icon: "sliders-horizontal",
       },
       {
         page: "appearance",
         zh: COPY["page-tr-001"][0],
         en: COPY["page-tr-001"][1],
-        descriptionZh: "语言、浅色与深色主题",
-        descriptionEn: "Language, light and dark themes",
+        descriptionZh: "语言与主题",
+        descriptionEn: "Language and theme",
         icon: "palette",
       },
     ],
@@ -89,8 +89,8 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
         page: "logs",
         zh: "日志",
         en: "Logs",
-        descriptionZh: COPY["page-tr-030"][0],
-        descriptionEn: COPY["page-tr-030"][1],
+        descriptionZh: "实时日志与按天归档",
+        descriptionEn: "Live logs and daily archives",
         icon: "file-text",
       },
     ],
@@ -103,40 +103,26 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
         page: "diagnostics",
         zh: COPY["diagnostics-title"][0],
         en: COPY["diagnostics-title"][1],
-        descriptionZh: "连接状态、HTTPS 探测与自动恢复",
-        descriptionEn: "Connection status, HTTPS probes and recovery",
+        descriptionZh: "连接状态与探测",
+        descriptionEn: "Connection status and probes",
         icon: "shield-check",
-      },
-      {
-        page: "advanced-diagnostics",
-        zh: "高级诊断",
-        en: "Advanced diagnostics",
-        descriptionZh: "域名 DoH 策略、脱敏报告与内核验收",
-        descriptionEn: "Domain DoH policy, redacted reports and qualification",
-        icon: "stethoscope",
       },
       {
         page: "backups",
         zh: "备份与恢复",
         en: "Backup & restore",
-        descriptionZh: COPY["backup-subtitle"][0],
-        descriptionEn: COPY["backup-subtitle"][1],
         icon: "download",
       },
       {
         page: "converter",
         zh: COPY["page-tr-002"][0],
         en: COPY["page-tr-002"][1],
-        descriptionZh: COPY["hard-zh-023"][0],
-        descriptionEn: COPY["hard-zh-023"][1],
         icon: "refresh-cw",
       },
       {
         page: "about",
         zh: "关于",
         en: "About",
-        descriptionZh: "开源信息、组件版本与隐私说明",
-        descriptionEn: "Open source, component versions and privacy",
         icon: "info",
       },
     ],
@@ -163,10 +149,11 @@ export function Tools() {
                       id={`tool-${tool().page}`}
                       icon={tool().icon}
                       title={ui.t(tool().zh, tool().en)}
-                      subtitle={ui.t(
-                        tool().descriptionZh,
-                        tool().descriptionEn,
-                      )}
+                      subtitle={
+                        tool().descriptionZh
+                          ? ui.t(tool().descriptionZh!, tool().descriptionEn!)
+                          : undefined
+                      }
                       divider={index() + 1 < section().rows.length}
                       chevron
                       onPress={() => ui.navigate(tool().page)}
@@ -177,16 +164,6 @@ export function Tools() {
             </View>
           )}
         </Each>
-        <Text
-          style={{
-            textAlign: "center",
-            marginTop: density.space(12),
-            fontSize: density.font(12),
-            color: palette().muted,
-          }}
-        >
-          Paws {ui.client.domains.data("summary")?.appVersion || ""}
-        </Text>
       </Body>
     </Scroll>
   );

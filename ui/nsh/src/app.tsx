@@ -55,7 +55,7 @@ import {
   desktopPrimary,
   desktopGroupTitle,
 } from "./desktop-navigation";
-import { Dashboard, Traffic } from "./pages/overview";
+import { Dashboard, DnsDiagnostics, Traffic } from "./pages/overview";
 import { FloatingVpnPowerButton } from "./floating-vpn";
 import { Profiles } from "./pages/profiles";
 import { ProfileEditor } from "./pages/profile-editor";
@@ -102,6 +102,7 @@ const titles: Record<Page, [string, string]> = {
   proxies: ["代理节点", "Proxy nodes"],
   "proxy-group": ["分组节点", "Group members"],
   traffic: ["流量", "Traffic"],
+  "dns-diagnostics": ["DNS 诊断", "DNS diagnostics"],
   tools: ["设置", "Settings"],
   settings: ["网络设置", "Network settings"],
   appearance: [...COPY["page-tr-001"]],
@@ -122,6 +123,7 @@ export function parentPage(page: Page): Page | undefined {
   if (primary.some((item) => item.page === page)) return undefined;
   if (page === "proxy-group") return "proxies";
   if (page === "activity-detail") return "connections";
+  if (page === "dns-diagnostics") return "traffic";
   return page === "proxies" || page === "editor" || page === "profile-detail"
     ? "profiles"
     : page === "privacy"
@@ -134,6 +136,7 @@ export function pageMeasure(page: Page, wide: boolean): number {
   if (["profiles", "profile-detail", "proxies", "proxy-group"].includes(page))
     return 1120;
   if (["traffic", "converter", "diagnostics"].includes(page)) return 1120;
+  if (page === "dns-diagnostics") return platform.desktop ? 720 : 640;
   if (page === "backups") return platform.desktop ? 1120 : 640;
   if (["requests", "connections", "resources", "logs"].includes(page))
     return 1180;
@@ -940,6 +943,9 @@ export function PawsApp(props: {
                             </If>
                             <If when={current.name === "traffic"}>
                               <Traffic />
+                            </If>
+                            <If when={current.name === "dns-diagnostics"}>
+                              <DnsDiagnostics />
                             </If>
                             <If when={current.name === "connections"}>
                               <Activity />
