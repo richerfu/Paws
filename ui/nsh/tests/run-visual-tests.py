@@ -277,13 +277,18 @@ def main():
     for width, height in [(320, 844), (390, 844), (1280, 900)]:
         for name, taps in CASES.items():
             if width >= 840 and taps[:1] == ['nav-tools']:
-                taps = navigation_steps(taps[1].removeprefix('tool-'), width) + taps[2:]
+                nav = navigation_steps(taps[1].removeprefix('tool-'), width)
+                # Wide Resources opens on profile rules; provider cases switch to the second section.
+                if name in ('resources', 'provider-detail', 'resources-end'):
+                    nav = nav + ['resources-section-resources']
+                taps = nav + taps[2:]
             command = [str(args.nsh_bin.resolve()), 'trace', ENTRY, '--width', str(width), '--height', str(height), '--wait', '30']
             for selector in ['visual-hide-controls', *taps]:
-                if name == 'rule-detail' and selector == 'rule-details-rule-1':
+                # Wide Resources shows one section whose rows fit on screen, so only the single-list phone layout scrolls.
+                if name == 'rule-detail' and selector == 'rule-details-rule-1' and width < 840:
                     command.extend(['--scroll', 'id:resources-list', '100000'])
                 command.extend(['--tap', 'id:' + selector])
-            if name == 'resources-end':
+            if name == 'resources-end' and width < 840:
                 command.extend(['--scroll', 'id:resources-list', '100000'])
             run = run_nsh(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=40)
             path = args.output_dir / f'{width}-{name}.log'
