@@ -1,7 +1,8 @@
 //! One bounded startup probe through the actual engine-owned ingress.
 use super::*;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum StartupCheck {
     Passed,
     Failed,
@@ -11,7 +12,8 @@ pub enum StartupCheck {
 
 /// Evidence for one actual VPN session. A cached result from another session
 /// or engine must never turn the current connection's indicators green.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StartupHealth {
     pub session: String,
     pub engine: VpnEngine,
@@ -93,6 +95,28 @@ mod presentation_tests {
     }
 }
 impl CoreHandle {
+    /// Read only the bounded evidence for the current session. Diagnostics do
+    /// not need to clone connections, DNS records, history and log projections.
+    pub fn startup_health(&self) -> Result<Option<StartupHealth>, PawsError> {
+        let (root, session, engine) = {
+            let mut state = self.lock_state()?;
+            self.sync_platform_vpn_state_locked(&mut state);
+            (
+                state.profiles.root().to_path_buf(),
+                platform_vpn_session_id(&state),
+                state.platform_vpn_engine,
+            )
+        };
+        let health = StartupHealth::read_current(&root, session.as_deref(), engine);
+        let mut state = self.lock_state()?;
+        self.sync_platform_vpn_state_locked(&mut state);
+        Ok(
+            (platform_vpn_session_id(&state) == session && state.platform_vpn_engine == engine)
+                .then_some(health)
+                .flatten(),
+        )
+    }
+
     pub async fn validate_engine_startup(
         &self,
         session: &str,
@@ -111,9 +135,17 @@ impl CoreHandle {
         let evidence = evidence
             .ok_or_else(|| PawsError::Core("actual engine session is unavailable".into()))?;
         let engine = evidence["engine"].as_str().unwrap_or("unknown");
-        let port = evidence["ingressPort"]
-            .as_u64()
-            .ok_or_else(|| PawsError::Core("actual engine ingress is unavailable".into()))?;
+        let proxy_url = {
+            let state = self.lock_state()?;
+            ensure_platform_attempt_active(&state, session)?;
+            state
+                .platform_app_http_proxy
+                .as_ref()
+                .ok_or_else(|| {
+                    PawsError::Core("actual engine authenticated ingress is unavailable".into())
+                })?
+                .proxy_url()
+        };
         let node = {
             let state = self.lock_state()?;
             let name = crate::engine_policy::selected_node(&state);
@@ -141,7 +173,7 @@ impl CoreHandle {
                 let client = reqwest::Client::builder()
                     .no_proxy()
                     .proxy(
-                        reqwest::Proxy::all(format!("http://127.0.0.1:{port}"))
+                        reqwest::Proxy::all(&proxy_url)
                             .map_err(|_| "proxy-configuration".to_owned())?,
                     )
                     .timeout(Duration::from_secs(8))
@@ -226,6 +258,18 @@ mod tests {
         .unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        {
+            let mut state = core.lock_state().unwrap();
+            state.platform_start_attempt_id = "probe-test".into();
+            state.platform_extension_attached = true;
+            state.platform_start_outcome = PlatformStartOutcome::Connected;
+            state.platform_vpn_running = true;
+            state.platform_vpn_engine = Some(VpnEngine::SingBox);
+            state.platform_app_http_proxy = Some(AppHttpProxyEndpoint {
+                port,
+                token: "synthetic-health-token".into(),
+            });
+        }
         std::fs::write(
             root.join("engine-session.json"),
             serde_json::json!({"session":"probe-test", "engine":"sing-box", "ingressPort":port})
@@ -238,6 +282,14 @@ mod tests {
             let size = stream.read(&mut request).await.unwrap();
             assert!(String::from_utf8_lossy(&request[..size])
                 .starts_with("CONNECT cp.cloudflare.com:443 "));
+            assert!(
+                String::from_utf8_lossy(&request[..size])
+                    .lines()
+                    .any(|line| line
+                        .to_ascii_lowercase()
+                        .starts_with("proxy-authorization: basic ")),
+                "startup health must use the authenticated engine ingress"
+            );
             stream
                 .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
                 .await

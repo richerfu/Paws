@@ -2,42 +2,51 @@ import {
   AsyncPluginBase,
   BridgeCallContext,
   BridgeContextRequirement,
-  BridgePluginContext,
   BridgePluginHookContext,
   BridgeTypedValue,
-} from '@ohos-rs/ability';
-import { vpnExtension } from '@kit.NetworkKit';
-import { notificationManager } from '@kit.NotificationKit';
-import { commonEventManager } from '@kit.BasicServicesKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
-import pawsUi from 'libpaws_ui.so';
-import { describeError } from '../common/Errors';
-import { buildVpnWant, PawsPlatformSharedMemoryFds } from '../vpnability/VpnConfig';
+} from "@ohos-rs/ability";
+import { common } from "@kit.AbilityKit";
+import { vpnExtension } from "@kit.NetworkKit";
+import { notificationManager } from "@kit.NotificationKit";
+import { commonEventManager } from "@kit.BasicServicesKit";
+import { hilog } from "@kit.PerformanceAnalysisKit";
+import pawsUi from "libpaws_ui.so";
+import { describeError } from "../common/Errors";
+import { buildVpnWant, PawsPlatformSharedMemoryFds } from "../vpnability/VpnConfig";
 import {
   authorizeVpnForEmulatorDebug,
   canRecoverRejectedEmulatorStop,
   isVpnEmulatorCompatibilityEnabled,
-} from '../vpnability/VpnEmulatorCompatibility';
-import { startVpnExtensionWithHandoff } from '../vpnability/VpnExtensionLauncher';
-import { vpnContinuousTask } from '../vpnability/VpnContinuousTask';
+} from "../vpnability/VpnEmulatorCompatibility";
+import { startVpnExtensionWithHandoff } from "../vpnability/VpnExtensionLauncher";
+import { vpnContinuousTask } from "../vpnability/VpnContinuousTask";
 
-interface EngineStartupHealth { success: boolean; actualEngine: string; rollbackToBaseline: boolean; stage: string; }
+interface EngineStartupHealth {
+  success: boolean;
+  actualEngine: string;
+  rollbackToBaseline: boolean;
+  stage: string;
+}
+
+interface VpnHostContext {
+  abilityContext: common.UIAbilityContext;
+}
 
 const LOG_DOMAIN: number = 0x0000;
-const LOG_TAG: string = 'PawsVpn';
+const LOG_TAG: string = "PawsVpn";
 
-const VPN_START_REQUEST_TYPE = 'paws.VpnStartRequest';
-const VPN_START_RESPONSE_TYPE = 'paws.VpnStartResponse';
-const VPN_STOP_REQUEST_TYPE = 'paws.VpnStopRequest';
-const VPN_STOP_RESPONSE_TYPE = 'paws.VpnStopResponse';
-const VPN_OWNED_STOP_REQUEST_TYPE = 'paws.VpnOwnedStopRequest';
-const VPN_OWNED_STOP_RESPONSE_TYPE = 'paws.VpnOwnedStopResponse';
-const VPN_RESTART_REQUEST_TYPE = 'paws.VpnRestartRequest';
-const VPN_RESTART_RESPONSE_TYPE = 'paws.VpnRestartResponse';
-const VPN_OPERATION_LOOKUP_REQUEST_TYPE = 'paws.VpnOperationLookupRequest';
-const VPN_OPERATION_LOOKUP_RESPONSE_TYPE = 'paws.VpnOperationLookupResponse';
-const VPN_OPERATION_WAIT_REQUEST_TYPE = 'paws.VpnOperationWaitRequest';
-const VPN_OPERATION_WAIT_RESPONSE_TYPE = 'paws.VpnOperationWaitResponse';
+const VPN_START_REQUEST_TYPE = "paws.VpnStartRequest";
+const VPN_START_RESPONSE_TYPE = "paws.VpnStartResponse";
+const VPN_STOP_REQUEST_TYPE = "paws.VpnStopRequest";
+const VPN_STOP_RESPONSE_TYPE = "paws.VpnStopResponse";
+const VPN_OWNED_STOP_REQUEST_TYPE = "paws.VpnOwnedStopRequest";
+const VPN_OWNED_STOP_RESPONSE_TYPE = "paws.VpnOwnedStopResponse";
+const VPN_RESTART_REQUEST_TYPE = "paws.VpnRestartRequest";
+const VPN_RESTART_RESPONSE_TYPE = "paws.VpnRestartResponse";
+const VPN_OPERATION_LOOKUP_REQUEST_TYPE = "paws.VpnOperationLookupRequest";
+const VPN_OPERATION_LOOKUP_RESPONSE_TYPE = "paws.VpnOperationLookupResponse";
+const VPN_OPERATION_WAIT_REQUEST_TYPE = "paws.VpnOperationWaitRequest";
+const VPN_OPERATION_WAIT_RESPONSE_TYPE = "paws.VpnOperationWaitResponse";
 const VPN_OPERATION_WAIT_MAX_MS: number = 45000;
 const MAX_RETAINED_VPN_OPERATIONS: number = 16;
 const VPN_COOPERATIVE_STOP_TIMEOUT_MS: number = 3000;
@@ -76,7 +85,7 @@ interface VpnOperationLookupRequest {
   requestId: string;
 }
 
-interface VpnOperationLookupResponse {
+export interface VpnOperationLookupResponse {
   status: string;
   operationId: string;
   operationStatus: string;
@@ -84,7 +93,7 @@ interface VpnOperationLookupResponse {
   error: string;
 }
 
-interface VpnOperationTerminal {
+export interface VpnOperationTerminal {
   status: string;
   result: boolean;
   error: string;
@@ -105,24 +114,27 @@ interface VpnOperationRecord {
  * stays a thin assembly point.
  */
 export class VpnPlugin extends AsyncPluginBase {
-  readonly id = 'paws.vpn';
-  readonly requires: BridgeContextRequirement[] = ['ability'];
+  readonly id = "paws.vpn";
+  readonly requires: BridgeContextRequirement[] = ["ability"];
 
   private vpnStartRequest: Promise<void> | undefined = undefined;
-  private vpnStartOptions: string = '';
+  private vpnStartOptions: string = "";
   private pendingVpnStartDispatches: Map<string, Promise<void>> = new Map();
-  private activeVpnStartAttemptId: string = '';
-  private connectedVpnSessionId: string = '';
+  private activeVpnStartAttemptId: string = "";
+  private connectedVpnSessionId: string = "";
   private operationGeneration: number = 0;
   private operationChain: Promise<void> = Promise.resolve();
   private startupVpnPreparation: Promise<void> = Promise.resolve();
   private platformSharedMemory?: PawsPlatformSharedMemoryFds;
-  private readonly bridgeSessionNonce: string =
-    `${Date.now().toString(36)}-${++vpnPluginInstanceSequence}-${Math.floor(Math.random() * 0x100000000).toString(36)}`;
+  private readonly bridgeSessionNonce: string = `${Date.now().toString(36)}-${++vpnPluginInstanceSequence}-${Math.floor(Math.random() * 0x100000000).toString(36)}`;
   private nextBridgeOperationId: number = 0;
   private bridgeOperations: Map<string, VpnOperationRecord> = new Map();
   private requestOperations: Map<string, string> = new Map();
   private installedCallback?: () => void;
+  private hostContext?: VpnHostContext;
+  private initialized: boolean = false;
+  private hostDetached: boolean = false;
+  private systemSubscriber?: commonEventManager.CommonEventSubscriber;
 
   constructor(installedCallback?: () => void) {
     super();
@@ -130,10 +142,43 @@ export class VpnPlugin extends AsyncPluginBase {
   }
 
   onInstall(_context: BridgePluginHookContext): void {
+    this.initializeHost();
+  }
+
+  /** The NSH host owns VPN orchestration independently of bridge registration. */
+  attachHost(context: common.UIAbilityContext): void {
+    this.hostDetached = false;
+    this.hostContext = { abilityContext: context };
+    this.initializeHost();
+  }
+
+  detachHost(): void {
+    this.hostDetached = true;
+    this.hostContext = undefined;
+    if (this.systemSubscriber) {
+      try {
+        commonEventManager.unsubscribe(this.systemSubscriber);
+      } catch (_) {}
+      this.systemSubscriber = undefined;
+    }
+  }
+
+  private vpnContext(): VpnHostContext {
+    if (this.hostDetached) {
+      throw new Error("VPN Ability host has been disposed");
+    }
+    return this.hostContext ?? this.getContext();
+  }
+
+  private initializeHost(): void {
+    if (this.initialized) {
+      return;
+    }
     this.initializePlatformSharedMemory();
     authorizeVpnForEmulatorDebug();
     this.startupVpnPreparation = this.prepareVpnForEmulatorDebug();
     this.subscribeToSystemWakeupEvents();
+    this.initialized = true;
     // Debug callers can be waiting since onCreate, before BridgeHost installs
     // ability plugins. Publish readiness only after the cleanup barrier exists.
     this.installedCallback?.();
@@ -144,101 +189,123 @@ export class VpnPlugin extends AsyncPluginBase {
     request: BridgeTypedValue,
     _context: BridgeCallContext,
   ): Promise<BridgeTypedValue> {
-    if (action === 'start-vpn') {
-      if (request.typeName !== VPN_START_REQUEST_TYPE || typeof request.value !== 'object') {
+    if (action === "start-vpn") {
+      if (request.typeName !== VPN_START_REQUEST_TYPE || typeof request.value !== "object") {
         throw new Error(`paws.vpn expected ${VPN_START_REQUEST_TYPE}, got ${request.typeName}`);
       }
       const payload = request.value as VpnStartRequest;
-      if (typeof payload.requestId !== 'string' || typeof payload.optionsJson !== 'string') {
+      if (typeof payload.requestId !== "string" || typeof payload.optionsJson !== "string") {
         throw new Error(`paws.vpn invalid start request shape`);
       }
       const operationId = this.submitBridgeOperation(
         payload.requestId,
         action,
         payload.optionsJson,
-        (): Promise<void> =>
-        this.requestStartVpn(payload.optionsJson));
+        (): Promise<void> => this.requestStartVpn(payload.optionsJson),
+      );
       return { typeName: VPN_START_RESPONSE_TYPE, value: { operationId } };
     }
-    if (action === 'stop-vpn') {
-      if (request.typeName !== VPN_STOP_REQUEST_TYPE || typeof request.value !== 'object') {
+    if (action === "stop-vpn") {
+      if (request.typeName !== VPN_STOP_REQUEST_TYPE || typeof request.value !== "object") {
         throw new Error(`paws.vpn expected ${VPN_STOP_REQUEST_TYPE}, got ${request.typeName}`);
       }
       const payload = request.value as VpnStopRequest;
-      if (typeof payload.requestId !== 'string') {
-        throw new Error('paws.vpn invalid stop request shape');
+      if (typeof payload.requestId !== "string") {
+        throw new Error("paws.vpn invalid stop request shape");
       }
       const operationId = this.submitBridgeOperation(
         payload.requestId,
         action,
-        '',
+        "",
         (): Promise<boolean> => this.requestStopVpn(),
       );
       return { typeName: VPN_STOP_RESPONSE_TYPE, value: { operationId } };
     }
-    if (action === 'stop-vpn-if-current') {
-      if (request.typeName !== VPN_OWNED_STOP_REQUEST_TYPE || typeof request.value !== 'object') {
-        throw new Error(`paws.vpn expected ${VPN_OWNED_STOP_REQUEST_TYPE}, got ${request.typeName}`);
+    if (action === "stop-vpn-if-current") {
+      if (request.typeName !== VPN_OWNED_STOP_REQUEST_TYPE || typeof request.value !== "object") {
+        throw new Error(
+          `paws.vpn expected ${VPN_OWNED_STOP_REQUEST_TYPE}, got ${request.typeName}`,
+        );
       }
       const payload = request.value as VpnOwnedStopRequest;
-      if (typeof payload.requestId !== 'string' ||
-        typeof payload.expectedSessionId !== 'string' ||
-        typeof payload.expectedConfigRevision !== 'string') {
-        throw new Error('paws.vpn invalid owned stop request shape');
+      if (
+        typeof payload.requestId !== "string" ||
+        typeof payload.expectedSessionId !== "string" ||
+        typeof payload.expectedConfigRevision !== "string"
+      ) {
+        throw new Error("paws.vpn invalid owned stop request shape");
       }
       const operationId = this.submitBridgeOperation(
         payload.requestId,
         action,
         `${payload.expectedSessionId}\u0000${payload.expectedConfigRevision}`,
         (): Promise<boolean> =>
-        this.requestStopVpnIfCurrent(payload.expectedSessionId, payload.expectedConfigRevision));
+          this.requestStopVpnIfCurrent(payload.expectedSessionId, payload.expectedConfigRevision),
+      );
       return { typeName: VPN_OWNED_STOP_RESPONSE_TYPE, value: { operationId } };
     }
-    if (action === 'restart-vpn') {
-      if (request.typeName !== VPN_RESTART_REQUEST_TYPE || typeof request.value !== 'object') {
+    if (action === "restart-vpn") {
+      if (request.typeName !== VPN_RESTART_REQUEST_TYPE || typeof request.value !== "object") {
         throw new Error(`paws.vpn expected ${VPN_RESTART_REQUEST_TYPE}, got ${request.typeName}`);
       }
       const payload = request.value as VpnRestartRequest;
-      if (typeof payload.requestId !== 'string' ||
-        typeof payload.expectedSessionId !== 'string' ||
-        typeof payload.expectedConfigRevision !== 'string' ||
-        typeof payload.optionsJson !== 'string') {
-        throw new Error('paws.vpn invalid restart request shape');
+      if (
+        typeof payload.requestId !== "string" ||
+        typeof payload.expectedSessionId !== "string" ||
+        typeof payload.expectedConfigRevision !== "string" ||
+        typeof payload.optionsJson !== "string"
+      ) {
+        throw new Error("paws.vpn invalid restart request shape");
       }
       const operationId = this.submitBridgeOperation(
         payload.requestId,
         action,
         `${payload.expectedSessionId}\u0000${payload.expectedConfigRevision}\u0000${payload.optionsJson}`,
         (): Promise<boolean> =>
-        this.requestRestartVpn(
-          payload.expectedSessionId,
-          payload.expectedConfigRevision,
-          payload.optionsJson,
-        ));
+          this.requestRestartVpn(
+            payload.expectedSessionId,
+            payload.expectedConfigRevision,
+            payload.optionsJson,
+          ),
+      );
       return { typeName: VPN_RESTART_RESPONSE_TYPE, value: { operationId } };
     }
-    if (action === 'lookup-vpn-operation') {
-      if (request.typeName !== VPN_OPERATION_LOOKUP_REQUEST_TYPE || typeof request.value !== 'object') {
-        throw new Error(`paws.vpn expected ${VPN_OPERATION_LOOKUP_REQUEST_TYPE}, got ${request.typeName}`);
+    if (action === "lookup-vpn-operation") {
+      if (
+        request.typeName !== VPN_OPERATION_LOOKUP_REQUEST_TYPE ||
+        typeof request.value !== "object"
+      ) {
+        throw new Error(
+          `paws.vpn expected ${VPN_OPERATION_LOOKUP_REQUEST_TYPE}, got ${request.typeName}`,
+        );
       }
       const payload = request.value as VpnOperationLookupRequest;
-      if (typeof payload.requestId !== 'string' || payload.requestId.length === 0) {
-        throw new Error('paws.vpn invalid operation lookup request shape');
+      if (typeof payload.requestId !== "string" || payload.requestId.length === 0) {
+        throw new Error("paws.vpn invalid operation lookup request shape");
       }
       return {
         typeName: VPN_OPERATION_LOOKUP_RESPONSE_TYPE,
         value: this.lookupBridgeOperation(payload.requestId),
       };
     }
-    if (action === 'await-vpn-operation') {
-      if (request.typeName !== VPN_OPERATION_WAIT_REQUEST_TYPE || typeof request.value !== 'object') {
-        throw new Error(`paws.vpn expected ${VPN_OPERATION_WAIT_REQUEST_TYPE}, got ${request.typeName}`);
+    if (action === "await-vpn-operation") {
+      if (
+        request.typeName !== VPN_OPERATION_WAIT_REQUEST_TYPE ||
+        typeof request.value !== "object"
+      ) {
+        throw new Error(
+          `paws.vpn expected ${VPN_OPERATION_WAIT_REQUEST_TYPE}, got ${request.typeName}`,
+        );
       }
       const payload = request.value as VpnOperationWaitRequest;
-      if (typeof payload.operationId !== 'string' ||
-        typeof payload.waitMs !== 'number' || !Number.isInteger(payload.waitMs) ||
-        payload.waitMs < 1 || payload.waitMs > VPN_OPERATION_WAIT_MAX_MS) {
-        throw new Error('paws.vpn invalid operation wait request shape');
+      if (
+        typeof payload.operationId !== "string" ||
+        typeof payload.waitMs !== "number" ||
+        !Number.isInteger(payload.waitMs) ||
+        payload.waitMs < 1 ||
+        payload.waitMs > VPN_OPERATION_WAIT_MAX_MS
+      ) {
+        throw new Error("paws.vpn invalid operation wait request shape");
       }
       return {
         typeName: VPN_OPERATION_WAIT_RESPONSE_TYPE,
@@ -255,22 +322,24 @@ export class VpnPlugin extends AsyncPluginBase {
     create: () => Promise<void | boolean>,
   ): string {
     if (requestId.length === 0) {
-      throw new Error('VPN operation requestId must not be empty');
+      throw new Error("VPN operation requestId must not be empty");
     }
     const existingOperationId = this.requestOperations.get(requestId);
     if (existingOperationId !== undefined) {
       const existing = this.bridgeOperations.get(existingOperationId);
       if (existing === undefined) {
-        throw new Error('VPN operation receipt mapping is no longer observable');
+        throw new Error("VPN operation receipt mapping is no longer observable");
       }
       if (existing.action !== action || existing.payloadFingerprint !== payloadFingerprint) {
-        throw new Error(`VPN operation requestId '${requestId}' was reused with a different request`);
+        throw new Error(
+          `VPN operation requestId '${requestId}' was reused with a different request`,
+        );
       }
       return existingOperationId;
     }
     this.reclaimCompletedBridgeOperations();
     if (this.bridgeOperations.size >= MAX_RETAINED_VPN_OPERATIONS) {
-      throw new Error('too many active VPN platform operations');
+      throw new Error("too many active VPN platform operations");
     }
     const operationId = `${this.bridgeSessionNonce}:${++this.nextBridgeOperationId}`;
     const record: VpnOperationRecord = {
@@ -288,16 +357,16 @@ export class VpnPlugin extends AsyncPluginBase {
     record.settled = operation.then(
       (result?: void | boolean): void => {
         record.terminal = {
-          status: 'succeeded',
-          result: typeof result === 'boolean' ? result : true,
-          error: '',
+          status: "succeeded",
+          result: typeof result === "boolean" ? result : true,
+          error: "",
         };
       },
       (err: Error): void => {
         record.terminal = {
-          status: 'failed',
+          status: "failed",
           result: false,
-          error: describeError(err) || 'VPN platform operation failed',
+          error: describeError(err) || "VPN platform operation failed",
         };
       },
     );
@@ -329,11 +398,11 @@ export class VpnPlugin extends AsyncPluginBase {
     waitMs: number,
   ): Promise<VpnOperationTerminal> {
     if (!operationId.startsWith(`${this.bridgeSessionNonce}:`)) {
-      return { status: 'unavailable', result: false, error: '' };
+      return { status: "unavailable", result: false, error: "" };
     }
     const record = this.bridgeOperations.get(operationId);
     if (!record) {
-      return { status: 'unavailable', result: false, error: '' };
+      return { status: "unavailable", result: false, error: "" };
     }
     if (record.terminal === undefined) {
       let timeoutId: number = -1;
@@ -346,7 +415,7 @@ export class VpnPlugin extends AsyncPluginBase {
       }
     }
     if (record.terminal === undefined) {
-      return { status: 'pending', result: false, error: '' };
+      return { status: "pending", result: false, error: "" };
     }
     return record.terminal;
   }
@@ -355,31 +424,64 @@ export class VpnPlugin extends AsyncPluginBase {
     const operationId = this.requestOperations.get(requestId);
     if (operationId === undefined) {
       return {
-        status: 'unknown-session',
-        operationId: '',
-        operationStatus: 'unknown',
+        status: "unknown-session",
+        operationId: "",
+        operationStatus: "unknown",
         result: false,
-        error: '',
+        error: "",
       };
     }
     const record = this.bridgeOperations.get(operationId);
     if (record === undefined) {
       return {
-        status: 'unknown-session',
-        operationId: '',
-        operationStatus: 'unknown',
+        status: "unknown-session",
+        operationId: "",
+        operationStatus: "unknown",
         result: false,
-        error: '',
+        error: "",
       };
     }
     const terminal = record.terminal;
     return {
-      status: 'found',
+      status: "found",
       operationId,
-      operationStatus: terminal?.status ?? 'pending',
+      operationStatus: terminal?.status ?? "pending",
       result: terminal?.result ?? false,
-      error: terminal?.error ?? '',
+      error: terminal?.error ?? "",
     };
+  }
+
+  /** The NSH host observes the same operation registry as the typed bridge. */
+  submitHostOperation(
+    requestId: string,
+    action: string,
+    fingerprint: string,
+    create: () => Promise<void | boolean>,
+  ): string {
+    return this.submitBridgeOperation(requestId, action, fingerprint, create);
+  }
+
+  lookupHostOperation(requestId: string): VpnOperationLookupResponse {
+    return this.lookupBridgeOperation(requestId);
+  }
+
+  async finishHostOperation(operationId: string): Promise<VpnOperationTerminal> {
+    const record = this.bridgeOperations.get(operationId);
+    if (!operationId.startsWith(`${this.bridgeSessionNonce}:`) || !record) {
+      return {
+        status: "unavailable",
+        result: false,
+        error: "VPN operation receipt is unavailable",
+      };
+    }
+    await record.settled;
+    return (
+      record.terminal ?? {
+        status: "unavailable",
+        result: false,
+        error: "VPN operation receipt is unavailable",
+      }
+    );
   }
 
   /**
@@ -387,22 +489,29 @@ export class VpnPlugin extends AsyncPluginBase {
    * session context that BridgeHost injected on install.
    */
   async requestStartVpn(optionsJson: string): Promise<void> {
-    await this.requestStartVpnWithContext(optionsJson, this.getContext());
+    await this.requestStartVpnWithContext(optionsJson, this.vpnContext());
   }
 
   /** Public entry for in-app callers (debug automation). */
   async requestStopVpn(): Promise<boolean> {
-    return this.requestStopVpnWithContext(this.getContext());
+    return this.requestStopVpnWithContext(this.vpnContext());
   }
 
   onAbilityForeground(): void {
+    if (this.hostDetached) {
+      return;
+    }
     this.checkAndAutoRecoverVpn();
     if (this.connectedVpnSessionId.length > 0) {
       try {
-        this.startContinuousTaskProtection(this.getContext());
+        this.startContinuousTaskProtection(this.vpnContext());
       } catch (err) {
-        hilog.warn(LOG_DOMAIN, LOG_TAG,
-          'foreground continuous task check skipped %{public}s', describeError(err));
+        hilog.warn(
+          LOG_DOMAIN,
+          LOG_TAG,
+          "foreground continuous task check skipped %{public}s",
+          describeError(err),
+        );
       }
     }
   }
@@ -410,53 +519,88 @@ export class VpnPlugin extends AsyncPluginBase {
   checkAndAutoRecoverVpn(): void {
     try {
       const optionsJson = pawsUi.claimPlatformVpnAutoRecovery();
-      if (typeof optionsJson !== 'string' || optionsJson.length === 0) {
+      if (typeof optionsJson !== "string" || optionsJson.length === 0) {
         return;
       }
-      hilog.warn(LOG_DOMAIN, LOG_TAG,
-        'platform wakeup claimed pending VPN auto-recovery; restarting VPN');
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "platform wakeup claimed pending VPN auto-recovery; restarting VPN",
+      );
       this.requestStartVpn(optionsJson).catch((err: Error): void => {
-        const message = describeError(err) || 'platform auto-recovery VPN start failed';
-        hilog.warn(LOG_DOMAIN, LOG_TAG,
-          'platform auto-recovery VPN start failed %{public}s', message);
+        const message = describeError(err) || "platform auto-recovery VPN start failed";
+        hilog.warn(
+          LOG_DOMAIN,
+          LOG_TAG,
+          "platform auto-recovery VPN start failed %{public}s",
+          message,
+        );
         try {
           pawsUi.rearmPlatformVpnAutoRecovery(message);
         } catch (innerErr) {
-          hilog.error(LOG_DOMAIN, LOG_TAG,
-            'rearm platform VPN auto-recovery failed %{public}s', describeError(innerErr));
+          hilog.error(
+            LOG_DOMAIN,
+            LOG_TAG,
+            "rearm platform VPN auto-recovery failed %{public}s",
+            describeError(innerErr),
+          );
         }
       });
     } catch (err) {
-      hilog.warn(LOG_DOMAIN, LOG_TAG,
-        'platform VPN auto-recovery check failed %{public}s', describeError(err));
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "platform VPN auto-recovery check failed %{public}s",
+        describeError(err),
+      );
     }
   }
 
   private subscribeToSystemWakeupEvents(): void {
     try {
-      commonEventManager.createSubscriber({
-        events: [
-          'usual.event.VPN_CONNECTION_STATUS_CHANGED',
-          'usual.event.SCREEN_ON',
-          'usual.event.SCREEN_UNLOCKED',
-          'usual.event.CONNECTIVITY_CHANGE',
-        ],
-      }).then((subscriber: commonEventManager.CommonEventSubscriber): void => {
-        commonEventManager.subscribe(subscriber, (err, data): void => {
-          if (err) {
+      commonEventManager
+        .createSubscriber({
+          events: [
+            "usual.event.VPN_CONNECTION_STATUS_CHANGED",
+            "usual.event.SCREEN_ON",
+            "usual.event.SCREEN_UNLOCKED",
+            "usual.event.CONNECTIVITY_CHANGE",
+          ],
+        })
+        .then((subscriber: commonEventManager.CommonEventSubscriber): void => {
+          if (this.hostDetached) {
+            commonEventManager.unsubscribe(subscriber);
             return;
           }
-          hilog.info(LOG_DOMAIN, LOG_TAG,
-            'system common event received %{public}s', data?.event ?? 'unknown');
-          this.onAbilityForeground();
+          this.systemSubscriber = subscriber;
+          commonEventManager.subscribe(subscriber, (err, data): void => {
+            if (err) {
+              return;
+            }
+            hilog.info(
+              LOG_DOMAIN,
+              LOG_TAG,
+              "system common event received %{public}s",
+              data?.event ?? "unknown",
+            );
+            this.onAbilityForeground();
+          });
+        })
+        .catch((err: Error): void => {
+          hilog.warn(
+            LOG_DOMAIN,
+            LOG_TAG,
+            "subscribe system common events skipped %{public}s",
+            describeError(err),
+          );
         });
-      }).catch((err: Error): void => {
-        hilog.warn(LOG_DOMAIN, LOG_TAG,
-          'subscribe system common events skipped %{public}s', describeError(err));
-      });
     } catch (err) {
-      hilog.warn(LOG_DOMAIN, LOG_TAG,
-        'create system common event subscriber skipped %{public}s', describeError(err));
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "create system common event subscriber skipped %{public}s",
+        describeError(err),
+      );
     }
   }
 
@@ -475,26 +619,34 @@ export class VpnPlugin extends AsyncPluginBase {
       return false;
     }
     return this.enqueueOperation(async (): Promise<boolean> => {
-      if (generation !== this.operationGeneration ||
+      if (
+        generation !== this.operationGeneration ||
         !pawsUi.isPlatformVpnIntentCurrent(intentEpoch) ||
-        !pawsUi.isPlatformVpnSessionCurrent(expectedSessionId, expectedConfigRevision)) {
+        !pawsUi.isPlatformVpnSessionCurrent(expectedSessionId, expectedConfigRevision)
+      ) {
         return false;
       }
-      const stopped = await this.performStopVpn(expectedSessionId, intentEpoch, (): boolean =>
-        generation === this.operationGeneration &&
+      const stopped = await this.performStopVpn(
+        expectedSessionId,
+        intentEpoch,
+        (): boolean =>
+          generation === this.operationGeneration &&
           pawsUi.isPlatformVpnIntentCurrent(intentEpoch) &&
           pawsUi.isPlatformVpnSessionCurrent(expectedSessionId, expectedConfigRevision),
         false,
-        true);
+        true,
+      );
       if (!stopped) {
         return false;
       }
-      if (generation !== this.operationGeneration ||
+      if (
+        generation !== this.operationGeneration ||
         !pawsUi.isPlatformVpnIntentCurrent(intentEpoch) ||
-        !pawsUi.isRuntimeConfigRevisionCurrent(expectedConfigRevision)) {
+        !pawsUi.isRuntimeConfigRevisionCurrent(expectedConfigRevision)
+      ) {
         return false;
       }
-      await this.performStartVpn(optionsJson, this.getContext(), generation, intentEpoch);
+      await this.performStartVpn(optionsJson, this.vpnContext(), generation, intentEpoch);
       return true;
     });
   }
@@ -516,15 +668,21 @@ export class VpnPlugin extends AsyncPluginBase {
       return false;
     }
     return this.enqueueOperation(async (): Promise<boolean> => {
-      if (generation !== this.operationGeneration ||
+      if (
+        generation !== this.operationGeneration ||
         !pawsUi.isPlatformVpnIntentCurrent(intentEpoch) ||
-        !pawsUi.isPlatformVpnSessionCurrent(expectedSessionId, expectedConfigRevision)) {
+        !pawsUi.isPlatformVpnSessionCurrent(expectedSessionId, expectedConfigRevision)
+      ) {
         return false;
       }
-      return this.performStopVpn(expectedSessionId, intentEpoch, (): boolean =>
-        generation === this.operationGeneration &&
+      return this.performStopVpn(
+        expectedSessionId,
+        intentEpoch,
+        (): boolean =>
+          generation === this.operationGeneration &&
           pawsUi.isPlatformVpnIntentCurrent(intentEpoch) &&
-          pawsUi.isPlatformVpnSessionCurrent(expectedSessionId, expectedConfigRevision));
+          pawsUi.isPlatformVpnSessionCurrent(expectedSessionId, expectedConfigRevision),
+      );
     });
   }
 
@@ -534,31 +692,43 @@ export class VpnPlugin extends AsyncPluginBase {
       .catch((_err: Error): void => {})
       .then((): Promise<void> => localReady)
       .then(operation);
-    this.operationChain = request.then((_value: T): void => {}, (_err: Error): void => {});
+    this.operationChain = request.then(
+      (_value: T): void => {},
+      (_err: Error): void => {},
+    );
     vpnOperationChain = this.operationChain;
     return request;
   }
 
   private initializePlatformSharedMemory(): void {
     try {
-      const fields = pawsUi.initializePlatformSharedMemory().split(',');
+      const fields = pawsUi.initializePlatformSharedMemory().split(",");
       const ashmemFd = Number(fields[0]);
       const notificationFd = Number(fields[1]);
-      if (fields.length !== 2 || !Number.isInteger(ashmemFd) || ashmemFd < 0 ||
-        !Number.isInteger(notificationFd) || notificationFd < 0) {
-        throw new Error('native platform shared memory returned invalid file descriptors');
+      if (
+        fields.length !== 2 ||
+        !Number.isInteger(ashmemFd) ||
+        ashmemFd < 0 ||
+        !Number.isInteger(notificationFd) ||
+        notificationFd < 0
+      ) {
+        throw new Error("native platform shared memory returned invalid file descriptors");
       }
       this.platformSharedMemory = { ashmemFd, notificationFd };
     } catch (err) {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'initialize platform shared memory failed %{public}s',
-        describeError(err));
-      throw new Error(describeError(err) || 'initialize platform shared memory failed');
+      hilog.error(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "initialize platform shared memory failed %{public}s",
+        describeError(err),
+      );
+      throw new Error(describeError(err) || "initialize platform shared memory failed");
     }
   }
 
   private async requestStartVpnWithContext(
     optionsJson: string,
-    context: BridgePluginContext,
+    context: VpnHostContext,
   ): Promise<void> {
     await this.startupVpnPreparation;
     if (this.vpnStartRequest && this.vpnStartOptions === optionsJson) {
@@ -567,9 +737,11 @@ export class VpnPlugin extends AsyncPluginBase {
     const intentEpoch = pawsUi.advancePlatformVpnIntent();
     const generation = ++this.operationGeneration;
     const request = this.enqueueOperation(async (): Promise<void> => {
-      if (generation !== this.operationGeneration ||
-        !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) {
-        throw new Error('VPN start request was superseded');
+      if (
+        generation !== this.operationGeneration ||
+        !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)
+      ) {
+        throw new Error("VPN start request was superseded");
       }
       await this.performStartVpn(optionsJson, context, generation, intentEpoch);
     });
@@ -584,17 +756,24 @@ export class VpnPlugin extends AsyncPluginBase {
     }
   }
 
-  private isStartupHealthCurrent(sessionId: string, generation: number, intentEpoch: string): boolean {
-    return sessionId.length > 0 && generation === this.operationGeneration &&
+  private isStartupHealthCurrent(
+    sessionId: string,
+    generation: number,
+    intentEpoch: string,
+  ): boolean {
+    return (
+      sessionId.length > 0 &&
+      generation === this.operationGeneration &&
       pawsUi.isPlatformVpnIntentCurrent(intentEpoch) &&
       this.connectedVpnSessionId === sessionId &&
-      pawsUi.currentPlatformVpnSessionId() === sessionId;
+      pawsUi.currentPlatformVpnSessionId() === sessionId
+    );
   }
 
   private async monitorStartupHealth(
     sessionId: string,
     optionsJson: string,
-    context: BridgePluginContext,
+    context: VpnHostContext,
     generation: number,
     intentEpoch: string,
   ): Promise<void> {
@@ -605,11 +784,16 @@ export class VpnPlugin extends AsyncPluginBase {
     if (!this.isStartupHealthCurrent(sessionId, generation, intentEpoch)) {
       return;
     }
-    if (health.rollbackToBaseline && health.actualEngine !== 'mihomo') {
-      hilog.warn(LOG_DOMAIN, LOG_TAG, 'candidate startup health failed stage=%{public}s; restoring last production baseline', health.stage);
+    if (health.rollbackToBaseline && health.actualEngine !== "mihomo") {
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "candidate startup health failed stage=%{public}s; restoring last production baseline",
+        health.stage,
+      );
       const stop = this.requestStopVpnWithContext(context);
       const rollbackGeneration = this.operationGeneration;
-      if (!await stop || rollbackGeneration !== this.operationGeneration) {
+      if (!(await stop) || rollbackGeneration !== this.operationGeneration) {
         return;
       }
       // The recorded failure fences this candidate for five minutes. Recheck
@@ -631,23 +815,31 @@ export class VpnPlugin extends AsyncPluginBase {
         }
         const staleSessionId = pawsUi.claimCurrentPlatformVpnStop(intentEpoch);
         if (staleSessionId.length === 0) {
-          hilog.info(LOG_DOMAIN, LOG_TAG, 'debug startup VPN state is already clean');
+          hilog.info(LOG_DOMAIN, LOG_TAG, "debug startup VPN state is already clean");
           return;
         }
         await this.performStopVpn(staleSessionId, intentEpoch, undefined, true);
-        hilog.info(LOG_DOMAIN, LOG_TAG,
-          'debug startup VPN cleanup completed for attempt %{public}s', staleSessionId);
+        hilog.info(
+          LOG_DOMAIN,
+          LOG_TAG,
+          "debug startup VPN cleanup completed for attempt %{public}s",
+          staleSessionId,
+        );
       });
     } catch (err) {
-      hilog.error(LOG_DOMAIN, LOG_TAG,
-        'debug startup VPN preparation failed %{public}s', describeError(err));
+      hilog.error(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "debug startup VPN preparation failed %{public}s",
+        describeError(err),
+      );
     }
   }
 
   private dispatchVpnStart(
     optionsJson: string,
     attemptId: string,
-    context: BridgePluginContext,
+    context: VpnHostContext,
     generation: number,
     intentEpoch: string,
   ): void {
@@ -658,14 +850,14 @@ export class VpnPlugin extends AsyncPluginBase {
       generation,
       intentEpoch,
     ).catch((err: Error) => {
-      const message = describeError(err) || 'system rejected VPN start';
+      const message = describeError(err) || "system rejected VPN start";
       try {
         pawsUi.failUnattachedPlatformVpnStart(attemptId, message);
       } catch (innerErr) {
         hilog.error(
           LOG_DOMAIN,
           LOG_TAG,
-          'publish system VPN rejection failed %{public}s',
+          "publish system VPN rejection failed %{public}s",
           describeError(innerErr),
         );
       }
@@ -681,12 +873,15 @@ export class VpnPlugin extends AsyncPluginBase {
   private async runVpnStartDispatch(
     optionsJson: string,
     attemptId: string,
-    _context: BridgePluginContext,
+    _context: VpnHostContext,
     generation: number,
     intentEpoch: string,
   ): Promise<void> {
-    if (generation !== this.operationGeneration ||
-      !pawsUi.isPlatformVpnIntentCurrent(intentEpoch) || !this.platformSharedMemory) {
+    if (
+      generation !== this.operationGeneration ||
+      !pawsUi.isPlatformVpnIntentCurrent(intentEpoch) ||
+      !this.platformSharedMemory
+    ) {
       return;
     }
     await startVpnExtensionWithHandoff(optionsJson, attemptId, this.platformSharedMemory);
@@ -694,26 +889,32 @@ export class VpnPlugin extends AsyncPluginBase {
 
   private async performStartVpn(
     optionsJson: string,
-    context: BridgePluginContext,
+    context: VpnHostContext,
     generation: number,
     intentEpoch: string,
   ): Promise<void> {
-    let attemptId: string = '';
+    let attemptId: string = "";
     try {
-      if (generation !== this.operationGeneration ||
-        !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) {
-        throw new Error('VPN start request was superseded');
+      if (
+        generation !== this.operationGeneration ||
+        !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)
+      ) {
+        throw new Error("VPN start request was superseded");
       }
       const recoverableSessionId = pawsUi.claimCurrentPlatformVpnStop(intentEpoch);
-      if (recoverableSessionId.length > 0 ||
-        pawsUi.isPlatformVpnStopCurrent(intentEpoch, recoverableSessionId)) {
+      if (
+        recoverableSessionId.length > 0 ||
+        pawsUi.isPlatformVpnStopCurrent(intentEpoch, recoverableSessionId)
+      ) {
         // A cold/recreated UI may have no process-local session state while
         // the durable journal still owns a Pending or Attached attempt. Fence
         // and reconcile that exact owner before publishing a replacement.
         await this.performStopVpn(recoverableSessionId, intentEpoch, undefined, false, true);
-        if (generation !== this.operationGeneration ||
-          !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) {
-          throw new Error('VPN start request was superseded');
+        if (
+          generation !== this.operationGeneration ||
+          !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)
+        ) {
+          throw new Error("VPN start request was superseded");
         }
       }
       attemptId = pawsUi.beginPlatformVpnStartForIntent(intentEpoch);
@@ -722,30 +923,42 @@ export class VpnPlugin extends AsyncPluginBase {
       this.dispatchVpnStart(optionsJson, attemptId, context, generation, intentEpoch);
 
       const outcome = await pawsUi.awaitPlatformVpnStart(attemptId);
-      if (generation !== this.operationGeneration ||
-        !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)) {
-        throw new Error('VPN start request was superseded');
+      if (
+        generation !== this.operationGeneration ||
+        !pawsUi.isPlatformVpnIntentCurrent(intentEpoch)
+      ) {
+        throw new Error("VPN start request was superseded");
       }
-      if (outcome !== 'connected') {
+      if (outcome !== "connected") {
         throw new Error(`unexpected VPN start outcome: ${outcome}`);
       }
       this.connectedVpnSessionId = attemptId;
       this.ensureSpeedNotificationPermission(context).catch((err: Error) => {
-        hilog.warn(LOG_DOMAIN, LOG_TAG, 'deferred notification permission failed %{public}s',
-          describeError(err));
+        hilog.warn(
+          LOG_DOMAIN,
+          LOG_TAG,
+          "deferred notification permission failed %{public}s",
+          describeError(err),
+        );
       });
       this.startContinuousTaskProtection(context);
-      hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN start completed attempt %{public}s', attemptId);
+      hilog.info(LOG_DOMAIN, LOG_TAG, "VPN start completed attempt %{public}s", attemptId);
       // Completion of the system tunnel is the start receipt. HTTPS health is
       // independent evidence and must not hold the UI in Starting for 8 seconds.
-      this.monitorStartupHealth(attemptId, optionsJson, context, generation, intentEpoch)
-        .catch((err: Error): void => {
+      this.monitorStartupHealth(attemptId, optionsJson, context, generation, intentEpoch).catch(
+        (err: Error): void => {
           if (generation === this.operationGeneration) {
-            hilog.warn(LOG_DOMAIN, LOG_TAG, 'background VPN startup health failed %{public}s', describeError(err));
+            hilog.warn(
+              LOG_DOMAIN,
+              LOG_TAG,
+              "background VPN startup health failed %{public}s",
+              describeError(err),
+            );
           }
-        });
+        },
+      );
     } catch (err) {
-      const message = describeError(err) || 'request VPN start failed';
+      const message = describeError(err) || "request VPN start failed";
       if (attemptId.length > 0) {
         try {
           pawsUi.failPlatformVpnStart(attemptId, message);
@@ -753,59 +966,68 @@ export class VpnPlugin extends AsyncPluginBase {
           hilog.error(
             LOG_DOMAIN,
             LOG_TAG,
-            'publish VPN start failure failed %{public}s',
+            "publish VPN start failure failed %{public}s",
             describeError(innerErr),
           );
         }
       }
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'request VPN start failed %{public}s', message);
+      hilog.error(LOG_DOMAIN, LOG_TAG, "request VPN start failed %{public}s", message);
       throw new Error(message);
     } finally {
       if (this.activeVpnStartAttemptId === attemptId) {
-        this.activeVpnStartAttemptId = '';
+        this.activeVpnStartAttemptId = "";
       }
     }
   }
 
-  private startContinuousTaskProtection(context: BridgePluginContext): void {
-    vpnContinuousTask.start(
-      context.abilityContext,
-      (info): void => {
-        // DATA_TRANSFER is scheduler protection for active transfers, not the
-        // owner of the system VPN. HarmonyOS can cancel it for low throughput
-        // or stale progress while the VpnExtension and TUN are still healthy.
-        // Treating that cancellation as a user stop disconnected an idle VPN
-        // after roughly ten minutes. Keep the tunnel alive and retain the
-        // platform reason in hilog for diagnostics.
-        hilog.warn(
+  private startContinuousTaskProtection(context: VpnHostContext): void {
+    if (this.hostDetached) {
+      return;
+    }
+    vpnContinuousTask
+      .start(
+        context.abilityContext,
+        (info): void => {
+          // DATA_TRANSFER is scheduler protection for active transfers, not the
+          // owner of the system VPN. HarmonyOS can cancel it for low throughput
+          // or stale progress while the VpnExtension and TUN are still healthy.
+          // Treating that cancellation as a user stop disconnected an idle VPN
+          // after roughly ten minutes. Keep the tunnel alive and retain the
+          // platform reason in hilog for diagnostics.
+          hilog.warn(
+            LOG_DOMAIN,
+            LOG_TAG,
+            "continuous task protection ended; VPN remains active reason=%{public}d detail=%{public}s",
+            info.reason,
+            info.detailedReason === undefined ? "" : info.detailedReason.toString(),
+          );
+          this.checkAndAutoRecoverVpn();
+          if (this.connectedVpnSessionId.length > 0) {
+            setTimeout((): void => {
+              if (this.connectedVpnSessionId.length > 0) {
+                this.startContinuousTaskProtection(context);
+              }
+            }, 250);
+          }
+        },
+        (): void => {
+          this.checkAndAutoRecoverVpn();
+        },
+      )
+      .catch((err: Error): void => {
+        // VPN service remains usable if the platform rejects the background
+        // task, but the failure is explicit so diagnostics never claim that
+        // the process has continuous-task protection.
+        hilog.error(
           LOG_DOMAIN,
           LOG_TAG,
-          'continuous task protection ended; VPN remains active reason=%{public}d detail=%{public}s',
-          info.reason,
-          info.detailedReason === undefined ? '' : info.detailedReason.toString(),
+          "continuous VPN task start failed %{public}s",
+          describeError(err),
         );
-        this.checkAndAutoRecoverVpn();
-        if (this.connectedVpnSessionId.length > 0) {
-          setTimeout((): void => {
-            if (this.connectedVpnSessionId.length > 0) {
-              this.startContinuousTaskProtection(context);
-            }
-          }, 250);
-        }
-      },
-      (): void => {
-        this.checkAndAutoRecoverVpn();
-      },
-    ).catch((err: Error): void => {
-      // VPN service remains usable if the platform rejects the background
-      // task, but the failure is explicit so diagnostics never claim that
-      // the process has continuous-task protection.
-      hilog.error(LOG_DOMAIN, LOG_TAG,
-        'continuous VPN task start failed %{public}s', describeError(err));
-    });
+      });
   }
 
-  private async ensureSpeedNotificationPermission(context: BridgePluginContext): Promise<void> {
+  private async ensureSpeedNotificationPermission(context: VpnHostContext): Promise<void> {
     try {
       if (await notificationManager.isNotificationEnabled()) {
         return;
@@ -813,12 +1035,16 @@ export class VpnPlugin extends AsyncPluginBase {
       await notificationManager.requestEnableNotification(context.abilityContext);
     } catch (err) {
       // Notification permission must never prevent the user from starting VPN.
-      hilog.warn(LOG_DOMAIN, LOG_TAG, 'notification permission unavailable %{public}s',
-        describeError(err));
+      hilog.warn(
+        LOG_DOMAIN,
+        LOG_TAG,
+        "notification permission unavailable %{public}s",
+        describeError(err),
+      );
     }
   }
 
-  private async requestStopVpnWithContext(_context: BridgePluginContext): Promise<boolean> {
+  private async requestStopVpnWithContext(_context: VpnHostContext): Promise<boolean> {
     const intentEpoch = pawsUi.advancePlatformVpnIntent();
     ++this.operationGeneration;
     // Core owns the cross-Plugin fence. In particular, a recreated Bridge has
@@ -844,36 +1070,38 @@ export class VpnPlugin extends AsyncPluginBase {
       this.pendingVpnStartDispatches.delete(sessionId);
       // Recheck a scoped stop immediately before touching the OS so a newer
       // intent or config revision cannot stop the session it superseded.
-      if ((isStillAuthorized !== undefined && !isStillAuthorized()) ||
-        !this.canDispatchPlatformVpnStop(intentEpoch, sessionId)) {
+      if (
+        (isStillAuthorized !== undefined && !isStillAuthorized()) ||
+        !this.canDispatchPlatformVpnStop(intentEpoch, sessionId)
+      ) {
         return false;
       }
       let cleanupObservation: Promise<string> | undefined = undefined;
       let cleanupCompleted = sessionId.length === 0;
-      const cooperativeStopRequested = sessionId.length > 0 &&
-        pawsUi.requestPlatformVpnStop(sessionId);
+      const cooperativeStopRequested =
+        sessionId.length > 0 && pawsUi.requestPlatformVpnStop(sessionId);
       if (cooperativeStopRequested) {
         cleanupObservation = pawsUi.awaitPlatformVpnStop(sessionId).then(
-          (completed: boolean): string => completed ? 'complete' : 'superseded',
-          (err: Error): string => `error:${describeError(err) || 'platform cleanup wait failed'}`,
+          (completed: boolean): string => (completed ? "complete" : "superseded"),
+          (err: Error): string => `error:${describeError(err) || "platform cleanup wait failed"}`,
         );
         const cooperativeResult = await this.waitForCooperativeCleanup(cleanupObservation);
-        if (cooperativeResult === 'complete') {
+        if (cooperativeResult === "complete") {
           cleanupCompleted = true;
-        } else if (cooperativeResult === 'superseded') {
+        } else if (cooperativeResult === "superseded") {
           return false;
-        } else if (cooperativeResult.startsWith('error:')) {
+        } else if (cooperativeResult.startsWith("error:")) {
           hilog.warn(
             LOG_DOMAIN,
             LOG_TAG,
-            'cooperative VPN cleanup wait failed %{public}s',
-            cooperativeResult.slice('error:'.length),
+            "cooperative VPN cleanup wait failed %{public}s",
+            cooperativeResult.slice("error:".length),
           );
         } else {
           hilog.warn(
             LOG_DOMAIN,
             LOG_TAG,
-            'cooperative VPN cleanup still pending for %{public}s; requesting OS stop',
+            "cooperative VPN cleanup still pending for %{public}s; requesting OS stop",
             sessionId,
           );
         }
@@ -882,23 +1110,37 @@ export class VpnPlugin extends AsyncPluginBase {
       // pending. Atomically convert the still-current fence to InFlight and
       // invoke HarmonyOS synchronously before yielding; otherwise the newer
       // owner takes over the stop and this stale operation becomes a no-op.
-      if (!this.canDispatchPlatformVpnStop(intentEpoch, sessionId) ||
-        !pawsUi.beginPlatformVpnOsStop(intentEpoch, sessionId)) {
+      if (
+        !this.canDispatchPlatformVpnStop(intentEpoch, sessionId) ||
+        !pawsUi.beginPlatformVpnOsStop(intentEpoch, sessionId)
+      ) {
         return false;
       }
       try {
         await vpnExtension.stopVpnExtensionAbility(buildVpnWant());
       } catch (err) {
-        if (!canRecoverRejectedEmulatorStop(
-          recoverUnattachedDebugOwner, sessionId, cooperativeStopRequested)) {
+        if (
+          !canRecoverRejectedEmulatorStop(
+            recoverUnattachedDebugOwner,
+            sessionId,
+            cooperativeStopRequested,
+          )
+        ) {
           if (!pawsUi.failPlatformVpnOsStop(intentEpoch, sessionId)) {
-            hilog.error(LOG_DOMAIN, LOG_TAG,
-              'failed to retain exact VPN OS stop fence after system rejection');
+            hilog.error(
+              LOG_DOMAIN,
+              LOG_TAG,
+              "failed to retain exact VPN OS stop fence after system rejection",
+            );
           }
-          throw new Error(describeError(err) || 'system rejected VPN stop');
+          throw new Error(describeError(err) || "system rejected VPN stop");
         }
-        hilog.warn(LOG_DOMAIN, LOG_TAG,
-          'debug startup cleanup found no attached VPN for stale attempt %{public}s', sessionId);
+        hilog.warn(
+          LOG_DOMAIN,
+          LOG_TAG,
+          "debug startup cleanup found no attached VPN for stale attempt %{public}s",
+          sessionId,
+        );
       }
       if (!pawsUi.completePlatformVpnOsStop(intentEpoch, sessionId)) {
         throw new Error(`VPN OS stop confirmation did not match exact fence ${sessionId}`);
@@ -911,40 +1153,45 @@ export class VpnPlugin extends AsyncPluginBase {
           hilog.warn(
             LOG_DOMAIN,
             LOG_TAG,
-            'recovered VPN cleanup after confirmed OS stop and exact-owner proof %{public}s',
+            "recovered VPN cleanup after confirmed OS stop and exact-owner proof %{public}s",
             sessionId,
           );
         }
         if (!cleanupCompleted) {
           throw new Error(
-            `VPN cleanup owner ${sessionId} remained live or was superseded after confirmed OS stop`);
+            `VPN cleanup owner ${sessionId} remained live or was superseded after confirmed OS stop`,
+          );
         }
       }
       if (this.connectedVpnSessionId === sessionId) {
-        this.connectedVpnSessionId = '';
+        this.connectedVpnSessionId = "";
       }
       if (!keepContinuousTask) {
         await vpnContinuousTask.stop().catch((err: Error): void => {
-          hilog.warn(LOG_DOMAIN, LOG_TAG,
-            'continuous VPN task stop failed %{public}s', describeError(err));
+          hilog.warn(
+            LOG_DOMAIN,
+            LOG_TAG,
+            "continuous VPN task stop failed %{public}s",
+            describeError(err),
+          );
         });
       }
       if (sessionId.length > 0) {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN stop cleanup confirmed attempt %{public}s', sessionId);
+        hilog.info(LOG_DOMAIN, LOG_TAG, "VPN stop cleanup confirmed attempt %{public}s", sessionId);
       } else {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'VPN OS stop confirmed with no journaled owner');
+        hilog.info(LOG_DOMAIN, LOG_TAG, "VPN OS stop confirmed with no journaled owner");
       }
       return true;
     } catch (err) {
-      hilog.error(LOG_DOMAIN, LOG_TAG, 'request VPN stop failed %{public}s', describeError(err));
-      throw new Error(describeError(err) || 'request VPN stop failed');
+      hilog.error(LOG_DOMAIN, LOG_TAG, "request VPN stop failed %{public}s", describeError(err));
+      throw new Error(describeError(err) || "request VPN stop failed");
     }
   }
 
   private async waitForCooperativeCleanup(cleanup: Promise<string>): Promise<string> {
     let timeoutId: number = -1;
     const timeout = new Promise<string>((resolve: (value: string) => void): void => {
-      timeoutId = setTimeout((): void => resolve('pending'), VPN_COOPERATIVE_STOP_TIMEOUT_MS);
+      timeoutId = setTimeout((): void => resolve("pending"), VPN_COOPERATIVE_STOP_TIMEOUT_MS);
     });
     const result = await Promise.race([cleanup, timeout]);
     if (timeoutId >= 0) {
@@ -954,7 +1201,9 @@ export class VpnPlugin extends AsyncPluginBase {
   }
 
   private canDispatchPlatformVpnStop(intentEpoch: string, sessionId: string): boolean {
-    return pawsUi.isPlatformVpnStopCurrent(intentEpoch, sessionId) ||
-      (sessionId.length === 0 && pawsUi.isPlatformVpnIntentCurrent(intentEpoch));
+    return (
+      pawsUi.isPlatformVpnStopCurrent(intentEpoch, sessionId) ||
+      (sessionId.length === 0 && pawsUi.isPlatformVpnIntentCurrent(intentEpoch))
+    );
   }
 }

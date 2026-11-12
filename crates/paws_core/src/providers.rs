@@ -85,7 +85,7 @@ pub(super) fn refresh_provider_cache_metadata(providers: &mut [ProviderSummary])
 
 pub(super) fn enrich_proxy_provider_members(
     providers: &mut [ProviderSummary],
-    registry: &dashmap::DashMap<String, Arc<ProxyProvider>>,
+    registry: &HashMap<String, Arc<ProxyProvider>>,
 ) {
     for provider in providers
         .iter_mut()
@@ -107,7 +107,7 @@ pub(super) fn enrich_proxy_provider_members(
             .map(|proxy| ProviderProxySummary {
                 name: proxy.name().to_owned(),
                 proxy_type: proxy.adapter_type().to_string(),
-                alive: proxy.alive(),
+                alive: (!proxy.delay_history().is_empty()).then(|| proxy.alive()),
                 delay_ms: (!proxy.delay_history().is_empty())
                     .then(|| u32::from(proxy.last_delay())),
             })

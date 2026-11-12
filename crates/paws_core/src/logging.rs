@@ -1,5 +1,16 @@
 use super::*;
 
+// Separate from CoreState: tracing is emitted while engine/configuration locks
+// are held, so a subscriber must never re-enter those locks to find its sink.
+static ENGINE_LOG_SINK: std::sync::RwLock<Option<std::sync::Weak<paws_engine::EngineLogBuffer>>> =
+    std::sync::RwLock::new(None);
+
+pub(super) fn set_engine_log_sink(sink: Option<Arc<paws_engine::EngineLogBuffer>>) {
+    if let Ok(mut current) = ENGINE_LOG_SINK.write() {
+        *current = sink.as_ref().map(Arc::downgrade);
+    }
+}
+
 pub(super) fn info_log(message: impl Into<String>) -> LogEntry {
     LogEntry {
         level: "info".to_owned(),
@@ -21,18 +32,6 @@ pub(super) fn error_log(message: impl Into<String>) -> LogEntry {
         level: "error".to_owned(),
         message: message.into(),
         timestamp: unix_timestamp_string(),
-    }
-}
-
-pub(super) fn broadcast_log_entry(entry: &LogEntry) {
-    if let Ok(senders) = API_LOG_TXS.lock() {
-        for tx in senders.iter() {
-            let _ = tx.send(meow_api::log_stream::LogMessage {
-                level: meow_api::log_stream::LogLevel::Error,
-                payload: entry.message.clone(),
-                time: time::OffsetDateTime::now_utc(),
-            });
-        }
     }
 }
 
@@ -84,13 +83,6 @@ where
 
     fn on_event(&self, event: &tracing::Event<'_>, ctx: tracing_subscriber::layer::Context<'_, S>) {
         let target = event.metadata().target();
-        // dioxus's internal diff/template traces carry the entire Template
-        // tree as a debug field; formatting it on the UI thread for every
-        // rendered node stalls the main loop (observed as a 6s+ ANR on
-        // device). These internals are worthless for the app log anyway.
-        if target.starts_with("dioxus") {
-            return;
-        }
         let level = match *event.metadata().level() {
             Level::TRACE | Level::DEBUG => "debug",
             Level::INFO => "info",
@@ -127,22 +119,29 @@ where
             append_socket_trace(&message, &flow);
         }
         if is_vpn_log_target(event.metadata().target()) {
-            push_runtime_log(
-                &self.logs,
-                LogEntry {
-                    level: level.to_owned(),
-                    message,
-                    timestamp: unix_timestamp_string(),
-                },
-            );
-        }
-        if let Ok(senders) = API_LOG_TXS.lock() {
-            for tx in senders.iter() {
-                let _ = tx.send(meow_api::log_stream::LogMessage {
-                    level: meow_log_level(*event.metadata().level()),
-                    payload: visitor_payload(event),
-                    time: time::OffsetDateTime::now_utc(),
-                });
+            let entry = LogEntry {
+                level: level.to_owned(),
+                message,
+                timestamp: unix_timestamp_string(),
+            };
+            let native = if target.starts_with("meow_")
+                || target.starts_with("meow-")
+                || target.starts_with("paws_vpn")
+            {
+                ENGINE_LOG_SINK
+                    .read()
+                    .ok()
+                    .and_then(|sink| sink.as_ref().and_then(std::sync::Weak::upgrade))
+            } else {
+                None
+            };
+            if let Some(sink) = native {
+                // The engine journal has its own fenced archive consumer.
+                // Sending it to the application writer too would duplicate the
+                // same native entry and bypass the recording cut watermark.
+                let _ = sink.record(entry);
+            } else {
+                push_runtime_log(&self.logs, entry);
             }
         }
     }
@@ -153,21 +152,6 @@ pub(super) fn is_vpn_log_target(target: &str) -> bool {
         || target.starts_with("paws_vpn")
         || target.starts_with("meow_")
         || target.starts_with("meow-")
-}
-
-pub(super) fn meow_log_level(level: Level) -> meow_api::log_stream::LogLevel {
-    match level {
-        Level::TRACE | Level::DEBUG => meow_api::log_stream::LogLevel::Debug,
-        Level::INFO => meow_api::log_stream::LogLevel::Info,
-        Level::WARN => meow_api::log_stream::LogLevel::Warning,
-        Level::ERROR => meow_api::log_stream::LogLevel::Error,
-    }
-}
-
-pub(super) fn visitor_payload(event: &tracing::Event<'_>) -> String {
-    let mut visitor = LogMessageVisitor::default();
-    event.record(&mut visitor);
-    visitor.finish(event.metadata().target())
 }
 
 #[derive(Default)]
@@ -423,11 +407,9 @@ mod socket_wire_tests {
         );
     }
     #[test]
-    fn wire_events_never_reach_runtime_ring_or_api_even_with_spoofed_text() {
+    fn wire_events_never_reach_runtime_ring_even_with_spoofed_text() {
         let logs = Arc::new(Mutex::new(RuntimeLogBuffer::default()));
         let subscriber = tracing_subscriber::registry().with(PawsLogLayer { logs: logs.clone() });
-        let (tx, mut rx) = tokio::sync::broadcast::channel(256);
-        API_LOG_TXS.lock().unwrap().push_back(tx.clone());
         tracing::subscriber::with_default(subscriber, || {
             // A target string resembling a probe field is not a structured probe_id.
             let span = tracing::info_span!("paws_flow", target = "probe_id=tp-0123456789abcdef-1");
@@ -435,10 +417,6 @@ mod socket_wire_tests {
             tracing::info!(target: "paws_core::wire_test", id=999, offset=0, n=2, hex="abcd", "socket-trace event=wire-write-sample");
             tracing::info!(target: "paws_core::wire_test", "wire-test-public-control");
         });
-        API_LOG_TXS
-            .lock()
-            .unwrap()
-            .retain(|sender| !sender.same_channel(&tx));
         let logs = logs.lock().unwrap();
         assert!(!logs
             .entries()
@@ -446,14 +424,5 @@ mod socket_wire_tests {
         assert!(logs
             .entries()
             .any(|entry| entry.message == "wire-test-public-control"));
-        let mut public_control = false;
-        for _ in 0..256 {
-            let Ok(message) = rx.try_recv() else {
-                break;
-            };
-            assert!(!message.payload.contains("wire-write-sample"));
-            public_control |= message.payload == "wire-test-public-control";
-        }
-        assert!(public_control);
     }
 }

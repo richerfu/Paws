@@ -220,11 +220,3 @@ pub(super) fn mode_to_tunnel(value: RuntimeMode) -> TunnelMode {
         RuntimeMode::Direct => TunnelMode::Direct,
     }
 }
-
-pub(super) fn mode_from_tunnel(value: TunnelMode) -> RuntimeMode {
-    match value {
-        TunnelMode::Rule => RuntimeMode::Rule,
-        TunnelMode::Global => RuntimeMode::Global,
-        TunnelMode::Direct => RuntimeMode::Direct,
-    }
-}

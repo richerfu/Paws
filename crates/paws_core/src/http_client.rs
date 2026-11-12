@@ -11,7 +11,7 @@ use std::time::Duration;
 pub const EXTERNAL_HTTP_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
 const EXTERNAL_HTTP_ERROR_BODY_BYTES: usize = 64 * 1024;
 const APP_USER_AGENT: &str = concat!("Paws/", env!("CARGO_PKG_VERSION"));
-const SUBSCRIPTION_USER_AGENT: &str = concat!("clash.meta/0.22.0 Paws/", env!("CARGO_PKG_VERSION"));
+const SUBSCRIPTION_USER_AGENT: &str = concat!("clash.meta/0.29.0 Paws/", env!("CARGO_PKG_VERSION"));
 const SUBSCRIPTION_ACCEPT: &str =
     "application/yaml, text/yaml, text/plain, application/octet-stream, */*";
 const MAX_PROXY_CLIENTS: usize = 4;
@@ -420,7 +420,8 @@ mod tests {
                 }
                 let (mut stream, _) = next.unwrap().unwrap();
                 let mut buf = [0u8; 2048];
-                stream.read(&mut buf).await.unwrap();
+                let received = stream.read(&mut buf).await.unwrap();
+                assert!(received > 0, "retry connection must carry an HTTP request");
                 stream
                     .write_all(
                         b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nready",
@@ -517,7 +518,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(response.body.contains("ua=clash.meta/0.22.0 Paws/"));
+            assert!(response.body.contains("ua=clash.meta/0.29.0 Paws/"));
             assert_eq!(
                 response.body.contains("cookie=true"),
                 expected_cookie,

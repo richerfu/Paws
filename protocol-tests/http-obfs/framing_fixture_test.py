@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,12 +29,13 @@ def main():
         subprocess.run(command, env={**environment, "TINYPAWS_HELLO_FIXTURE_OUT": str(work / "hello.bin")},
                        check=True, capture_output=True, timeout=180)
         source = ROOT / "protocol-tests/http-obfs/meow_wire_test.rs"
+        dependency = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["dependencies"]["meow-transport"]
+        transport = ','.join(name + '=' + json.dumps(dependency[name]) for name in ("git", "rev"))
         manifest = ('[package]\nname="paws_meow_wire_fixture"\nversion="0.1.0"\nedition="2021"\n'
                     '[[bin]]\nname="meow-wire-fixture"\npath=' + json.dumps(str(source)) + '\n'
                     '[dependencies]\nshadowsocks={version="=1.24.0",default-features=false,features=["aead-cipher"]}\n'
                     'tokio={version="1",features=["full"]}\nserde_json="1"\n'
-                    'meow-transport={path=' + json.dumps(str(ROOT / 'vendor/meow-transport')) +
-                    ',default-features=false,features=["simple-obfs"]}\n')
+                    'meow-transport={' + transport + ',default-features=false,features=["simple-obfs"]}\n')
         (work / "Cargo.toml").write_text(manifest)
         with (work / "meow.json").open("w") as capture:
             subprocess.run(["cargo", "run", "--offline", "--quiet", "--manifest-path", str(work / "Cargo.toml"),
@@ -44,8 +46,14 @@ def main():
                        env={**environment, "TINYPAWS_MEOW_WIRE_FIXTURE": str(work / "meow.json")},
                        check=True, capture_output=True, timeout=180)
         report = json.loads(report_path.read_text())
+        metadata = json.loads(subprocess.check_output(
+            ["cargo", "metadata", "--offline", "--format-version", "1", "--manifest-path", str(work / "Cargo.toml")],
+            env=environment, text=True))
+        transport_package = next(package for package in metadata["packages"] if package["name"] == "meow-transport")
+        transport_source = Path(transport_package["manifest_path"]).parent / "src/simple_obfs/client.rs"
         report["meow"] = {"shadowsocksVersion": "1.24.0",
-                          "httpObfsSha256": hashlib.sha256((ROOT / "vendor/meow-transport/src/simple_obfs/client.rs").read_bytes()).hexdigest()}
+                          "httpObfsSha256": hashlib.sha256(transport_source.read_bytes()).hexdigest(),
+                          "sourceRevision": dependency["rev"]}
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps({"passed": report["passed"], "report": str(args.output),

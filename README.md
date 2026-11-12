@@ -1,36 +1,36 @@
 # Paws
 
-Paws is a native HarmonyOS proxy client with an ArkUI interface and three
+Paws is a native OpenHarmony proxy client with an NSH OpenHarmony interface and three
 integrated proxy engines: Mihomo, sing-box, and
-[meow-rs 0.22.0](https://github.com/meow-rs/meow-rs).
-Profiles that use plugin transports are resolved through the route-validated
-mihomo engine even when a candidate engine is selected, so a compatibility
-preference cannot produce a false Connected state.
+[meow-rs](https://github.com/meow-rs/meow-rs).
 Its product flow follows
-[Meow for Android](https://github.com/meow-rs/meow-android), while the HarmonyOS UI,
+[Meow for Android](https://github.com/meow-rs/meow-android), while the OpenHarmony UI,
 VPN lifecycle, native bridge, packaging, and device validation are implemented
 in this repository.
 
 ## Architecture
 
 ```text
-Native ArkUI (Rust: arkit + Dioxus)
-    |  N-API
+NSH native UI (ui/nsh, local nsh-platform-ohos)
+    |  NshSurface / typed commands, domain queries and revision events
     v
-HarmonyOS abilities (ArkTS)
-    |  EntryAbility + VpnExtensionAbility
-    |  VpnConnection TUN + protectProcessNet()
+Rust application layer
+    |  paws_app + paws_core + paws_profile + paws_model
+    |  engine policy, profile transactions, session ownership, diagnostics
+    |  paws_engine: EngineSession / EngineTunnel / EngineManagement
+    |  paws_vpn: TCP/UDP/DNS completion against neutral ports
     v
-Paws Rust runtime
-    |  paws_core + paws_profile
-    |  paws_vpn + netstack-smoltcp/lwIP
-    v
-engine adapter
-    |  meow-rs (native Rust), mihomo, or sing-box
-    |  Config, rule engine, proxy, DNS, external controller
+Backend adapters
+    |  paws_engine_meow: meow-rs data plane, listeners and management
+    |  paws_engine_go: Mihomo and sing-box lifecycle/configuration/management
     v
 Network
 ```
+
+OpenHarmony abilities own platform permissions, TUN creation and protected network
+selection. Every engine follows the same prepare/start/stop/reload bridge.
+See [the architecture contract](docs/nsh-three-layer-architecture.md) for
+ownership, configuration revisions, disposal and acceptance requirements.
 
 ## Features
 
@@ -60,12 +60,12 @@ Network
   portable/WebDAV backup, public-exit health, and a redacted diagnostic export.
 - **Runtime views**: proxy selection and delay test, live traffic, connections,
   requests, logs, resources, and VPN lifecycle diagnostics.
-- **Native UI**: phone, tablet, and 2-in-1 device targets built with
-  [arkit](https://github.com/richerfu/arkit). Live window widths below 840vp
-  use bottom navigation; wider tablet and desktop windows use a sidebar and
-  bounded page content. Keyboard and pointer input remain available in split
-  or narrow windows. Text fields focus on click so scrolling does not open
-  the keyboard accidentally.
+- **Native UI**: phone, tablet, and 2-in-1 device targets built with the locally
+  adapted NSH OpenHarmony backend. Narrow windows use bottom navigation;
+  wider windows use a sidebar and bounded content. Configuration drafts stay
+  separate from live traffic, resource and session updates. The interface uses
+  NSH Gallery's theme and base controls; YAML editing opens a dedicated page
+  with NSH's code editor, highlighting, find, undo and revision-checked saving.
 - **Localization**: English and Simplified Chinese.
 - **Automation**: workspace tests, local protocol mocks, HAP export checks,
   device/QEMU smoke tests, and a 14-mode positive/negative protocol matrix.
@@ -84,11 +84,25 @@ Network
 If DevEco Studio is installed outside `/Applications/DevEco-Studio.app`, set
 `DEVECO_STUDIO_HOME` to its `Contents` directory before running these scripts.
 
-Run `ohpm install --all` after changing dependencies. Paws uses the published
-Arkit `0.0.1-beta.0` Rust crates and Ability `1.0.0-beta.3` Rust / OHPM
-packages, including the matching files and URL plugins. Third-party
-dependencies resolve from crates.io and the OHPM registry; no local host
-snapshot or sibling checkout is required.
+This branch pins NSH to `4794cd525b6d37ba444e25d6f7f3e83ff296bce1`, the local
+`ohos` branch tip selected for this migration (see `scripts/nsh-revision`).
+The build creates a clean checkout under `target/nsh-checkouts` from Git objects
+in `../nsh`, independently of that repository's active branch or uncommitted edits.
+Set `NSH_ROOT` to select another compatible checkout. `scripts/build-nsh-ohos.sh` builds its
+native library and CLI, bundles `ui/nsh`, and stages its ArkTS host plus the
+application's capability helpers under this project's `target/ohos`. The
+current NSH host attaches through `NshSurface(UIContext)` and uses its native
+editor and dialogs without the legacy Ability patch set. Source fingerprints
+cover NSH and local binding overrides. Generated outputs stay in Paws.
+The floating VPN control uses NSH's `Overlay` and native pan binding. Its
+action guard does not disable dragging. The pinned native SDK is built from
+unchanged upstream sources; no Paws pointer, editor, dialog or frame scheduler
+patches are applied.
+Application capability helpers retain Ability `b6550250`, staged under
+`target/ability-checkouts` from the local Ability repository or Cargo Git object
+cache. Set `NSH_ABILITY_ROOT` when those helpers live elsewhere. Run that
+script before a standalone `ohpm install --all`; `scripts/package-hap.sh` runs
+it automatically.
 
 The project targets HarmonyOS 6.1 and is compatible with HarmonyOS 6.0.2.
 The default release package contains `arm64-v8a` native libraries.
@@ -105,8 +119,8 @@ local protocol profile generation, and an OpenHarmony `aarch` build.
 ### Build an unsigned release HAP
 
 Prepare the Go engines from the vendored bridges and pinned upstream sources;
-follow [Building Mihomo and sing-box with patched OpenHarmony Go](docs/native-engines-build.md)
-for first-time compiler preparation, reusing patched Go 1.24.7, engine patches,
+follow [Building Mihomo and sing-box with go-patch](docs/native-engines-build.md)
+for the checksum-pinned go-patch compiler, engine patches,
 explicit library paths, and release/debug packaging. Keep that guide's exported
 environment when running the commands below. A separate FlClash checkout is
 no longer required.
@@ -128,6 +142,11 @@ entry/build/default/outputs/default/entry-default-unsigned.hap
 ### Build a signed release HAP
 
 After configuring a valid HarmonyOS signing profile for the target device:
+
+Keep the private DevEco `build-profile.json5` under `.ohos-sign/`, or set
+`PAWS_SIGNING_PROFILE` to its path. The signed packaging command temporarily
+applies only its signing configuration and restores the tracked project file,
+including when the build fails. Certificates, keys and passwords stay local.
 
 ```sh
 scripts/fetch-geodata.sh
@@ -261,11 +280,16 @@ entry/                         HarmonyOS application module
   src/main/cpp/types/          Generated N-API declarations
   src/main/resources/          UI resources and packaged GeoData
 crates/
-  paws_ui/                    Native ArkUI interface and N-API exports
-  paws_core/                  Runtime lifecycle and meow-rs integration
+  paws_ui/                    Thin N-API application/platform binding
+  paws_app/                   Commands, preferences and subscription conversion
+  paws_engine/                Backend-neutral lifecycle and network contracts
+  paws_engine_meow/           meow-rs network adapter
+  paws_engine_go/             Mihomo and sing-box adapters
+  paws_core/                  Runtime policy, lifecycle and domain orchestration
   paws_profile/               Profiles, subscriptions, rules, and persistence
   paws_vpn/                   TUN TCP/UDP and DNS forwarding
   paws_model/                 Shared data model
+ui/nsh/                       NSH native views and state/interaction checks
 local-protocol-tests/          Echo servers, mock proxies, and generated profiles
 scripts/                       Build, package, smoke, and regression automation
 docs/                          Native engine build and GeoData provisioning guides

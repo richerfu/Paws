@@ -1,18 +1,25 @@
 # Third-party components
 
+The native interface uses [Native Shell](https://github.com/longbridge/nsh).
+`ui/nsh/theme.json` and `ui/nsh/src/finishes.json` are adapted from its
+`examples/nsh-gallery-ui` at local revision `e10ae2c47b3d711c67485ed49f6b76633ebebd93`.
+The upstream Apache License 2.0 text is included at
+[LICENSES/nsh/LICENSE-APACHE](LICENSES/nsh/LICENSE-APACHE). The build records
+also fingerprint local SDK and native-binding changes.
+
 Paws packages Mihomo, sing-box, and meow-rs as independent proxy engines for
 HarmonyOS. The About page lists their packaged versions, source revisions, and
 license links; these are not claims about the latest upstream releases.
 
-- FlClash OpenHarmony core bridge (`vendor/mihomo-bridge` and `vendor/mihomo-bridge/ohos-napi`): GPL-3.0.
+- FlClash OpenHarmony core bridge (`vendor/mihomo-bridge`): GPL-3.0.
 - Mihomo 1.10.0 (the version declared by `constant/version.go` in the pinned
   [FlClash source fork](https://github.com/chen08209/Clash.Meta/tree/8597778c7df410ebe88c57e59eaab32d203156df),
   commit `8597778c7df410ebe88c57e59eaab32d203156df` with
-  `patches/mihomo-openharmony.patch` and `patches/gvisor-fstat.patch`):
+  `patches/mihomo-openharmony.patch` and `patches/mihomo-paws-management.patch`):
   [GPL-3.0](https://github.com/chen08209/Clash.Meta/blob/8597778c7df410ebe88c57e59eaab32d203156df/LICENSE).
 - The unmodified upstream license text is included at
   [LICENSES/mihomo/LICENSE](LICENSES/mihomo/LICENSE).
-- The packaged `libcore.so` and `libclash.so` are compiled via `scripts/build-mihomo-ohos.sh` from `vendor/mihomo-bridge` and commit `8597778c` (2026-10-01).
+- The packaged `libclash.so` is compiled via `scripts/build-mihomo-ohos.sh` from `vendor/mihomo-bridge` and commit `8597778c` (2026-10-01).
 
 The bridge sources, adaptation patches, and complete upstream license texts are
 included in this repository. The pinned upstream source links and build
@@ -32,29 +39,28 @@ advanced-protocol use.
   text is included at [LICENSES/sing-box/COPYING](LICENSES/sing-box/COPYING).
 - OpenHarmony Go bridge source: `vendor/sing-box-bridge/main.go`.
 - The packaged `libsingbox.so` is compiled for `openharmony/arm64` with the
-  OpenHarmony SIG Go 1.24 toolchain and the DevEco OpenHarmony clang/sysroot.
+  [go-patch v1.27.3](https://github.com/openharmony-command-package/go-patch/releases/tag/v1.27.3) toolchain and the DevEco OpenHarmony clang/sysroot.
 
-The Go compiler can be rebuilt from the OpenHarmony SIG Go 1.24.5 source
-distribution with `patches/go-ohos-1.24.7-compat.patch`. This patch contains the
-remaining official Go 1.24.5-to-1.24.7 changes missing from that distribution;
-the existing OpenHarmony changes are retained. Go uses a BSD-style license.
+Paws consumes the precompiled go-patch distribution without modifying Go or
+gVisor sources. The pinned release and archive checksums are recorded in
+`scripts/go-ohos-toolchain.json`. Go retains its upstream BSD-style license;
+source and port attribution are available in the distribution and its
+[repository](https://github.com/openharmony-command-package/go-patch).
 See `docs/native-engines-build.md` for source revisions and build commands.
 
 Redistribution of a HAP containing `libsingbox.so` must include the matching
 sing-box source, bridge source, and GPL-3.0-or-later license notice.
 
-The Rust native engine uses [meow-rs 0.22.0](https://github.com/meow-rs/meow-rs)
-under the MIT license. The local copies of `meow-common`,
-`meow-proxy`, `meow-anytls`, `meow-listener`, `meow-tunnel`, and `meow-transport`
-in `vendor/` retain their original source and license notices. Paws changes
-add OpenHarmony socket protection, network-bound bootstrap DNS, HTTP-obfs
-compatibility and bounded diagnostics; see `vendor/TINYPAWS-PATCHES.md`.
+The Rust native engine uses unmodified [meow-rs at
+`52d75ec0fe7eefcc427639ed2bb7ea242dc2781f`](https://github.com/meow-rs/meow-rs/commit/52d75ec0fe7eefcc427639ed2bb7ea242dc2781f)
+under the MIT license, reported as `0.29.0+52d75ec`. This revision includes
+fixes newer than the v0.29.0 release tag. All former meow-rs vendor copies and
+Cargo patches have been removed; see [vendor/README.md](vendor/README.md).
+The GeoSite category decoder in `paws_engine_go` is adapted from meow-rs.
+Its original MIT notice is included at
+[LICENSES/meow-rs/LICENSE](LICENSES/meow-rs/LICENSE).
 
 The sing-box bridge additionally includes `physical_network.go`, `obfs_plugin.go`,
 `trace.go`, and `httpobfs/conn.go`; the required upstream handshake change is
 `patches/sing-box-http-obfs-handshake.patch`. Rebuilding requires applying that
 patch, as enforced by `scripts/build-sing-box-ohos.sh`.
-
-The native UI uses [arkit](https://github.com/richerfu/arkit), including its
-shadcn components, under MIT OR Apache-2.0. Its exact version is taken from the
-workspace dependency and displayed in About.

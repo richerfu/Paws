@@ -1,12 +1,12 @@
 /// <reference path="../types/vpnExtensionDebug.d.ts" />
 
-import { updateVpnAuthorizedState } from '@ohos.net.vpnExtension';
-import { hilog } from '@kit.PerformanceAnalysisKit';
-import BuildProfile from 'BuildProfile';
-import { describeError } from '../common/Errors';
+import { updateVpnAuthorizedState } from "@ohos.net.vpnExtension";
+import { hilog } from "@kit.PerformanceAnalysisKit";
+import BuildProfile from "BuildProfile";
+import { describeError } from "../common/Errors";
 
 const LOG_DOMAIN: number = 0x0000;
-const LOG_TAG: string = 'PawsVpn';
+const LOG_TAG: string = "PawsVpn";
 
 export function isVpnEmulatorCompatibilityEnabled(): boolean {
   return BuildProfile.DEBUG;
@@ -19,12 +19,19 @@ export function authorizeVpnForEmulatorDebug(): void {
   }
   try {
     const accepted: boolean = updateVpnAuthorizedState(BuildProfile.BUNDLE_NAME);
-    hilog.info(LOG_DOMAIN, LOG_TAG,
-      'debug updateVpnAuthorizedState returned %{public}s; verify system ret is 0',
-      String(accepted));
+    hilog.info(
+      LOG_DOMAIN,
+      LOG_TAG,
+      "debug updateVpnAuthorizedState returned %{public}s; verify system ret is 0",
+      String(accepted),
+    );
   } catch (err) {
-    hilog.warn(LOG_DOMAIN, LOG_TAG,
-      'debug updateVpnAuthorizedState failed %{public}s', describeError(err));
+    hilog.warn(
+      LOG_DOMAIN,
+      LOG_TAG,
+      "debug updateVpnAuthorizedState failed %{public}s",
+      describeError(err),
+    );
   }
 }
 
@@ -33,6 +40,10 @@ export function canRecoverRejectedEmulatorStop(
   sessionId: string,
   cooperativeStopRequested: boolean,
 ): boolean {
-  return isVpnEmulatorCompatibilityEnabled() && recoverUnattachedDebugOwner &&
-    sessionId.length > 0 && !cooperativeStopRequested;
+  return (
+    isVpnEmulatorCompatibilityEnabled() &&
+    recoverUnattachedDebugOwner &&
+    sessionId.length > 0 &&
+    !cooperativeStopRequested
+  );
 }

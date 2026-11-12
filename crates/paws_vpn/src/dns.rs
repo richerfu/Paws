@@ -198,7 +198,7 @@ pub(super) fn evict_earliest_dns_cache_record(
 }
 
 pub(super) async fn handle_dns_query(
-    tunnel: Tunnel,
+    tunnel: Arc<dyn EngineTunnel>,
     dns_table: DnsTable,
     dns_cache: DnsResponseCache,
     stats: Arc<SharedStats>,
@@ -223,7 +223,7 @@ pub(super) async fn handle_dns_query(
         stats.dns_cache_misses.fetch_add(1, Ordering::Relaxed);
     }
 
-    let response = match meow_dns::DnsServer::handle_query(&query, &tunnel.resolver()).await {
+    let response = match tunnel.dns_query(&query).await {
         Ok(response) => response,
         Err(_) => build_dns_error_response(&query, DnsResponseCode::ServFail),
     };

@@ -105,6 +105,30 @@ class ManifestTests(unittest.TestCase):
         self.assertFalse(disabled['wireCapture'])
         self.assertFalse(disabled['diagnosticPeerPinned'])
 
+    def test_nsh_source_pair_and_exact_packaged_bundle_are_bound(self):
+        (self.library.parent / 'libnsh_platform_ohos.so').write_bytes(elf_fixture())
+        inputs = self.root / 'target/ohos/nsh-source-inputs.json'
+        inputs.parent.mkdir(parents=True)
+        inputs.write_text(json.dumps({'nsh': {'revision': 'd' * 40, 'dirty': True, 'worktreeSha256': 'f' * 64},
+                                      'ability': {'revision': 'e' * 40, 'dirty': False, 'worktreeSha256': 'a' * 64},
+                                      'cli': {'path': '/synthetic/nsh', 'sha256': 'b' * 64}}))
+        bundle = self.root / 'entry/src/main/resources/rawfile/paws.bundle.js'
+        bundle.parent.mkdir(parents=True)
+        bundle.write_text('mount(Paws);')
+        with zipfile.ZipFile(self.hap, 'a') as archive:
+            archive.writestr('libs/arm64-v8a/libnsh_platform_ohos.so', elf_fixture(stripped=True))
+            archive.writestr('resources/rawfile/paws.bundle.js', bundle.read_bytes())
+        manifest = build.attach_hap_provenance(self.make_manifest(), self.hap)
+        self.assertTrue(manifest['uiRuntime']['bundle']['matchesCompiledBundle'])
+        self.assertEqual(manifest['uiRuntime']['nsh']['revision'], 'd' * 40)
+        self.assertTrue(manifest['uiRuntime']['nsh']['dirty'])
+        bundle.write_text('mount(Unexpected);')
+        with self.assertRaisesRegex(build.ProvenanceError, 'NSH bundle differs'):
+            build.attach_hap_provenance(self.make_manifest(), self.hap)
+        inputs.unlink()
+        with self.assertRaisesRegex(build.ProvenanceError, 'NSH source identities'):
+            self.make_manifest()
+
     def test_unsigned_and_signed_hap_provenance(self):
         manifest = build.attach_hap_provenance(self.make_manifest(), self.hap, self.signed)
         library = manifest['nativeLibraries']['libfixture.so']
