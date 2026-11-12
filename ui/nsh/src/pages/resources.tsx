@@ -454,7 +454,16 @@ export function Resources() {
                     color: palette().text,
                   }}
                 >
-                  {ui.t("规则", "Rules")}
+                  {ui.t("配置规则", "Profile rules")}
+                </Text>
+                <Text
+                  style={{
+                    fontSize: typography.note,
+                    color: palette().muted,
+                    fontVariant: ["tabular-nums"],
+                  }}
+                >
+                  {`${current().rules.length} ${ui.t("条", "rules")}`}
                 </Text>
                 <Action
                   secondary

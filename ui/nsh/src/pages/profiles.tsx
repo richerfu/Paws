@@ -423,7 +423,17 @@ export function Profiles(props: { profileId?: string } = {}) {
                 <SectionHeader title={ui.t("信息", "Details")} />
                 <ListSurface>
                   <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: 1, borderBottomColor: palette().line }}>
-                    <Detail stacked label={ui.t("来源", "Source")} value={selectedProfile()?.subscriptionUrl || selectedProfile()?.source || ""} />
+                    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: spacing.sm }}>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Detail stacked label={ui.t("来源", "Source")} value={selectedProfile()?.subscriptionUrl || selectedProfile()?.source || ""} />
+                      </View>
+                      <IconButton
+                        id="profile-copy-source"
+                        icon="copy"
+                        label={ui.t("复制完整来源", "Copy source")}
+                        onPress={() => copyText(ui, selectedProfile()?.subscriptionUrl || selectedProfile()?.source || "", ui.t("来源已复制", "Source copied"))}
+                      />
+                    </View>
                   </View>
                   <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: selectedProfile()?.subscriptionUserInfo ? 1 : 0, borderBottomColor: palette().line }}>
                     <Detail label={ui.t("更新时间", "Updated")} value={timestamp(selectedProfile()?.lastRefreshAt || selectedProfile()?.updatedAt)} />
@@ -462,15 +472,13 @@ export function Profiles(props: { profileId?: string } = {}) {
                 <If when={selectedProfile() && !selectedProfile()!.active}>
                   <Action id="profile-activate" primary label={ui.t("启用此订阅", "Use this subscription")} disabled={ui.client.pending() > 0 || !ui.client.domains.readyForCommand(["config", "profiles"])} onPress={() => void profileAction("profiles.activate", collection.selected())} />
                 </If>
-                <If when={selectedProfile()?.subscriptionUrl}>
-                  <Action icon="refresh-cw" label={selectedProfile()?.lastRefreshError ? ui.t("重试更新", "Retry update") : ui.t("更新订阅", "Update subscription")} loading={!!selectedProfile() && refreshing(selectedProfile()!)} disabled={ui.client.pending() > 0} onPress={() => void profileAction("profiles.refresh", collection.selected())} />
+                <If when={selectedProfile()?.subscriptionUrl && selectedProfile()?.active}>
+                  <Action primary icon="refresh-cw" label={selectedProfile()?.lastRefreshError ? ui.t("重试更新", "Retry update") : ui.t("更新订阅", "Update subscription")} loading={!!selectedProfile() && refreshing(selectedProfile()!)} disabled={ui.client.pending() > 0} onPress={() => void profileAction("profiles.refresh", collection.selected())} />
                 </If>
                 <If when={selectedProfile()?.active}>
-                  <Action id="profile-proxies" label={ui.t("代理节点", "Proxy nodes")} onPress={() => ui.navigate("proxies")} />
+                  <Action id="profile-proxies" label={ui.t("查看代理节点", "View proxy nodes")} onPress={() => ui.navigate("proxies")} />
                 </If>
-                <Action icon="file-pen-line" label={ui.t("编辑 YAML", "Edit YAML")} onPress={() => { if (selectedProfile()) ui.editProfile(selectedProfile()!.id); }} />
-                <Action icon="download" label={ui.t("导出…", "Export…")} onPress={() => { if (selectedProfile()) { exporting.set(selectedProfile()); qr.set(undefined); } }} />
-                <Action icon="copy" label={ui.t("复制完整来源", "Copy source")} onPress={() => copyText(ui, selectedProfile()?.subscriptionUrl || selectedProfile()?.source || "", ui.t("来源已复制", "Source copied"))} />
+                <Action id="profile-edit-detail" label={ui.t("编辑订阅…", "Edit subscription…")} onPress={() => { if (selectedProfile()) openEdit(selectedProfile()!); }} />
               </Actions>
             </If>
           </Body>

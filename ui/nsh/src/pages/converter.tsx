@@ -322,26 +322,6 @@ export function Converter() {
                       onChange={(remote_config) => change({ remote_config })}
                     />
                     <Field
-                      label={ui.t("包含节点", "Include nodes")}
-                      value={draft()!.include_remarks}
-                      placeholder={ui.t(
-                        "节点名必须包含，支持正则",
-                        "Include node names matching a regex",
-                      )}
-                      disabled={busy()}
-                      onChange={(include_remarks) => change({ include_remarks })}
-                    />
-                    <Field
-                      label={ui.t("排除节点", "Exclude nodes")}
-                      value={draft()!.exclude_remarks}
-                      placeholder={ui.t(
-                        "排除匹配的节点名，支持正则",
-                        "Exclude node names matching a regex",
-                      )}
-                      disabled={busy()}
-                      onChange={(exclude_remarks) => change({ exclude_remarks })}
-                    />
-                    <Field
                       label={ui.t("输出文件名", "Output filename")}
                       value={draft()!.filename}
                       placeholder={ui.t(
@@ -371,6 +351,34 @@ export function Converter() {
                             })),
                         })
                       }
+                    />
+                  </Card>
+                  <Card
+                    title={ui.t("过滤", "Filter")}
+                    subtitle={ui.t(
+                      "按节点名称包含或排除，支持正则。",
+                      "Include or exclude nodes by name; regular expressions are supported.",
+                    )}
+                  >
+                    <Field
+                      label={ui.t("包含节点", "Include nodes")}
+                      value={draft()!.include_remarks}
+                      placeholder={ui.t(
+                        "节点名必须包含，支持正则",
+                        "Include node names matching a regex",
+                      )}
+                      disabled={busy()}
+                      onChange={(include_remarks) => change({ include_remarks })}
+                    />
+                    <Field
+                      label={ui.t("排除节点", "Exclude nodes")}
+                      value={draft()!.exclude_remarks}
+                      placeholder={ui.t(
+                        "排除匹配的节点名，支持正则",
+                        "Exclude node names matching a regex",
+                      )}
+                      disabled={busy()}
+                      onChange={(exclude_remarks) => change({ exclude_remarks })}
                     />
                   </Card>
                   <View style={{ gap: spacing.sm }}>
