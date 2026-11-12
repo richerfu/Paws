@@ -777,6 +777,9 @@ export function Traffic() {
               gap: spacing.section,
             }}
           >
+            <If when={columns()}>
+              <DnsSections />
+            </If>
             <View style={{ gap: spacing.sm }}>
               <SectionHeader
                 title={ui.t("连接与诊断", "Connections and diagnostics")}
@@ -799,9 +802,10 @@ export function Traffic() {
                       : `${ui.t("总下载", "Downloaded")} ${bytes(connections().downloadBytes)} · ${ui.t("总上传", "Uploaded")} ${bytes(connections().uploadBytes)}`
                   }
                   chevron
-                  divider
+                  divider={!columns()}
                   onPress={() => ui.navigate("connections")}
                 />
+                <If when={!columns()}>
                 <ListRow
                   id="traffic-dns"
                   icon="globe"
@@ -814,6 +818,7 @@ export function Traffic() {
                   chevron
                   onPress={() => ui.navigate("dns-diagnostics")}
                 />
+                </If>
               </ListSurface>
             </View>
           </View>
@@ -824,15 +829,13 @@ export function Traffic() {
 }
 
 
-export function DnsDiagnostics() {
+function DnsSections() {
   const ui = useApp(),
     current = () => ui.client.state()!;
   const unavailable = () =>
     ui.t("当前内核未提供统计", "Statistics unavailable from this engine");
   return (
-    <Scroll bounces={false} style={{ flex: 1 }}>
-      <Body>
-        <View style={{ gap: spacing.section }}>
+    <View style={{ gap: spacing.section }}>
             <View style={{ gap: spacing.sm }}>
               <SectionHeader
                 title={ui.t("DNS", "DNS")}
@@ -1074,7 +1077,15 @@ export function DnsDiagnostics() {
                 </TrafficRow>
               </ListSurface>
             </View>
-        </View>
+    </View>
+  );
+}
+
+export function DnsDiagnostics() {
+  return (
+    <Scroll bounces={false} style={{ flex: 1 }}>
+      <Body>
+        <DnsSections />
       </Body>
     </Scroll>
   );
