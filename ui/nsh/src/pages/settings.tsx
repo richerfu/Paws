@@ -470,7 +470,6 @@ export function Settings() {
                             : "info"
                         }
                         label={`${previewStatus()}，${ui.t("查看详情", "View details")}`}
-                        size={24}
                         disabled={previewBusy()}
                         onPress={open}
                       />

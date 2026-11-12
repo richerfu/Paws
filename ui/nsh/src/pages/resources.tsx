@@ -1,4 +1,4 @@
-import { density } from "../theme";
+import { density, typography } from "../theme";
 import {
   computed,
   fontScale,
@@ -307,7 +307,7 @@ export function Resources() {
                   role="header"
                   style={{
                     flex: 1,
-                    fontSize: density.font(14),
+                    fontSize: typography.section,
                     fontWeight: "600",
                     color: palette().text,
                   }}
@@ -357,7 +357,7 @@ export function Resources() {
                   <Text
                     style={{
                       numberOfLines: 1,
-                      fontSize: density.font(14),
+                      fontSize: typography.sm,
                       fontWeight: "600",
                       color: palette().text,
                     }}
@@ -399,7 +399,7 @@ export function Resources() {
                   role="header"
                   style={{
                     flex: 1,
-                    fontSize: density.font(14),
+                    fontSize: typography.section,
                     fontWeight: "600",
                     color: palette().text,
                   }}
@@ -449,7 +449,7 @@ export function Resources() {
                   role="header"
                   style={{
                     flex: 1,
-                    fontSize: density.font(14),
+                    fontSize: typography.section,
                     fontWeight: "600",
                     color: palette().text,
                   }}

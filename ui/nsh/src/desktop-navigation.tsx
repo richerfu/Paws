@@ -182,24 +182,30 @@ export function DesktopNavigation(props: {
       }
       activeStyle={{ backgroundColor: palette().soft }}
       style={{
-        minHeight: expanded()
-          ? Math.max(36, density.line(20) * Math.max(1, fontScale()) + 12)
-          : 42,
-        paddingHorizontal: expanded() ? spacing.md : 0,
+        // Pointer: 28 pt rows and 36 pt rail tiles with a 6 pt corner, the
+        // selection a fill alone. Touch: 36 pt rows and 42 pt rail tiles.
+        minHeight: platform.desktop
+          ? expanded()
+            ? Math.max(28, density.line(18) * Math.max(1, fontScale()) + 10)
+            : 36
+          : expanded()
+            ? Math.max(36, density.line(20) * Math.max(1, fontScale()) + 12)
+            : 42,
+        paddingHorizontal: expanded() ? (platform.desktop ? 8 : spacing.md) : 0,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: expanded() ? "flex-start" : "center",
-        gap: 10,
-        borderRadius: expanded() ? 9 : 10,
+        gap: platform.desktop ? 9 : 10,
+        borderRadius: platform.desktop ? 6 : expanded() ? 9 : 10,
         borderCurve: "continuous",
         borderWidth: 1,
-        borderColor: selected(item.destination.page)
-          ? palette().border
-          : "transparent",
+        borderColor:
+          selected(item.destination.page) && !platform.desktop
+            ? palette().border
+            : "transparent",
         backgroundColor: selected(item.destination.page)
           ? palette().sidebarAccent
           : "transparent",
-        ...(selected(item.destination.page) ? surfaceFinish("card") : {}),
         ...feedbackStyle(),
       }}
     >
@@ -220,10 +226,12 @@ export function DesktopNavigation(props: {
               color: selected(item.destination.page)
                 ? palette().text
                 : palette().muted,
-              fontSize: density.font(14),
-              lineHeight: density.line(20),
+              fontSize: density.font(platform.desktop ? 13 : 14),
+              lineHeight: density.line(platform.desktop ? 18 : 20),
               numberOfLines: 1,
-              fontWeight: selected(item.destination.page) ? "600" : "500",
+              fontWeight: selected(item.destination.page)
+                ? platform.desktop ? "500" : "600"
+                : "500",
             }}
           >
             {props.t(item.destination.zh, item.destination.en)}
@@ -296,21 +304,24 @@ export function DesktopNavigation(props: {
         hoverStyle={{ backgroundColor: palette().hover }}
         activeStyle={{ backgroundColor: palette().soft }}
         style={{
-          minHeight: 54,
-          paddingHorizontal: expanded() ? 14 : 0,
+          minHeight: 40,
+          marginTop: 12,
+          marginBottom: 4,
+          marginHorizontal: 8,
+          paddingHorizontal: expanded() ? 10 : 0,
           flexDirection: "row",
           alignItems: "center",
           justifyContent: expanded() ? "flex-start" : "center",
-          gap: 10,
-          borderBottomWidth: 1,
-          borderBottomColor: palette().sidebarBorder,
+          gap: 9,
+          borderRadius: 9,
+          borderCurve: "continuous",
         }}
       >
         <View
           style={{
-            width: 24,
-            height: 24,
-            borderRadius: 7,
+            width: 26,
+            height: 26,
+            borderRadius: 8,
             borderCurve: "continuous",
             borderWidth: 1,
             alignItems: "center",
@@ -320,8 +331,8 @@ export function DesktopNavigation(props: {
         >
           <Text
             style={{
-              fontSize: 12,
-              lineHeight: 15,
+              fontSize: 13,
+              lineHeight: 16,
               fontWeight: "700",
               color: palette().primaryText,
             }}
@@ -334,9 +345,9 @@ export function DesktopNavigation(props: {
             style={{
               flex: 1,
               color: palette().text,
-              fontSize: 15,
+              fontSize: 16,
               fontWeight: "600",
-              letterSpacing: -0.2,
+              letterSpacing: -0.16,
             }}
           >
             Paws

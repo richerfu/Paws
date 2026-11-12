@@ -70,15 +70,25 @@ export const radius = {
   },
   full: 999,
 };
+// NSH Gallery sizes by input method: the pointer tier (desktop) is compact,
+// the touch tier (Phone and Pad) roomier. Pad stays on the touch tier even
+// with a keyboard, so `platform.desktop` alone selects the tier.
+const pointer = () => platform.desktop;
 export const typography = {
   get xs() {
     return density.font(12);
   },
+  /** Secondary text and row details: 12 pointer, 13 touch. */
   get note() {
-    return density.font(13);
+    return density.font(pointer() ? 12 : 13);
   },
+  /** Body text and row labels: 14 pointer, 15 touch. */
   get sm() {
-    return density.font(15);
+    return density.font(pointer() ? 14 : 15);
+  },
+  /** Section titles: 13 pointer, 15 touch. */
+  get section() {
+    return density.font(pointer() ? 13 : 15);
   },
   get md() {
     return density.font(17);
@@ -95,22 +105,60 @@ export const typography = {
 };
 export const control = {
   get compact() {
-    return !platform.desktop;
+    return !pointer();
   },
-  height: 40,
-  small: 36,
+  /** Regular button: 28 pointer, 40 touch. */
+  get height() {
+    return pointer() ? 28 : 40;
+  },
+  /** Small button: 24 pointer, 36 touch. */
+  get small() {
+    return pointer() ? 24 : 36;
+  },
+  /** Large button: 34 pointer, 48 touch. */
+  get large() {
+    return pointer() ? 34 : 48;
+  },
+  /** Icon button: 28 pointer, 40 touch. */
+  get icon() {
+    return pointer() ? 28 : 40;
+  },
+  /** Text field: 28 pointer, 46 touch. */
+  get field() {
+    return pointer() ? 28 : 46;
+  },
+  /** Select and picker trigger: 32 pointer, 44 touch. */
+  get select() {
+    return pointer() ? 32 : 44;
+  },
+  /** Segmented control: 30 pointer, 36 touch. */
+  get segment() {
+    return pointer() ? 30 : 36;
+  },
+  /** Small segmented control: 26 pointer, 32 touch. */
+  get segmentSmall() {
+    return pointer() ? 26 : 32;
+  },
+  /** Compact filter picker, paired with the small segmented control: 32 both tiers. */
   compactHeight: 32,
-  large: 46,
-  icon: 36,
+  /** Checkbox and radio box: 16 pointer, 22 touch. */
+  get box() {
+    return pointer() ? 16 : 22;
+  },
+  /** Least height of a list row: 40 pointer, 48 touch. */
   get row() {
-    return Math.max(52, density.line(20) * Math.max(1, fontScale()) + spacing.xl);
+    return Math.max(
+      pointer() ? 40 : 48,
+      density.line(20) * Math.max(1, fontScale()) + 16,
+    );
   },
   hitSlop(size: number) {
-    return !platform.desktop ? Math.max(0, (44 - size) / 2) : 0;
+    return !pointer() ? Math.max(0, (44 - size) / 2) : 0;
   },
 };
 export const chrome = {
-  header: 54,
+  header: 52,
+  toolbar: 54,
   bottom: 64,
 };
 

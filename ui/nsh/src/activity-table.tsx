@@ -100,7 +100,7 @@ export function ActivityTableHeader(props: {
     <View
       testID="activity-table-header"
       style={{
-        minHeight: 36,
+        minHeight: 32,
         flexDirection: "row",
         alignItems: "center",
         gap: spacing.md,
@@ -219,7 +219,7 @@ export function ActivityTableRow(props: {
     <View
       testID={`activity-table-row-${props.connection.id}`}
       style={{
-        minHeight: details() ? 46 : 56,
+        minHeight: 40,
         flexDirection: "row",
         alignItems: "center",
         gap: spacing.md,
@@ -253,7 +253,7 @@ export function ActivityTableRow(props: {
           style={{
             minWidth: 0,
             numberOfLines: 1,
-            fontSize: density.font(14),
+            fontSize: density.font(13),
             lineHeight: density.line(20),
             fontWeight: props.selected ? "600" : "500",
             color: palette().text,

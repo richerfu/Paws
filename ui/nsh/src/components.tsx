@@ -189,8 +189,8 @@ export function SectionHeader(props: {
           flex: 1,
           minWidth: 0,
           color: palette().text,
-          fontSize: typography.sm,
-          lineHeight: density.line(20),
+          fontSize: typography.section,
+          lineHeight: density.line(platform.desktop ? 18 : 20),
           fontWeight: "600",
         }}
       >
@@ -253,13 +253,12 @@ export function ListSurface(props: {
       testID={props.id}
       style={{
         minWidth: 0,
-        borderRadius: radius.xl,
+        borderRadius: platform.desktop ? 10 : radius.xl,
         borderCurve: "continuous",
         backgroundColor: palette().panel,
         borderWidth: 1,
         borderColor: palette().border,
         overflow: "hidden",
-        ...surfaceFinish("card"),
         ...props.style,
       }}
     >
@@ -290,6 +289,19 @@ export function ListRow(props: {
   const interactive = () => !!props.onPress;
   const content = (
     <>
+      <If when={props.divider}>
+        <View
+          style={{
+            pointerEvents: "none",
+            position: "absolute",
+            left: platform.desktop ? 14 : 16,
+            right: platform.desktop ? 14 : 16,
+            bottom: 0,
+            height: 1,
+            backgroundColor: palette().line,
+          }}
+        />
+      </If>
       <If when={props.leading || props.icon}>
         <If
           when={props.leading}
@@ -379,19 +391,15 @@ export function ListRow(props: {
     </>
   );
   const rowStyle = () => ({
-    minHeight: Math.max(
-      52,
-      density.line(20) * Math.max(1, fontScale()) + spacing.lg,
-    ),
-    paddingHorizontal: 14,
-    paddingVertical: density.space(10),
+    minHeight: control.row,
+    paddingHorizontal: platform.desktop ? 14 : 16,
+    paddingVertical: platform.desktop ? 6 : 8,
+    position: "relative" as const,
     flexDirection: "row" as const,
     alignItems: (props.alignTop ? "flex-start" : "center") as
       | "flex-start"
       | "center",
-    gap: spacing.md,
-    borderBottomWidth: props.divider ? 1 : 0,
-    borderBottomColor: palette().line,
+    gap: platform.desktop ? 10 : spacing.md,
     backgroundColor: props.selected ? palette().accentFill : "transparent",
     opacity: props.disabled ? 0.45 : 1,
     ...feedbackStyle(),
@@ -773,12 +781,14 @@ export function Action(props: {
         maxWidth: "100%",
         flexShrink: 1,
         minHeight: props.small ? control.small : control.height,
-        paddingVertical: props.small ? spacing.xxs : density.space(6),
-        paddingHorizontal: props.small ? 12 : 14,
-        borderRadius: props.small ? 9 : radius.md,
+        paddingVertical: platform.desktop ? 2 : props.small ? spacing.xxs : density.space(6),
+        paddingHorizontal: platform.desktop
+          ? props.small ? 8 : 12
+          : props.small ? 12 : 16,
+        borderRadius: radius.md,
         borderCurve: "continuous",
         flexDirection: "row",
-        gap: props.small ? 6 : spacing.sm,
+        gap: platform.desktop ? 6 : 8,
         alignItems: "center",
         justifyContent: "center",
         opacity: props.loading ? 1 : props.disabled ? 0.5 : 1,
@@ -794,11 +804,11 @@ export function Action(props: {
             when={props.loading}
             else={
               <If when={props.icon}>
-                <Icon name={props.icon!} size={16} color={foreground()} />
+                <Icon name={props.icon!} size={platform.desktop ? (props.small ? 12 : 14) : props.small ? 14 : 16} color={foreground()} />
               </If>
             }
           >
-            <Spinner size={16} color={foreground()} />
+            <Spinner size={platform.desktop ? (props.small ? 12 : 14) : props.small ? 14 : 16} color={foreground()} />
           </If>
         </View>
       </If>
@@ -806,9 +816,11 @@ export function Action(props: {
         style={{
           minWidth: 0,
           flexShrink: 1,
-          lineHeight: density.line(20),
-          fontSize: props.small ? density.font(14) : typography.sm,
-          fontWeight: variant() === "primary" || variant() === "stop" ? "600" : "500",
+          lineHeight: density.line(platform.desktop ? 18 : 20),
+          fontSize: platform.desktop
+            ? density.font(props.small ? 12 : 13)
+            : density.font(props.small ? 14 : 15),
+          fontWeight: "500",
           color: foreground(),
         }}
       >
@@ -835,10 +847,7 @@ export function IconButton(props: {
   const press = usePressFeedback(disabled);
   const glyph = useGlyphTransition(() => (props.loading ? "busy" : props.icon));
   const size = () =>
-    Math.max(
-      control.icon,
-      props.size || (props.small ? control.small : control.icon),
-    );
+    props.size ?? (props.small ? control.small : control.icon);
   return (
     <Button
       testID={props.id}
@@ -905,12 +914,12 @@ export function IconButton(props: {
           else={
             <Icon
               name={props.icon}
-              size={18}
+              size={platform.desktop ? 15 : 18}
               color={props.iconColor || palette().text}
             />
           }
         >
-          <Spinner size={18} />
+          <Spinner size={platform.desktop ? 15 : 18} />
         </If>
       </View>
     </Button>
@@ -1010,10 +1019,10 @@ export function Badge(props: {
         flexShrink: 1,
         minWidth: 0,
         maxWidth: "100%",
-        minHeight: 20,
-        borderRadius: radius.full,
+        minHeight: 26,
+        borderRadius: 13,
         borderCurve: "continuous",
-        paddingHorizontal: 8,
+        paddingHorizontal: 10,
         paddingVertical: density.space(2),
         borderWidth: 0,
         borderColor: colors().border,
@@ -1026,7 +1035,7 @@ export function Badge(props: {
           minWidth: 0,
           fontSize: typography.xs,
           lineHeight: density.line(16),
-          fontWeight: !props.tone || props.tone === "neutral" ? "500" : "600",
+          fontWeight: "500",
           fontVariant: ["tabular-nums"],
           color: colors().text,
         }}
@@ -1063,11 +1072,11 @@ export function Tabs(props: {
               ? "flex-start"
               : "stretch",
         maxWidth: "100%",
-        minHeight: small() ? control.compactHeight : 36,
+        minHeight: small() ? control.segmentSmall : control.segment,
         padding: 2,
         flexDirection: "row",
         backgroundColor: palette().inset,
-        borderRadius: small() ? 9 : radius.md,
+        borderRadius: platform.desktop ? 9 : 10,
         borderCurve: "continuous",
         borderWidth: 1,
         borderColor: palette().border,
@@ -1076,7 +1085,7 @@ export function Tabs(props: {
       indicatorStyle={{
         top: 2,
         bottom: 2,
-        borderRadius: small() ? 7 : 8,
+        borderRadius: platform.desktop ? 6 : 7,
         borderCurve: "continuous",
         borderWidth: 1,
         ...surfaceFinish("thumb"),
@@ -1104,19 +1113,13 @@ export function Tabs(props: {
               style={{
                 flex: inline() ? undefined : 1,
                 minWidth: 0,
-                minHeight: small() ? 26 : 30,
+                minHeight: (small() ? control.segmentSmall : control.segment) - 6,
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "center",
                 gap: 5,
-                paddingHorizontal: small()
-                  ? inline()
-                    ? 11
-                    : 6
-                  : inline()
-                    ? 12
-                    : 10,
-                borderRadius: small() ? 7 : 8,
+                paddingHorizontal: inline() ? (platform.desktop ? 9 : 10) : 7,
+                borderRadius: platform.desktop ? 6 : 7,
                 borderCurve: "continuous",
                 backgroundColor: "transparent",
                 opacity: props.disabled ? 0.5 : 1,
@@ -1128,9 +1131,9 @@ export function Tabs(props: {
                   flexShrink: 1,
                   minWidth: 0,
                   numberOfLines: 1,
-                  fontSize: small() ? typography.note : density.font(14),
-                  lineHeight: density.line(small() ? 18 : 20),
-                  fontWeight: active() ? "600" : "500",
+                  fontSize: platform.desktop ? density.font(12) : density.font(small() ? 13 : 14),
+                  lineHeight: density.line(small() || platform.desktop ? 18 : 20),
+                  fontWeight: "500",
                   color: active() ? palette().text : palette().muted,
                 }}
               >
@@ -1566,12 +1569,15 @@ export function Field(props: {
     !props.password &&
     !props.disabled &&
     !props.readonly;
+  // Gallery field insets: 8 pointer, 14 touch; an embedded button sits inside the field's edge.
+  const inset = () => (platform.desktop ? 8 : 14);
+  const embedded = () => control.field - (platform.desktop ? 6 : 6);
   return (
     <View style={{ gap: spacing.xs }}>
       <If when={props.label}>
         <Text
           style={{
-            fontSize: typography.sm,
+            fontSize: density.font(13),
             fontWeight: "500",
             color: palette().text,
           }}
@@ -1613,17 +1619,17 @@ export function Field(props: {
               props.height ||
               (props.multiline
                 ? 120
-                : Math.max(control.height, 20 * Math.max(1, fontScale()) + 16)),
+                : Math.max(control.field, 20 * Math.max(1, fontScale()) + (platform.desktop ? 8 : 16))),
             fontSize: typography.sm,
             lineHeight: density.line(20),
             color: palette().text,
             placeholderColor: palette().muted,
             paddingLeft: props.leadingIcon
-              ? spacing.md + density.space(22)
-              : spacing.md,
+              ? inset() + density.space(22)
+              : inset(),
             paddingRight:
-              props.password || showClear() ? control.icon + 4 : spacing.md,
-            paddingVertical: props.multiline ? spacing.sm : spacing.xxs,
+              props.password || showClear() ? embedded() + 4 : inset(),
+            paddingVertical: props.multiline ? (platform.desktop ? 6 : 13) : 0,
             opacity: props.disabled ? 0.5 : 1,
             backgroundColor: palette().field,
             borderWidth: 1,
@@ -1642,13 +1648,13 @@ export function Field(props: {
             style={{
               pointerEvents: "none",
               position: "absolute",
-              left: spacing.md,
+              left: inset(),
               top: 0,
               bottom: 0,
               justifyContent: "center",
             }}
           >
-            <Icon name={props.leadingIcon!} size={15} color={palette().muted} />
+            <Icon name={props.leadingIcon!} size={platform.desktop ? 14 : 15} color={palette().muted} />
           </View>
         </If>
         <If when={props.password}>
@@ -1663,7 +1669,7 @@ export function Field(props: {
           >
             <IconButton
               icon={passwordVisible() ? "eye-off" : "eye"}
-              size={32}
+              size={embedded()}
               tooltip={false}
               label={
                 ui?.t("显示或隐藏密码", "Show or hide password") ||
@@ -1686,7 +1692,7 @@ export function Field(props: {
           >
             <IconButton
               icon="x"
-              size={32}
+              size={embedded()}
               tooltip={false}
               label={ui?.t("清除输入", "Clear input") || "Clear input"}
               onPress={() => props.onChange("")}
@@ -1764,7 +1770,7 @@ export function Toggle(props: {
         flexDirection: "row-reverse",
         alignItems: "center",
         gap: spacing.md,
-        minHeight: 48,
+        minHeight: platform.desktop ? 40 : 48,
         paddingHorizontal: props.insetRow ? spacing.md : 0,
         paddingVertical: props.insetRow ? density.space(10) : 0,
         borderBottomWidth: props.divider ? 1 : 0,
@@ -1772,10 +1778,10 @@ export function Toggle(props: {
         opacity: props.disabled ? 0.45 : 1,
       }}
       trackStyle={{
-        width: 42,
-        height: 24,
+        width: platform.desktop ? 28 : 42,
+        height: platform.desktop ? 16 : 24,
         borderRadius: radius.full,
-        padding: 2,
+        padding: 1,
         borderWidth: 1,
         borderColor: props.value
           ? surfaceFinish("accent").borderColor
@@ -1789,8 +1795,8 @@ export function Toggle(props: {
         }),
       }}
       thumbStyle={{
-        width: 18,
-        height: 18,
+        width: platform.desktop ? 12 : 20,
+        height: platform.desktop ? 12 : 20,
         borderRadius: radius.full,
         borderWidth: 1,
         ...(props.value ? surfaceFinish("knobOn") : surfaceFinish("knob")),
@@ -1798,7 +1804,7 @@ export function Toggle(props: {
           {
             translateX: position.interpolate({
               inputRange: [0, 1],
-              outputRange: [0, 18],
+              outputRange: [0, platform.desktop ? 12 : 18],
             }),
           },
         ],
@@ -1845,7 +1851,7 @@ export function Check(props: {
         flexDirection: "row",
         alignItems: "center",
         gap: spacing.md,
-        minHeight: 46,
+        minHeight: platform.desktop ? 40 : 46,
         paddingHorizontal: props.insetRow ? spacing.md : 0,
         paddingVertical: props.insetRow ? density.space(8) : 0,
         borderBottomWidth: props.divider ? 1 : 0,
@@ -1853,9 +1859,9 @@ export function Check(props: {
         opacity: props.disabled ? 0.45 : 1,
       }}
       indicatorStyle={{
-        width: 22,
-        height: 22,
-        borderRadius: 7,
+        width: control.box,
+        height: control.box,
+        borderRadius: platform.desktop ? 5 : 7,
         borderCurve: "continuous",
         borderWidth: 1,
         borderColor: props.value
@@ -1871,7 +1877,7 @@ export function Check(props: {
         <View style={{ opacity: selected, transform: [{ scale: selected }] }}>
           <Icon
             name="check"
-            size={14}
+            size={platform.desktop ? 12 : 16}
             strokeWidth={2.6}
             color={palette().primaryText}
           />
@@ -1957,7 +1963,7 @@ export function Detail(props: {
             userSelect: "text",
             width: "100%",
             minWidth: 0,
-            fontSize: density.font(14),
+            fontSize: typography.sm,
             lineHeight: density.line(20),
             fontWeight: "500",
             fontVariant: ["tabular-nums"],
@@ -2231,8 +2237,8 @@ export function Dialog(props: {
                   style={{
                     minWidth: 0,
                     numberOfLines: 2,
-                    fontSize: typography.md,
-                    lineHeight: density.line(24),
+                    fontSize: platform.desktop ? typography.md : typography.xl,
+                    lineHeight: density.line(platform.desktop ? 24 : 26),
                     fontWeight: "600",
                     color: palette().text,
                   }}
@@ -2468,7 +2474,7 @@ export function SheetActionItem(props: {
       style={{
         minHeight: 46,
         paddingHorizontal: 12,
-        borderRadius: 9,
+        borderRadius: 10,
         borderCurve: "continuous",
         flexDirection: "row",
         alignItems: "center",
@@ -2480,16 +2486,16 @@ export function SheetActionItem(props: {
     >
       <Icon
         name={props.icon}
-        size={16}
+        size={18}
         color={props.danger ? palette().danger : palette().muted}
       />
       <Text
         style={{
           flex: 1,
           minWidth: 0,
-          fontSize: typography.sm,
-          lineHeight: density.line(20),
-          fontWeight: "500",
+          fontSize: density.font(16),
+          lineHeight: density.line(22),
+          fontWeight: "400",
           color: color(),
         }}
       >
@@ -2567,7 +2573,7 @@ export function Select(props: {
               "Choose an option"
             }
             accessibilityValue={{ text: selectedLabel() }}
-            hitSlop={control.hitSlop(control.height)}
+            hitSlop={control.hitSlop(control.select)}
             accessibilityState={{
               expanded: open(),
               disabled: disabled(),
@@ -2582,10 +2588,10 @@ export function Select(props: {
               disabled() ? undefined : { backgroundColor: palette().soft }
             }
             style={{
-              minHeight: control.height,
+              minHeight: control.select,
               minWidth: 0,
-              paddingHorizontal: spacing.md,
-              paddingVertical: spacing.sm,
+              paddingHorizontal: platform.desktop ? 10 : spacing.md,
+              paddingVertical: platform.desktop ? 0 : spacing.sm,
               borderWidth: 1,
               borderRadius: radius.md,
               borderCurve: "continuous",
@@ -2775,8 +2781,8 @@ function RadioChoice(props: {
     >
       <View
         style={{
-          width: 22,
-          height: 22,
+          width: control.box,
+          height: control.box,
           borderRadius: radius.full,
           borderWidth: 1,
           borderColor: props.selected
@@ -2792,8 +2798,8 @@ function RadioChoice(props: {
       >
         <View
           style={{
-            width: 8,
-            height: 8,
+            width: platform.desktop ? 6 : 8,
+            height: platform.desktop ? 6 : 8,
             borderRadius: radius.full,
             backgroundColor: palette().primaryText,
             opacity: selected,

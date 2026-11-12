@@ -1,4 +1,4 @@
-import { density } from "../theme";
+import { density, typography } from "../theme";
 import {
   computed,
   fontScale,
@@ -307,8 +307,8 @@ export function Dashboard() {
           <View
             style={{
               padding: spacing.lg,
-              gap: density.space(14),
-              borderRadius: radius.xl,
+              gap: density.space(12),
+              borderRadius: platform.desktop ? 10 : radius.xl,
               borderCurve: "continuous",
               backgroundColor: palette().panel,
               borderWidth: 1,
@@ -484,20 +484,26 @@ export function Dashboard() {
                 hoverStyle={{ backgroundColor: palette().hover }}
                 activeStyle={{ backgroundColor: palette().soft }}
                 style={{
-                  minHeight: Math.max(
-                    52,
-                    density.line(20) * Math.max(1, fontScale()) + spacing.lg,
-                  ),
-                  paddingHorizontal: 14,
-                  paddingVertical: density.space(10),
+                  minHeight: control.row,
+                  paddingHorizontal: platform.desktop ? 14 : 16,
+                  paddingVertical: platform.desktop ? 6 : 8,
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: spacing.md,
-                  borderBottomWidth: 1,
-                  borderBottomColor: palette().line,
+                  gap: platform.desktop ? 10 : spacing.md,
                   ...feedbackStyle(),
                 }}
               >
+                <View
+                  style={{
+                    pointerEvents: "none",
+                    position: "absolute",
+                    left: platform.desktop ? 14 : 16,
+                    right: platform.desktop ? 14 : 16,
+                    bottom: 0,
+                    height: 1,
+                    backgroundColor: palette().line,
+                  }}
+                />
                 <IconTile icon="git-branch" />
                 <View style={{ flex: 1, minWidth: 0, gap: density.space(2) }}>
                   <Text
@@ -505,7 +511,7 @@ export function Dashboard() {
                     accessibilityLabel={node()}
                     style={{
                       numberOfLines: 1,
-                      fontSize: density.font(15),
+                      fontSize: typography.sm,
                       lineHeight: density.line(20),
                       fontWeight: "600",
                       color: palette().text,

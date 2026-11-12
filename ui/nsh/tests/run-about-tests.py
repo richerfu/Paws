@@ -78,7 +78,8 @@ def text_fits(tree, node):
 
 def validate_link_target(button, width):
     height = button['frame'][3]
-    assert height >= (28 if width >= 840 else 32), 'Link painted size collapsed'
+    # Small link: 24 pt on the pointer tier (desktop), 32 pt on the touch tier.
+    assert height >= (24 if width >= 840 else 32), 'Link painted size collapsed'
     if width < 840:
         slop = re.search(r'hit_slop: Edges \{ top: ([\d.]+)pt, right: [\d.]+pt, bottom: ([\d.]+)pt,', button['props'])
         assert slop and height + float(slop[1]) + float(slop[2]) >= 44, 'Compact link lost its 44-point touch target'

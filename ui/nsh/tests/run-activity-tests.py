@@ -116,8 +116,8 @@ def validate_table(tree, mode, language):
         for cell, heading in zip(row_children, header_children):
             near(tree.rect(cell)[0], tree.rect(heading)[0], 'Desktop column alignment')
         plus, menu = tree.one(f'rule-for-{row_id}'), tree.one(f'activity-menu-{row_id}')
-        near(plus['frame'][2], 36, 'Desktop action size')
-        near(menu['frame'][2], 36, 'Desktop menu size')
+        near(plus['frame'][2], 28, 'Desktop action size')
+        near(menu['frame'][2], 28, 'Desktop menu size')
         about.no_overlap(tree.rect(plus), tree.rect(menu), 'Desktop table actions')
         results.append({'rowId': row_id, 'destinationRect': tree.rect(destination), 'actionsRect': tree.rect(actions)})
     label = ('清空…' if mode == 'request' else '关闭全部…') if language == 'zh' else ('Clear…' if mode == 'request' else 'Close all…')

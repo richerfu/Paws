@@ -1,4 +1,4 @@
-import { density } from "../theme";
+import { density, typography } from "../theme";
 import {
   computed,
   fontScale,
@@ -255,7 +255,7 @@ export function SummaryPolicyGroups() {
                   <Text
                     style={{
                       numberOfLines: 1,
-                      fontSize: density.font(15),
+                      fontSize: typography.sm,
                       lineHeight: density.line(20),
                       fontWeight: "600",
                       color: palette().text,
@@ -416,7 +416,7 @@ export function SummaryPolicyGroups() {
                             <Text
                               style={{
                                 numberOfLines: 1,
-                                fontSize: density.font(15),
+                                fontSize: typography.sm,
                                 lineHeight: density.line(20),
                                 fontWeight: active() ? "600" : "500",
                                 color: palette().text,
@@ -781,7 +781,7 @@ export function ProxyGroupList(props: {
                     <Text
                       style={{
                         numberOfLines: 1,
-                        fontSize: density.font(14),
+                        fontSize: typography.sm,
                         lineHeight: density.line(20),
                         fontWeight: isSelected(item()) ? "600" : "500",
                         color: palette().text,
@@ -922,7 +922,7 @@ export function ProxyGroupList(props: {
                   <Text
                     style={{
                       numberOfLines: 1,
-                      fontSize: density.font(14),
+                      fontSize: typography.sm,
                       lineHeight: density.line(20),
                       fontWeight: "600",
                       color: palette().text,
@@ -1217,7 +1217,7 @@ export function Proxies(props: { groupKey?: string } = {}) {
                 <View style={{ flex: 1, minWidth: 0, gap: density.space(2) }}>
                   <Text
                     style={{
-                      fontSize: density.font(14),
+                      fontSize: typography.sm,
                       lineHeight: density.line(20),
                       fontWeight: active() ? "600" : "500",
                       color: palette().text,

@@ -1,4 +1,4 @@
-import { density, surfaceFinish } from "../theme";
+import { density, surfaceFinish, typography } from "../theme";
 import { platform, Scroll, signal, Text, View } from "nsh";
 import {
   Action,
@@ -962,7 +962,7 @@ export function About() {
         testID={`about-name-${index}`}
         style={{
           minWidth: 0,
-          fontSize: density.font(14),
+          fontSize: typography.sm,
           lineHeight: density.line(20),
           fontWeight: "500",
           color: palette().text,
@@ -1123,7 +1123,7 @@ export function About() {
             >
               <Text
                 style={{
-                  fontSize: density.font(14),
+                  fontSize: typography.sm,
                   lineHeight: density.line(20),
                   fontWeight: "500",
                   color: palette().text,

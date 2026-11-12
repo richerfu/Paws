@@ -398,7 +398,7 @@ export function PawsApp(props: {
             <View
               style={{
                 minHeight: Math.max(
-                  chrome.header,
+                  wide() ? chrome.toolbar : chrome.header,
                   density.line(24) * Math.max(1, fontScale()) + spacing.md,
                 ),
                 borderBottomWidth: 1,
@@ -1062,8 +1062,8 @@ export function PawsApp(props: {
                   >
                     <Icon
                       name={tab().icon}
-                      size={20}
-                      strokeWidth={group() === tab().page ? 2.25 : 1.85}
+                      size={18}
+                      strokeWidth={group() === tab().page ? 2.2 : 1.8}
                       color={
                         group() === tab().page
                           ? palette().accent

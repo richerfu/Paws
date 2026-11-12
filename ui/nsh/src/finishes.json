@@ -1,7 +1,7 @@
 {
   "dark": {
     "card": {
-      "boxShadow": "0 1px 0 rgba(0,0,0,0.35)"
+      "boxShadow": "none"
     },
     "inset": {
       "boxShadow": "inset 0 1px 1px rgba(0,0,0,0.2)"
@@ -107,7 +107,7 @@
   },
   "light": {
     "card": {
-      "boxShadow": "0 1px 0 rgba(10,15,25,0.04)"
+      "boxShadow": "none"
     },
     "inset": {
       "boxShadow": "inset 0 1px 1px rgba(10,15,25,0.03)"

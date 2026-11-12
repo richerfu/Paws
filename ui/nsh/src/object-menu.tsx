@@ -153,30 +153,31 @@ export function ObjectMenu(props: {
                 hoverStyle={{ backgroundColor: palette().hover }}
                 activeStyle={{ backgroundColor: palette().soft }}
                 style={{
-                  minHeight: 42,
-                  paddingHorizontal: spacing.md,
-                  paddingVertical: spacing.xs,
-                  borderRadius: 8,
+                  // Gallery menuItemSize: 26 pt rows with a 6 pt corner under a pointer, 46 pt with 10 on touch.
+                  minHeight: platform.desktop ? 26 : 46,
+                  paddingHorizontal: platform.desktop ? 8 : spacing.md,
+                  paddingVertical: 0,
+                  borderRadius: platform.desktop ? 6 : 10,
                   borderCurve: "continuous",
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: 10,
+                  gap: platform.desktop ? 8 : 10,
                   opacity: command().disabled ? 0.45 : 1,
                   ...feedbackStyle(),
                 }}
               >
                 <Icon
                   name={command().icon}
-                  size={16}
+                  size={platform.desktop ? 14 : 18}
                   color={command().danger ? palette().danger : palette().muted}
                 />
                 <Text
                   style={{
                     flex: 1,
                     minWidth: 0,
-                    fontSize: density.font(14),
-                    lineHeight: density.line(20),
-                    fontWeight: "500",
+                    fontSize: density.font(platform.desktop ? 13 : 16),
+                    lineHeight: density.line(platform.desktop ? 18 : 22),
+                    fontWeight: "400",
                     color: command().danger ? palette().danger : palette().text,
                   }}
                 >

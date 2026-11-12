@@ -83,7 +83,7 @@ def state(tree, value, save_enabled, editable=True):
     assert 'placeholder: "1500"' in field["inputConfig"] and "keyboard: Number" in field["inputConfig"]
     assert f"editable: {str(editable).lower()}" in field["inputConfig"]
     assert f"disabled: {str(not save_enabled).lower()}" in one(tree, "save-vpn")["props"]
-    assert one(tree, "engine-preview-status")["frame"][3] == 36
+    assert one(tree, "engine-preview-status")["frame"][3] == 40
     assert not any(n.get("testId") == "engine-preview-reasons" and tree.visible(n)
                    for n in tree.nodes.values())
 

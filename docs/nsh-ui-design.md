@@ -9,19 +9,36 @@ outside presentation. See [the three-layer architecture](nsh-three-layer-archite
 - `theme.json` defines light/dark semantic colors and radius tokens.
   `src/theme.ts` maps them to application roles. Ordinary sections have a flat
   surface and an external heading; shadows belong to raised controls and overlays.
-- Phone, Pad and PC share one unified NSH Gallery scale across platforms:
-  40-point standard buttons, inputs and selects, 36-point small buttons and
-  primary segmented tabs, 32-point secondary filter tabs and compact pickers,
-  and 36-point icon buttons. Header titles use 17-point text, body/section/row
-  labels use 15-point text, secondary/note text uses 13-point text, and badges
-  use 12-point text (`height: 20`). Touch `hitSlop` retains 44-point press areas
-  without enlarging the painted control, and segmented tabs reserve a full
-  44-point touch lane. Text rows grow with font scale. Long values wrap or have
-  a complete details view, and comparable numbers use tabular figures.
-- Desktop always uses its own workspace: a 232-point scrolling sidebar (36-point
-  items), or a 64-point icon rail (42-point tiles) in a narrow window, with
-  tooltips and keyboard focus. Brand and content toolbars share a 56-point
-  header baseline. Root destinations are direct switches; Back belongs to nested
+- Control sizes follow the NSH Gallery tier for the input method, selected by
+  `platform.desktop` through `control` and `typography` in `src/theme.ts`.
+  Phone and Pad use the touch tier; PC uses the pointer tier. Pad stays on the
+  touch tier even with a keyboard.
+
+  | Control | Touch (Phone, Pad) | Pointer (PC) |
+  | --- | --- | --- |
+  | Button regular / small | 40 / 36, 15 / 14-point label | 28 / 24, 13 / 12-point label |
+  | Icon button | 40, icon 18 | 28, icon 15 |
+  | Text field | 46, 15-point text | 28, 13-point text |
+  | Select, Picker | 44 | 32 |
+  | Segmented control regular / small | 36 / 32 | 30 / 26 |
+  | Switch | 42 x 24, knob 20 | 28 x 16, knob 12 |
+  | Checkbox, radio | 22 | 16 |
+  | List row (least height) | 48 | 40 |
+  | Section surface radius | 16 | 10 |
+  | Body, row label / note | 15 / 13 | 14 / 12 |
+  | Menu row, sheet row | 46, 16-point text | 26, 13-point text |
+
+  Section surfaces are flat: a 1-point edge and no shadow. Badges are 26 points
+  tall with 12-point text on both tiers. The compact filter picker is 32 points
+  on both tiers so it pairs with the small segmented control; Gallery has no
+  touch size for it. Touch `hitSlop` retains 44-point press areas without
+  enlarging the painted control. Header titles use 17-point text. Text rows grow
+  with font scale. Long values wrap or have a complete details view, and
+  comparable numbers use tabular figures.
+- Desktop always uses its own workspace: a 232-point scrolling sidebar (28-point
+  items), or a 64-point icon rail (36-point tiles) in a narrow window, with
+  tooltips and keyboard focus. The brand block is 40 points tall without a
+  divider; the content toolbar is 54 points, and the Phone header is 52 points. Root destinations are direct switches; Back belongs to nested
   tasks. The mobile Settings hub and duplicate request-history link are absent
   from the desktop sidebar.
 - Overview renders all policy groups directly without truncation or collapse on
@@ -29,7 +46,7 @@ outside presentation. See [the three-layer architecture](nsh-three-layer-archite
   node summary and speed) and the full policy-group column. Desktop nodes use a
   group browser and member pane. Connections and request history share one
   workspace with count-badged tabs, compact protocol/sort/status filters, Phone
-  bottom-sheet details, Pad master-detail, and PC `DataTable` (`>= 46 pt` rows)
+  bottom-sheet details, Pad master-detail, and PC `DataTable` (40-point rows, 32-point header)
   plus a closable inspector. Object commands use anchored menus and right click;
   short forms use Phone bottom sheets or centered Pad/PC dialogs.
 - Phone and narrow Pad use bottom navigation for root destinations and native

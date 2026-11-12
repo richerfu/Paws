@@ -1,4 +1,4 @@
-import { density } from "../theme";
+import { density, typography } from "../theme";
 import {
   cleanup,
   computed,
@@ -1118,7 +1118,7 @@ function ProfileRow(props: {
                 flex: 1,
                 minWidth: 0,
                 numberOfLines: 1,
-                fontSize: density.font(14),
+                fontSize: typography.sm,
                 lineHeight: density.line(20),
                 fontWeight: "600",
                 color: palette().text,

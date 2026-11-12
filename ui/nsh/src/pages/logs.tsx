@@ -573,7 +573,7 @@ export function Logs() {
             activeStyle={surfaceFinish("pressed")}
             onPress={toEnd}
             style={{
-              minHeight: 34,
+              minHeight: 36,
               paddingHorizontal: 14,
               borderRadius: radius.full,
               borderCurve: "continuous",

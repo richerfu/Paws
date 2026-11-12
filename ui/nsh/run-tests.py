@@ -146,8 +146,8 @@ def validate_output(name, output, markers, expected_taps):
                 values.append((value[1], float(value[2])))
             if spring and spring[1] in pan_nodes and len(values) >= 2 and spring[1] == values[-2][0]:
                 docks.append((values[-2][1], values[-1][1], float(spring[2])))
-        expected = [(214, 425, 294), (54, 275, 0), (260, 455, 294),
-                    (0, 0, 0), (644, 111, 644), (44, 345, 0)]
+        expected = [(214, 427, 294), (54, 277, 0), (260, 457, 294),
+                    (0, 0, 0), (644, 113, 644), (44, 347, 0)]
         if len(docks) != len(expected) or any(
             abs(actual - target) > 0.1
             for dock, wanted in zip(docks, expected) for actual, target in zip(dock, wanted)
