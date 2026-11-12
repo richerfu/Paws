@@ -306,7 +306,7 @@ export function Dashboard() {
             style={{
               padding: spacing.lg,
               gap: density.space(12),
-              borderRadius: platform.desktop ? 10 : radius.xl,
+              borderRadius: radius.xl,
               borderCurve: "continuous",
               backgroundColor: palette().panel,
               borderWidth: 1,

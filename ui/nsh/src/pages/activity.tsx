@@ -343,7 +343,7 @@ export function Activity(props: { history?: boolean }) {
         flex: 1,
         borderWidth: 1,
         borderColor: palette().border,
-        borderRadius: table() ? 14 : radius.xl,
+        borderRadius: table() ? 12 : radius.xl,
         borderCurve: "continuous",
         backgroundColor: palette().panel,
         overflow: "hidden",

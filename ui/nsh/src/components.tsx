@@ -254,7 +254,7 @@ export function ListSurface(props: {
       testID={props.id}
       style={{
         minWidth: 0,
-        borderRadius: platform.desktop ? 10 : radius.xl,
+        borderRadius: radius.xl,
         borderCurve: "continuous",
         backgroundColor: palette().panel,
         borderWidth: 1,
@@ -614,8 +614,10 @@ export function Card(props: {
                 role="header"
                 style={{
                   color: palette().text,
-                  fontSize: typography.sm,
-                  lineHeight: props.subtitle ? density.line(22) : density.line(20),
+                  fontSize: typography.section,
+                  lineHeight: props.subtitle
+                    ? density.line(22)
+                    : density.line(platform.desktop ? 18 : 20),
                   fontWeight: "600",
                 }}
               >

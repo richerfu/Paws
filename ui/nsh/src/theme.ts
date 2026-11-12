@@ -62,8 +62,9 @@ export const radius = {
   sm: 6,
   md: 10,
   lg: 12,
+  /** Section surfaces: the theme's card radius on touch, 10 under a pointer. */
   get xl() {
-    return token("radius-card");
+    return platform.desktop ? 10 : token("radius-card");
   },
   get xxl() {
     return token("radius-dialog");
