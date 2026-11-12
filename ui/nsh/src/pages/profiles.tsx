@@ -420,47 +420,41 @@ export function Profiles(props: { profileId?: string } = {}) {
                 {selectedProfile() ? row(selectedProfile()!, true) : undefined}
               </ListSurface>
               <View style={{ gap: spacing.sm }}>
-                <SectionHeader title={ui.t("订阅信息", "Subscription details")} />
+                <SectionHeader title={ui.t("信息", "Details")} />
                 <ListSurface>
-                  <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: 1, borderBottomColor: palette().line }}>
-                    <Detail stacked label={ui.t("名称", "Name")} value={selectedProfile()?.name || ""} />
-                  </View>
                   <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: 1, borderBottomColor: palette().line }}>
                     <Detail stacked label={ui.t("来源", "Source")} value={selectedProfile()?.subscriptionUrl || selectedProfile()?.source || ""} />
                   </View>
-                  <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: 1, borderBottomColor: palette().line }}>
+                  <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: selectedProfile()?.subscriptionUserInfo ? 1 : 0, borderBottomColor: palette().line }}>
                     <Detail label={ui.t("更新时间", "Updated")} value={timestamp(selectedProfile()?.lastRefreshAt || selectedProfile()?.updatedAt)} />
                   </View>
-                  <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10) }}>
+                  <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: selectedProfile()?.subscriptionUserInfo ? 1 : 0, borderBottomColor: palette().line }}>
                     <Detail label={ui.t("本地备份", "Local backup")} value={selectedProfile()?.hasBackup ? ui.t("有上次备份", "Previous backup available") : ui.t("无备份", "No backup")} />
                   </View>
+                  <If when={selectedProfile()?.subscriptionUserInfo}>
+                    <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), gap: spacing.sm }}>
+                      <Detail
+                        label={ui.t("已用流量", "Usage")}
+                        value={
+                          selectedProfile()?.subscriptionUserInfo?.totalBytes
+                            ? `${bytes((selectedProfile()?.subscriptionUserInfo?.uploadBytes || 0) + (selectedProfile()?.subscriptionUserInfo?.downloadBytes || 0))} / ${bytes(selectedProfile()!.subscriptionUserInfo!.totalBytes!)}`
+                            : bytes((selectedProfile()?.subscriptionUserInfo?.uploadBytes || 0) + (selectedProfile()?.subscriptionUserInfo?.downloadBytes || 0))
+                        }
+                      />
+                      <If when={!!selectedProfile()?.subscriptionUserInfo?.totalBytes}>
+                        <MeterBar
+                          ratio={Math.min(
+                            1,
+                            ((selectedProfile()?.subscriptionUserInfo?.uploadBytes || 0) +
+                              (selectedProfile()?.subscriptionUserInfo?.downloadBytes || 0)) /
+                              (selectedProfile()?.subscriptionUserInfo?.totalBytes || 1),
+                          )}
+                        />
+                      </If>
+                    </View>
+                  </If>
                 </ListSurface>
               </View>
-              <If when={selectedProfile()?.subscriptionUserInfo}>
-                <View style={{ gap: spacing.sm }}>
-                  <SectionHeader title={ui.t("流量配额", "Quota")} />
-                  <ListSurface style={{ padding: spacing.md, gap: spacing.sm }}>
-                    <Detail
-                      label={ui.t("已用流量", "Usage")}
-                      value={
-                        selectedProfile()?.subscriptionUserInfo?.totalBytes
-                          ? `${bytes((selectedProfile()?.subscriptionUserInfo?.uploadBytes || 0) + (selectedProfile()?.subscriptionUserInfo?.downloadBytes || 0))} / ${bytes(selectedProfile()!.subscriptionUserInfo!.totalBytes!)}`
-                          : bytes((selectedProfile()?.subscriptionUserInfo?.uploadBytes || 0) + (selectedProfile()?.subscriptionUserInfo?.downloadBytes || 0))
-                      }
-                    />
-                    <If when={!!selectedProfile()?.subscriptionUserInfo?.totalBytes}>
-                      <MeterBar
-                        ratio={Math.min(
-                          1,
-                          ((selectedProfile()?.subscriptionUserInfo?.uploadBytes || 0) +
-                            (selectedProfile()?.subscriptionUserInfo?.downloadBytes || 0)) /
-                            (selectedProfile()?.subscriptionUserInfo?.totalBytes || 1),
-                        )}
-                      />
-                    </If>
-                  </ListSurface>
-                </View>
-              </If>
               <If when={selectedProfile()?.lastRefreshError}>
                 <PageError id="profile-detail-error" text={selectedProfile()?.lastRefreshError || ""} />
               </If>
