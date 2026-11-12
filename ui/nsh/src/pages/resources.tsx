@@ -30,9 +30,11 @@ import {
   IconTile,
   SearchField,
   Spinner,
+  Tabs,
   palette,
   radius,
   useApp,
+  useLayout,
   useLifetime,
   useDraftGuard,
   RouteOwner,
@@ -182,8 +184,12 @@ export function Resources() {
     provider?: Provider;
     file?: UiState["geodata"][number];
   };
-  const rows = computed<Row[]>(() => [
-    { key: "summary", kind: "summary" },
+  // Wide layouts split the collection into profile rules and provider/geodata
+  // resources; the phone keeps one continuous list.
+  const layout = useLayout();
+  const wide = () => layout().sidebar;
+  const section = signal<"rules" | "resources">("rules");
+  const resourceRows = (): Row[] => [
     { key: "geo-header", kind: "geo-header" },
     ...current()
       .geodata.filter((file) => matchesGeodata(file, query()))
@@ -197,9 +203,19 @@ export function Resources() {
     ...(providers().length
       ? []
       : [{ key: "providers-empty", kind: "providers-empty" }]),
+  ];
+  const ruleRows = (): Row[] => [
     { key: "rules-header", kind: "rules-header" },
     ...rules().map((rule) => ({ key: `rule:${rule.id}`, kind: "rule", rule })),
     ...(rules().length ? [] : [{ key: "rules-empty", kind: "rules-empty" }]),
+  ];
+  const rows = computed<Row[]>(() => [
+    { key: "summary", kind: "summary" },
+    ...(wide()
+      ? section() === "rules"
+        ? ruleRows()
+        : resourceRows()
+      : [...resourceRows(), ...ruleRows()]),
   ]);
   return (
     <View
@@ -211,6 +227,28 @@ export function Resources() {
           windowSize().width >= 840 ? density.space(24) : density.space(16),
       }}
     >
+      <If when={wide()}>
+        <View style={{ marginBottom: density.space(12) }}>
+          <Tabs
+            idPrefix="resources-section"
+            value={section()}
+            inline
+            options={[
+              {
+                value: "rules",
+                label: ui.t("配置规则", "Profile rules"),
+                count: current().rules.length,
+              },
+              {
+                value: "resources",
+                label: "Provider / GeoData",
+                count: current().providers.length + current().geodata.length,
+              },
+            ]}
+            onChange={(value) => section.set(value as "rules" | "resources")}
+          />
+        </View>
+      </If>
       <View style={{ marginBottom: density.space(12) }}>
         <SearchField
           label={ui.t("搜索资源", "Search resources")}
