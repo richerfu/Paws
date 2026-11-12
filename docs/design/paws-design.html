@@ -1,0 +1,1203 @@
+<title>Paws 三端设计稿 · 对齐 NSH Gallery</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600&display=swap">
+<style>
+/* 布局：设计说明在左侧窄栏阅读，设备画面在全宽带里横向排列；Phone / Pad 取 NSH Gallery 触屏档，PC 取指针档（platform.desktop），二者共享同一套 finishes 与表面；三端壳层导航与多栏布局随视口自适应 */
+:root{
+  /* 取自 NSH Gallery 的 theme.json 与 finishes.json（浅色） */
+  --bg:#f6f6f9; --fg:#101319; --card:#ffffff; --muted:#5f636a; --faint:#9a9da3;
+  --line:#e4e4e7; --border:#cacbcd; --input:#c1c2c4; --field:#ffffff; --inset:#f1f2f5; --raised:#f3f4f7;
+  --track:#e9eaed; --popover:#f8f8fb; --muted-bg:#eeeff2; --accent-bg:#e8eaec; --on-fill:#dbdce0; --thumb-bg:#ffffff; --knob:#ffffff;
+  --sidebar:#ecedf0; --sidebar-border:#dedee1; --sidebar-sel:#ffffff;
+  --brand-fill:#c6ef6a; --on-brand:#13160c; --brand:#4a840a; --brand-tint:color-mix(in srgb,#8cc01d 16%,transparent);
+  --fill-grad:linear-gradient(180deg,#a2d33c 0%,#8fc21f 100%);
+  --choice-off-bg:#ffffff; --choice-off-border:#c1c2c4;
+  --up:#138a5a; --warn:#b26a00; --danger:#d43a4a; --info:#3d63d1;
+  --win-close:#ff5f57; --win-min:#febc2e; --win-zoom:#28c840; --win-edge:rgba(0,0,0,.14);
+  --edge-raised:#cacbcd; --edge-primary:#9cc43a;
+  --stop-fill:#d43a4a; --on-stop:#ffffff; --edge-stop:#b32837;
+  --sh-card:none;
+  --sh-inset:inset 0 1px 1px rgba(10,15,25,.03);
+  --sh-raised:inset 0 1px 0 #fff,inset 0 2px 0 rgba(255,255,255,.6),0 1px 0 rgba(10,15,25,.05);
+  --sh-primary:inset 0 1px 0 rgba(255,255,255,.55),inset 0 -1px 0 rgba(60,90,0,.12),0 1px 0 rgba(60,90,0,.14);
+  --sh-stop:inset 0 1px 0 rgba(255,255,255,.32),inset 0 -1px 0 rgba(90,10,20,.18),0 1px 0 rgba(90,10,20,.16);
+  --sh-sunk:inset 0 1px 1px rgba(10,15,25,.05);
+  --sh-thumb:0 1px 2px rgba(10,15,25,.10),0 1px 0 rgba(10,15,25,.04);
+  --sh-menu:0 1px 0 rgba(10,15,25,.04),0 12px 28px -10px rgba(10,15,25,.22);
+  --frame:#1b1c1f; --mark:#d43a4a; --scrim:rgba(0,0,0,.45);
+  --wash-hover:color-mix(in srgb,var(--fg) 5%,transparent); --wash-sel:color-mix(in srgb,var(--fg) 9%,transparent); --wash-press:color-mix(in srgb,var(--fg) 16%,transparent);
+  --sans:"Inter","Noto Sans SC",system-ui,-apple-system,"PingFang SC",sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#16191f; --fg:#eeeff1; --card:#1f2228; --muted:#9a9ea5; --faint:#6b6f76;
+  --line:#2d3036; --border:#31343a; --input:#393c42; --field:#16191f; --inset:#1a1d23; --raised:#33353b;
+  --track:#33363c; --popover:#1f2228; --muted-bg:#2a2d33; --accent-bg:#303339; --on-fill:#4b4f57; --thumb-bg:#33353b; --knob:#e4e5e8;
+  --sidebar:#101319; --sidebar-border:#24272d; --sidebar-sel:#25282e;
+  --brand-fill:#c4ec6a; --brand:#c8f26d; --brand-tint:color-mix(in srgb,#c8f26d 14%,transparent);
+  --fill-grad:linear-gradient(180deg,#c3ea6c 0%,#b4dc58 100%);
+  --choice-off-bg:color-mix(in srgb,#393c42 30%,transparent); --choice-off-border:color-mix(in srgb,#eeeff1 20%,transparent);
+  --up:#45d49a; --warn:#ffb547; --danger:#ff6170; --info:#7ea8ff;
+  --win-edge:rgba(255,255,255,.12);
+  --edge-raised:rgba(0,0,0,.5); --edge-primary:rgba(40,60,0,.55);
+  --stop-fill:#e04352; --on-stop:#ffffff; --edge-stop:rgba(80,10,18,.65);
+  --sh-card:none;
+  --sh-inset:inset 0 1px 1px rgba(0,0,0,.2);
+  --sh-raised:inset 0 0 0 1px rgba(255,255,255,.06),inset 0 1px 1px rgba(255,255,255,.08),0 1px 0 rgba(0,0,0,.12);
+  --sh-primary:inset 0 0 0 1px rgba(255,255,255,.22),inset 0 1px 1px rgba(255,255,255,.35),0 1px 1px rgba(0,0,0,.12);
+  --sh-stop:inset 0 0 0 1px rgba(255,255,255,.16),inset 0 1px 1px rgba(255,255,255,.26),0 1px 1px rgba(0,0,0,.22);
+  --sh-sunk:inset 0 1px 1px rgba(0,0,0,.25);
+  --sh-thumb:inset 0 0 0 1px rgba(255,255,255,.06),inset 0 1px 1px rgba(255,255,255,.08),0 1px 1px rgba(0,0,0,.12);
+  --sh-menu:0 1px 0 rgba(0,0,0,.4),0 16px 32px -10px rgba(0,0,0,.6);
+  --frame:#3a3c41; --mark:#ff6170; --scrim:rgba(0,0,0,.6); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#16191f; --fg:#eeeff1; --card:#1f2228; --muted:#9a9ea5; --faint:#6b6f76;
+  --line:#2d3036; --border:#31343a; --input:#393c42; --field:#16191f; --inset:#1a1d23; --raised:#33353b;
+  --track:#33363c; --popover:#1f2228; --muted-bg:#2a2d33; --accent-bg:#303339; --on-fill:#4b4f57; --thumb-bg:#33353b; --knob:#e4e5e8;
+  --sidebar:#101319; --sidebar-border:#24272d; --sidebar-sel:#25282e;
+  --brand-fill:#c4ec6a; --brand:#c8f26d; --brand-tint:color-mix(in srgb,#c8f26d 14%,transparent);
+  --fill-grad:linear-gradient(180deg,#c3ea6c 0%,#b4dc58 100%);
+  --choice-off-bg:color-mix(in srgb,#393c42 30%,transparent); --choice-off-border:color-mix(in srgb,#eeeff1 20%,transparent);
+  --up:#45d49a; --warn:#ffb547; --danger:#ff6170; --info:#7ea8ff;
+  --win-edge:rgba(255,255,255,.12);
+  --edge-raised:rgba(0,0,0,.5); --edge-primary:rgba(40,60,0,.55);
+  --stop-fill:#e04352; --on-stop:#ffffff; --edge-stop:rgba(80,10,18,.65);
+  --sh-card:none;
+  --sh-inset:inset 0 1px 1px rgba(0,0,0,.2);
+  --sh-raised:inset 0 0 0 1px rgba(255,255,255,.06),inset 0 1px 1px rgba(255,255,255,.08),0 1px 0 rgba(0,0,0,.12);
+  --sh-primary:inset 0 0 0 1px rgba(255,255,255,.22),inset 0 1px 1px rgba(255,255,255,.35),0 1px 1px rgba(0,0,0,.12);
+  --sh-stop:inset 0 0 0 1px rgba(255,255,255,.16),inset 0 1px 1px rgba(255,255,255,.26),0 1px 1px rgba(0,0,0,.22);
+  --sh-sunk:inset 0 1px 1px rgba(0,0,0,.25);
+  --sh-thumb:inset 0 0 0 1px rgba(255,255,255,.06),inset 0 1px 1px rgba(255,255,255,.08),0 1px 1px rgba(0,0,0,.12);
+  --sh-menu:0 1px 0 rgba(0,0,0,.4),0 16px 32px -10px rgba(0,0,0,.6);
+  --frame:#3a3c41; --mark:#ff6170; --scrim:rgba(0,0,0,.6); color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:14px;line-height:1.55;margin:0;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:24px 64px}
+.wrap{max-width:1220px;margin:0 auto;display:flex;flex-direction:column;gap:56px}
+h1{font-size:26px;font-weight:600;margin:0;letter-spacing:-.01em;text-wrap:balance}
+h2{font-size:19px;font-weight:600;margin:0;text-wrap:balance}
+h3{font-size:14px;font-weight:600;margin:0}
+p{margin:0;max-width:72ch}
+.lede{color:var(--muted)}
+.meta{display:flex;flex-wrap:wrap;gap:8px 16px;color:var(--muted);font-size:12px}
+.sec{display:flex;flex-direction:column;gap:20px;scroll-margin-top:76px}
+.sec-head{display:flex;flex-direction:column;gap:6px}
+.eyebrow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+
+/* 顶部预览工具栏（Gallery 玻璃浮层 + 分段外观切换 + 章节锚点） */
+.preview-bar{position:sticky;top:10px;z-index:20;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 16px;
+  padding:8px 12px;border-radius:12px;border:1px solid var(--border);background:color-mix(in srgb,var(--popover) 84%,transparent);
+  backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);box-shadow:var(--sh-card)}
+.anchor-nav{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.anchor-nav a{color:var(--muted);background:transparent;border:1px solid transparent;border-radius:7px;padding:5px 10px;text-decoration:none;font-size:12px;font-weight:500}
+.anchor-nav a:hover{background:var(--wash-hover);color:var(--fg)}
+.theme-seg{display:inline-flex;height:30px;padding:2px;border-radius:9px;background:var(--inset);border:1px solid var(--border);box-shadow:var(--sh-sunk);gap:2px}
+.theme-seg button{border:1px solid transparent;background:transparent;color:var(--muted);font:500 12px/1 var(--sans);padding:0 10px;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:5px}
+.theme-seg button[aria-pressed="true"]{background:var(--thumb-bg);border-color:var(--input);box-shadow:var(--sh-thumb);color:var(--fg);font-weight:600}
+
+/* 问题对照 */
+.issues{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.issue{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:6px;min-width:0;box-shadow:var(--sh-card)}
+.issue .n{font-family:var(--mono);font-size:11px;color:var(--mark);font-weight:600}
+.issue .fix{color:var(--muted);font-size:13px}
+.issue .fix b{color:var(--fg);font-weight:600}
+
+/* 设备带 */
+.strip{display:flex;gap:28px;overflow-x:auto;padding:4px 2px 16px;scroll-snap-type:x proximity;align-items:flex-start}
+.dev{display:flex;flex-direction:column;gap:10px;flex:none;scroll-snap-align:start}
+.cap{display:flex;flex-direction:column;gap:2px;max-width:384px}
+.cap b{font-size:14px;font-weight:600}
+.cap span{font-size:12.5px;line-height:1.5;color:var(--muted)}
+
+/* 手机外框：1 CSS px = 1 pt；Phone / Pad 触屏档（15 pt 正文 / 13 pt 次要 / 40 pt 按钮 / 46 pt 输入框），PC 在 .win.pc 中覆盖为指针档 */
+.phone{width:384px;min-height:560px;max-height:820px;border-radius:42px;border:8px solid var(--frame);background:var(--bg);overflow:hidden;
+  display:flex;flex-direction:column;position:relative;font-size:15px;line-height:20px}
+.phone.full{max-height:none}
+.sb{height:28px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 22px;font-size:12px;font-weight:600}
+.hdr{height:52px;flex:none;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--bg)}
+.hdr .t{font-size:17px;font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hdr .back{min-width:32px;height:40px;display:flex;align-items:center;gap:2px;color:var(--fg);font-size:15px;font-weight:500;margin-left:-6px;flex:none;white-space:nowrap}
+.hdr .act{display:flex;gap:8px;align-items:center;color:var(--fg);flex:none}
+.body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:22px;scrollbar-width:thin}.body>*{flex-shrink:0}
+.tabs{height:64px;flex:none;border-top:1px solid var(--line);display:flex;padding:6px 8px 12px;gap:4px;background:var(--bg)}
+.tab{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;color:var(--muted);font-size:12px;line-height:15px;font-weight:500}
+.tab .ti{width:48px;height:28px;border-radius:14px;display:flex;align-items:center;justify-content:center}
+.tab.on{color:var(--fg);font-weight:600}
+.tab.on svg{stroke:var(--brand);stroke-width:2.2}
+.home-ind{position:absolute;bottom:4px;left:50%;transform:translateX(-50%);width:116px;height:4px;border-radius:2px;background:var(--fg);opacity:.25;pointer-events:none}
+
+/* 应用内组件 —— 触屏档，数值取自 nsh-gallery-ui look/*（PC 指针档见 .win.pc 覆盖块） */
+svg.i{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+svg.s{width:16px;height:16px}
+.group{display:flex;flex-direction:column;gap:8px}
+.glabel{font-size:15px;line-height:20px;color:var(--fg);font-weight:600;padding:0 4px;display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.glabel span+span{font-size:13px;font-weight:400;color:var(--muted);font-variant-numeric:tabular-nums}
+.list{background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:var(--sh-card);overflow:hidden}
+.row{min-height:48px;display:flex;align-items:center;gap:12px;padding:8px 16px;position:relative}
+.row+.row::before{content:"";position:absolute;top:0;left:16px;right:16px;height:1px;background:var(--line)}
+.list.plain .row+.row::before,.list .field+.row::before,.list .row+.field::before,.list .field+.field::before{content:"";position:absolute;top:0;left:16px;right:16px;height:1px;background:var(--line)}
+.row .ic{width:26px;height:26px;border-radius:8px;background:var(--raised);border:1px solid var(--border);box-shadow:var(--sh-raised);display:flex;align-items:center;justify-content:center;color:var(--fg);flex:none}
+.row .tx{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.row .tx b{font-size:15px;line-height:20px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .tx small{font-size:13px;line-height:18px;color:var(--muted)}
+.row .tr{display:flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums;flex:none}
+.chev{color:var(--faint)}
+
+/* Gallery Buttons (look/button.ts —— 触屏 40 pt regular / 36 pt small，指针 28 / 24) */
+.btn{height:40px;border-radius:10px;padding:0 16px;display:inline-flex;align-items:center;justify-content:center;gap:8px;font-weight:500;font-size:15px;border:1px solid var(--border);white-space:nowrap}
+.btn.def{background:var(--raised);border-color:var(--edge-raised);box-shadow:var(--sh-raised);color:var(--fg)}
+.btn.pri{background:var(--brand-fill);border-color:var(--edge-primary);box-shadow:var(--sh-primary);color:var(--on-brand)}
+.btn.stop{background:var(--stop-fill);border-color:var(--edge-stop);box-shadow:var(--sh-stop);color:var(--on-stop)}
+.btn.stop .spin{border-color:rgba(255,255,255,.36);border-top-color:#ffffff}
+.btn.ghost{background:transparent;border-color:transparent;box-shadow:none;color:var(--muted)}
+.btn.danger{background:color-mix(in srgb,var(--danger) 10%,var(--raised));border-color:color-mix(in srgb,var(--danger) 36%,var(--border));box-shadow:var(--sh-raised);color:var(--danger)}
+.btn.sm{height:36px;padding:0 12px;font-size:14px;font-weight:500;border-radius:10px;gap:8px}
+
+/* Gallery Segmented & Picker (look/tabs.tsx segmentedLook + look/listbox.tsx pickerLook) */
+.seg{height:36px;background:var(--inset);border:1px solid var(--border);box-shadow:var(--sh-sunk);border-radius:10px;padding:2px;display:flex;gap:2px}
+.seg span{flex:1;display:flex;align-items:center;justify-content:center;gap:5px;border-radius:7px;font-size:14px;color:var(--muted);font-weight:500;padding:0 7px;border:1px solid transparent;white-space:nowrap}
+.seg span.on{background:var(--thumb-bg);border-color:var(--input);box-shadow:var(--sh-thumb);color:var(--fg);font-weight:500}
+.seg span em{font-style:normal;font-size:12px;font-weight:500;color:var(--faint);font-variant-numeric:tabular-nums}
+.seg span.on em{color:var(--muted)}
+.seg.sm{height:32px;border-radius:10px;padding:2px}
+.seg.sm span{font-size:13px;border-radius:7px;padding:0 7px}
+.picker{height:44px;border-radius:10px;background:var(--field);border:1px solid var(--input);display:inline-flex;align-items:center;justify-content:space-between;gap:6px;padding:0 10px;color:var(--fg);font-size:15px;font-weight:400;white-space:nowrap}
+.picker.sm{height:32px;border-radius:9px;font-size:13px;padding:0 8px 0 10px;background:var(--raised);border-color:var(--edge-raised);box-shadow:var(--sh-raised)}
+
+/* Gallery Card Surfaces & Wells (look/surface.tsx) */
+.hero{background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:var(--sh-card);padding:16px;display:flex;flex-direction:column;gap:12px}
+.well{background:var(--inset);border:1px solid var(--line);border-radius:10px;box-shadow:var(--sh-inset);padding:10px 12px}
+.status{display:flex;align-items:center;gap:10px}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--faint);flex:none}
+.dot.ok{background:var(--up);box-shadow:0 0 0 4px color-mix(in srgb,var(--up) 18%,transparent)}
+.status .st{font-size:20px;line-height:26px;font-weight:600}
+.status .sub{font-size:13px;line-height:18px;color:var(--muted)}
+.speed{display:grid;grid-template-columns:1fr 1fr;gap:0;background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:var(--sh-card);overflow:hidden}
+.speed div{background:var(--card);padding:12px 14px;display:flex;flex-direction:column;gap:4px}
+.speed div+div{border-left:1px solid var(--line)}
+.speed small{font-size:12px;line-height:16px;color:var(--muted);display:flex;align-items:center;gap:4px}
+.speed b{font-size:19px;line-height:24px;font-weight:600;font-variant-numeric:tabular-nums}
+.speed .unit{font-size:13px;color:var(--muted);font-weight:500;margin-left:3px}
+.note{font-size:13px;line-height:18px;color:var(--muted);padding:0 4px}
+
+/* Gallery Inputs, Search, Badges, Choice Controls, Meter */
+.search{height:46px;border-radius:10px;background:var(--field);border:1px solid var(--input);display:flex;align-items:center;gap:8px;padding:0 14px;color:var(--muted);font-size:15px}
+.badge{display:inline-flex;align-items:center;height:26px;font-size:12px;line-height:1;padding:0 10px;border-radius:13px;background:var(--brand-tint);color:var(--brand);font-weight:500;font-variant-numeric:tabular-nums;white-space:nowrap}
+.badge.neu{background:var(--muted-bg);color:var(--fg);font-weight:500}
+.badge.ok{background:color-mix(in srgb,var(--up) 14%,transparent);color:var(--up)}
+.badge.warn{background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--warn)}
+.badge.err{background:color-mix(in srgb,var(--danger) 14%,transparent);color:var(--danger)}
+.badge.info{background:color-mix(in srgb,var(--info) 14%,transparent);color:var(--info)}
+.lat{font-variant-numeric:tabular-nums;font-size:13px;min-width:48px;text-align:right;font-weight:500}
+.lat.good{color:var(--up)} .lat.mid{color:var(--warn)} .lat.bad{color:var(--danger)}
+
+/* Gallery Radio & Checkbox (look/choice.tsx —— 触屏 22 pt，指针 16 pt) */
+.radio{width:22px;height:22px;border-radius:50%;background:var(--choice-off-bg);border:1px solid var(--choice-off-border);flex:none;display:flex;align-items:center;justify-content:center}
+.radio.on{background:var(--brand-fill);border-color:var(--edge-primary);box-shadow:var(--sh-primary)}
+.radio.on::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--on-brand)}
+.chk{width:22px;height:22px;border-radius:7px;background:var(--choice-off-bg);border:1px solid var(--choice-off-border);flex:none;display:inline-flex;align-items:center;justify-content:center;color:transparent}
+.chk.on{background:var(--brand-fill);border-color:var(--edge-primary);box-shadow:var(--sh-primary);color:var(--on-brand)}
+.chk svg{width:16px;height:16px;stroke-width:3}
+
+/* Gallery Progress / Meter (look/meter.ts) */
+.bar{height:6px;border-radius:3px;background:var(--track);box-shadow:inset 0 0 0 1px var(--border),var(--sh-sunk);overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;border-radius:3px;background:var(--fill-grad)}
+
+/* Gallery Field & Switch (look/field.tsx、look/switch.ts —— 触屏 46 pt 输入框 / 42×24 pt 开关，指针 28 pt / 28×16 pt) */
+.field{display:flex;flex-direction:column;gap:6px;padding:12px 16px;position:relative}
+.field label{font-size:13px;font-weight:500;color:var(--fg)}
+.field .in{height:46px;border-radius:10px;background:var(--field);border:1px solid var(--input);display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:15px;font-variant-numeric:tabular-nums;color:var(--fg)}
+.field .in.ro{background:var(--inset);border-color:var(--line);color:var(--muted)}
+.field .in.err{border-color:var(--danger);outline:2px solid color-mix(in srgb,var(--danger) 22%,transparent);outline-offset:0}
+.field .help{font-size:13px;line-height:18px;color:var(--muted)}
+.field .help.err{color:var(--danger)}
+.sw{width:42px;height:24px;border-radius:12px;box-sizing:border-box;background:var(--track);border:1px solid var(--border);box-shadow:var(--sh-sunk);padding:1px;flex:none;display:inline-flex;align-items:center}
+.sw::after{content:"";display:block;width:20px;height:20px;border-radius:50%;background:var(--knob);border:1px solid var(--input);box-shadow:0 1px 1px rgba(10,15,25,.12)}
+.sw.on{background:var(--brand-fill);border-color:var(--edge-primary)}.sw.on::after{background:#fff;border-color:#8fb536;transform:translateX(18px)}
+
+/* 底部动作栏、Sheet、Dialog、Menu、Toast/Pill */
+.footer{flex:none;border-top:1px solid var(--line);padding:12px 16px 18px;display:flex;align-items:center;gap:10px;background:var(--bg)}
+.footer .hint{flex:1;font-size:13px;color:var(--warn);display:flex;align-items:center;gap:6px}
+.scrim{position:absolute;inset:0;background:var(--scrim);z-index:3}
+.sheet{position:absolute;left:0;right:0;bottom:0;z-index:4;background:var(--card);border:1px solid var(--border);border-bottom:0;border-radius:20px 20px 0 0;box-shadow:var(--sh-menu);padding:10px 10px 34px;max-height:88%;overflow:hidden;display:flex;flex-direction:column;gap:4px}
+.sheet.form{padding:8px 16px 50px;gap:14px}
+.grab{width:36px;height:5px;border-radius:3px;background:var(--raised);border:1px solid var(--line);margin:0 auto 6px}
+.sheet.form .grab{margin:0 auto 0}
+.sheet .sh{padding:4px 10px 8px;display:flex;flex-direction:column;gap:2px}
+.sheet.form .sh{padding:0;flex-direction:row;align-items:flex-start;justify-content:space-between;gap:8px}
+.sheet .sh b{font-size:16px;font-weight:600} .sheet .sh small{font-size:13px;color:var(--muted)}
+.sheet.form .sh b{font-size:18px;line-height:24px}
+.xbtn{width:40px;height:40px;border-radius:10px;display:inline-flex;align-items:center;justify-content:center;color:var(--muted);flex:none}
+.imp-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.imp-tile{background:var(--raised);border:1px solid var(--edge-raised);box-shadow:var(--sh-raised);border-radius:12px;padding:13px 12px 12px;display:flex;flex-direction:column;gap:8px;min-width:0}
+.imp-tile .itop{display:flex;align-items:center;justify-content:space-between}
+.imp-tile .itic{width:32px;height:32px;border-radius:10px;background:var(--choice-off-bg);border:1px solid var(--choice-off-border);display:flex;align-items:center;justify-content:center;color:var(--fg);flex:none}
+.imp-tile b{font-size:15px;line-height:20px;font-weight:600;color:var(--fg)}
+.imp-tile small{font-size:12.5px;line-height:17px;color:var(--muted)}
+.or-rule{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--faint);font-weight:500}
+.or-rule::before,.or-rule::after{content:"";flex:1;height:1px;background:var(--line)}
+.sfield{display:flex;flex-direction:column;gap:6px}
+.sfield label{font-size:13px;font-weight:500;color:var(--fg)}
+.sfield .in{height:46px;border-radius:10px;background:var(--field);border:1px solid var(--input);display:flex;align-items:center;padding:0 14px;font-size:15px;color:var(--fg);font-variant-numeric:tabular-nums}
+.sfield .in.ph{color:var(--muted)}
+.mi{height:46px;display:flex;align-items:center;gap:10px;padding:0 12px;border-radius:10px;font-size:16px;color:var(--fg)}
+.mi svg{color:var(--muted)}
+.mi.danger,.mi.danger svg{color:var(--danger)}
+.msep{height:1px;background:var(--line);margin:4px 8px}
+.fab{position:absolute;right:16px;bottom:78px;width:48px;height:48px;border-radius:50%;background:var(--brand-fill);border:1px solid var(--edge-primary);color:var(--on-brand);display:flex;align-items:center;justify-content:center;box-shadow:var(--sh-primary),var(--sh-menu);z-index:2}
+.fab.stop{background:var(--stop-fill);border-color:var(--edge-stop);color:var(--on-stop);box-shadow:var(--sh-stop),var(--sh-menu)}
+.ann{position:absolute;font-family:var(--mono);font-size:10px;font-weight:600;color:#fff;background:var(--mark);border-radius:9px;min-width:18px;height:18px;display:flex;align-items:center;justify-content:center;padding:0 5px;z-index:5}
+
+/* —— Pad 与 PC 外框：三端共享同一套 Gallery 控件与字号令牌，仅导航壳层与多栏布局自适应 —— */
+.win{position:relative;border:8px solid var(--frame);border-radius:24px;background:var(--bg);overflow:hidden;display:flex;font-size:15px;line-height:20px;flex:none;min-height:620px}
+.win.pad{width:1080px;border-radius:28px}
+.win.pad.portrait{width:768px;min-height:720px;flex-direction:column}
+.win.pc{width:1180px;border-radius:14px;border:1px solid var(--border);box-shadow:var(--sh-menu);flex-direction:column;min-height:640px}
+.win.pc.narrow{width:820px}
+
+/* Gallery Sidebar & Rail (gallery/App.tsx) */
+.side{width:232px;flex:none;background:var(--sidebar);border-right:1px solid var(--sidebar-border);padding:12px 8px;display:flex;flex-direction:column;gap:2px}
+.side.rail{width:64px;align-items:center;padding:12px 8px;gap:4px}
+.brand{height:40px;display:flex;align-items:center;gap:9px;padding:0 10px;margin-bottom:4px;font-weight:600;font-size:16px;letter-spacing:-.01em}
+.logo{width:26px;height:26px;border-radius:8px;background:var(--brand-fill);border:1px solid var(--edge-primary);box-shadow:var(--sh-primary);color:var(--on-brand);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex:none}
+.nav{height:36px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:9px;border:1px solid transparent;color:var(--muted);font-size:14px}
+.nav svg{color:var(--muted)}
+.nav.on{background:var(--sidebar-sel);border-color:var(--border);box-shadow:var(--sh-card);color:var(--fg);font-weight:600}
+.nav.on svg{color:var(--fg)}
+.side.rail .nav{width:42px;height:42px;justify-content:center;padding:0;border-radius:10px}
+.nlabel{font-size:12px;color:var(--muted);padding:12px 10px 4px;font-weight:600;letter-spacing:.03em}
+.kbd{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+.side-foot{margin-top:auto;padding:10px 10px 2px;border-top:1px solid var(--sidebar-border);display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted)}
+
+/* Gallery TitleBar & Workspace Header (gallery/TitleBar.tsx & DemoPane) */
+.titlebar{height:38px;flex:none;display:flex;align-items:center;gap:8px;padding:0 14px;background:var(--inset);border-bottom:1px solid var(--line)}
+.tls{display:flex;gap:7px;align-items:center;margin-right:6px}
+.tl{width:12px;height:12px;border-radius:50%;background:var(--border);border:1px solid var(--win-edge)}
+.tl.c{background:var(--win-close)} .tl.m{background:var(--win-min)} .tl.z{background:var(--win-zoom)}
+.tb-title{font-size:13px;font-weight:600;color:var(--muted);flex:1;text-align:center;margin-right:52px}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
+.tool{height:54px;flex:none;display:flex;align-items:center;gap:8px;padding:0 20px;border-bottom:1px solid var(--line);background:var(--bg)}
+.tool .crumb{font-size:14px;color:var(--muted);display:flex;align-items:center;gap:6px}
+.tool .t{font-size:17px;font-weight:600;flex:1;min-width:0}
+.cols{flex:1;min-height:0;display:grid;gap:20px;padding:20px;overflow:hidden;align-content:start}
+.pane{display:flex;flex-direction:column;gap:16px;min-width:0}
+.split{flex:1;min-height:0;display:grid;grid-template-columns:320px 1fr}
+.split .master{border-right:1px solid var(--line);padding:16px;display:flex;flex-direction:column;gap:10px;overflow:hidden;background:color-mix(in srgb,var(--inset) 45%,var(--bg))}
+.split .detail{padding:16px 20px;display:flex;flex-direction:column;gap:14px;overflow:hidden;min-width:0}
+.gitem{border-radius:10px;border:1px solid transparent;padding:10px 12px;display:flex;align-items:center;gap:10px}
+.gitem.on{background:var(--card);border-color:var(--border);box-shadow:var(--sh-card)}
+
+/* Gallery DataTable (data-table.ts —— 指针档 40 pt 行高) */
+.tbl{background:var(--card);border:1px solid var(--border);border-radius:12px;box-shadow:var(--sh-card);overflow:hidden;font-size:14px}
+.tr2{display:grid;grid-template-columns:1.6fr 1.1fr .65fr .75fr 28px;align-items:center;min-height:46px;padding:0 14px;gap:12px;border-top:1px solid var(--line)}
+.tr2.h{border-top:0;border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--muted-bg) 75%,var(--card));color:var(--muted);font-weight:600;font-size:12px;min-height:36px}
+.tr2.sel{background:var(--brand-tint)}
+.tr2 .num{text-align:right;font-variant-numeric:tabular-nums}
+.cell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* PC 指针档覆盖块在样式表末尾；触屏档的分段控件始终撑满一行 */
+.win.pc .seg:not(.fill){align-self:flex-start}
+.win.pc .seg:not(.fill) span{flex:0 0 auto}
+.win.pad .dlg,.win.pc .dlg{max-width:420px;left:50%;right:auto;width:400px;transform:translate(-50%,-50%);border-radius:16px;padding:20px}
+
+/* 规则表、空状态、横幅、弹框、Gallery 日志流、代码编辑器 */
+.rules{overflow-x:auto;background:var(--card);border-radius:12px;border:1px solid var(--border);box-shadow:var(--sh-card)}
+table{border-collapse:collapse;width:100%;min-width:640px;font-size:13px}
+th,td{text-align:left;padding:10px 14px;border-top:1px solid var(--line);vertical-align:top}
+th{border-top:0;border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--muted-bg) 70%,var(--card));font-size:12px;color:var(--muted);font-weight:600}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.note-card{background:var(--inset);border:1px solid var(--line);box-shadow:var(--sh-inset);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:6px}
+.empty{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:44px 16px}
+.empty .eic{width:46px;height:46px;border-radius:14px;background:var(--raised);border:1px solid var(--border);box-shadow:var(--sh-raised);color:var(--muted);display:flex;align-items:center;justify-content:center}
+.empty b{font-size:16px}.empty small{font-size:13px;color:var(--muted);max-width:250px;line-height:18px}
+.alert{display:flex;gap:8px;align-items:flex-start;padding:10px 12px;border-radius:10px;font-size:13px;line-height:18px;background:color-mix(in srgb,var(--warn) 11%,var(--card));border:1px solid color-mix(in srgb,var(--warn) 32%,var(--border));color:var(--fg)}
+.alert svg{color:var(--warn);margin-top:2px;flex:none}
+.alert.err{background:color-mix(in srgb,var(--danger) 10%,var(--card));border-color:color-mix(in srgb,var(--danger) 32%,var(--border))}
+.alert.err svg{color:var(--danger)}
+.alert.info{background:color-mix(in srgb,var(--info) 10%,var(--card));border-color:color-mix(in srgb,var(--info) 30%,var(--border))}
+.alert.info svg{color:var(--info)}
+.alert span{flex:1}.alert .lk{font-weight:600;color:var(--fg);flex:none;text-decoration:underline;text-underline-offset:2px}
+.dlg{position:absolute;left:24px;right:24px;top:50%;transform:translateY(-50%);z-index:4;background:var(--card);border:1px solid var(--border);border-radius:16px;padding:20px;display:flex;flex-direction:column;gap:12px;box-shadow:var(--sh-menu)}
+.dlg b{font-size:20px;line-height:26px}.dlg p{font-size:15px;color:var(--muted);line-height:21px}
+.dact{display:flex;gap:8px;margin-top:6px;justify-content:flex-end}
+.dact span{flex:1;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:15px;background:var(--raised);border:1px solid var(--edge-raised);box-shadow:var(--sh-raised)}
+.dact .bp{background:var(--brand-fill);color:var(--on-brand);border-color:var(--edge-primary);box-shadow:var(--sh-primary)}
+.dact .dg{background:var(--danger);color:#fff;border-color:transparent;box-shadow:var(--sh-primary)}
+.log{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:var(--sh-card);overflow:hidden}
+.log .lrow{display:flex;align-items:flex-start;gap:10px;min-height:46px;padding:10px 14px;border-top:1px solid var(--line)}
+.log .lrow:first-child{border-top:0}
+.log .lrow.sel{background:var(--brand-tint)}
+.log .tm{font-family:var(--mono);font-size:12.5px;line-height:20px;color:var(--muted);font-variant-numeric:tabular-nums;flex:none}
+.log .msg{font-family:var(--mono);font-size:13.5px;line-height:20px;color:var(--fg);flex:1;min-width:0;word-break:break-word}
+.pill{position:absolute;left:50%;transform:translateX(-50%);bottom:76px;height:36px;padding:0 16px;border-radius:18px;background:var(--raised);border:1px solid var(--border);box-shadow:var(--sh-menu);color:var(--fg);font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;z-index:2;white-space:nowrap}
+.code{font-family:var(--mono);font-size:13px;line-height:20px;background:var(--card);border:1px solid var(--border);border-radius:14px;box-shadow:var(--sh-card);padding:10px 0;flex:1;overflow:hidden;display:flex;flex-direction:column}
+.code div{display:flex;gap:12px;padding:0 14px;white-space:pre}.code div.cur{background:var(--wash-hover)}
+.code .ln{width:24px;text-align:right;color:var(--faint);flex:none;user-select:none}
+.key{color:var(--info)}.str{color:var(--brand)}.cm{color:var(--faint)}
+.pop{position:absolute;min-width:200px;background:var(--popover);border:1px solid var(--border);border-radius:12px;padding:4px;box-shadow:var(--sh-menu);z-index:5}
+.pop .mi{height:26px;border-radius:6px;font-size:13px;padding:0 8px;gap:8px}
+.pop .mi svg{width:14px;height:14px}
+.pop .mi.hov{background:var(--accent-bg)}
+.kv{display:grid;grid-template-columns:88px 1fr;gap:10px 12px;padding:12px 14px;font-size:14px}.kv>span:nth-child(odd){color:var(--muted)}.kv>span:nth-child(even){min-width:0;word-break:break-all;font-variant-numeric:tabular-nums}
+.ext-link{color:var(--brand);text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--brand) 40%,transparent);text-underline-offset:2px;display:inline-flex;align-items:center;gap:3px;font-weight:500}
+.spin{width:14px;height:14px;border-radius:50%;border:2px solid var(--border);border-top-color:var(--brand);flex:none}
+.skel{height:48px;border-radius:12px;background:var(--track);border:1px solid var(--line)}
+.mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:16px}
+.mcard{display:flex;flex-direction:column;gap:8px;min-width:0}.mcard .cap{max-width:none}
+.mcard .box{background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:12px}
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;font-size:13px}
+.flow span{background:var(--card);border:1px solid var(--border);box-shadow:var(--sh-card);border-radius:8px;padding:6px 12px;font-weight:500}.flow i{font-style:normal;color:var(--faint)}
+.demo-tabs{background:var(--bg)}
+
+/* —— PC：NSH Gallery 指针档（platform.desktop）。数值出处见页末令牌表 —— */
+.win.pc{font-size:13px;line-height:18px}
+.win.pc .btn{height:28px;padding:0 12px;font-size:13px;gap:6px}
+.win.pc .btn.sm{height:24px;padding:0 8px;font-size:12px;gap:6px}
+.win.pc .btn svg.i{width:14px;height:14px}
+.win.pc .btn.sm svg.i{width:12px;height:12px}
+.win.pc .seg{height:30px;border-radius:9px}
+.win.pc .seg span{font-size:12px;border-radius:6px;padding:0 9px}
+.win.pc .seg.fill span{padding:0 7px}
+.win.pc .seg span em{font-size:11px}
+.win.pc .seg.sm{height:26px;border-radius:9px}
+.win.pc .seg.sm span{font-size:12px;padding:0 9px}
+.win.pc .seg.sm.fill span{padding:0 7px}
+.win.pc .picker,.win.pc .picker.sm{height:32px;font-size:14px;padding:0 10px}
+.win.pc .search,.win.pc .field .in,.win.pc .sfield .in{height:28px;font-size:13px;padding:0 8px}
+.win.pc .field{padding:8px 14px}
+.win.pc .sw{width:28px;height:16px;border-radius:8px}
+.win.pc .sw::after{width:12px;height:12px}
+.win.pc .sw.on::after{transform:translateX(12px)}
+.win.pc .radio,.win.pc .chk{width:16px;height:16px}
+.win.pc .chk{border-radius:5px}
+.win.pc .radio.on::after{width:6px;height:6px}
+.win.pc .chk svg{width:12px;height:12px}
+.win.pc .list,.win.pc .hero,.win.pc .speed,.win.pc .log{border-radius:10px}
+.win.pc .row{min-height:40px;padding:6px 14px;gap:10px}
+.win.pc .row .tx b{font-size:14px;line-height:20px}
+.win.pc .row .tx small{font-size:12px;line-height:16px}
+.win.pc .row .tr{font-size:12px}
+.win.pc .row+.row::before,.win.pc .list.plain .row+.row::before,.win.pc .list .field+.row::before,.win.pc .list .row+.field::before,.win.pc .list .field+.field::before{left:14px;right:14px}
+.win.pc .glabel{font-size:13px;line-height:18px}
+.win.pc .glabel span+span{font-size:12px}
+.win.pc .note,.win.pc .field .help{font-size:12px;line-height:16px}
+.win.pc .kv{font-size:13px}
+.win.pc .nav{height:28px;border-radius:6px;gap:9px;padding:0 8px;font-size:13px}
+.win.pc .nav.on{border-color:transparent;font-weight:500}
+.win.pc .side.rail .nav{width:36px;height:36px;padding:0}
+.win.pc .tr2{min-height:40px;padding:0 8px;font-size:13px}
+.win.pc .tr2.h{min-height:32px;font-size:12px}
+.win.pc .dlg{gap:12px!important}
+.win.pc .dlg b{font-size:17px!important;line-height:24px!important}
+.win.pc .dlg p{font-size:13px;line-height:19px}
+.win.pc .dact span{height:28px;font-size:13px}
+.win.pc .xbtn{width:28px;height:28px}
+.win.pc .gitem b,.win.pc .gitem .tx b{font-size:14px!important}
+.win.pc .gitem small,.win.pc .gitem .tx small{font-size:12px!important}
+a:focus-visible,button:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+@media (max-width:560px){h1{font-size:22px}}
+</style>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<symbol id="power" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></symbol>
+<symbol id="stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2.2" fill="currentColor" stroke="none"/></symbol>
+<symbol id="chev" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+<symbol id="chev-d" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+<symbol id="house" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></symbol>
+<symbol id="rss" viewBox="0 0 24 24"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></symbol>
+<symbol id="activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+<symbol id="gear" viewBox="0 0 24 24"><path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.3a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.5a2 2 0 0 1-1 1.7l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.3a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.3a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.7v-.5a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.3a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+<symbol id="branch" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M6 8.5v7"/><path d="M18 10.5c0 4-6 3-11 6"/></symbol>
+<symbol id="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 0 20a15 15 0 0 1 0-20"/></symbol>
+<symbol id="search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></symbol>
+<symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+<symbol id="refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 12A9 9 0 0 1 18.5 5.8L21 8"/><path d="M21 3v5h-5"/><path d="M3 21v-5h5"/></symbol>
+<symbol id="zap" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></symbol>
+<symbol id="up" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></symbol>
+<symbol id="down" viewBox="0 0 24 24"><path d="M12 5v14M19 12l-7 7-7-7"/></symbol>
+<symbol id="list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+<symbol id="edit" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></symbol>
+<symbol id="trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></symbol>
+<symbol id="copy" viewBox="0 0 24 24"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></symbol>
+<symbol id="check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+<symbol id="alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></symbol>
+<symbol id="layers" viewBox="0 0 24 24"><path d="m12 2 10 5-10 5L2 7z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/></symbol>
+<symbol id="file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></symbol>
+<symbol id="file-up" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 12v6"/><path d="m15 15-3-3-3 3"/></symbol>
+<symbol id="code" viewBox="0 0 24 24"><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></symbol>
+<symbol id="scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 12h10"/></symbol>
+<symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></symbol>
+<symbol id="shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></symbol>
+<symbol id="download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+<symbol id="upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+<symbol id="x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="pause" viewBox="0 0 24 24"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></symbol>
+<symbol id="sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+<symbol id="sidebar" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></symbol>
+<symbol id="ext" viewBox="0 0 24 24"><path d="M7 17 17 7"/><path d="M7 7h10v10"/></symbol>
+<symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></symbol>
+<symbol id="moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+<symbol id="monitor" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+<symbol id="link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+</svg>
+
+<div class="wrap">
+
+<div class="preview-bar" role="region" aria-label="设计稿导航与主题切换">
+  <nav class="anchor-nav" aria-label="章节跳转">
+    <a href="#sec-phone-core">Phone 核心</a>
+    <a href="#sec-phone-flows">Phone 全流程</a>
+    <a href="#sec-states">状态与交互</a>
+    <a href="#sec-pad">Pad 全页面（14 屏）</a>
+    <a href="#sec-pc">PC 全工作区（15 屏）</a>
+    <a href="#sec-coverage">三端覆盖表与硬规则</a>
+  </nav>
+  <div style="display:flex;align-items:center;gap:8px">
+    <span style="font-size:12px;color:var(--muted)">Gallery 外观：</span>
+    <div class="theme-seg" role="group" aria-label="切换浅色或深色主题">
+      <button type="button" data-set-theme="system" aria-pressed="true"><svg class="i s"><use href="#monitor"/></svg>跟随系统</button>
+      <button type="button" data-set-theme="light" aria-pressed="false"><svg class="i s"><use href="#sun"/></svg>浅色</button>
+      <button type="button" data-set-theme="dark" aria-pressed="false"><svg class="i s"><use href="#moon"/></svg>深色</button>
+    </div>
+  </div>
+</div>
+
+<header class="sec">
+  <div class="sec-head">
+    <span class="eyebrow">Paws · NSH Gallery 视觉与交互对齐 · v3 待确认</span>
+    <h1>Paws 三端完整设计稿（Phone · Pad 触屏档 · PC 指针档）</h1>
+    <p class="lede">这是按 <code>nsh-gallery-ui</code> 规范校正后的三端完整目标设计稿，覆盖全部 14 类页面与状态：<b>① 尺度按输入方式分两档</b>——Gallery 对触屏与桌面指针各定义一档（<code>platform.desktop</code> 判定），Phone 与 Pad 用触屏档（15 pt 正文、40 pt 按钮、46 pt 输入框、42×24 pt 开关、22 pt 单选/复选、16 pt 卡片圆角），PC 用指针档（13 pt 正文、28 pt 按钮与输入框、28×16 pt 开关、16 pt 单选/复选、10 pt 卡片圆角）；三端仅在壳层导航（底栏 / 64 pt 图标轨 / 232 pt 侧栏）与多栏布局上随视口自适应；<b>② 首页策略组默认全展开</b>——全部策略组随整页统一滚动，没有“查看策略组”入口；<b>③ 连接与请求、日志对齐 NSH Gallery</b>——统一采用 <code>Segmented</code> + <code>Picker</code> 组合筛选，补齐“请求历史”独立画面与三端一致的详情面板/检查器。</p>
+  </div>
+  <div class="meta"><span>依据：docs/nsh-interaction-redesign.md</span><span>视觉基准：nsh/examples/nsh-gallery-ui @ origin/ohos 59f8dcc9e（Phone · Pad 触屏档，PC 指针档）</span><span>2026-11-12 · v4 双档尺度校正版</span></div>
+</header>
+
+<section class="sec">
+  <div class="sec-head">
+    <span class="eyebrow">当前真机问题复盘</span>
+    <h2>首页与核心页面的问题和修正标准</h2>
+    <p class="lede">序号与下方手机画面上的红色标注一一对应；本次已按最新真机反馈同步修正“首页策略组全展开”，并把尺度校正为 NSH Gallery 的触屏 / 指针两档。</p>
+  </div>
+  <div class="issues">
+    <div class="issue"><span class="n">01</span><h3>连接动作出现三次</h3><p class="fix">电源图标块、"连接"按钮和悬浮按钮都能连接，真正的按钮反而很小，而且靠左。<b>修正：</b>首页只保留连接卡片里的一个全宽按钮。只有当连接卡片滚出屏幕时，才显示悬浮按钮。</p></div>
+    <div class="issue"><span class="n">02</span><h3>按钮样式不一致</h3><p class="fix">"代理节点"带阴影，"当前分组"不带。<b>修正：</b>这两个入口都不再做成按钮，并入"当前节点"那一行，点按后进入代理节点页。</p></div>
+    <div class="issue"><span class="n">03</span><h3>速率区缺少分组</h3><p class="fix">标题和"当前没有实时数据"挤在同一行。<b>修正：</b>上传和下载做成两格数值，单位单独标出。未连接时数值显示为 0，下方用说明文字解释原因。</p></div>
+    <div class="issue"><span class="n">04</span><h3>策略组嵌套滚动或被折叠收拢</h3><p class="fix">早期套了内层滚动框，后续截断为 3 组并加“查看全部策略组”破坏了直达性。<b>修正：</b>首页「策略组」默认完整平铺全部策略组，作为整页内容统一滚动，绝不默认收拢，也不设“查看策略组”操作。</p></div>
+    <div class="issue"><span class="n">05</span><h3>悬浮按钮压住内容</h3><p class="fix">悬浮按钮压在"69 个节点"上。<b>修正：</b>同 01。悬浮按钮出现时，页面底部要留出等高的空白。</p></div>
+    <div class="issue"><span class="n">06</span><h3>表面层级与字号尺度不一致</h3><p class="fix">真机上小一号字号显得局促，卡片描边与控件尺寸不统一。<b>修正：</b>Phone / Pad 采用 NSH Gallery 触屏档（15 pt 正文、40 pt 按钮、46 pt 输入框、16 pt <code>sectionSurface</code> 无阴影卡片），PC 采用指针档（13 pt 正文、28 pt 按钮与输入框、10 pt 卡片）；Phone 左右边距 16 pt。</p></div>
+  </div>
+</section>
+
+<section class="sec" id="sec-phone-core">
+  <div class="sec-head">
+    <span class="eyebrow">Phone · 首页、节点、订阅、设置（对齐 Gallery 标准尺度）</span>
+    <h2>手机核心画面</h2>
+    <p class="lede">底栏有四个一级入口。首页直接平铺展示全部策略组（无折叠、无“查看策略组”入口），点按任一策略组直达对应节点列表。前两屏采用整页长图展示完整未收拢的策略组，第三屏展示向下滚动视口态。</p>
+  </div>
+  <div class="strip">
+
+    <!-- 1 首页 未连接（整页完整展开全部策略组） -->
+    <div class="dev">
+      <div class="phone full">
+        <div class="sb"><span>9:41</span><span>82%</span></div>
+        <div class="hdr"><span class="t">首页</span></div>
+        <div class="body">
+          <div class="hero" style="position:relative">
+            <span class="ann" style="right:-6px;top:-6px">01</span>
+            <div class="status"><span class="dot"></span><div><div class="st">未连接</div><div class="sub">示例机场 · 更新于 2 小时前</div></div></div>
+            <div class="seg"><span class="on">规则</span><span>全局</span><span>直连</span></div>
+            <div class="btn pri"><svg class="i"><use href="#power"/></svg>连接</div>
+          </div>
+          <div class="group" style="position:relative">
+            <span class="ann" style="right:-6px;top:-21px">02</span>
+            <div class="glabel"><span>节点</span></div>
+            <div class="list">
+              <div class="row"><span class="ic"><svg class="i s"><use href="#branch"/></svg></span><span class="tx"><b>新加坡 03</b><small>节点选择 · 手动</small></span><span class="tr"><span class="lat good">86 ms</span><svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#globe"/></svg></span><span class="tx"><b>出口 IP</b></span><span class="tr">连接后显示</span></div>
+            </div>
+          </div>
+          <div class="group" style="position:relative">
+            <span class="ann" style="right:-6px;top:-21px">03</span>
+            <div class="glabel"><span>速率</span></div>
+            <div class="speed"><div><small><svg class="i s"><use href="#up"/></svg>上传</small><b>0<span class="unit">B/s</span></b></div><div><small><svg class="i s"><use href="#down"/></svg>下载</small><b>0<span class="unit">B/s</span></b></div></div>
+            <p class="note">连接后显示实时速率。</p>
+          </div>
+          <div class="group" style="position:relative">
+            <span class="ann" style="right:-6px;top:-21px">04</span>
+            <div class="glabel"><span>策略组</span><span>6 组 · 65 节点</span></div>
+            <div class="list">
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>节点选择</b><small>手动选择 · 新加坡 03</small></span><span class="tr">12<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#zap"/></svg></span><span class="tx"><b>自动选择</b><small>URL-Test · 香港 01 (42 ms)</small></span><span class="tr">48<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>媒体解锁</b><small>手动选择 · 新加坡 03</small></span><span class="tr">65<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>AI 服务</b><small>手动选择 · 日本 02</small></span><span class="tr">24<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#shield"/></svg></span><span class="tx"><b>广告拦截</b><small>手动选择 · REJECT</small></span><span class="tr">3<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>漏网之鱼</b><small>手动选择 · 节点选择</small></span><span class="tr">65<svg class="i s chev"><use href="#chev"/></svg></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="tabs"><div class="tab on"><span class="ti"><svg class="i"><use href="#house"/></svg></span>首页</div><div class="tab"><span class="ti"><svg class="i"><use href="#rss"/></svg></span>订阅</div><div class="tab"><span class="ti"><svg class="i"><use href="#activity"/></svg></span>流量</div><div class="tab"><span class="ti"><svg class="i"><use href="#gear"/></svg></span>设置</div></div>
+        <span class="home-ind"></span>
+      </div>
+      <div class="cap"><b>首页 · 未连接（整页全展开）</b><span>全部 6 个策略组直接完整平铺在首页内随整页滚动，默认绝不折叠收拢，也没有“查看策略组”按钮。</span></div>
+    </div>
+
+    <!-- 2 首页 已连接（整页完整展开全部策略组） -->
+    <div class="dev">
+      <div class="phone full">
+        <div class="sb"><span>9:41</span><span>82%</span></div>
+        <div class="hdr"><span class="t">首页</span></div>
+        <div class="body">
+          <div class="hero">
+            <div class="status"><span class="dot ok"></span><div><div class="st">已连接</div><div class="sub">示例机场 · 00:12:41</div></div></div>
+            <div class="seg"><span class="on">规则</span><span>全局</span><span>直连</span></div>
+            <div class="btn stop"><svg class="i"><use href="#stop"/></svg>停止</div>
+          </div>
+          <div class="group">
+            <div class="glabel"><span>节点</span></div>
+            <div class="list">
+              <div class="row"><span class="ic"><svg class="i s"><use href="#branch"/></svg></span><span class="tx"><b>新加坡 03</b><small>节点选择 · 手动</small></span><span class="tr"><span class="lat good">86 ms</span><svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#globe"/></svg></span><span class="tx"><b>出口 IP</b></span><span class="tr" style="color:var(--fg)">203.0.113.24 · 新加坡</span></div>
+            </div>
+          </div>
+          <div class="group">
+            <div class="glabel"><span>速率</span><span>本次 1.4 GB</span></div>
+            <div class="speed">
+              <div><small><svg class="i s"><use href="#up"/></svg>上传</small><b>12.4<span class="unit">KB/s</span></b></div>
+              <div><small><svg class="i s"><use href="#down"/></svg>下载</small><b>1.21<span class="unit">MB/s</span></b></div>
+            </div>
+            <p class="note">前往「流量」页可查看速率趋势与活动连接。</p>
+          </div>
+          <div class="group">
+            <div class="glabel"><span>策略组</span><span>6 组 · 65 节点</span></div>
+            <div class="list">
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>节点选择</b><small>手动选择 · 新加坡 03</small></span><span class="tr">12<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#zap"/></svg></span><span class="tx"><b>自动选择</b><small>URL-Test · 香港 01 (42 ms)</small></span><span class="tr">48<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>媒体解锁</b><small>手动选择 · 新加坡 03</small></span><span class="tr">65<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>AI 服务</b><small>手动选择 · 日本 02</small></span><span class="tr">24<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#shield"/></svg></span><span class="tx"><b>广告拦截</b><small>手动选择 · REJECT</small></span><span class="tr">3<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>漏网之鱼</b><small>手动选择 · 节点选择</small></span><span class="tr">65<svg class="i s chev"><use href="#chev"/></svg></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="tabs"><div class="tab on"><span class="ti"><svg class="i"><use href="#house"/></svg></span>首页</div><div class="tab"><span class="ti"><svg class="i"><use href="#rss"/></svg></span>订阅</div><div class="tab"><span class="ti"><svg class="i"><use href="#activity"/></svg></span>流量</div><div class="tab"><span class="ti"><svg class="i"><use href="#gear"/></svg></span>设置</div></div>
+        <span class="home-ind"></span>
+      </div>
+      <div class="cap"><b>首页 · 已连接（整页全展开）</b><span>只有在路由验证通过后才显示“已连接”。“停止”采用醒目的实心红色按钮（与未连接时的绿色“连接”按钮一眼区分），策略组保持完整展开。</span></div>
+    </div>
+
+    <!-- 2b 首页 滚出首屏后的悬浮按钮 -->
+    <div class="dev">
+      <div class="phone">
+        <div class="sb"><span>9:41</span><span>82%</span></div>
+        <div class="hdr"><span class="t">首页</span><span class="badge ok">已连接 · 规则</span></div>
+        <div class="body" style="padding-bottom:80px">
+          <div class="group">
+            <div class="glabel"><span>速率</span><span>本次 1.4 GB</span></div>
+            <div class="speed"><div><small><svg class="i s"><use href="#up"/></svg>上传</small><b>12.4<span class="unit">KB/s</span></b></div><div><small><svg class="i s"><use href="#down"/></svg>下载</small><b>1.21<span class="unit">MB/s</span></b></div></div>
+          </div>
+          <div class="group">
+            <div class="glabel"><span>策略组</span><span>6 组 · 65 节点</span></div>
+            <div class="list">
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>节点选择</b><small>手动选择 · 新加坡 03</small></span><span class="tr">12<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#zap"/></svg></span><span class="tx"><b>自动选择</b><small>URL-Test · 香港 01 (42 ms)</small></span><span class="tr">48<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>媒体解锁</b><small>手动选择 · 新加坡 03</small></span><span class="tr">65<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>AI 服务</b><small>手动选择 · 日本 02</small></span><span class="tr">24<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#shield"/></svg></span><span class="tx"><b>广告拦截</b><small>手动选择 · REJECT</small></span><span class="tr">3<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>漏网之鱼</b><small>手动选择 · 节点选择</small></span><span class="tr">65<svg class="i s chev"><use href="#chev"/></svg></span></div>
+            </div>
+          </div>
+        </div>
+        <div class="fab stop" title="停止 VPN"><span class="ann" style="left:-10px;top:-6px">05</span><svg class="i"><use href="#stop"/></svg></div>
+        <div class="tabs"><div class="tab on"><span class="ti"><svg class="i"><use href="#house"/></svg></span>首页</div><div class="tab"><span class="ti"><svg class="i"><use href="#rss"/></svg></span>订阅</div><div class="tab"><span class="ti"><svg class="i"><use href="#activity"/></svg></span>流量</div><div class="tab"><span class="ti"><svg class="i"><use href="#gear"/></svg></span>设置</div></div>
+        <span class="home-ind"></span>
+      </div>
+      <div class="cap"><b>首页 · 向下滚动视口态（红色悬浮停止圆钮）</b><span>顶部连接卡滚出视口后浮现 48 pt 圆钮：未连接为绿色电源钮，已连接/连接中同步变为红色停止圆钮；底部预留 80 pt 安全留白防遮挡。</span></div>
+    </div>
+
+    <!-- 3 代理节点 -->
+    <div class="dev">
+      <div class="phone">
+        <div class="sb"><span>9:41</span><span>82%</span></div>
+        <div class="hdr"><span class="back"><svg class="i"><use href="#back"/></svg>首页</span><span class="t" style="text-align:center">代理节点</span><span class="btn sm def"><svg class="i s"><use href="#zap"/></svg>测速</span></div>
+        <div class="body" style="gap:16px">
+          <div class="search"><svg class="i s"><use href="#search"/></svg>搜索节点或策略组</div>
+          <div class="group">
+            <div class="glabel"><span>节点选择 · 手动</span><span>12 个节点</span></div>
+            <div class="list">
+              <div class="row"><span class="radio on"></span><span class="tx"><b>新加坡 03</b><small>当前 · 0.1 倍率</small></span><span class="tr"><span class="lat good">86 ms</span></span></div>
+              <div class="row"><span class="radio"></span><span class="tx"><b>香港 01</b><small>0.5 倍率</small></span><span class="tr"><span class="lat good">42 ms</span></span></div>
+              <div class="row"><span class="radio"></span><span class="tx"><b>日本 02</b><small>1 倍率</small></span><span class="tr"><span class="lat mid">214 ms</span></span></div>
+              <div class="row"><span class="radio"></span><span class="tx"><b>美国 05</b><small>1 倍率</small></span><span class="tr"><span class="lat bad">超时</span></span></div>
+              <div class="row"><span class="radio"></span><span class="tx"><b>台湾 01</b><small>1 倍率 · 未测速</small></span><span class="tr"><span class="lat" style="color:var(--faint)">—</span></span></div>
+            </div>
+          </div>
+          <div class="group">
+            <div class="glabel"><span>切换其他策略组</span></div>
+            <div class="list">
+              <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>媒体解锁</b><small>手动选择 · 当前 新加坡 03</small></span><span class="tr">65<svg class="i s chev"><use href="#chev"/></svg></span></div>
+              <div class="row"><span class="ic"><svg class="i s"><use href="#shield"/></svg></span><span class="tx"><b>广告拦截</b><small>手动选择 · REJECT</small></span><span class="tr">3<svg class="i s chev"><use href="#chev"/></svg></span></div>
+            </div>
+          </div>
+        </div>
+        <span class="home-ind"></span>
+      </div>
+      <div class="cap"><b>代理节点（从首页策略组进入）</b><span>单选环对齐 Gallery 22 pt RadioRing（选中为柠檬绿底 + 深色圆点）。超时写“超时”而非 0 ms；自动策略组不展示单选框。</span></div>
+    </div>
+
+    <!-- 4 订阅 + 对象菜单 -->
+    <div class="dev">
+      <div class="phone">
+        <div class="sb"><span>9:41</span><span>82%</span></div>
+        <div class="hdr"><span class="t">订阅</span><span class="act"><svg class="i"><use href="#refresh"/></svg><svg class="i"><use href="#plus"/></svg></span></div>
+        <div class="body" style="gap:16px">
+          <div class="search"><svg class="i s"><use href="#search"/></svg>搜索订阅</div>
+          <div class="list">
+            <div class="row" style="align-items:flex-start;padding-top:12px;padding-bottom:12px"><span class="tx"><b style="display:flex;gap:6px;align-items:center">示例机场 <span class="badge">当前</span></b><small>更新于 2 小时前 · 剩余 38 天</small><div class="bar"><i style="width:34%"></i></div><small style="font-variant-numeric:tabular-nums">68.2 / 200 GB</small></span><span class="tr"><svg class="i"><use href="#more"/></svg></span></div>
+            <div class="row" style="align-items:flex-start;padding-top:12px;padding-bottom:12px"><span class="tx"><b>备用订阅</b><small>更新于 3 天前</small><div class="bar"><i style="width:8%"></i></div><small style="font-variant-numeric:tabular-nums">4.1 / 50 GB</small></span><span class="tr"><svg class="i"><use href="#more"/></svg></span></div>
+            <div class="row"><span class="tx"><b>本地配置</b><small>本地文件 · 不自动更新</small></span><span class="tr"><svg class="i"><use href="#more"/></svg></span></div>
+          </div>
+        </div>
+        <div class="tabs"><div class="tab"><span class="ti"><svg class="i"><use href="#house"/></svg></span>首页</div><div class="tab on"><span class="ti"><svg class="i"><use href="#rss"/></svg></span>订阅</div><div class="tab"><span class="ti"><svg class="i"><use href="#activity"/></svg></span>流量</div><div class="tab"><span class="ti"><svg class="i"><use href="#gear"/></svg></span>设置</div></div>
+        <div class="scrim"></div>
+        <div class="sheet">
+          <div class="grab"></div>
+          <div class="sh"><b>备用订阅</b><small>更新于 3 天前</small></div>
+          <div class="mi"><svg class="i"><use href="#check"/></svg>启用</div>
+          <div class="mi"><svg class="i"><use href="#refresh"/></svg>更新</div>
+          <div class="mi"><svg class="i"><use href="#edit"/></svg>编辑…</div>
+          <div class="mi"><svg class="i"><use href="#file"/></svg>编辑 YAML</div>
+          <div class="mi"><svg class="i"><use href="#copy"/></svg>复制链接</div>
+          <div class="msep"></div>
+          <div class="mi danger"><svg class="i"><use href="#trash"/></svg>删除…</div>
+        </div>
+        <span class="home-ind"></span>
+      </div>
+      <div class="cap"><b>订阅 · 对象菜单</b><span>配额条采用 Gallery 6 pt 凹陷轨道 Meter；底部菜单采用 Gallery Sheet（20 pt 顶圆角 + 36×5 pt 抓手 + 46 pt 菜单行）。</span></div>
+    </div>
+
+    <!-- 5 网络设置 -->
+    <div class="dev">
+      <div class="phone">
+        <div class="sb"><span>9:41</span><span>82%</span></div>
+        <div class="hdr"><span class="back"><svg class="i"><use href="#back"/></svg>设置</span><span class="t" style="text-align:center;margin-right:48px">网络设置</span></div>
+        <div class="body" style="gap:20px">
+          <div class="group">
+            <div class="glabel"><span>VPN</span></div>
+            <div class="list plain">
+              <div class="field"><label for="mtu">MTU</label><div class="in err" id="mtu">1200</div><span class="help err">请输入 1280 至 65535 之间的整数。</span></div>
+              <div class="row"><span class="tx"><b>IPv6</b><small>为 VPN 分配 IPv6 地址</small></span><span class="sw on"></span></div>
+              <div class="row"><span class="tx"><b>协议栈</b><small>仅 Meow 内核生效</small></span><span class="tr">gVisor<svg class="i s chev"><use href="#chev"/></svg></span></div>
+            </div>
+            <p class="note">保存后会重新建立 VPN 连接。</p>
+          </div>
+          <div class="group">
+            <div class="glabel"><span>DNS</span></div>
+            <div class="list plain">
+              <div class="field"><label for="dns">DNS 服务器</label><div class="in" id="dns">223.5.5.5, 119.29.29.29</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="footer"><span class="hint"><svg class="i s"><use href="#alert"/></svg>VPN 设置未保存</span><span class="btn pri" style="padding:0 16px;opacity:.5">保存</span></div>
+        <span class="home-ind"></span>
+      </div>
+      <div class="cap"><b>网络设置 · 草稿与校验</b><span>错误字段采用 Gallery 危险态描边 + 字段下方文字说明；校验未通过时保存按钮禁用。底部保存栏随键盘上移。</span></div>
+    </div>
+
+  </div>
+</section>
+
+<section class="sec">
+  <div class="sec-head">
+    <span class="eyebrow">三端壳层速览 · Phone / Pad 触屏档 · PC 指针档</span>
+    <h2>Pad 与 PC 核心壳层对照（完整全页面见下方专章）</h2>
+    <p class="lede">Phone 与 Pad 使用 Gallery 触屏档（40 pt 按钮、46 pt 输入框、15 pt 正文、16 pt <code>sectionSurface</code> 卡片、22 pt 单选/复选），PC 使用指针档（28 pt 按钮与输入框、13 pt 正文、10 pt 卡片、16 pt 单选/复选）；Pad 横屏采用 64 pt 图标轨 + 主从分栏，PC 采用 232 pt 完整侧栏 + 双列工作区 + 窗口标题栏与快捷键。</p></div>
+  </div>
+  <div class="strip">
+    <div class="dev">
+      <div class="win pad">
+        <div class="side rail">
+          <div class="logo" style="margin:4px 0 10px">P</div>
+          <div class="nav" title="概览"><svg class="i"><use href="#house"/></svg></div>
+          <div class="nav" title="订阅"><svg class="i"><use href="#rss"/></svg></div>
+          <div class="nav on" title="代理节点"><svg class="i"><use href="#branch"/></svg></div>
+          <div class="nav" title="流量"><svg class="i"><use href="#activity"/></svg></div>
+          <div class="nav" title="连接与请求"><svg class="i"><use href="#list"/></svg></div>
+          <div class="nav" title="资源与规则"><svg class="i"><use href="#layers"/></svg></div>
+          <div class="nav" title="日志"><svg class="i"><use href="#file"/></svg></div>
+          <div style="flex:1"></div>
+          <div class="nav" title="设置"><svg class="i"><use href="#gear"/></svg></div>
+        </div>
+        <div class="main">
+          <div class="tool"><span class="t">代理节点</span><span class="btn sm def"><svg class="i s"><use href="#zap"/></svg>测速当前组</span></div>
+          <div class="split">
+            <div class="master">
+              <div class="search"><svg class="i s"><use href="#search"/></svg>搜索策略组</div>
+              <div class="gitem on"><svg class="i s"><use href="#layers"/></svg><span class="tx" style="flex:1;display:flex;flex-direction:column"><b style="font-weight:600">节点选择</b><small style="font-size:13px;color:var(--muted)">手动 · 新加坡 03</small></span><span style="color:var(--muted);font-size:13px">12</span></div>
+              <div class="gitem"><svg class="i s"><use href="#zap"/></svg><span class="tx" style="flex:1;display:flex;flex-direction:column"><b style="font-weight:500">自动选择</b><small style="font-size:13px;color:var(--muted)">URL-Test · 香港 01</small></span><span style="color:var(--muted);font-size:13px">48</span></div>
+              <div class="gitem"><svg class="i s"><use href="#layers"/></svg><span class="tx" style="flex:1;display:flex;flex-direction:column"><b style="font-weight:500">媒体解锁</b><small style="font-size:13px;color:var(--muted)">手动 · 新加坡 03</small></span><span style="color:var(--muted);font-size:13px">65</span></div>
+              <div class="gitem"><svg class="i s"><use href="#layers"/></svg><span class="tx" style="flex:1;display:flex;flex-direction:column"><b style="font-weight:500">AI 服务</b><small style="font-size:13px;color:var(--muted)">手动 · 日本 02</small></span><span style="color:var(--muted);font-size:13px">24</span></div>
+              <div class="gitem"><svg class="i s"><use href="#shield"/></svg><span class="tx" style="flex:1;display:flex;flex-direction:column"><b style="font-weight:500">广告拦截</b><small style="font-size:13px;color:var(--muted)">手动 · REJECT</small></span><span style="color:var(--muted);font-size:13px">3</span></div>
+              <div class="gitem"><svg class="i s"><use href="#layers"/></svg><span class="tx" style="flex:1;display:flex;flex-direction:column"><b style="font-weight:500">漏网之鱼</b><small style="font-size:13px;color:var(--muted)">手动 · 节点选择</small></span><span style="color:var(--muted);font-size:13px">65</span></div>
+            </div>
+            <div class="detail">
+              <div class="glabel" style="padding:0"><span>节点选择 · 手动选择</span><span>上次测速 2 分钟前</span></div>
+              <div class="list">
+                <div class="row"><span class="radio on"></span><span class="tx"><b>新加坡 03</b><small>当前 · 0.1 倍率</small></span><span class="tr"><span class="lat good">86 ms</span></span></div>
+                <div class="row"><span class="radio"></span><span class="tx"><b>香港 01</b><small>0.5 倍率</small></span><span class="tr"><span class="lat good">42 ms</span></span></div>
+                <div class="row"><span class="radio"></span><span class="tx"><b>日本 02</b><small>1 倍率</small></span><span class="tr"><span class="lat mid">214 ms</span></span></div>
+                <div class="row"><span class="radio"></span><span class="tx"><b>美国 05</b><small>1 倍率</small></span><span class="tr"><span class="lat bad">超时</span></span></div>
+                <div class="row"><span class="radio"></span><span class="tx"><b>台湾 01</b><small>1 倍率</small></span><span class="tr"><span class="lat" style="color:var(--faint)">—</span></span></div>
+                <div class="row"><span class="radio"></span><span class="tx"><b>韩国 02</b><small>1 倍率</small></span><span class="tr"><span class="lat good">63 ms</span></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="cap" style="max-width:680px"><b>Pad 横屏 · 代理节点（64 pt 图标轨 + 主从分栏）</b><span>选中的策略组使用卡片选中态（card + border，无阴影）；控件与字号与 Phone 同为 Gallery 触屏档。</span></div>
+    </div>
+
+    <div class="dev">
+      <div class="win pc">
+        <div class="titlebar"><span class="tls"><span class="tl c"></span><span class="tl m"></span><span class="tl z"></span></span><svg class="i s" style="color:var(--muted)"><use href="#sidebar"/></svg><span class="tb-title">Paws</span></div>
+        <div style="flex:1;display:flex;min-height:0">
+          <div class="side">
+            <div class="brand"><span class="logo">P</span>Paws</div>
+            <div class="nlabel">主要</div>
+            <div class="nav on"><svg class="i s"><use href="#house"/></svg>概览<span class="kbd">⌘1</span></div>
+            <div class="nav"><svg class="i s"><use href="#rss"/></svg>订阅<span class="kbd">⌘2</span></div>
+            <div class="nav"><svg class="i s"><use href="#branch"/></svg>代理节点<span class="kbd">⌘3</span></div>
+            <div class="nav"><svg class="i s"><use href="#activity"/></svg>流量<span class="kbd">⌘4</span></div>
+            <div class="nlabel">网络</div>
+            <div class="nav"><svg class="i s"><use href="#list"/></svg>连接与请求</div>
+            <div class="nav"><svg class="i s"><use href="#layers"/></svg>资源与规则</div>
+            <div class="nav"><svg class="i s"><use href="#file"/></svg>日志</div>
+            <div class="nlabel">工具与偏好</div>
+            <div class="nav"><svg class="i s"><use href="#shield"/></svg>诊断</div>
+            <div class="nav"><svg class="i s"><use href="#download"/></svg>备份与恢复</div>
+            <div class="nav"><svg class="i s"><use href="#refresh"/></svg>订阅转换</div>
+            <div class="nav"><svg class="i s"><use href="#sliders"/></svg>网络设置</div>
+            <div class="nav"><svg class="i s"><use href="#gear"/></svg>外观<span class="kbd">⌘,</span></div>
+            <div class="nav"><svg class="i s"><use href="#info"/></svg>关于</div>
+            <div class="side-foot"><span style="display:flex;align-items:center;gap:6px"><span class="dot ok" style="width:7px;height:7px;box-shadow:none"></span>Meow · 已连接</span><span>v1.3.0</span></div>
+          </div>
+          <div class="main">
+            <div class="tool"><span class="crumb">主要 <svg class="i" style="width:12px;height:12px"><use href="#chev"/></svg></span><span class="t">概览</span><span class="btn sm def"><svg class="i s"><use href="#refresh"/></svg>刷新 <span class="kbd" style="margin-left:4px">⌘R</span></span></div>
+            <div class="cols" style="grid-template-columns:360px 1fr">
+              <div class="pane">
+                <div class="hero">
+                  <div class="status"><span class="dot ok"></span><div><div class="st">已连接</div><div class="sub">示例机场 · 00:12:41</div></div></div>
+                  <div class="seg fill"><span class="on">规则</span><span>全局</span><span>直连</span></div>
+                  <div class="btn stop"><svg class="i"><use href="#stop"/></svg>停止</div>
+                </div>
+                <div class="group">
+                  <div class="glabel"><span>节点</span></div>
+                  <div class="list">
+                    <div class="row"><span class="ic"><svg class="i s"><use href="#branch"/></svg></span><span class="tx"><b>新加坡 03</b><small>节点选择 · 手动</small></span><span class="tr"><span class="lat good">86 ms</span><svg class="i s chev"><use href="#chev"/></svg></span></div>
+                    <div class="row"><span class="ic"><svg class="i s"><use href="#globe"/></svg></span><span class="tx"><b>出口 IP</b></span><span class="tr" style="color:var(--fg)">203.0.113.24 · 新加坡</span></div>
+                  </div>
+                </div>
+                <div class="group">
+                  <div class="glabel"><span>速率</span><span>本次 1.4 GB</span></div>
+                  <div class="speed"><div><small><svg class="i s"><use href="#up"/></svg>上传</small><b>12.4<span class="unit">KB/s</span></b></div><div><small><svg class="i s"><use href="#down"/></svg>下载</small><b>1.21<span class="unit">MB/s</span></b></div></div>
+                </div>
+              </div>
+              <div class="pane">
+                <div class="group">
+                  <div class="glabel"><span>策略组</span><span>6 组 · 65 节点</span></div>
+                  <div class="list">
+                    <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>节点选择</b><small>手动选择 · 新加坡 03</small></span><span class="tr">12<svg class="i s chev"><use href="#chev"/></svg></span></div>
+                    <div class="row"><span class="ic"><svg class="i s"><use href="#zap"/></svg></span><span class="tx"><b>自动选择</b><small>URL-Test · 香港 01 (42 ms)</small></span><span class="tr">48<svg class="i s chev"><use href="#chev"/></svg></span></div>
+                    <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>媒体解锁</b><small>手动选择 · 新加坡 03</small></span><span class="tr">65<svg class="i s chev"><use href="#chev"/></svg></span></div>
+                    <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>AI 服务</b><small>手动选择 · 日本 02</small></span><span class="tr">24<svg class="i s chev"><use href="#chev"/></svg></span></div>
+                    <div class="row"><span class="ic"><svg class="i s"><use href="#shield"/></svg></span><span class="tx"><b>广告拦截</b><small>手动选择 · REJECT</small></span><span class="tr">3<svg class="i s chev"><use href="#chev"/></svg></span></div>
+                    <div class="row"><span class="ic"><svg class="i s"><use href="#layers"/></svg></span><span class="tx"><b>漏网之鱼</b><small>手动选择 · 节点选择</small></span><span class="tr">65<svg class="i s chev"><use href="#chev"/></svg></span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="cap" style="max-width:740px"><b>PC · 概览（232 pt 侧栏 + Gallery 指针档 + 策略组全展开）</b><span>左列整合连接状态卡、当前节点与实时速率，右列完整平铺全部策略组（无折叠、无“查看策略组”操作），控件与字号为 Gallery 指针档。</span></div>
+    </div>
+  </div>
+</section>
+
+<script>
+// 顶部 Gallery 外观切换（跟随系统 / 浅色 / 深色）
+{
+  const root=document.documentElement,btns=[...document.querySelectorAll('[data-set-theme]')];
+  btns.forEach(b=>b.addEventListener('click',()=>{
+    const m=b.dataset.setTheme;
+    if(m==='system')delete root.dataset.theme;else root.dataset.theme=m;
+    btns.forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
+  }));
+}
+const I=(n,c)=>`<svg class="i ${c||''}"><use href="#${n}"/></svg>`,S=n=>I(n,'s'),CH=I('chev','s chev');
+const put=(id,a)=>{document.getElementById(id).innerHTML=a.join('')};
+const tabsBar=on=>`<div class="tabs">${[['house','首页'],['rss','订阅'],['activity','流量'],['gear','设置']].map((t,k)=>`<div class="tab${k===on?' on':''}"><span class="ti">${I(t[0])}</span>${t[1]}</div>`).join('')}</div>`;
+const hdr=o=>`<div class="hdr">${o.back?`<span class="back">${I('back')}${typeof o.back==='string'?o.back:''}</span>`:''}<span class="t">${o.t}</span>${o.act?`<span class="act">${o.act}</span>`:''}</div>`;
+const phone=o=>`<div class="dev"><div class="phone" style="${o.w?`width:${o.w}px;`:''}min-height:${o.over?(o.over.includes('class="sheet')?780:640):(o.min||560)}px"><div class="sb"><span>9:41</span><span>82%</span></div>${hdr(o)}<div class="body"${o.gap?` style="gap:${o.gap}px"`:''}>${o.body}</div>${o.footer||''}${o.tab!=null?tabsBar(o.tab):''}${o.over||''}<span class="home-ind"></span></div><div class="cap"${o.w?` style="max-width:${o.w}px"`:''}><b>${o.cap}</b><span>${o.note}</span></div></div>`;
+const grp=(l,r,x)=>`<div class="group"><div class="glabel"><span>${l}</span>${r?`<span>${r}</span>`:''}</div>${x}</div>`;
+const lst=(a,p)=>`<div class="list${p?' plain':''}">${a.join('')}</div>`;
+const row=o=>`<div class="row"${o.st?` style="${o.st}"`:''}>${o.ic?`<span class="ic">${S(o.ic)}</span>`:''}${o.lead||''}<span class="tx"><b>${o.t}</b>${o.s?`<small>${o.s}</small>`:''}</span>${o.r!=null||o.ch?`<span class="tr">${o.r!=null?o.r:''}${o.ch?CH:''}</span>`:''}</div>`;
+const btn=(t,k,st)=>`<div class="btn ${k||'def'}"${st?` style="${st}"`:''}>${t}</div>`;
+const lat=(v,c)=>`<span class="lat ${c||''}">${v}</span>`;
+const fld=(l,v,h,e)=>`<div class="field"><label>${l}</label><div class="in${e?' err':''}">${v}</div>${h?`<span class="help${e?' err':''}">${h}</span>`:''}</div>`;
+const sel=(l,v,h)=>`<div class="field"><label>${l}</label><div class="in"><span>${v}</span><svg class="i s chev"><use href="#chev-d"/></svg></div>${h?`<span class="help">${h}</span>`:''}</div>`;
+const sw=on=>`<span class="sw${on?' on':''}"></span>`;
+const chk=on=>`<span class="chk${on?' on':''}">${I('check')}</span>`;
+const rad=on=>`<span class="radio${on?' on':''}"></span>`;
+const bdg=(t,k)=>`<span class="badge${k?' '+k:''}">${t}</span>`;
+const ext=t=>`<span class="ext-link">${t}<svg class="i" style="width:12px;height:12px"><use href="#ext"/></svg></span>`;
+const seg=(a,i,f)=>`<div class="seg${f?' fill':''}">${a.map((x,k)=>`<span${k===i?' class="on"':''}>${x}</span>`).join('')}</div>`;
+const segSm=(a,i,f,st)=>`<div class="seg sm${f?' fill':''}"${st?` style="${st}"`:''}>${a.map((x,k)=>`<span${k===i?' class="on"':''}>${x}</span>`).join('')}</div>`;
+const pickSm=(t,st)=>`<div class="picker sm"${st?` style="${st}"`:''}><span>${t}</span><svg class="i s chev"><use href="#chev-d"/></svg></div>`;
+const sch=t=>`<div class="search">${S('search')}${t}</div>`;
+const foot=(h,b)=>`<div class="footer">${h?`<span class="hint">${S('alert')}${h}</span>`:'<span style="flex:1"></span>'}${b}</div>`;
+const sheet=(t,s,x)=>`<div class="scrim"></div><div class="sheet"><div class="grab"></div>${t?`<div class="sh"><b>${t}</b>${s?`<small>${s}</small>`:''}</div>`:''}${x}</div>`;
+const sfld=(l,v,ph)=>`<div class="sfield"><label>${l}</label><div class="in${ph?' ph':''}">${v}</div></div>`;
+const impTiles=`<div class="imp-grid"><div class="imp-tile"><div class="itop"><span class="itic">${S('file-up')}</span><svg class="i s chev"><use href="#chev"/></svg></div><div style="display:flex;flex-direction:column;gap:2px"><b>从本地导入</b><small>选择 YAML 配置文件</small></div></div><div class="imp-tile"><div class="itop"><span class="itic">${S('scan')}</span><svg class="i s chev"><use href="#chev"/></svg></div><div style="display:flex;flex-direction:column;gap:2px"><b>扫码导入</b><small>扫描订阅二维码</small></div></div></div>`;
+const addSubSheet=`<div class="scrim"></div><div class="sheet form"><div class="grab"></div><div class="sh"><div style="display:flex;flex-direction:column;gap:2px"><b>添加订阅</b><small>从本地文件、二维码直接导入，或填写订阅地址</small></div><span class="xbtn">${S('x')}</span></div>${impTiles}<div class="or-rule">或粘贴订阅链接</div><div style="display:flex;flex-direction:column;gap:12px">${sfld('订阅地址','https://example.com/sub?token=…')}${sfld('名称（可选）','留空时自动使用配置名称',1)}</div><div style="display:flex;gap:8px;padding-top:2px">${btn('取消','def','flex:1')}${btn(S('download')+'导入订阅','pri','flex:1')}</div></div>`;
+const mi=(ic,t,d)=>`<div class="mi${d?' danger':''}">${I(ic)}${t}</div>`;
+const dlg=(t,p,a,b,d)=>`<div class="scrim"></div><div class="dlg"><b>${t}</b><p>${p}</p><div class="dact"><span>${a}</span><span class="${d?'dg':'bp'}">${b}</span></div></div>`;
+const bar=w=>`<div class="bar"><i style="width:${w}%"></i></div>`;
+const hero=(k,lab,sub,b)=>`<div class="hero"><div class="status"><span class="dot${k==='ok'?' ok':''}"${{bad:' style="background:var(--danger)"',warn:' style="background:var(--warn)"'}[k]||''}></span><div><div class="st">${lab}</div><div class="sub">${sub}</div></div></div>${seg(['规则','全局','直连'],0,1)}${b}</div>`;
+const two=(a,b)=>`<div style="display:flex;gap:8px;padding:6px 8px 0">${btn(a,'def','flex:1')}${btn(b,'pri','flex:1')}</div>`;
+const ok=t=>`<span style="color:var(--up);display:inline-flex;gap:4px;align-items:center;font-weight:500">${S('check')}${t}</span>`,no=t=>`<span style="color:var(--danger);display:inline-flex;gap:4px;align-items:center;font-weight:500">${S('alert')}${t}</span>`;
+</script>
+<section class="sec" id="sec-phone-flows"><div class="sec-head"><span class="eyebrow">Phone · 订阅</span><h2>订阅的完整流程</h2>
+<p class="lede">从没有订阅开始：添加、更新失败、查看详情、删除。更新失败只在对应行和横幅里说明，其他订阅仍可操作。</p></div>
+<div class="strip" id="A"></div></section>
+<script>
+const subRows=[row({t:'示例机场 <span class="badge">当前</span>',s:'更新于 2 小时前 · 38 天后到期',r:S('more'),st:'align-items:flex-start'}),row({t:'备用订阅',s:'更新于 3 天前',r:S('more')})];
+const addBody=grp('订阅',null,lst(subRows));
+put('A',[
+phone({t:'订阅',act:S('refresh')+S('plus'),tab:1,cap:'订阅 · 空状态',note:'没有订阅时，页面只给出一个下一步：添加订阅。不展示空的搜索框。',body:`<div class="empty"><div class="eic">${I('rss')}</div><b>暂无配置</b><small>添加订阅后即可连接并选择节点。</small>${btn('添加订阅…','pri','padding:0 20px;margin-top:6px')}</div>`}),
+phone({t:'订阅',act:S('refresh')+S('plus'),tab:1,cap:'订阅 · 添加（对齐 Gallery 导入磁贴与表单）',note:'「从本地导入」与「扫码导入」采用 Gallery choiceTileLook 双栏凸起磁贴（内置 choiceWell 图标槽，单击即触发并在对应磁贴内显示加载）；下方以细线分隔无嵌套边框的链接输入框与「导入订阅」主按钮。',body:addBody,over:addSubSheet}),
+phone({t:'订阅',act:S('refresh')+S('plus'),tab:1,cap:'订阅 · 更新失败',note:'失败信息留在横幅里，可复制完整错误；这一行仍可启用、编辑、删除。重试只重试更新，不重复其他操作。',body:`<div class="alert err">${S('alert')}<span>示例机场更新失败：连接超时。已保留 2 小时前的版本。</span><span class="lk">复制错误</span></div>`+grp('订阅',null,lst([row({t:'示例机场 <span class="badge">当前</span>',s:'上次成功 2 小时前',r:no('更新失败')}),row({t:'备用订阅',s:'正在更新…',r:'<span class="spin"></span>'}),row({t:'本地配置',s:'本地文件 · 不自动更新',r:S('more')})]))}),
+phone({t:'示例机场',back:1,cap:'订阅 · 详情',note:'"启用此订阅"是这个页面唯一的主按钮。当前订阅已启用，因此主按钮换成"更新订阅"。',body:grp('信息',null,lst([row({t:'来源',s:'https://example.com/sub?…',r:S('copy')}),row({t:'更新时间',r:'2 小时前'}),row({t:'本地备份',r:'有上次备份'}),`<div class="row" style="flex-direction:column;align-items:stretch"><span style="display:flex;justify-content:space-between"><b style="font-weight:500">已用流量</b><span style="color:var(--muted);font-size:12px">68.2 / 200 GB</span></span>${bar(34)}</div>`]))+btn('更新订阅','pri')+btn('查看代理节点','def')+btn('编辑订阅…','def')}),
+phone({t:'订阅',act:S('refresh')+S('plus'),tab:1,cap:'订阅 · 删除确认',note:'确认框写出具体名称和影响范围，按钮用结果动词"删除"。取消不会提交任何命令。',body:addBody,over:dlg('删除“备用订阅”？','仅删除此订阅及其本地副本，其他订阅保持不变。','取消','删除',1)})
+]);
+</script>
+<section class="sec"><div class="sec-head"><span class="eyebrow">Phone · 流量与连接</span><h2>流量、连接与请求（严格对齐 NSH Gallery）</h2>
+<p class="lede">「连接与请求」统一收口原分散入口，顶部分段在「活动连接」与「请求历史」间就地切换；筛选全面采用 Gallery 凹陷轨道 <code>Segmented</code> 与 <code>Picker</code>（移除异质的散装筛选胶囊），列表行保持双栏清爽层级，点按打开 Gallery 底部详情面板。</p></div>
+<div class="strip" id="B"></div></section>
+<script>
+const connRow=(d,net,chain,v)=>row({t:`<span style="display:flex;align-items:center;gap:6px"><span style="overflow:hidden;text-overflow:ellipsis">${d}</span>${bdg(net,'neu')}</span>`,s:chain,r:v,ch:1,st:'min-height:58px'});
+const reqRow=(d,stText,stTone,meta,v)=>row({t:`<span style="display:flex;align-items:center;gap:6px"><span style="overflow:hidden;text-overflow:ellipsis">${d}</span>${bdg(stText,stTone)}</span>`,s:meta,r:v,ch:1,st:'min-height:58px'});
+const connList=lst([
+  connRow('api.example.com:443','TCP','媒体解锁 → 新加坡 03 · 持续 42s','412 KB'),
+  connRow('cdn.example.net:443','TCP','漏网之鱼 → 新加坡 03 · 持续 3m','3.1 MB'),
+  connRow('time.example.org:123','UDP','直连 · 持续 8s','2 KB'),
+  connRow('ai.example.org:443','TCP','AI 服务 → 日本 02 · 持续 19s','128 KB'),
+  connRow('push.example.com:5223','TCP','漏网之鱼 → 新加坡 03 · 持续 12m','18 KB')
+],1);
+const reqList=lst([
+  reqRow('api.example.com:443','活跃','ok','TCP · 媒体解锁 → 新加坡 03 · 09:41:07','412 KB'),
+  reqRow('registry.npmjs.org:443','已结束','neu','TCP · 节点选择 → 香港 01 · 09:40:52','1.8 MB'),
+  reqRow('ads.example.net:443','已拦截','warn','TCP · 广告拦截 → REJECT · 09:40:39','0 B'),
+  reqRow('dns.alidns.com:853','已结束','neu','UDP · 直连 · 09:40:18','4 KB'),
+  reqRow('cdn.example.net:443','活跃','ok','TCP · 漏网之鱼 → 新加坡 03 · 09:38:11','3.1 MB')
+],1);
+const chart=`<svg viewBox="0 0 300 118" style="width:100%;display:block" role="img" aria-label="最近 5 分钟速率"><g stroke="var(--line)"><path d="M28 10H296M28 55H296M28 100H296"/></g><g fill="var(--muted)" font-size="9" text-anchor="end"><text x="24" y="13">2 MB/s</text><text x="24" y="58">1</text><text x="24" y="103">0</text></g><path d="M28 94L58 82L88 60L118 70L148 38L178 48L208 26L238 36L268 20L296 30" fill="none" stroke="var(--brand)" stroke-width="2"/><path d="M28 99L58 98L88 97L118 98L148 96L178 97L208 95L238 96L268 94L296 95" fill="none" stroke="var(--info)" stroke-width="2"/><g fill="var(--muted)" font-size="9" text-anchor="middle"><text x="28" y="114">-5 分</text><text x="162" y="114">-2.5</text><text x="296" y="114">现在</text></g></svg>`;
+put('B',[
+phone({t:'流量',tab:2,cap:'流量',note:'数值使用等宽数字并右对齐，采样口径写在小标题旁；下方统一跳转至「连接与请求」与「DNS 诊断」。',body:grp('本次会话','已用 1.4 GB',`<div class="speed"><div><small>${S('up')}上传</small><b>12.4<span class="unit">KB/s</span></b></div><div><small>${S('down')}下载</small><b>1.21<span class="unit">MB/s</span></b></div></div>`)+grp('速率','最近 5 分钟 · 零基线',`<div class="list" style="padding:12px 12px 8px">${chart}<div style="display:flex;gap:16px;font-size:13px;color:var(--muted);padding-top:6px"><span><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--brand)"></i> 下载 峰值 1.9 MB/s</span><span><i style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--info)"></i> 上传 峰值 0.3 MB/s</span></div></div>`)+grp('连接与诊断','48 个活跃',lst([row({ic:'list',t:'连接与请求',s:'总下载 1.4 GB · 请求历史 126 条',ch:1}),row({ic:'globe',t:'DNS 与控制器诊断',s:'缓存命中 128 / 164',ch:1})]))}),
+phone({t:'连接与请求',back:1,act:btn('关闭全部…','sm def'),cap:'连接与请求 · 活动连接',note:'顶栏右侧直接给出当前标签对应的「关闭全部…」次要按钮；筛选栏采用单行 Gallery Segmented（全部 / TCP / UDP），不堆叠散装胶囊。',gap:12,body:seg(['活动连接 <em>48</em>','请求历史 <em>126</em>'],0,1)+sch('搜索域名、IP、规则或节点')+`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px">${segSm(['全部','TCP','UDP'],0,0,'flex:1')}<span class="note" style="padding:0;white-space:nowrap">48 条活跃</span></div>`+connList}),
+phone({t:'连接与请求',back:1,act:btn('清空…','sm def'),cap:'连接与请求 · 请求历史（独立绘出）',note:'切换至「请求历史」后右上角动作同步变为「清空…」；协议分段与状态 Picker（全部状态 / 活跃 / 已结束 / 已拦截）排在同一行，行内清晰标出状态胶囊与时间。',gap:12,body:seg(['活动连接 <em>48</em>','请求历史 <em>126</em>'],1,1)+sch('搜索域名、IP、规则或节点')+`<div style="display:flex;align-items:center;gap:8px">${segSm(['全部','TCP','UDP'],0,1,'flex:1')}${pickSm('全部状态')}</div>`+reqList}),
+phone({t:'连接与请求',back:1,act:btn('关闭全部…','sm def'),cap:'连接与请求 · 详情面板 (Sheet)',note:'列表行不塞多个行内小按钮，点按任一连接或历史记录打开 Gallery 底部面板查看完整链路，并执行复制、加规则或关闭单个连接。',gap:12,body:seg(['活动连接 <em>48</em>','请求历史 <em>126</em>'],0,1)+sch('搜索域名、IP、规则或节点')+connList,over:sheet('api.example.com:443','TCP · 活跃 · 建立于 09:41:07',`<div class="well" style="margin:2px 8px 6px;padding:2px 0"><div class="kv"><span>解析 IP</span><span>203.0.113.24</span><span>代理链路</span><span>节点选择 → 媒体解锁 → 新加坡 03</span><span>命中规则</span><span>DOMAIN-SUFFIX,example.com</span><span>流量统计</span><span>下载 412 KB · 上传 18 KB</span></div></div>`+mi('copy','复制目标地址')+mi('plus','以此域名添加规则…')+'<div class="msep"></div>'+mi('x','关闭此连接',1))}),
+phone({t:'连接与请求',back:1,act:btn('清空…','sm def'),cap:'连接与请求 · 筛选无结果',note:'筛选无结果时采用统一 Gallery 空状态卡说明原因并提供「清除筛选条件」，不留空白页。',gap:12,body:seg(['活动连接 <em>48</em>','请求历史 <em>126</em>'],1,1)+sch('unknown.invalid')+`<div style="display:flex;align-items:center;gap:8px">${segSm(['全部','TCP','UDP'],2,1,'flex:1')}${pickSm('已结束')}</div><div class="empty"><div class="eic">${I('search')}</div><b>没有匹配记录</b><small>当前协议与状态筛选下没有匹配的请求历史。</small>${btn('清除筛选条件','def','padding:0 20px')}</div>`})
+]);
+</script>
+<section class="sec"><div class="sec-head"><span class="eyebrow">Phone · 资源与日志</span><h2>资源与规则、日志（严格对齐 NSH Gallery）</h2>
+<p class="lede">三端日志统一采用「当前日志 / 历史归档」分段与单行五级 <code>Segmented</code>（全部 / 信息 / 警告 / 错误 / 调试）；每条日志使用 Gallery <code>sectionSurface</code> 列表行与语义色徽章，点按打开底部详情面板。</p></div>
+<div class="strip" id="C"></div></section>
+<script>
+const rule=(n,t,d,x)=>row({t:`<span style="color:var(--faint);font-variant-numeric:tabular-nums;margin-right:6px">${n}</span>${t}`,s:d,r:x||S('more'),st:'min-height:52px'});
+const logs=[
+  ['09:41:07','inf','连接到 api.example.com:443 [媒体解锁 → 新加坡 03]'],
+  ['09:41:08','dbg','DNS 缓存命中 cdn.example.net → 203.0.113.9'],
+  ['09:41:09','wrn','节点 美国 05 URL-Test 测速超时 (5000 ms)'],
+  ['09:41:12','inf','规则匹配 DOMAIN-SUFFIX,example.com → 媒体解锁'],
+  ['09:41:15','err','拨号失败 time.example.org:123 (UDP)：i/o timeout'],
+  ['09:41:18','inf','连接到 push.example.com:5223 [漏网之鱼 → 新加坡 03]']
+];
+const lvMeta={inf:['信息','info'],wrn:['警告','warn'],err:['错误','err'],dbg:['调试','neu']};
+const renderLogs=(selIdx)=>`<div class="log">${logs.map((l,i)=>`<div class="lrow${i===selIdx?' sel':''}"><span class="tm">${l[0]}</span>${bdg(lvMeta[l[1]][0],lvMeta[l[1]][1])}<span class="msg">${l[2]}</span></div>`).join('')}</div>`;
+const logBox=renderLogs(-1);
+put('C',[
+phone({t:'资源与规则',back:1,act:S('search')+S('plus'),cap:'资源与规则',note:'顶部先给运行状态，再给规则列表。每条规则的启用、停用、上下移动和删除都在行内菜单，删除需确认并写出规则编号。',gap:20,body:grp('规则运行状态',null,lst([row({t:'引擎配置',r:ok('已加载')}),row({t:'当前模式',r:'规则'}),row({t:'运行规则数',r:'1,284'})]))+grp('配置规则','4 条',lst([rule(1,'DOMAIN-SUFFIX,example.com','媒体解锁'),rule(2,'GEOIP,CN','直连'),rule(3,'DOMAIN-KEYWORD,ads','广告拦截'),rule(4,'MATCH','漏网之鱼')]))}),
+phone({t:'资源与规则',back:1,act:S('search')+S('plus'),cap:'规则 · 排序预览',note:'上移或下移后，页面进入排序预览：横幅说明"尚未保存"，底部是"放弃排序"和"保存顺序"。配置在期间被改动时不能提交旧顺序。',gap:16,body:`<div class="alert">${S('alert')}<span>规则顺序预览，尚未保存。</span></div>`+grp('配置规则','4 条',lst([rule(1,'DOMAIN-SUFFIX,example.com','媒体解锁'),rule(2,'DOMAIN-KEYWORD,ads','广告拦截'),rule(3,'GEOIP,CN','直连'),rule(4,'MATCH','漏网之鱼')])),footer:foot('',btn('放弃排序','def','padding:0 14px')+btn('保存顺序','pri','padding:0 14px'))}),
+phone({t:'日志',back:'设置',act:btn(S('pause')+'暂停','sm def')+btn('清空…','sm ghost','padding:0 6px'),cap:'日志 · 当前日志',note:'顶栏常驻暂停/继续与清空动作；级别过滤采用单行五档 Gallery Segmented（全部 / 信息 / 警告 / 错误 / 调试），上滚阅读时浮现胶囊提示。',gap:12,body:seg(['当前日志','历史归档 <em>3</em>'],0,1)+`<div class="note" style="display:flex;justify-content:space-between;align-items:center"><span style="display:inline-flex;gap:6px;align-items:center"><span class="dot ok" style="width:8px;height:8px"></span>记录中 · 按天自动归档</span><span style="font-variant-numeric:tabular-nums">248 条</span></div>`+sch('搜索日志内容、域名或错误码')+segSm(['全部','信息','警告','错误','调试'],0,1)+logBox,over:`<div class="pill" style="bottom:22px">${S('down')}已暂停跟随 · 3 条新日志</div>`}),
+phone({t:'日志',back:'设置',act:btn(S('pause')+'暂停','sm def'),cap:'日志 · 单条详情面板 (Sheet)',note:'点按任一条日志打开 Gallery 底部面板（不使用局促的居中弹窗），完整展示毫秒级时间、模块与可复制原文，并支持一键跳往诊断探测。',gap:12,body:seg(['当前日志','历史归档 <em>3</em>'],0,1)+sch('搜索日志内容、域名或错误码')+segSm(['全部','信息','警告','错误','调试'],0,1)+renderLogs(4),over:sheet('日志详情','2026-11-11 09:41:15.204 · 错误',`<div class="well" style="margin:2px 8px 6px;font-family:var(--mono);font-size:13px;line-height:19px;color:var(--fg);word-break:break-all">dial udp 203.0.113.88:123 via DIRECT: i/o timeout after 5000ms</div><div class="kv" style="padding:6px 12px 8px"><span>级别</span><span>${bdg('错误','err')}</span><span>模块</span><span>outbound / direct</span><span>关联目标</span><span>time.example.org:123 (UDP)</span></div>`+mi('copy','复制此条日志')+mi('activity','在诊断中探测目标'))}),
+phone({t:'日志',back:'设置',cap:'日志 · 历史归档与导出',note:'切换至「历史归档」按天展示日志文件；当前正在写入的归档在菜单内禁用删除并写明原因，导出与删除均明确标出文件名。',gap:14,body:seg(['当前日志','历史归档 <em>3</em>'],1,1)+lst([row({ic:'file',t:'2026-11-11.log '+bdg('正在写入'),s:'1.2 MB · 更新于 09:41',r:S('more')}),row({ic:'file',t:'2026-11-10.log',s:'4.8 MB · 昨天 23:59',r:S('more')}),row({ic:'file',t:'2026-11-09.log',s:'3.1 MB · 11-09 23:59',r:S('more')})]),over:sheet('2026-11-11.log','1.2 MB · 当前正在写入',mi('upload','导出日志文件…')+`<div class="mi" style="color:var(--faint)">${I('trash')}删除归档…<small style="margin-left:auto;font-size:12px">正在写入，不可删除</small></div>`)})
+]);
+</script>
+<section class="sec"><div class="sec-head"><span class="eyebrow">Phone · 设置与工具</span><h2>设置入口、诊断、备份</h2>
+<p class="lede">设置是第四个底栏入口，也是网络、工具和偏好的统一入口。「网络」分组明确收口为「连接与请求」「资源与规则」「日志」三项，不重复拆分连接与请求。</p></div>
+<div class="strip" id="D"></div></section>
+<script>
+const probeHint=`<span class="help">请先连接 VPN 后再探测。</span>`;
+const bakBody=grp('本地备份',null,lst([row({ic:'upload',t:'导出备份文件…',ch:1}),row({ic:'download',t:'选择备份文件…',s:'从文件恢复',ch:1})]))+grp('WebDAV 备份',null,`<div class="list plain">${fld('备份文件地址','https://dav.example.com/paws.bak')}${fld('用户名','demo')}${fld('密码或应用专用密码','••••••••')}</div>`)+`<div style="display:flex;gap:8px">${btn('上传备份','def','flex:1')}${btn('下载并恢复…','def','flex:1')}</div>`;
+put('D',[
+phone({t:'设置',tab:3,cap:'设置入口',note:'按"偏好、网络、工具"分组，每组外置小标题。网络组统一为「连接与请求、资源与规则、日志」三项，与 Pad / PC 侧栏导航结构完全一致。',gap:18,body:grp('偏好',null,lst([row({ic:'sliders',t:'网络设置',s:'VPN、DNS、端口',ch:1}),row({ic:'gear',t:'外观',s:'语言与主题',ch:1})]))+grp('网络',null,lst([row({ic:'list',t:'连接与请求',s:'活动连接与请求历史',ch:1}),row({ic:'layers',t:'资源与规则',s:'分流规则与外部规则集',ch:1}),row({ic:'file',t:'日志',s:'实时日志与按天归档',ch:1})]))+grp('工具',null,lst([row({ic:'activity',t:'诊断',s:'连接状态与探测',ch:1}),row({ic:'download',t:'备份与恢复',ch:1}),row({ic:'refresh',t:'订阅转换',ch:1}),row({ic:'info',t:'关于',ch:1})]))}),
+phone({t:'诊断',back:1,act:S('refresh'),cap:'诊断',note:'每项检查用图标加文字（通过、失败、未测试）表示，不只用颜色。未连接时，探测按钮不可用并说明原因。',gap:18,body:grp('连接状态',null,lst([row({t:'连接状态',r:ok('已连接')}),row({t:'运行内核',r:'Meow'}),row({t:'配置载入',r:ok('通过')}),row({t:'出站保护',r:ok('通过')}),row({t:'节点 TCP',r:no('失败')})]))+grp('目标服务探测',null,`<div class="list plain">${fld('探测地址','https://example.com')}</div>${probeHint}`)+btn('开始探测','def','opacity:.5')}),
+phone({t:'备份与恢复',back:1,cap:'备份与恢复',note:'本地与 WebDAV 分成两组。恢复总是新建配置副本，不覆盖现有订阅，确认框里写明。',gap:16,body:bakBody}),
+phone({t:'备份与恢复',back:1,cap:'恢复确认',note:'按钮写结果"恢复为新配置"，不写"确定"。来源与时间写在正文；来源没有时间信息时直接说明。',gap:16,body:bakBody,over:dlg('恢复备份？','来源：本地文件。备份格式未记录生成时间。将新建配置副本，保留现有订阅和当前连接。','取消','恢复为新配置')})
+]);
+</script>
+<section class="sec"><div class="sec-head"><span class="eyebrow">Phone · 转换、外观、YAML</span><h2>订阅转换、外观与关于、YAML 编辑</h2>
+<p class="lede">转换设置离开时自动保存，生成结果只保留在本次会话；输入变化后旧结果立刻标记失效。YAML 编辑是整页，离开时守护未保存的修改。</p></div>
+<div class="strip" id="E"></div></section>
+<script>
+const convForm=grp('转换规则',null,`<div class="list plain">${seg(['基础模式','进阶模式'],0).replace('class="seg"','class="seg" style="margin:12px 14px"')}${fld('订阅或节点链接','https://example.com/sub?…')}${sel('目标客户端','Clash')}</div>`);
+const yaml=['port: 7890','mode: rule','dns:','  enable: true','  nameserver:','    - 223.5.5.5','proxies:','  - name: 新加坡 03','    type: ss'];
+const code=`<div class="code">${yaml.map((l,k)=>`<div${k===7?' class="cur"':''}><span class="ln">${k+1}</span><span>${l.replace(/^(\s*-?\s*)([a-z]+):/,'$1<span class="key">$2</span>:')}</span></div>`).join('')}</div>`;
+put('E',[
+phone({t:'订阅转换',back:1,cap:'订阅转换 · 填写',note:'"基础模式"只显示链接和客户端；"进阶模式"才展开后端、远程配置、包含与排除等选项，避免首屏过长。',gap:16,body:convForm,footer:foot('',btn('生成订阅链接','pri','padding:0 16px'))}),
+phone({t:'订阅转换',back:1,cap:'订阅转换 · 结果失效',note:'输入或选项一变，结果区立即提示"已失效"，复制和导入按钮禁用，重新生成后才可用。',gap:16,body:convForm+`<div class="alert">${S('alert')}<span>输入或选项已改变，以下结果已失效。重新生成后才能复制或导入。</span></div>`+lst([row({t:'定制订阅',s:'生成后显示长链接',r:S('copy'),st:'opacity:.55'}),row({t:'订阅短链',s:'生成后显示短链接',r:S('copy'),st:'opacity:.55'})],1)}),
+phone({t:'外观',back:1,cap:'外观',note:'语言和主题采用 Gallery RadioRing 单选组，选择后立即生效，不再另设保存按钮。',gap:20,body:grp('语言',null,lst([row({lead:rad(1),t:'跟随系统'}),row({lead:rad(0),t:'简体中文'}),row({lead:rad(0),t:'English'})],1))+grp('主题',null,lst([row({lead:rad(1),t:'跟随系统'}),row({lead:rad(0),t:'浅色'}),row({lead:rad(0),t:'深色'})],1))}),
+phone({t:'关于',back:1,cap:'关于',note:'版本信息可完整复制（界面运行时为 nsh-platform-harmonyos），外部地址用 Gallery Link 外链样式，应用内入口仍是普通行。',gap:20,body:grp('版本',null,lst([row({t:'应用版本',r:'1.3.0'}),row({t:'核心版本',r:'0.22.0'}),row({t:'界面运行时',r:'nsh-platform-harmonyos'})],1))+grp('更多',null,lst([row({t:'代理内核',s:'Meow / Mihomo 许可证',ch:1}),row({t:'开源致谢',ch:1}),row({t:'隐私与数据',ch:1}),row({t:'项目主页',r:ext('github.com')})],1))}),
+phone({t:'编辑配置',back:1,act:S('search')+S('refresh'),cap:'YAML 编辑',note:'整页原生编辑器，键盘弹出后光标和底部按钮都在可见区域。有未保存修改时标题旁显示"未保存"胶囊。',gap:12,body:`<div class="note" style="display:flex;justify-content:space-between;align-items:center"><span>示例机场 · config.yaml</span>${bdg('未保存','warn')}</div>`+code,footer:foot('',btn('校验','def','padding:0 16px')+btn('保存','pri','padding:0 16px'))}),
+phone({t:'编辑配置',back:1,cap:'YAML · 离开保护',note:'返回时若有修改，询问是否丢弃。取消保留编辑，系统返回手势同样触发此确认。',gap:12,body:code,over:dlg('丢弃未保存的修改？','你对配置的修改尚未保存，离开后会丢失。','继续编辑','丢弃修改',1)})
+]);
+</script>
+<section class="sec" id="sec-states"><div class="sec-head"><span class="eyebrow">状态 · 全端共用</span><h2>连接状态与页面状态</h2>
+<p class="lede">连接只有在路由验证完成后才显示"已连接"。命令收到回应不等于已生效。每个页面的加载、空、失败、无结果状态都有设计，不留空白。</p></div>
+<div class="mgrid" id="F"></div></section>
+<script>
+const mc=(t,n,x)=>`<div class="mcard"><div class="box">${x}</div><div class="cap"><b>${t}</b><span>${n}</span></div></div>`;
+const spn='<span class="spin"></span>';
+document.getElementById('F').innerHTML=[
+mc('未连接','主按钮是"连接"，没有订阅时先显示"添加订阅…"。',hero('off','未连接','示例机场',btn(I('power')+'连接','pri'))),
+mc('正在连接','按钮变为醒目红色“停止”，可以随时取消。显示真实阶段，没有阶段数据就只显示等待。',hero('warn','正在连接','检查路由与保护…',btn(spn+'停止','stop'))),
+mc('已连接','路由验证通过后才出现。“停止”及滚出首屏后的悬浮按钮均采用醒目实心红色，与未连接状态一眼可辨。',hero('ok','已连接','示例机场 · 00:12:41',btn(I('stop')+'停止','stop'))),
+mc('正在断开','保持红色停止按钮并显示加载环，期间不能重复点击。',hero('warn','正在断开','',btn(spn+'正在停止','stop','opacity:.65'))),
+mc('连接失败','说明原因，给出"连接"重试和"诊断"入口。',hero('bad','连接失败','节点握手超时',btn(I('power')+'连接','pri')+btn('打开诊断','def'))),
+mc('操作待确认','结果不明时先确认状态，不盲目重复启动。',hero('warn','操作待确认','VPN 状态尚未确认',btn('确认状态','def')+btn(I('stop')+'停止并重新同步','stop'))),
+mc('加载中','只在真实等待时显示骨架，形状与内容一致。','<div class="skel"></div><div class="skel"></div><div class="skel" style="height:72px"></div>'),
+mc('读取失败（有旧数据）','保留旧内容，横幅提示"未更新"，只提供"重新读取"。',`<div class="alert err">${S('alert')}<span>读取失败，显示的是上次结果。</span><span class="lk">重新读取</span></div>`+lst([row({t:'示例机场',s:'更新于 2 小时前'})],1)),
+mc('读取失败（无数据）','整页显示原因和"重试"，可复制错误详情。',`<div class="empty" style="padding:16px"><div class="eic" style="color:var(--danger)">${I('alert')}</div><b>读取失败</b><small>订阅数据暂时无法读取。</small>${btn('重试','def','padding:0 20px')}</div>`),
+mc('提交已完成，读取失败','写入已提交，仅同步失败。提示"重新读取"，不显示"重试保存"。',`<div class="alert">${S('alert')}<span>配置已保存，但状态读取失败。</span><span class="lk">重新读取</span></div>`)
+].join('');
+</script>
+<section class="sec"><div class="sec-head"><span class="eyebrow">组件状态 · 回应你的问题</span><h2>Tab 与列表行的五种状态</h2>
+<p class="lede">手机底部 Tab 不再用整块底色表示选中：选中项是品牌色的加粗图标和更深的加粗文字，图标和文字两处都变，不只靠颜色。按下时，图标后面出现一个短暂的小椭圆，松手即消失，所以按下一个已选中的 Tab 也看得到反馈。焦点环是单独的一圈，可与选中同时出现。列表行和按钮的状态不变。</p></div>
+<div class="rules"><table><thead><tr><th>状态</th><th>Tab</th><th>列表行</th><th>按钮</th><th>谁会看到</th></tr></thead><tbody id="G"></tbody></table></div></section>
+<script>
+const tb=(m,x)=>{const bg={hover:'var(--wash-hover)',press:'var(--wash-press)'}[m]||'transparent',on=m==='sel'||m==='foc';return `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;width:64px;padding:2px 0;border-radius:12px;color:${on?'var(--fg)':'var(--muted)'};font-size:11px;line-height:14px;font-weight:${on?600:500};${x||''}"><span style="width:48px;height:28px;border-radius:14px;display:flex;align-items:center;justify-content:center;background:${bg}">${on?'<svg class="i" style="stroke:var(--brand);stroke-width:2.2"><use href="#rss"/></svg>':I('rss')}</span>订阅</div>`};
+const rw=(w,x)=>`<div style="height:44px;width:200px;border-radius:10px;background:${w};display:flex;align-items:center;padding:0 12px;border:1px solid var(--line);${x||''}">示例机场</div>`;
+const bt=(bg,c,x)=>`<div class="btn pri" style="width:96px;${x||''}">连接</div>`;
+const fo='outline:2px solid var(--brand);outline-offset:2px;';
+document.getElementById('G').innerHTML=[
+['静止',tb('rest'),rw('var(--card)'),bt(),'所有端'],
+['悬停',tb('hover'),rw('var(--wash-hover)'),bt('','','filter:brightness(1.02)'),'仅指针（PC）；触屏没有'],
+['按下',tb('press'),rw('var(--wash-press)'),bt('','','transform:scale(.97);filter:brightness(.94)'),'所有端；按钮缩放 0.97，Tab 和行不缩放'],
+['选中',tb('sel'),rw('var(--brand-tint)','font-weight:600;border-color:color-mix(in srgb,var(--brand) 35%,var(--border))'),'—','只有 Tab、单选项、当前对象；普通按钮没有'],
+['键盘焦点',tb('foc',fo),rw('var(--brand-tint)',fo),bt('','',fo),'键盘和读屏；与选中叠加显示'],
+['禁用',tb('rest','opacity:.45'),rw('var(--card)','opacity:.45'),bt('','','opacity:.45'),'无悬停和按下反馈']
+].map(r=>`<tr><td><b>${r[0]}</b></td><td>${r[1]}</td><td>${r[2]}</td><td>${r[3]}</td><td style="color:var(--muted);font-size:12px">${r[4]}</td></tr>`).join('');
+</script>
+<section class="sec"><div class="sec-head"><span class="eyebrow">Phone · 二级界面与缺失信息</span><h2>网络设置、DNS、规则编辑与高级诊断</h2><p class="lede">网络设置按分区独立保存。即时偏好使用开关；需要保存的字段使用草稿。缺少真实测量时间、内核统计或备份内容时，如实说明，不构造看似完整的数据。</p></div><div class="strip" id="J"></div></section>
+<script>
+put('J',[
+phone({t:'网络设置',back:'设置',cap:'网络设置 · VPN 与应用范围',note:'内核选择先检查可用性；结果失败时可重试，不把偏好等同于当前运行内核。应用范围选择在独立页完成，回到本分区保存。',body:grp('VPN 基础',null,lst([row({t:'VPN 内核',s:'当前运行：Meow',r:'自动选择',ch:1}),row({t:'网络栈',s:'仅 Meow 生效',r:'gVisor',ch:1}),row({t:'DNS 劫持',r:sw(1)}),row({t:'通过 VPN 的应用',s:'所有应用',ch:1})],1))+grp('MTU',null,`<div class="list plain">${fld('MTU','1500','1280–65535；下次建立连接时应用。')}</div>`),footer:foot('VPN 设置未保存',btn('保存 VPN 设置','pri','padding:0 12px'))}),
+phone({t:'网络设置',back:'设置',cap:'网络设置 · 端口与控制器',note:'独立草稿分区，不连带保存 DNS。访问密钥默认遮挡，可按明确动作查看/复制。',gap:16,body:grp('网络端口与控制器',null,lst([row({t:'混合代理服务',r:sw(1)}),fld('混合代理端口','7890'),row({t:'Controller 服务',r:sw(1)}),fld('控制器端口','9090'),row({t:'允许局域网访问',r:sw(0)}),fld('访问密钥','••••••••')],1)),footer:foot('网络设置未保存',btn('保存网络设置','pri','padding:0 12px'))}),
+phone({t:'DNS 诊断',back:'流量',cap:'DNS 与控制器 · 从流量进入',note:'完整信息在二级页查看，不挤占实时流量。清理缓存与清理 Fake-IP 是不同命令；后者需确认影响。',body:grp('DNS',null,lst([row({t:'DNS 劫持',r:bdg('开启','ok')}),row({t:'上游',s:'223.5.5.5, 119.29.29.29'}),row({t:'缓存命中',r:'128 / 164'}),row({t:'最近查询',s:'cdn.example.net → 203.0.113.9'})],1))+`<div style="display:flex;gap:8px">${btn('清理 DNS 缓存','def','flex:1')}${btn('清理 Fake-IP…','def','flex:1')}</div>`+grp('控制器',null,lst([row({t:'监听',r:'127.0.0.1:9090'}),row({t:'内核运行时堆内存',r:'未提供'})],1))}),
+phone({t:'添加规则',back:'规则',cap:'规则编辑 · 保存前草稿',note:'从连接详情进入时预填目标。规则类型、内容、目标策略和位置都用 Gallery Picker / Input 表达，取消不写入。',body:grp('规则',null,`<div class="list plain">${sel('类型','DOMAIN-SUFFIX')}${fld('内容','example.com')}${sel('目标策略','媒体解锁')}${sel('插入位置','第一条之前')}</div>`),footer:foot('',btn('取消','def','padding:0 16px')+btn('添加','pri','padding:0 20px'))}),
+phone({t:'高级诊断',back:'诊断',cap:'高级诊断 · 报告与证据',note:'每个工作区独立提交。导出前可查看脱敏报告；不自动访问用户个人内容。',body:grp('域名 DoH 策略',null,`<div class="list plain">${fld('域名列表','example.com','每行一个域名，仅影响此策略。')}</div>`)+btn('应用 DoH 策略','def')+grp('脱敏诊断报告',null,lst([row({ic:'shield',t:'生成脱敏报告',s:'先预览，再复制或导出',ch:1})]))+grp('内核验收证据',null,lst([row({ic:'file',t:'导入验收证据…',ch:1})]))}),
+phone({t:'隐私与数据',back:'关于',cap:'隐私与许可证 · 长文',note:'长文至少 13 pt，行距 1.65，可选择和复制；每条外部服务链接写出完整域名。许可证同样采用连续可滚动正文。',body:`<div class="group"><h3>隐私与数据处理</h3><p style="font-size:13px;line-height:1.65;color:var(--muted)">配置、规则和日志包含连接信息，仅存储在设备本地沙箱中。导出或分享诊断报告前会自动隐去订阅令牌与鉴权密钥。</p></div>`+grp('出口 IP 服务',null,lst([row({t:'服务地址',s:'https://example.com/ip',r:S('copy')})],1))+grp('开源许可证',null,lst([row({t:'Meow Core',s:'GPL-3.0 · 完整许可证文本可展开复制',ch:1}),row({t:'nsh-platform-harmonyos',s:'MIT / Apache-2.0',ch:1})],1))})
+]);
+</script>
+<section class="sec"><div class="sec-head"><span class="eyebrow">编辑与详情 · 共享容器</span><h2>其余表单和详情的确定画面</h2><p class="lede">以下均沿用上方已展示的 Gallery 表单、复选框与详情组件。Phone 用整页或底部菜单，Pad 长表单为居中任务页，PC 使用居中短表单或工作区详情。</p></div><div class="strip" id="K"></div></section>
+<script>
+put('K',[
+phone({t:'编辑订阅',back:'订阅',cap:'编辑订阅',note:'修订冲突时保留输入，告知重新读取。关闭时有草稿则询问丢弃，网络请求取消与丢弃草稿是两个概念。',body:grp('订阅信息',null,`<div class="list plain">${fld('配置名称','示例机场')}${fld('订阅地址','https://example.com/sub?…')}</div>`),footer:foot('',btn('保存修改','pri','padding:0 16px'))}),
+phone({t:'订阅详情',back:'订阅',cap:'导出订阅',note:'明确区分文件、二维码和复制来源。二维码需要能完整显示，不能把长 URL 直接裁掉后当复制源。',body:grp('示例机场',null,lst([row({t:'来源',s:'https://example.com/sub?…'})],1)),over:sheet('导出配置','示例机场',mi('upload','导出 YAML 文件…')+mi('scan','导出为二维码…')+mi('copy','复制完整来源'))}),
+phone({t:'资源详情',back:'规则',cap:'提供者与资源详情',note:'保留来源、状态、更新时间和完整路径。刷新/健康检查按对象显示忙碌，失败保留缓存。',body:grp('地区规则',null,lst([row({t:'状态',r:ok('缓存已加载')}),row({t:'格式',r:'YAML'}),row({t:'更新时间',r:'2 小时前'}),row({t:'规则数',r:'128'}),row({t:'文件路径',s:'providers/rules/region.yaml',r:S('copy')})],1))+btn('刷新资源','def')+btn('复制完整详情','def')}),
+phone({t:'规则查询',back:'规则',cap:'规则查询与匹配结果',note:'输入域名或 IP 后查询。无匹配、无法解析和加载失败是不同结果。',body:grp('查询目标',null,`<div class="list plain">${fld('域名或 IP','api.example.com')}</div>`)+btn('查询','pri')+grp('匹配结果',null,lst([row({t:'DOMAIN-SUFFIX,example.com',s:'目标：媒体解锁'}),row({t:'解析 IP',r:'203.0.113.24'})],1))}),
+phone({t:'应用范围',back:'VPN',cap:'应用选择 · VPN 草稿',note:'采用 Gallery Checkbox（柠檬绿填充 + 深色粗勾），可搜索、全选与清除；点击完成只更新 VPN 草稿，保存 VPN 设置后才提交。',gap:14,body:sch('搜索应用')+`<div style="display:flex;justify-content:space-between;align-items:center" class="note"><span>已选 2 个应用</span><span>全选 · 清除</span></div>`+lst([row({lead:chk(1),t:'示例浏览器',s:'com.example.browser'}),row({lead:chk(1),t:'示例终端',s:'com.example.term'}),row({lead:chk(0),t:'示例邮件',s:'com.example.mail'}),row({lead:chk(0),t:'示例播放器',s:'com.example.player'})],1),footer:foot('',btn('完成','pri','padding:0 20px'))}),
+phone({t:'订阅转换',back:'设置',cap:'转换 · 进阶模式（含 Gallery 复选框）',note:'所有高级选项按任务分节，页内连续滚动；输出与定制选项采用 Gallery Checkbox。远程配置上传、短链和解析各有独立反馈。',gap:14,body:seg(['基础模式','进阶模式'],1)+grp('后端与远程配置',null,`<div class="list plain">${fld('转换后端','https://sub.example.com/sub')}${sel('远程配置预设','自定义')}${fld('远程配置地址','https://example.com/rules.ini')}</div>`)+grp('过滤',null,`<div class="list plain">${fld('包含节点','香港|新加坡')}${fld('排除节点','到期|剩余流量')}</div>`)+grp('输出与定制选项',null,lst([row({lead:chk(1),t:'启用 Emoji 旗帜'}),row({lead:chk(1),t:'开启 UDP 转发'}),row({lead:chk(0),t:'跳过证书校验 (scv)'}),row({lead:chk(1),t:'按节点名称排序'})],1)),footer:foot('',btn('生成订阅链接','pri','padding:0 16px'))})
+]);
+</script>
+<section class="sec"><div class="sec-head"><span class="eyebrow">交互样本 · 可操作</span><h2>直接试 Tab 的选中与按下</h2><p class="lede">点选下面的 Tab，或用 Tab 键进入、方向键切换。选中项为品牌色图标 + 加粗文字；键盘焦点环独立显示。原生应用须通过 NSH 组件实现。</p></div>
+<style>
+.demo-tabs{display:flex;gap:4px;padding:6px 8px;background:var(--bg);border:1px solid var(--border);box-shadow:var(--sh-card);border-radius:14px;max-width:440px}
+.demo-tabs .moving{display:none}
+.demo-tabs button{flex:1;border:0;background:transparent;color:var(--muted);font:500 11px/14px var(--sans);min-height:56px;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer}
+.demo-tabs .ti{width:48px;height:28px;border-radius:14px;display:flex;align-items:center;justify-content:center;transition:background .12s ease-out}
+.demo-tabs button[aria-selected="true"]{color:var(--fg);font-weight:600}
+.demo-tabs button[aria-selected="true"] svg{stroke:var(--brand);stroke-width:2.2}
+@media(hover:hover){.demo-tabs button:hover .ti{background:var(--wash-hover)}}
+.demo-tabs button:active .ti{background:var(--wash-press)}
+.demo-tabs button:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+@media(prefers-reduced-motion:reduce){.demo-tabs .ti{transition:none}}
+.coverage{font-size:12px}.coverage td{line-height:1.7}
+</style>
+<div class="demo-tabs" role="tablist" aria-label="状态样本"><span class="moving"></span><button id="state-a" role="tab" aria-selected="true" tabindex="0" aria-controls="state-out"><span class="ti"><svg class="i"><use href="#house"/></svg></span><span class="lb">概览</span></button><button id="state-b" role="tab" aria-selected="false" tabindex="-1" aria-controls="state-out"><span class="ti"><svg class="i"><use href="#rss"/></svg></span><span class="lb">订阅</span></button><button id="state-c" role="tab" aria-selected="false" tabindex="-1" aria-controls="state-out"><span class="ti"><svg class="i"><use href="#activity"/></svg></span><span class="lb">流量</span></button></div>
+<div id="state-out" role="tabpanel" aria-labelledby="state-a" class="note">当前选择：概览</div>
+<script>
+{const el=document.querySelector('.demo-tabs'),bs=[...el.querySelectorAll('button')],out=document.getElementById('state-out');function choose(i,f){bs.forEach((b,k)=>{b.setAttribute('aria-selected',String(k===i));b.tabIndex=k===i?0:-1});out.textContent='当前选择：'+bs[i].querySelector('.lb').textContent;out.setAttribute('aria-labelledby',bs[i].id);if(f)bs[i].focus()};bs.forEach((b,i)=>{b.onclick=()=>choose(i,false);b.onkeydown=e=>{let j=i;if(e.key==='ArrowRight')j=(i+1)%3;else if(e.key==='ArrowLeft')j=(i+2)%3;else if(e.key==='Home')j=0;else if(e.key==='End')j=2;else return;e.preventDefault();choose(j,true)}})}
+</script></section>
+
+<section class="sec" id="sec-pad"><div class="sec-head"><span class="eyebrow">Pad · 全页面完整设计（Gallery 触屏档）</span><h2>平板全页面：主要与网络工作区（概览、订阅、流量、连接与请求、规则、日志）</h2>
+<p class="lede">横屏（≥ 840 pt）采用 Gallery 64 pt 侧栏图标轨（底部固定设置入口）+ 双栏主从布局；控件为 Gallery 触屏档：40 pt 按钮、46 pt 输入框、15 pt 正文与 16 pt <code>sectionSurface</code> 卡片圆角。概览页策略组完整平铺不收拢；连接与请求、日志采用 Gallery <code>Segmented</code> + <code>Picker</code> 筛选与右侧锁定详情栏。</p></div>
+<div class="strip" id="H"></div>
+<div class="sec-head" style="margin-top:8px"><span class="eyebrow">Pad · 设置、工具、YAML 与竖屏断点回退</span><h2>平板全页面：网络设置、订阅转换、诊断、备份、外观与关于、YAML、竖屏回退</h2>
+<p class="lede">表单与长文在宽屏平板中居中限宽 640 pt，避免控件拉成超宽长条；转换与诊断采用左输入/状态、右结果/探测双列；YAML 占据完整工作区；旋转至 768 pt 竖屏时自动退回底栏 + 640 pt 居中单列并保留草稿。</p></div>
+<div class="strip" id="H2"></div></section>
+<script>
+const NAV=[['house','概览'],['rss','订阅'],['branch','代理节点'],['activity','流量'],['list','连接与请求'],['layers','规则'],['file','日志']];
+const rail=on=>`<div class="side rail"><div class="logo" style="margin:4px 0 10px">P</div>${NAV.map((n,k)=>`<div class="nav${k===on?' on':''}" title="${n[1]}">${I(n[0])}</div>`).join('')}<div style="flex:1"></div><div class="nav${on===7?' on':''}" title="设置与工具">${I('gear')}</div></div>`;
+const padwin=(on,title,tool,inner,cap,note,over)=>`<div class="dev"><div class="win pad">${rail(on)}<div class="main"><div class="tool"><span class="t">${title}</span>${tool||''}</div>${inner}</div>${over||''}</div><div class="cap" style="max-width:720px"><b>${cap}</b><span>${note}</span></div></div>`;
+const gi=(t,s,on,n)=>`<div class="gitem${on?' on':''}"><span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px"><b style="font-size:15px;font-weight:${on?600:500};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t}</b><small style="font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${s}</small></span>${n!=null?`<span style="color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums;flex:none">${n}</span>`:''}</div>`;
+const padAct=(t,ic,k)=>btn((ic?S(ic):'')+t,(k||'def')+' sm');
+const fullGroupRows=[
+  row({ic:'layers',t:'节点选择',s:'手动选择 · 新加坡 03',r:'12',ch:1}),
+  row({ic:'zap',t:'自动选择',s:'URL-Test · 香港 01 (42 ms)',r:'48',ch:1}),
+  row({ic:'layers',t:'媒体解锁',s:'手动选择 · 新加坡 03',r:'65',ch:1}),
+  row({ic:'layers',t:'AI 服务',s:'手动选择 · 日本 02',r:'24',ch:1}),
+  row({ic:'shield',t:'广告拦截',s:'手动选择 · REJECT',r:'3',ch:1}),
+  row({ic:'layers',t:'漏网之鱼',s:'手动选择 · 节点选择',r:'65',ch:1})
+];
+
+put('H',[
+padwin(0,'概览',padAct('刷新状态','refresh'),`<div class="cols" style="grid-template-columns:360px 1fr;gap:20px"><div class="pane">${hero('ok','已连接','示例机场 · 00:12:41',btn(I('stop')+'停止','stop'))}${grp('节点',null,lst([row({ic:'branch',t:'新加坡 03',s:'节点选择 · 手动',r:lat('86 ms','good'),ch:1}),row({ic:'globe',t:'出口 IP',r:'203.0.113.24 · 新加坡'})]))}${grp('速率','本次 1.4 GB',`<div class="speed"><div><small>${S('up')}上传</small><b>12.4<span class="unit">KB/s</span></b></div><div><small>${S('down')}下载</small><b>1.21<span class="unit">MB/s</span></b></div></div>`)}</div><div class="pane">${grp('策略组','6 组 · 65 节点',lst(fullGroupRows))}</div></div>`,'Pad 横屏 · 概览（策略组默认全展开 · 红色停止主按钮）','左列承载连接状态卡（已连接态使用醒目红色“停止”按钮）、当前节点与实时速率，右列完整平铺展示全部策略组。'),
+padwin(1,'订阅',`<span style="display:flex;gap:8px">${padAct('全部更新','refresh')}${padAct('添加订阅…','plus')}</span>`,`<div class="split"><div class="master">${sch('搜索订阅')}${gi('示例机场 '+bdg('当前'),'2 小时前 · 38 天后到期',1,'34%')}${gi('备用订阅','更新于 3 天前',0,'8%')}${gi('本地配置','本地文件 · 不自动更新',0)}</div><div class="detail"><div class="glabel" style="padding:0"><span>示例机场</span>${bdg('当前订阅')}</div><div class="list"><div class="kv"><span>来源</span><span>https://example.com/sub?token=…</span><span>更新时间</span><span>2 小时前（自动更新：每 24 小时）</span><span>本地备份</span><span>保留上次可用副本</span></div></div><div class="list" style="padding:12px 14px"><div style="display:flex;justify-content:space-between;font-size:14px"><b>已用流量</b><span style="color:var(--muted);font-variant-numeric:tabular-nums">68.2 / 200 GB · 剩余 38 天</span></div>${bar(34)}</div><div style="display:flex;flex-wrap:wrap;gap:8px">${btn('更新订阅','pri')}${btn('查看代理节点','def')}${btn('编辑订阅…','def')}${btn('编辑 YAML','def')}${btn('导出…','def')}</div></div></div>`,'Pad 横屏 · 订阅','左侧订阅列表保留选中高亮，右侧直接展示配额 Meter 与完整操作；触屏更多操作仍打开原生底部面板。'),
+padwin(3,'流量','',`<div class="cols" style="grid-template-columns:1.1fr .9fr;gap:20px"><div class="pane">${grp('本次会话','已用 1.4 GB',`<div class="speed"><div><small>${S('up')}上传</small><b>12.4<span class="unit">KB/s</span></b></div><div><small>${S('down')}下载</small><b>1.21<span class="unit">MB/s</span></b></div></div>`)}${grp('速率历史','最近 5 分钟 · 零基线',`<div class="list" style="padding:14px">${chart}<div style="display:flex;gap:16px;font-size:13px;color:var(--muted);padding-top:8px"><span><i style="display:inline-block;width:9px;height:9px;border-radius:3px;background:var(--brand)"></i> 下载 峰值 1.9 MB/s</span><span><i style="display:inline-block;width:9px;height:9px;border-radius:3px;background:var(--info)"></i> 上传 峰值 0.3 MB/s</span></div></div>`)}</div><div class="pane">${grp('DNS 与缓存',null,lst([row({t:'DNS 劫持',r:bdg('开启','ok')}),row({t:'上游 DNS',s:'223.5.5.5, 119.29.29.29'}),row({t:'缓存命中',r:'128 / 164'})],1))}<div style="display:flex;gap:8px">${btn('清理 DNS 缓存','def','flex:1')}${btn('清理 Fake-IP…','def','flex:1')}</div>${grp('控制器与连接请求','48 个活跃',lst([row({t:'控制器监听',r:'127.0.0.1:9090'}),row({t:'前往连接与请求',s:'总下载 1.4 GB · 请求历史 126 条',ch:1})],1))}</div></div>`,'Pad 横屏 · 流量','左列聚焦实时速率与最近 5 分钟双折线趋势图，右列并排展示 DNS 缓存、Fake-IP 独立清理命令与连接入口。'),
+padwin(4,'连接与请求',`<span style="display:flex;gap:8px">${padAct('关闭全部…','x')}</span>`,`<div class="split" style="grid-template-columns:380px 1fr"><div class="master">${seg(['活动连接 <em>48</em>','请求历史 <em>126</em>'],0,1)}${sch('搜索域名、IP、规则或节点')}<div style="display:flex;align-items:center;gap:8px">${segSm(['全部','TCP','UDP'],0,1,'flex:1')}${pickSm('按流量')}</div>${gi('api.example.com:443 '+bdg('TCP','neu'),'媒体解锁 → 新加坡 03 · 持续 42s',1,'412 KB')}${gi('cdn.example.net:443 '+bdg('TCP','neu'),'漏网之鱼 → 新加坡 03 · 持续 3m',0,'3.1 MB')}${gi('time.example.org:123 '+bdg('UDP','neu'),'直连 · 持续 8s',0,'2 KB')}${gi('ai.example.org:443 '+bdg('TCP','neu'),'AI 服务 → 日本 02 · 持续 19s',0,'128 KB')}${gi('push.example.com:5223 '+bdg('TCP','neu'),'漏网之鱼 → 新加坡 03 · 持续 12m',0,'18 KB')}</div><div class="detail"><div class="glabel" style="padding:0"><span>连接详情</span>${bdg('TCP · 活跃','ok')}</div><div class="list"><div class="kv"><span>目标地址</span><span>api.example.com:443</span><span>解析 IP</span><span>203.0.113.24</span><span>代理链路</span><span>节点选择 → 媒体解锁 → 新加坡 03</span><span>命中规则</span><span>DOMAIN-SUFFIX,example.com</span><span>流量统计</span><span>下载 412 KB · 上传 18 KB</span><span>建立时间</span><span>09:41:07（持续 42 秒）</span></div></div><div style="display:flex;gap:8px">${btn(S('copy')+'复制详情','def')}${btn(S('plus')+'添加规则…','def')}${btn(S('x')+'关闭此连接','danger')}</div></div></div>`,'Pad 横屏 · 连接与请求 · 活动连接（Gallery Segmented + Picker）','左栏顶部分段聚焦「活动连接」，工具栏仅展示对应的「关闭全部…」，单行 Segmented + Picker 组合筛选，列表实时刷新时锁定当前选中连接 ID。'),
+padwin(4,'连接与请求',`<span style="display:flex;gap:8px">${padAct('清空历史…','trash')}</span>`,`<div class="split" style="grid-template-columns:380px 1fr"><div class="master">${seg(['活动连接 <em>48</em>','请求历史 <em>126</em>'],1,1)}${sch('搜索域名、IP、规则或节点')}<div style="display:flex;align-items:center;gap:8px">${segSm(['全部','TCP','UDP'],0,1,'flex:1')}${pickSm('全部状态')}</div>${gi('registry.npmjs.org:443 '+bdg('已结束','neu'),'节点选择 → 香港 01 · 09:40:52',1,'1.8 MB')}${gi('api.example.com:443 '+bdg('活跃','ok'),'媒体解锁 → 新加坡 03 · 09:41:07',0,'412 KB')}${gi('ads.example.net:443 '+bdg('已拦截','warn'),'广告拦截 → REJECT · 09:40:39',0,'0 B')}${gi('dns.alidns.com:853 '+bdg('已结束','neu'),'直连 (UDP) · 09:40:18',0,'4 KB')}</div><div class="detail"><div class="glabel" style="padding:0"><span>请求详情</span>${bdg('TCP · 已结束','neu')}</div><div class="list"><div class="kv"><span>目标地址</span><span>registry.npmjs.org:443</span><span>解析 IP</span><span>104.16.29.34</span><span>代理链路</span><span>节点选择 → 香港 01</span><span>命中规则</span><span>DOMAIN-SUFFIX,npmjs.org</span><span>总流量</span><span>下载 1.8 MB · 上传 42 KB</span><span>请求时间</span><span>09:40:52（耗时 6.4 秒）</span></div></div><div style="display:flex;gap:8px">${btn(S('copy')+'复制详情','def')}${btn(S('plus')+'以此域名添加规则…','def')}</div></div></div>`,'Pad 横屏 · 连接与请求 · 请求历史（独立绘出 · 含状态胶囊与请求详情）','切到「请求历史」时顶栏切换为「清空历史…」，筛选栏切换为「全部状态」Picker（全部 / 活跃 / 已结束 / 已拦截），右侧详情对已结束请求隐藏“关闭此连接”按钮。'),
+padwin(5,'资源与规则',`<span style="display:flex;gap:8px">${padAct('规则查询…','search')}${padAct('添加规则…','plus')}</span>`,`<div style="flex:1;display:flex;flex-direction:column;min-height:0"><div class="split" style="grid-template-columns:360px 1fr"><div class="master">${seg(['配置规则','Provider / Geo'],0,1)}${gi('1 · DOMAIN-SUFFIX,example.com','目标：媒体解锁',1)}${gi('2 · DOMAIN-KEYWORD,ads','目标：广告拦截 · 已上移',0)}${gi('3 · GEOIP,CN','目标：直连',0)}${gi('4 · MATCH','目标：漏网之鱼',0)}</div><div class="detail"><div class="alert">${S('alert')}<span>当前处于规则顺序预览，保存前不会改写运行配置。</span></div><div class="glabel" style="padding:0"><span>规则 #1 详情</span>${bdg('已启用','ok')}</div><div class="list"><div class="kv"><span>规则类型</span><span>DOMAIN-SUFFIX</span><span>匹配内容</span><span>example.com</span><span>目标策略</span><span>媒体解锁</span><span>所属配置</span><span>示例机场（运行规则 1,284 条）</span></div></div><div style="display:flex;gap:8px">${btn(S('up')+'上移','def')}${btn(S('down')+'下移','def')}${btn(S('edit')+'编辑…','def')}${btn(S('trash')+'删除…','danger')}</div></div></div>${foot('存在未保存的规则排序变更',btn('放弃排序','def','padding:0 16px')+btn('保存顺序','pri','padding:0 18px'))}</div>`,'Pad 横屏 · 资源与规则（含独立排序提交栏）','左侧切换配置规则与 Provider/GeoData 集合，右侧查看详情与上下移动；排序预览拥有固定底部提交栏。'),
+padwin(6,'日志',`<span style="display:flex;gap:8px;align-items:center">${bdg('记录中 · 按天归档','ok')}${padAct('暂停记录','pause')}${padAct('清空…','trash')}</span>`,`<div class="split" style="grid-template-columns:1.15fr .85fr"><div class="master" style="position:relative;padding-bottom:58px">${seg(['当前日志','历史归档 <em>3</em>'],0,1)}${sch('搜索日志内容、域名或错误码')}${segSm(['全部','信息','警告','错误','调试'],0,1)}${renderLogs(4)}<div class="pill" style="bottom:12px">${S('down')}已暂停跟随 · 3 条新日志</div></div><div class="detail"><div class="glabel" style="padding:0"><span>日志详情</span>${bdg('错误','err')}</div><div class="well" style="font-family:var(--mono);font-size:13.5px;line-height:20px;color:var(--fg);word-break:break-all">dial udp 203.0.113.88:123 via DIRECT: i/o timeout after 5000ms</div><div class="list"><div class="kv"><span>时间戳</span><span>2026-11-11 09:41:15.204</span><span>级别</span><span>错误 (ERROR)</span><span>模块</span><span>outbound / direct</span><span>关联目标</span><span>time.example.org:123 (UDP)</span></div></div><div style="display:flex;gap:8px">${btn(S('copy')+'复制此条日志','def')}${btn(S('activity')+'在诊断中探测目标','def')}</div></div></div>`,'Pad 横屏 · 日志（五档 Gallery Segmented + 右侧详情检查器）','三端统一「当前日志 / 历史归档」与五级分段过滤；左侧 Gallery 列表流在上滚时暂停跟随并浮出胶囊，右侧完整呈现单条日志原文与排查入口。')
+]);
+
+put('H2',[
+padwin(7,'网络设置','',`<div style="flex:1;display:flex;flex-direction:column;min-height:0"><div class="cols" style="grid-template-columns:minmax(0,640px);justify-content:center"><div class="pane">${grp('VPN 基础（独立保存分区）',null,lst([row({t:'VPN 内核',s:'当前运行：Meow 0.22.0',r:'自动选择',ch:1}),row({t:'网络协议栈',s:'仅 Meow 内核生效',r:'gVisor',ch:1}),row({t:'DNS 劫持',r:sw(1)}),row({t:'通过 VPN 的应用范围',s:'已选 2 个应用',ch:1}),fld('MTU','1500','1280–65535；保存后重新建立 VPN 连接生效。')],1))}${grp('混合代理与控制器（独立保存分区）',null,lst([row({t:'混合代理端口',r:'7890',ch:1}),row({t:'Controller 监听',r:'127.0.0.1:9090',ch:1})],1))}</div></div>${foot('VPN 分区有未保存修改',btn('重置草稿','def','padding:0 16px')+btn('保存 VPN 设置','pri','padding:0 18px'))}</div>`,'Pad 横屏 · 网络设置（640 pt 居中表单 + 固定保存栏）','宽屏下表单严格居中并限制最大宽度 640 pt，开关与标签距离紧凑易读；每个配置分区独立校验与保存。'),
+padwin(7,'订阅转换',padAct('重置选项','refresh'),`<div class="cols" style="grid-template-columns:1.08fr .92fr;gap:20px"><div class="pane">${seg(['基础模式','进阶模式'],1,1)}${grp('输入与后端',null,`<div class="list plain">${fld('订阅或节点链接','https://example.com/sub?token=…')}${sel('目标客户端','Clash')}${fld('转换后端','https://sub.example.com/sub')}</div>`)}${grp('输出定制（Gallery 22 pt 复选框）',null,lst([row({lead:chk(1),t:'启用 Emoji 节点旗帜'}),row({lead:chk(1),t:'开启 UDP 转发'}),row({lead:chk(0),t:'跳过证书校验 (scv)'})],1))}${btn('生成订阅链接','pri')}</div><div class="pane">${grp('生成结果','本次会话有效',`<div class="alert">${S('alert')}<span>左侧过滤或定制项已改动，下方旧结果已标记失效，请重新生成。</span></div>`+lst([row({t:'定制长链接',s:'https://sub.example.com/sub?target=clash&url=…',r:S('copy'),st:'opacity:.55'}),row({t:'订阅短链',s:'https://s.example.com/p9x2k',r:S('copy'),st:'opacity:.55'})],1))}${grp('后续动作',null,`<div style="display:flex;gap:8px">${btn('直接导入到 Paws 订阅…','def','flex:1;opacity:.5')}${btn('生成短链','def','flex:1;opacity:.5')}</div>`)}</div></div>`,'Pad 横屏 · 订阅转换（左输入定制 · 右生成结果）','输入与高级复选框在左列连续滚动，生成结果与导入动作固定在右列；任何输入变更立即使右侧旧链接进入失效保护态。'),
+padwin(7,'诊断与高级诊断',padAct('重新检查','refresh'),`<div class="cols" style="grid-template-columns:1fr 1fr;gap:20px"><div class="pane">${grp('当前连接检查',null,lst([row({t:'VPN 隧道与路由验证',r:ok('已通过')}),row({t:'运行内核',r:bdg('Meow','neu')}),row({t:'配置载入与语法',r:ok('通过')}),row({t:'出站回路保护',r:ok('通过')}),row({t:'当前节点 TCP 握手',r:no('超时 (5000 ms)')})],1))}${grp('自动恢复策略',null,lst([row({t:'网络切换后自动重连',r:sw(1)})],1))}</div><div class="pane">${grp('主动 HTTPS 探测',null,`<div class="list plain">${fld('探测目标地址','https://www.gstatic.com/generate_204')}</div>`+btn('开始探测','pri'))}${grp('高级诊断与报告',null,lst([row({ic:'globe',t:'域名 DoH 策略',s:'已配置 3 个指定域名',ch:1}),row({ic:'shield',t:'生成脱敏诊断报告…',s:'预览并自动抹除订阅密钥后复制/导出',ch:1}),row({ic:'file',t:'导入内核验收证据…',ch:1})]))}</div></div>`,'Pad 横屏 · 诊断与高级诊断','左列呈现被动实时健康度与自动恢复，右列承载主动目标探测与脱敏诊断报告入口，探测进行中绝不阻塞停止 VPN。'),
+padwin(7,'备份与恢复','',`<div class="cols" style="grid-template-columns:minmax(0,640px);justify-content:center"><div class="pane">${grp('本地备份',null,lst([row({ic:'upload',t:'导出本地备份文件…',s:'包含全部订阅元数据、规则组与偏好设置',ch:1}),row({ic:'download',t:'从本地备份文件恢复…',s:'新建配置副本，不覆盖现有订阅',ch:1})]))}${grp('WebDAV 远程备份',null,`<div class="list plain">${fld('WebDAV 备份地址','https://dav.example.com/paws/backup.bak')}${fld('用户名','demo')}${fld('应用专用密码','••••••••••••')}</div>`)}<div style="display:flex;gap:10px">${btn(S('upload')+'上传备份到 WebDAV','pri','flex:1')}${btn(S('download')+'从 WebDAV 下载并恢复…','def','flex:1')}</div></div></div>`,'Pad 横屏 · 备份与恢复（含原生恢复确认）','640 pt 居中任务页，恢复前弹出 Gallery 卡片对话框写明来源与“新建副本、保留现有订阅”的准确语义。',dlg('从本地文件恢复备份？','来源：paws-2026-11-11.bak（备份格式未记录生成时刻）。恢复将新建独立配置副本，现有订阅与当前 VPN 连接保持不变。','取消','恢复为新配置')),
+padwin(7,'外观与关于','',`<div class="cols" style="grid-template-columns:minmax(0,640px);justify-content:center"><div class="pane">${grp('外观偏好（立即生效）',null,lst([row({t:'界面语言',r:'跟随系统（简体中文）',ch:1}),row({lead:rad(1),t:'主题：跟随系统'}),row({lead:rad(0),t:'主题：浅色 (Gallery Light)'}),row({lead:rad(0),t:'主题：深色 (Gallery Dark)'})],1))}${grp('关于 Paws',null,lst([row({t:'应用版本',r:'1.3.0 (Build 40)'}),row({t:'代理核心版本',r:'Meow 0.22.0'}),row({t:'界面运行时',r:'nsh-platform-harmonyos'}),row({t:'开源致谢与内核许可证',ch:1}),row({t:'隐私与数据处理说明',ch:1}),row({t:'源代码仓库',r:ext('github.com/southorange/Paws')})],1))}</div></div>`,'Pad 横屏 · 外观与关于','640 pt 居中偏好与版本卡片，完整展示 nsh-platform-harmonyos 运行时标识、内页长文入口与 Gallery 外链样式。'),
+padwin(1,'编辑配置 · 示例机场',`<span style="display:flex;gap:8px;align-items:center">${bdg('未保存','warn')}${padAct('查找','search')}${padAct('还原','refresh')}${padAct('校验','check')}${padAct('保存','check','pri')}</span>`,`<div style="flex:1;display:flex;flex-direction:column;padding:16px 20px;gap:10px;min-height:0"><div class="note" style="display:flex;justify-content:space-between;padding:0"><span>config.yaml · UTF-8 · 2 空格缩进</span><span>行 8，列 17 · 语法校验通过</span></div>${code}</div>`,'Pad 横屏 · YAML 全工作区编辑器','YAML 绝不塞进窄弹层或半屏面板，而是占据侧栏轨右侧的完整工作区，键盘弹出时自动抬高底部可视区。'),
+`<div class="dev"><div class="win pad portrait"><div class="sb" style="padding:0 24px"><span>9:41 · iPad / 平板竖屏 768 pt</span><span>82%</span></div><div class="hdr" style="padding:0 24px"><span class="t">订阅</span><span class="act">${S('refresh')}${S('plus')}</span></div><div class="body" style="align-items:center;padding:20px 24px"><div style="width:100%;max-width:640px;display:flex;flex-direction:column;gap:18px">${sch('搜索订阅')}${grp('全部订阅','3 个配置',lst([row({t:'示例机场 '+bdg('当前'),s:'更新于 2 小时前 · 68.2 / 200 GB · 剩余 38 天',r:S('more'),ch:1}),row({t:'备用订阅',s:'更新于 3 天前 · 4.1 / 50 GB',r:S('more'),ch:1}),row({t:'本地配置',s:'本地文件 · 不自动更新',r:S('more'),ch:1})],1))}<div class="alert info">${S('info')}<span>竖屏宽度 768 pt（处于 600–839 区间）：自动收起侧栏轨切换为底部导航栏，内容限宽 640 pt 居中单列，不强行挤出窄双栏。</span></div></div></div>${tabsBar(1)}<span class="home-ind"></span></div><div class="cap" style="max-width:640px"><b>Pad 竖屏 / 分屏 · 768 pt 断点回退</b><span>严格落实断点表第 2 行：600–839 pt 使用底栏 + 640 pt 居中单列；旋转回横屏时自动恢复主从分栏与选中订阅。</span></div></div>`
+]);
+</script>
+<section class="sec"><div class="sec-head"><span class="eyebrow">Pad · 断点</span><h2>什么时候分栏，什么时候单列</h2></div>
+<div class="rules"><table><thead><tr><th>可用宽度</th><th>导航</th><th>内容</th><th>说明</th></tr></thead><tbody>
+<tr><td class="num">&lt; 600</td><td>底栏</td><td>单列</td><td>与手机相同，返回使用系统返回</td></tr>
+<tr><td class="num">600 – 839</td><td>底栏</td><td>单列，内容宽度上限 640 居中</td><td>竖屏平板；不强行分栏</td></tr>
+<tr><td class="num">≥ 840</td><td>64 pt 图标轨，可展开到 232</td><td>扣除导航后，≥ 620 才分栏</td><td>分栏：列表 ≥ 240，详情 ≥ 320；不够就单列</td></tr>
+<tr><td colspan="4" style="color:var(--muted);font-size:13px">旋转、分屏时保留当前对象、筛选、滚动位置和未保存的草稿。</td></tr>
+</tbody></table></div></section>
+<section class="sec" id="sec-pc"><div class="sec-head"><span class="eyebrow">PC · 全页面完整设计（Gallery 指针档）</span><h2>电脑全页面：主要与网络工作区（订阅、短表单、节点、流量、连接与请求、规则、日志）</h2>
+<p class="lede">固定 232 pt 侧栏（28 pt 导航行、6 pt 圆角、选中仅底色、底栏常驻内核状态）+ 38 pt 窗口标题栏 + 54 pt 面包屑工具栏。控件与字号为 Gallery 指针档（28 pt 按钮与输入框、24 pt 小按钮、30 / 26 pt 分段控件、13 pt 正文、40 pt 数据表行、16 pt 单选/复选、28×16 pt 开关）。对象命令同时提供可见“更多”按钮与右键上下文菜单。</p></div>
+<div class="strip" id="L"></div>
+<div class="sec-head" style="margin-top:8px"><span class="eyebrow">PC · 设置、工具、YAML 与窄窗口自适应</span><h2>电脑全页面：网络设置、订阅转换、诊断、备份、外观与关于、YAML、820 pt 窄窗回退</h2>
+<p class="lede">偏好与网络设置居中限宽 720 pt 并按分区独立保存；转换、诊断、备份采用双列桌面工作区；YAML 占据完整工作区并支持桌面快捷键（⌘S / ⌘F / ⌘⇧R）；窗口收窄时侧栏收起为 64 pt 图标轨（⌘B 切换），绝不变成手机底栏。</p></div>
+<div class="strip" id="L2"></div></section>
+<script>
+const PCN=[['n','主要'],['house','概览','⌘1'],['rss','订阅','⌘2'],['branch','代理节点','⌘3'],['activity','流量','⌘4'],['n','网络'],['list','连接与请求'],['layers','资源与规则'],['file','日志'],['n','工具与偏好'],['shield','诊断'],['download','备份与恢复'],['refresh','订阅转换'],['sliders','网络设置'],['gear','外观','⌘,'],['info','关于']];
+const pcGroupOf=on=>['概览','订阅','代理节点','流量'].includes(on)?'主要':['连接与请求','资源与规则','日志'].includes(on)?'网络':'工具与偏好';
+const pcSide=on=>`<div class="side"><div class="brand"><span class="logo">P</span>Paws</div>${PCN.map(n=>n[0]==='n'?`<div class="nlabel">${n[1]}</div>`:`<div class="nav${n[1]===on?' on':''}">${S(n[0])}${n[1]}${n[2]?`<span class="kbd">${n[2]}</span>`:''}</div>`).join('')}<div class="side-foot"><span style="display:flex;align-items:center;gap:6px"><span class="dot ok" style="width:7px;height:7px;box-shadow:none"></span>Meow · 已连接</span><span>v1.3.0</span></div></div>`;
+const pcTools=a=>`<span style="display:flex;gap:8px;align-items:center">${a}</span>`;
+const pcBtn=(t,i,k)=>btn((i?S(i):'')+t,(k||'def')+' sm');
+const pcTb=title=>`<div class="titlebar"><span class="tls"><span class="tl c"></span><span class="tl m"></span><span class="tl z"></span></span><svg class="i s" style="color:var(--muted)"><use href="#sidebar"/></svg><span class="tb-title">${title||'Paws'}</span></div>`;
+const pcwin=(on,title,tool,inner,cap,note,over,grpName)=>`<div class="dev"><div class="win pc">${pcTb('Paws')}<div style="flex:1;display:flex;min-height:0">${pcSide(on)}<div class="main"><div class="tool"><span class="crumb">${grpName||pcGroupOf(on)} <svg class="i" style="width:12px;height:12px"><use href="#chev"/></svg></span><span class="t">${title}</span>${tool||''}</div>${inner}</div></div>${over||''}</div><div class="cap" style="max-width:760px"><b>${cap}</b><span>${note}</span></div></div>`;
+const pr=(a,b,c,d,selRow)=>`<div class="tr2${selRow?' sel':''}"><span class="cell">${a}</span><span class="cell">${b}</span><span>${c}</span><span class="num">${d}</span>${S('more')}</div>`;
+const th=(a,b,c,d)=>`<div class="tr2 h"><span>${a}</span><span>${b}</span><span>${c}</span><span class="num">${d}</span><span></span></div>`;
+
+put('L',[
+pcwin('订阅','订阅',pcTools(pcBtn('全部更新','refresh')+pcBtn('添加订阅…','plus','pri')),`<div class="split" style="grid-template-columns:1fr 340px"><div class="detail">${sch('按名称或域名筛选订阅')}<div class="tbl">${th('名称','来源','用量','更新')}${pr('<b>示例机场</b> '+bdg('当前'),'example.com','68.2 / 200 GB','2 小时前',1)}${pr('备用订阅','backup.example.net','4.1 / 50 GB','3 天前')}${pr('本地配置','本地文件','—','—')}</div></div><div class="master" style="border-right:0;border-left:1px solid var(--line);gap:12px"><div class="glabel" style="padding:0"><span>订阅详情</span>${bdg('当前')}</div><div class="list"><div class="kv" style="grid-template-columns:76px 1fr"><span>名称</span><span>示例机场</span><span>来源</span><span>https://example.com/sub?…</span><span>自动更新</span><span>每 24 小时</span><span>到期时间</span><span>38 天后</span></div></div><div class="list" style="padding:12px 14px"><div style="display:flex;justify-content:space-between;font-size:13px"><b>配额</b><span style="color:var(--muted);font-variant-numeric:tabular-nums">68.2 / 200 GB (34%)</span></div>${bar(34)}</div><div style="display:flex;flex-wrap:wrap;gap:8px">${pcBtn('立即更新','refresh')}${pcBtn('编辑订阅…','edit')}${pcBtn('编辑 YAML…','code')}${pcBtn('导出…','upload')}</div></div></div>`,'PC · 订阅（列表 + 右侧详情检查器 + 右键/更多同源菜单）','左侧 Gallery DataTable 与右侧订阅详情并排；右键点击行或点击行尾“更多”弹出同一个 Gallery Popover 菜单，Esc 关闭后焦点回到原行。',`<div class="pop" style="left:515px;top:218px"><div class="mi hov">${S('check')}设为当前订阅</div><div class="mi">${S('refresh')}更新订阅</div><div class="mi">${S('edit')}编辑订阅…</div><div class="mi">${S('code')}编辑 YAML…</div><div class="mi">${S('upload')}导出…</div><div class="msep"></div><div class="mi danger">${S('trash')}删除…</div></div>`),
+pcwin('订阅','订阅',pcTools(pcBtn('全部更新','refresh')+pcBtn('添加订阅…','plus','pri')),`<div class="cols" style="grid-template-columns:1fr"><div class="tbl">${th('名称','来源','用量','更新')}${pr('<b>示例机场</b> '+bdg('当前'),'example.com','68.2 / 200 GB','2 小时前',1)}${pr('备用订阅','backup.example.net','4.1 / 50 GB','3 天前')}${pr('本地配置','本地文件','—','—')}</div></div>`,'PC · 订阅 · 添加订阅居中弹框（Gallery 双栏导入磁贴 + 链接表单）','桌面与宽屏平板采用 Gallery 440 pt 居中 dialogCard，与手机端共享同一套双栏凸起导入磁贴（从本地导入 / 扫码导入）、分隔线与无嵌套输入框布局。',`<div class="scrim"></div><div class="dlg" style="left:50%;right:auto;width:440px;transform:translate(-50%,-50%);gap:14px"><div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px"><div style="display:flex;flex-direction:column;gap:2px"><b style="font-size:18px;line-height:24px">添加订阅</b><small style="font-size:13px;color:var(--muted)">从本地文件、二维码直接导入，或填写订阅地址</small></div><span class="xbtn">${S('x')}</span></div>${impTiles}<div class="or-rule">或粘贴订阅链接</div><div style="display:flex;flex-direction:column;gap:12px">${sfld('订阅地址','https://example.com/sub?token=…')}${sfld('名称（可选）','留空时自动使用配置名称',1)}</div><div style="display:flex;justify-content:flex-end;gap:8px;padding-top:2px">${btn('取消','def')}${btn(S('download')+'导入订阅','pri')}</div></div>`),
+pcwin('代理节点','代理节点',pcTools(pcBtn('测速当前组','zap')+pcBtn('定位当前节点','branch')),`<div class="split"><div class="master">${sch('搜索策略组或节点')}${gi('节点选择','手动 · 新加坡 03',1,12)}${gi('自动选择','URL-Test · 香港 01',0,48)}${gi('媒体解锁','手动 · 新加坡 03',0,65)}${gi('AI 服务','手动 · 日本 02',0,24)}${gi('广告拦截','手动 · REJECT',0,3)}${gi('漏网之鱼','手动 · 节点选择',0,65)}</div><div class="detail"><div style="display:flex;justify-content:space-between;align-items:center"><div class="glabel" style="padding:0;gap:8px"><span>节点选择</span>${bdg('手动选择','neu')}</div><span class="note" style="padding:0">上次测速 2 分钟前 · 双击或回车切换节点</span></div><div class="tbl">${th('节点','协议','倍率','延迟')}${pr('<b>新加坡 03</b> '+bdg('当前'),'Shadowsocks','0.1×',lat('86 ms','good'),1)}${pr('香港 01','Trojan','0.5×',lat('42 ms','good'))}${pr('韩国 02','Trojan','1.0×',lat('63 ms','good'))}${pr('日本 02','VMess','1.0×',lat('214 ms','mid'))}${pr('美国 05','VMess','1.0×',lat('超时','bad'))}${pr('台湾 01','Trojan','1.0×',lat('—'))}</div></div></div>`,'PC · 代理节点（组浏览器 + 节点数据表）','左侧组浏览器与右侧 Gallery DataTable 独立滚动；键盘上下方向键移动焦点与当前生效节点区分展示，搜索过滤绝不清除已选节点。'),
+pcwin('流量','流量',pcTools(pcBtn('DNS 诊断详情…','globe')),`<div class="cols" style="grid-template-columns:1.1fr .9fr;gap:20px"><div class="pane">${grp('本次会话','已用 1.4 GB',`<div class="speed"><div><small>${S('up')}上传</small><b>12.4<span class="unit">KB/s</span></b></div><div><small>${S('down')}下载</small><b>1.21<span class="unit">MB/s</span></b></div></div>`)}${grp('实时速率趋势','最近 5 分钟 · 零基线',`<div class="list" style="padding:14px">${chart}<div style="display:flex;gap:16px;font-size:13px;color:var(--muted);padding-top:6px"><span><i style="display:inline-block;width:9px;height:9px;border-radius:3px;background:var(--brand)"></i> 下载（峰值 1.9 MB/s）</span><span><i style="display:inline-block;width:9px;height:9px;border-radius:3px;background:var(--info)"></i> 上传（峰值 0.3 MB/s）</span></div></div>`)}</div><div class="pane">${grp('DNS 与缓存',null,lst([row({t:'DNS 劫持',r:bdg('开启','ok')}),row({t:'上游 DNS',s:'223.5.5.5, 119.29.29.29'}),row({t:'缓存命中',r:'128 / 164'})],1))}<div style="display:flex;gap:8px">${pcBtn('清理 DNS 缓存','refresh')}${pcBtn('清理 Fake-IP…','trash')}</div>${grp('控制器与连接摘要','48 个活跃连接',lst([row({t:'Controller 监听',r:'127.0.0.1:9090'}),row({t:'前往连接与请求',s:'总下载 1.4 GB · 请求历史 126 条',ch:1})],1))}</div></div>`,'PC · 流量（图表与会话详情并排）','左列呈现实时速率与零基线趋势图，右列并排展示 DNS 缓存统计、独立的 Fake-IP 清理命令与控制器状态。'),
+pcwin('连接与请求','连接与请求',pcTools(pcBtn('关闭全部…','x')),`<div class="split" style="grid-template-columns:1fr 330px"><div class="detail"><div style="display:flex;gap:10px;align-items:center">${seg(['活动连接 <em>48</em>','请求历史 <em>126</em>'],0)}<div class="search" style="flex:1">${S('search')}搜索域名、IP、规则或节点</div>${segSm(['全部','TCP','UDP'],0)}</div><div class="tbl">${th('目标地址','规则 / 代理链','网络','流量')}${pr('<b>api.example.com:443</b>','媒体解锁 → 新加坡 03',bdg('TCP','neu'),'412 KB',1)}${pr('cdn.example.net:443','漏网之鱼 → 新加坡 03',bdg('TCP','neu'),'3.1 MB')}${pr('time.example.org:123','直连',bdg('UDP','neu'),'2 KB')}${pr('ai.example.org:443','AI 服务 → 日本 02',bdg('TCP','neu'),'128 KB')}${pr('push.example.com:5223','漏网之鱼 → 新加坡 03',bdg('TCP','neu'),'18 KB')}</div></div><div class="master" style="border-right:0;border-left:1px solid var(--line);gap:12px"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:15px">连接检查器</b><span title="关闭检查器" style="color:var(--muted)">${S('x')}</span></div><div class="list"><div class="kv" style="grid-template-columns:72px 1fr"><span>目标</span><span>api.example.com:443</span><span>状态</span><span>${bdg('TCP · 活跃','ok')}</span><span>解析 IP</span><span>203.0.113.24</span><span>代理链</span><span>节点选择 → 媒体解锁 → 新加坡 03</span><span>命中规则</span><span>DOMAIN-SUFFIX,example.com</span><span>流量</span><span>↓ 412 KB · ↑ 18 KB</span></div></div><div style="display:flex;flex-wrap:wrap;gap:8px">${pcBtn('复制详情','copy')}${pcBtn('添加规则…','plus')}${pcBtn('关闭此连接','x','danger')}</div></div></div>`,'PC · 连接与请求 · 活动连接（Gallery Segmented + 数据表 + 可关闭检查器）','筛选栏全部采用 Gallery Segmented（零散装胶囊），工具栏仅展示与当前「活动连接」对应的「关闭全部…」；右侧检查器按连接 ID 锁定选中项。'),
+pcwin('连接与请求','连接与请求',pcTools(pcBtn('清空历史…','trash')),`<div class="split" style="grid-template-columns:1fr 330px"><div class="detail"><div style="display:flex;gap:10px;align-items:center">${seg(['活动连接 <em>48</em>','请求历史 <em>126</em>'],1)}<div class="search" style="flex:1">${S('search')}搜索域名、IP、规则或节点</div>${segSm(['全部','TCP','UDP'],0)}${pickSm('全部状态')}</div><div class="tbl"><div class="tr2 h" style="grid-template-columns:1.5fr 1.1fr .65fr .75fr .75fr 28px"><span>目标地址</span><span>规则 / 代理链</span><span>状态</span><span>时间</span><span class="num">流量</span><span></span></div><div class="tr2 sel" style="grid-template-columns:1.5fr 1.1fr .65fr .75fr .75fr 28px"><span class="cell"><b>registry.npmjs.org:443</b></span><span class="cell">节点选择 → 香港 01</span><span>${bdg('已结束','neu')}</span><span style="color:var(--muted);font-variant-numeric:tabular-nums">09:40:52</span><span class="num">1.8 MB</span>${S('more')}</div><div class="tr2" style="grid-template-columns:1.5fr 1.1fr .65fr .75fr .75fr 28px"><span class="cell">api.example.com:443</span><span class="cell">媒体解锁 → 新加坡 03</span><span>${bdg('活跃','ok')}</span><span style="color:var(--muted);font-variant-numeric:tabular-nums">09:41:07</span><span class="num">412 KB</span>${S('more')}</div><div class="tr2" style="grid-template-columns:1.5fr 1.1fr .65fr .75fr .75fr 28px"><span class="cell">ads.example.net:443</span><span class="cell">广告拦截 → REJECT</span><span>${bdg('已拦截','warn')}</span><span style="color:var(--muted);font-variant-numeric:tabular-nums">09:40:39</span><span class="num">0 B</span>${S('more')}</div><div class="tr2" style="grid-template-columns:1.5fr 1.1fr .65fr .75fr .75fr 28px"><span class="cell">dns.alidns.com:853</span><span class="cell">直连 (UDP)</span><span>${bdg('已结束','neu')}</span><span style="color:var(--muted);font-variant-numeric:tabular-nums">09:40:18</span><span class="num">4 KB</span>${S('more')}</div></div></div><div class="master" style="border-right:0;border-left:1px solid var(--line);gap:12px"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:15px">请求检查器</b><span title="关闭检查器" style="color:var(--muted)">${S('x')}</span></div><div class="list"><div class="kv" style="grid-template-columns:72px 1fr"><span>目标</span><span>registry.npmjs.org:443</span><span>状态</span><span>${bdg('TCP · 已结束','neu')}</span><span>代理链</span><span>节点选择 → 香港 01</span><span>命中规则</span><span>DOMAIN-SUFFIX,npmjs.org</span><span>耗时</span><span>09:40:52（持续 6.4s）</span><span>总流量</span><span>↓ 1.8 MB · ↑ 42 KB</span></div></div><div style="display:flex;flex-wrap:wrap;gap:8px">${pcBtn('复制详情','copy')}${pcBtn('以此域名添加规则…','plus')}</div></div></div>`,'PC · 连接与请求 · 请求历史（独立绘出 · 含状态 Picker 与请求检查器）','切到「请求历史」时工具栏切换为「清空历史…」，筛选栏增加 Gallery Picker（全部状态 / 活跃 / 已结束 / 已拦截），已结束请求在检查器中隐藏“关闭连接”按钮。'),
+pcwin('资源与规则','资源与规则',pcTools(pcBtn('规则查询…','search')+pcBtn('添加规则…','plus','pri')),`<div style="flex:1;display:flex;flex-direction:column;min-height:0"><div class="split" style="grid-template-columns:1fr 330px"><div class="detail"><div style="display:flex;justify-content:space-between;align-items:center">${seg(['配置规则 <em>1,284</em>','Provider / GeoData'],0)}<span class="note" style="padding:0">支持 ⌥↑ / ⌥↓ 键盘调整顺序</span></div><div class="tbl"><div class="tr2 h" style="grid-template-columns:44px 1.6fr 1fr 28px"><span>#</span><span>规则</span><span>目标策略</span><span></span></div><div class="tr2 sel" style="grid-template-columns:44px 1.6fr 1fr 28px"><span>1</span><span class="cell"><b>DOMAIN-SUFFIX,example.com</b></span><span>媒体解锁</span>${S('more')}</div><div class="tr2" style="grid-template-columns:44px 1.6fr 1fr 28px"><span>2</span><span class="cell">DOMAIN-KEYWORD,ads ${bdg('已上移','warn')}</span><span>广告拦截</span>${S('more')}</div><div class="tr2" style="grid-template-columns:44px 1.6fr 1fr 28px"><span>3</span><span class="cell">GEOIP,CN</span><span>直连</span>${S('more')}</div><div class="tr2" style="grid-template-columns:44px 1.6fr 1fr 28px"><span>4</span><span class="cell">MATCH</span><span>漏网之鱼</span>${S('more')}</div></div></div><div class="master" style="border-right:0;border-left:1px solid var(--line);gap:12px"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:15px">规则检查器</b><span style="color:var(--muted)">${S('x')}</span></div><div class="list"><div class="kv" style="grid-template-columns:68px 1fr"><span>编号</span><span>#1</span><span>类型</span><span>DOMAIN-SUFFIX</span><span>内容</span><span>example.com</span><span>目标</span><span>媒体解锁</span><span>状态</span><span>已启用</span></div></div><div style="display:flex;flex-wrap:wrap;gap:8px">${pcBtn('上移 ⌥↑','up')}${pcBtn('下移 ⌥↓','down')}${pcBtn('复制','copy')}${pcBtn('删除…','trash','danger')}</div></div></div>${foot('规则排序处于预览草稿，保存后写入配置',pcBtn('放弃排序')+btn('保存顺序','pri sm'))}</div>`,'PC · 资源与规则（表格 / 提供者切换 + 可关闭检查器 + 键盘排序）','工作区顶部切换规则表与外部 Provider 列表，右侧检查器可关闭；上下移动进入预览草稿并在底栏集中提交。'),
+pcwin('日志','日志',pcTools(bdg('记录中 · 按天归档','ok')+pcBtn('暂停记录','pause')+pcBtn('清空…','trash')+pcBtn('导出…','upload')),`<div class="split" style="grid-template-columns:1fr 330px"><div class="detail" style="position:relative;padding-bottom:58px"><div style="display:flex;gap:10px;align-items:center">${seg(['当前日志','历史归档 <em>3</em>'],0)}<div class="search" style="flex:1">${S('search')}搜索日志内容、域名或错误码</div></div><div style="display:flex;justify-content:space-between;align-items:center;gap:10px">${segSm(['全部','信息','警告','错误','调试'],0)}<span class="note" style="padding:0">248 条日志</span></div>${renderLogs(4)}<div class="pill" style="bottom:14px">${S('down')}已暂停跟随 · 3 条新日志（点击回到底部）</div></div><div class="master" style="border-right:0;border-left:1px solid var(--line);gap:12px"><div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:15px">日志详情检查器</b><span title="关闭检查器" style="color:var(--muted)">${S('x')}</span></div><div class="well" style="font-family:var(--mono);font-size:13.5px;line-height:20px;color:var(--fg);word-break:break-all">dial udp 203.0.113.88:123 via DIRECT: i/o timeout after 5000ms</div><div class="list"><div class="kv" style="grid-template-columns:72px 1fr"><span>时间</span><span>2026-11-11 09:41:15.204</span><span>级别</span><span>${bdg('错误','err')}</span><span>模块</span><span>outbound / direct</span><span>关联目标</span><span>time.example.org:123</span></div></div><div style="display:flex;flex-wrap:wrap;gap:8px">${pcBtn('复制此条日志','copy')}${pcBtn('在诊断中探测','activity')}</div></div></div>`,'PC · 日志（五档 Gallery Segmented + 右侧可关闭日志检查器，与 Pad 完全统一）','三端统一采用「当前日志 / 历史归档」与五级分段筛选；PC 补齐右侧日志详情检查器，点击任意日志即可查看完整毫秒时间戳、原文与探测入口。')
+]);
+
+put('L2',[
+pcwin('网络设置','网络设置','',`<div class="cols" style="grid-template-columns:minmax(0,720px);justify-content:center"><div class="pane">${grp('VPN 基础（独立草稿分区）',null,lst([row({t:'VPN 内核',s:'当前运行：Meow 0.22.0',r:'自动选择',ch:1}),row({t:'网络栈',s:'仅 Meow 生效',r:'gVisor',ch:1}),row({t:'DNS 劫持',r:sw(1)}),fld('MTU','1500','1280–65535；下次建立连接时应用。')],1))}<div style="display:flex;justify-content:flex-end;gap:8px">${btn('重置','def')}${btn('保存 VPN 设置','pri')}</div>${grp('混合代理与控制器（独立草稿分区）',null,lst([row({t:'混合代理服务',s:'监听 127.0.0.1:7890',r:sw(1)}),row({t:'Controller 服务',s:'监听 127.0.0.1:9090 · 密钥已设置',r:sw(1)}),row({t:'允许局域网访问',r:sw(0)})],1))}<div style="display:flex;justify-content:flex-end;gap:8px">${btn('保存网络设置','def','opacity:.45')}</div></div></div>`,'PC · 网络设置（720 pt 居中表单 · Gallery 指针档控件）','桌面端表单宽度上限 720 pt 居中，开关开关为 28×16 pt、输入框为 28 pt（Gallery 指针档）；每个分区独立校验保存。'),
+pcwin('订阅转换','订阅转换',pcTools(pcBtn('重置表单','refresh')),`<div class="cols" style="grid-template-columns:1.08fr .92fr;gap:20px"><div class="pane">${seg(['基础模式','进阶模式'],1,1)}${grp('输入与目标',null,`<div class="list plain">${fld('订阅或节点链接','https://example.com/sub?token=…')}${sel('目标客户端','Clash')}${fld('转换后端','https://sub.example.com/sub')}</div>`)}${grp('定制选项（Gallery 16 pt 复选框）',null,lst([row({lead:chk(1),t:'启用 Emoji 节点旗帜'}),row({lead:chk(1),t:'开启 UDP 转发'}),row({lead:chk(0),t:'跳过证书校验 (scv)'}),row({lead:chk(1),t:'按节点名称排序'})],1))}<div style="display:flex;justify-content:flex-end">${btn('生成订阅链接','pri')}</div></div><div class="pane">${grp('生成结果','明确提交后刷新',`<div class="alert">${S('alert')}<span>左侧定制选项已变更，下方上次生成的链接已标记失效，请重新点击“生成订阅链接”。</span></div>`+lst([row({t:'定制订阅链接',s:'https://sub.example.com/sub?target=clash&url=…',r:S('copy'),st:'opacity:.55'}),row({t:'短链接',s:'https://s.example.com/p9x2k',r:S('copy'),st:'opacity:.55'})],1))}<div style="display:flex;gap:8px">${pcBtn('直接添加为 Paws 订阅…','plus')}${pcBtn('生成短链','link')}</div></div></div>`,'PC · 订阅转换（双列工作区 + 旧结果失效保护）','左列整合订阅输入、客户端 Picker 与 16 pt（指针档）Gallery 复选框；修改任一参数后右列旧结果立即进入失效提示态。'),
+pcwin('诊断','诊断',pcTools(pcBtn('重新检查','refresh')+pcBtn('生成脱敏报告…','shield')),`<div class="cols" style="grid-template-columns:1fr 1fr;gap:20px"><div class="pane">${grp('状态检查',null,lst([row({t:'VPN 隧道与路由',r:ok('已通过')}),row({t:'运行内核',r:bdg('Meow 0.22.0','neu')}),row({t:'配置语法与资源',r:ok('正常')}),row({t:'出站回路保护',r:ok('正常')}),row({t:'代理节点连通',r:no('超时 (5000 ms)')})],1))}${grp('自动恢复',null,lst([row({t:'网络切换后自动重连',r:sw(1)})],1))}</div><div class="pane">${grp('主动连通性探测',null,`<div class="list plain">${fld('探测目标','https://www.gstatic.com/generate_204','探测任务独立运行，随时可取消，绝不阻塞停止 VPN。')}</div>`+`<div style="display:flex;gap:8px;justify-content:flex-end">${btn('开始探测','pri')}</div>`)}${grp('高级诊断',null,lst([row({ic:'globe',t:'域名 DoH 策略…',s:'3 个指定域名走加密解析',ch:1}),row({ic:'shield',t:'预览并导出脱敏诊断报告…',s:'自动遮蔽订阅 URL 与密钥',ch:1}),row({ic:'file',t:'导入内核验收证据…',ch:1})]))}</div></div>`,'PC · 诊断与高级诊断（状态、探测与脱敏报告双列工作区）','被动连接检查与主动探测分列并排；高级诊断报告在导出前可预览脱敏内容，探测进行中仍可立即停止 VPN。'),
+pcwin('备份与恢复','备份与恢复','',`<div class="cols" style="grid-template-columns:1fr 1fr;gap:20px"><div class="pane">${grp('本地备份',null,lst([row({ic:'upload',t:'导出备份文件到本地…',s:'包含订阅列表、规则与偏好设置',ch:1}),row({ic:'download',t:'从本地备份文件恢复…',s:'新建配置副本，保留现有订阅',ch:1})]))}</div><div class="pane">${grp('WebDAV 远程同步',null,`<div class="list plain">${fld('WebDAV 地址','https://dav.example.com/paws/backup.bak')}${fld('账号','demo')}${fld('应用专用密码','••••••••••••')}</div>`)}<div style="display:flex;gap:8px;justify-content:flex-end">${btn(S('download')+'从 WebDAV 恢复…','def')}${btn(S('upload')+'上传备份','pri')}</div></div></div>`,'PC · 备份与恢复（本地与远程双区 + 居中恢复确认）','本地与 WebDAV 分列展示；居中确认弹框明确写出“恢复为新配置”（新建副本、不覆盖现有订阅），与单订阅回滚严格区分。',dlg('从 WebDAV 恢复备份？','来源：dav.example.com/paws/backup.bak。恢复后将新建独立配置副本，不会覆盖现有订阅或中断当前连接。','取消','恢复为新配置')),
+pcwin('外观','外观与关于',pcTools(`<span class="kbd">⌘,</span>`),`<div class="cols" style="grid-template-columns:minmax(0,720px);justify-content:center"><div class="pane">${grp('外观与语言（立即生效 · 方向键可达）',null,lst([row({t:'界面语言',r:'跟随系统（简体中文）',ch:1}),row({lead:rad(1),t:'外观主题：跟随系统'}),row({lead:rad(0),t:'外观主题：浅色 (Gallery Light)'}),row({lead:rad(0),t:'外观主题：深色 (Gallery Dark)'})],1))}${grp('关于 Paws（完整版本可复制 · 外链键盘可达）',null,lst([row({t:'应用版本',r:'1.3.0 (Build 40) '+S('copy')}),row({t:'代理核心',r:'Meow 0.22.0'}),row({t:'界面运行时',r:'nsh-platform-harmonyos'}),row({t:'隐私与数据处理 / 开源许可证',s:'720 pt 连续正文阅读，支持全文选择与复制',ch:1}),row({t:'项目主页',r:ext('github.com/southorange/Paws')})],1))}</div></div>`,'PC · 外观（⌘,）与关于（含 nsh-platform-harmonyos）','偏好单选支持键盘方向键切换并立即生效；关于区完整展示 nsh-platform-harmonyos 运行时标识、可复制版本号与键盘可达外链。'),
+pcwin('订阅','编辑 YAML · 示例机场',pcTools(bdg('已修改','warn')+pcBtn('查找 ⌘F','search')+pcBtn('还原 ⌘⇧R','refresh')+pcBtn('校验语法','check')+pcBtn('保存 ⌘S','check','pri')),`<div style="flex:1;display:flex;flex-direction:column;padding:14px 20px;gap:8px;min-height:0"><div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--muted)"><span>示例机场 / config.yaml · UTF-8 · LF</span><span>行 8，列 17 · YAML 语法有效</span></div>${code}</div>`,'PC · YAML 全工作区编辑器（⌘S / ⌘F / ⌘⇧R）','YAML 占据整个右侧工作区（绝不塞入窄模态框），工具栏集成查找、还原、语法校验与保存快捷键，底部实时反馈行列与校验结果。',null,'主要'),
+`<div class="dev"><div class="win pc narrow">${pcTb('Paws · 窄窗口 820 pt')}<div style="flex:1;display:flex;min-height:0"><div class="side rail"><div class="logo" style="margin:2px 0 8px">P</div><div class="nav" title="概览 ⌘1">${S('house')}</div><div class="nav" title="订阅 ⌘2">${S('rss')}</div><div class="nav" title="代理节点 ⌘3">${S('branch')}</div><div class="nav" title="流量 ⌘4">${S('activity')}</div><div class="nav on" title="连接与请求">${S('list')}</div><div class="nav" title="资源与规则">${S('layers')}</div><div class="nav" title="日志">${S('file')}</div><div style="flex:1"></div><div class="nav" title="外观与设置 ⌘,">${S('gear')}</div></div><div class="main"><div class="tool"><span class="btn sm def" title="展开侧栏 ⌘B">${S('sidebar')}<span class="kbd" style="margin-left:2px">⌘B</span></span><span class="t">连接与请求</span>${pcTools(pcBtn('关闭全部…','x'))}</div><div class="cols" style="grid-template-columns:1fr;gap:12px"><div style="display:flex;gap:8px;align-items:center">${seg(['活动连接','请求历史'],0)}<div class="search" style="flex:1">${S('search')}搜索连接</div>${segSm(['全部','TCP','UDP'],0)}</div><div class="tbl"><div class="tr2 h" style="grid-template-columns:1fr 78px 92px 28px"><span>目标与命中规则（次要列已下移折叠）</span><span>网络</span><span class="num">流量</span><span></span></div><div class="tr2 sel" style="grid-template-columns:1fr 78px 92px 28px;padding-top:8px;padding-bottom:8px"><span class="cell" style="display:flex;flex-direction:column;gap:2px"><b>api.example.com:443</b><small style="color:var(--muted);font-size:12.5px">媒体解锁 → 新加坡 03</small></span><span>${bdg('TCP','neu')}</span><span class="num">412 KB</span>${S('more')}</div><div class="tr2" style="grid-template-columns:1fr 78px 92px 28px;padding-top:8px;padding-bottom:8px"><span class="cell" style="display:flex;flex-direction:column;gap:2px"><b>cdn.example.net:443</b><small style="color:var(--muted);font-size:12.5px">漏网之鱼 → 新加坡 03</small></span><span>${bdg('TCP','neu')}</span><span class="num">3.1 MB</span>${S('more')}</div><div class="tr2" style="grid-template-columns:1fr 78px 92px 28px;padding-top:8px;padding-bottom:8px"><span class="cell" style="display:flex;flex-direction:column;gap:2px"><b>time.example.org:123</b><small style="color:var(--muted);font-size:12.5px">直连</small></span><span>${bdg('UDP','neu')}</span><span class="num">2 KB</span>${S('more')}</div></div><div class="alert info">${S('info')}<span>桌面窗口收窄时：侧栏自动收起为 64 pt 图标轨（⌘B 可临时展开），表格“规则 / 节点”次要列并入目标下方，筛选仍保持 Gallery Segmented 样式。</span></div></div></div></div></div><div class="cap" style="max-width:740px"><b>PC · 窄窗口（820 pt）侧栏收起为图标轨与表格次要列下移</b><span>验证桌面端自适应边界：窄窗口保留桌面标题栏、工具栏、Gallery 指针档控件尺度与右键菜单，绝不退化成手机底部 Tab 栏。</span></div></div>`
+]);
+</script>
+<section class="sec" id="sec-coverage"><div class="sec-head"><span class="eyebrow">全端覆盖表 · 实施依据</span><h2>每个页面在三端的呈现（14 类页面三端已全部绘出）</h2><p class="lede">上方 Phone、Pad、PC 画面已逐一落实下表全部 14 类页面及窄窗/竖屏回退态，三端共享同一套 NSH Gallery（<code>nsh-gallery-ui</code>）色彩、表面材质与标准控件尺度。</p></div>
+<div class="rules"><table class="coverage"><thead><tr><th>页面</th><th>Phone</th><th>Pad 宽屏</th><th>PC</th></tr></thead><tbody>
+<tr><td>概览（首页）</td><td>连接卡 + 节点摘要 + 速率 + <b>全部策略组直接平铺展开</b>（无折叠、无“查看策略组”按钮）；整页统一滚动</td><td>左列连接卡 + 节点 + 速率，右列<b>全部策略组全展开</b>；窄屏自动退回单列</td><td>双列工作区（左列连接 + 节点 + 速率，右列<b>全部策略组全展开</b>）；无悬浮按钮</td></tr>
+<tr><td>订阅</td><td>连续列表 → 详情；菜单为底部面板</td><td>订阅列表 + 详情；触屏命令仍为原生菜单</td><td>列表 + 详情；右键与更多同命令；短编辑居中表单</td></tr>
+<tr><td>代理节点</td><td>组集合 → 成员单页；搜索不清选择</td><td>组列表 + 成员列表，独立滚动</td><td>组浏览器 + 成员列表；焦点与选中不同</td></tr>
+<tr><td>流量</td><td>速率 / 累计 / 趋势；连接与请求、DNS 诊断入口</td><td>速率与历史并排；右侧 DNS 缓存与连接入口</td><td>图表与会话详情并排；文字单位和零基线不变</td></tr>
+<tr><td>连接与请求</td><td>统一双分段（活动连接 / 请求历史）+ 单行 Gallery Segmented / Picker 筛选 + 清爽列表 → 底部详情 Sheet</td><td>左栏双分段列表（Segmented + Picker 筛选）+ 右侧锁定 ID 详情面板</td><td>双分段 Gallery DataTable + 单行 Segmented / Picker 筛选 + 右侧可关闭连接/请求检查器</td></tr>
+<tr><td>资源与规则</td><td>状态 + 分类列表；排序固定提交栏</td><td>资源集合 + 详情，排序区独立</td><td>规则表格 / 提供者列表 + 检查器；上移下移可键盘操作</td></tr>
+<tr><td>日志</td><td>当前日志 / 历史归档双分段 + 五档 Gallery Segmented 级别过滤 + 列表行 → 底部详情 Sheet</td><td>左侧日志流（含暂停跟随保护胶囊）+ 右侧选中日志详情检查器</td><td>与 Pad 一致的左日志流 + 右侧可关闭日志详情检查器；记录/暂停/清空在工具栏</td></tr>
+<tr><td>网络设置</td><td>VPN / 网络 / DNS 独立草稿，独立保存</td><td>居中表单，宽度上限 640；保存栏固定</td><td>工作区表单宽度上限 720；分区保存，不全页混存</td></tr>
+<tr><td>转换</td><td>输入 → 选项 → 结果，基本 / 进阶</td><td>输入与结果双列，复杂选项连续滚动</td><td>双列工作区，生成是明确提交；旧结果失效</td></tr>
+<tr><td>诊断</td><td>状态 / 主动探测 / 自动恢复；高级诊断独立</td><td>当前状态与探测双列</td><td>状态、探测主区 + 高级诊断入口；停止不被探测阻塞</td></tr>
+<tr><td>备份</td><td>本地 / WebDAV 分组；原生确认</td><td>居中任务页，短确认走原生弹框</td><td>本地与远程双区；恢复确认居中，范围准确</td></tr>
+<tr><td>外观</td><td>原生单选偏好，立即生效</td><td>居中偏好列表</td><td>工作区偏好，Mod+,；单选键盘可达</td></tr>
+<tr><td>关于 / 隐私 / 许可</td><td>版本行与连续长文，不裁切</td><td>正文宽度上限 640</td><td>正文上限 720；外链可键盘打开，版本完整可复制</td></tr>
+<tr><td>YAML</td><td>全页原生 Editor + 键盘避让</td><td>全页 Editor；不塞入短表单弹层</td><td>全工作区 Editor，Mod+S / Mod+F / Mod+Shift+R</td></tr>
+</tbody></table></div></section>
+<section class="sec"><div class="sec-head"><span class="eyebrow">流程与设计边界</span><h2>主要任务的返回与提交规则</h2></div>
+<div class="flow"><span>首页</span><i>→</i><span>添加订阅</span><i>→</i><span>启用订阅</span><i>→</i><span>连接</span><i>→</i><span>选节点</span><i>→</i><span>确认生效</span><i>→</i><span>返回首页</span></div>
+<div class="flow"><span>任意草稿</span><i>→</i><span>返回 / 切换目的地</span><i>→</i><span>继续编辑 或 放弃修改</span><i>→</i><span>只放弃未提交部分</span></div>
+<div class="flow"><span>已提交</span><i>→</i><span>状态读取失败</span><i>→</i><span>重新读取</span><i>→</i><span>不重新提交原命令</span></div>
+<p class="lede">菜单先关闭，再开表单。Escape / 系统返回先关闭顶层弹层，焦点回触发点。两种恢复语义不同，按钮文案也不同：从备份文件或 WebDAV 恢复，是新建配置副本，保留现有订阅，按钮写"恢复为新配置"；恢复某个订阅的上次备份，会覆盖该订阅，按钮保留现有的"恢复并覆盖"，并写出订阅名称。自动策略组若实际支持固定节点，使用明确的“固定此节点 / 恢复自动选择”，不隐去已有能力。</p>
+</section>
+<section class="sec">
+  <div class="sec-head">
+    <span class="eyebrow">给实现的硬规则 · NSH Gallery 触屏档 / 指针档</span>
+    <h2>尺寸、表面与双档尺度令牌</h2>
+    <p class="lede">由 <code>platform.desktop</code> 选档：Phone 与 Pad 取触屏档，PC 取指针档，Pad 即使接键盘也不切指针档。数值取自 nsh/examples/nsh-gallery-ui（origin/ohos 59f8dcc9e），下表是代码对齐的依据。</p>
+  </div>
+  <div class="rules">
+    <table>
+      <thead><tr><th>项目</th><th>Phone · Pad（触屏档）</th><th>PC（指针档）</th><th>Gallery 出处</th></tr></thead>
+      <tbody>
+        <tr><td>按钮 regular / small / large</td><td class="num">40 / 36 / 48 pt · 字 15 / 14 / 17 · 图标 16 / 14 / 18 · 内边距 16 / 12 / 20</td><td class="num">28 / 24 / 34 pt · 字 13 / 12 / 14 · 图标 14 / 12 / 15 · 内边距 12 / 8 / 16</td><td>look/button.ts <code>buttonSizes</code>；标签字重 500，圆角 <code>radius.control</code>，触屏 hitSlop 补到 44 pt</td></tr>
+        <tr><td>图标按钮</td><td class="num">40 × 40 pt · 图标 18</td><td class="num">28 × 28 pt · 图标 15</td><td>look/button.ts <code>iconButtonLook</code></td></tr>
+        <tr><td>分段控件 Segmented</td><td class="num">36 / 32 pt（regular / small）· 字 14 / 13 · 轨道圆角 10 · 滑块 7 · 撑满一行</td><td class="num">30 / 26 pt · 字 12 · 轨道圆角 9 · 滑块 6 · 按内容宽度</td><td>look/tabs.tsx <code>segmentedLook</code>；选中项字重同为 500</td></tr>
+        <tr><td>输入框 / 搜索</td><td class="num">46 pt · 字 15 · 水平内边距 14</td><td class="num">28 pt · 字 13 · 水平内边距 8</td><td>look/field.tsx <code>fieldSize</code></td></tr>
+        <tr><td>Picker / Select 触发器</td><td class="num">44 pt · 字 15</td><td class="num">32 pt · 字 14</td><td>look/listbox.tsx <code>controlSize.line</code></td></tr>
+        <tr><td>开关</td><td class="num">42 × 24 pt · 滑块 20 · 描边 1 + 内边距 1</td><td class="num">28 × 16 pt · 滑块 12</td><td>look/switch-geometry.ts</td></tr>
+        <tr><td>单选 / 复选</td><td class="num">22 pt · 复选圆角 7 · 圆点 8 · 勾 16</td><td class="num">16 pt · 复选圆角 5 · 圆点 6 · 勾 12</td><td>look/surface.tsx <code>controlSize</code></td></tr>
+        <tr><td>分区表面 sectionSurface</td><td class="num">圆角 16 · 1 pt 边线 · <b>无阴影</b></td><td class="num">圆角 10 · 1 pt 边线 · <b>无阴影</b></td><td>look/surface.tsx <code>density.surface</code>；普通分区保持平面</td></tr>
+        <tr><td>列表行</td><td class="num">最小高 48 pt · 垂直内边距 8 · 水平 16 · 间距 12 · 分隔线贯穿内容宽度</td><td class="num">最小高 40 pt · 垂直 6 · 水平 14 · 间距 10</td><td>look/surface.tsx <code>density.row</code>、<code>controlSize.row</code>、<code>RowDivider</code></td></tr>
+        <tr><td>字号层级</td><td class="num">分区标题 15 · 正文 / 行标签 15 · 说明 13 · 徽章 12</td><td class="num">分区标题 13 · 正文 / 行标签 14 · 说明 12 · 徽章 12</td><td>look/surface.tsx <code>density</code>、<code>controlSize.label / detail</code>；SectionHead</td></tr>
+        <tr><td>徽章 Badge</td><td class="num">26 pt 高 · 水平 10 · 圆角 13 · 字 12 / 500</td><td class="num">同触屏档（Gallery 的 Badge 不分档）</td><td>index.tsx <code>Badge</code></td></tr>
+        <tr><td>菜单行 / Sheet</td><td class="num">菜单行 46 pt · 圆角 10 · 字 16 · Sheet 顶圆角 20 · 抓手 36 × 5 · 内边距 10 / 10 / 34</td><td class="num">弹出菜单行 26 pt · 圆角 6 · 字 13 · 图标 14 · 面板内边距 4</td><td>look/menu.tsx <code>menuItemSize</code>、<code>menuSheet</code></td></tr>
+        <tr><td>对话框卡片</td><td class="num">圆角 16 · 内边距 20 · 行间 12 · 标题 20 · 正文 15 / 21</td><td class="num">标题 17 · 正文 13 / 19</td><td>look/overlay.ts <code>dialogCard</code></td></tr>
+        <tr><td>数据表</td><td class="num">不用（触屏用列表行）</td><td class="num">行高 40 pt · 表头 32 pt · 圆角 12 · 单元格水平 8</td><td>data-table.ts、<code>controlSize.row</code></td></tr>
+        <tr><td>页面边距 / 表单限宽</td><td class="num">Phone 16 pt · Pad 20 pt · Pad 表单居中 ≤ 640 pt</td><td class="num">PC 20 pt · 表单居中 ≤ 720 pt</td><td>Paws 版式；宽屏长表单居中限宽</td></tr>
+        <tr><td>首页（概览）策略组</td><td colspan="2">三端默认完整平铺全部策略组，不收拢，没有“查看策略组”操作</td><td>作为页面统一滚动的一部分，点按任一策略组直达该组节点选择</td></tr>
+        <tr><td>表面层级与主按钮</td><td colspan="2">Canvas(<code>--bg</code>) → Section(<code>--card</code> + 1pt <code>--border</code>) → Raised(<code>--raised</code>) → Overlay(<code>--popover</code> + <code>--sh-menu</code>)</td><td>“连接”用柠檬绿（<code>--brand-fill</code>），已连接/连接中“停止”用实心红（<code>--stop-fill</code> + 白色前景）；测速、刷新等普通动作用 Raised 次要按钮</td></tr>
+        <tr><td>悬浮连接按钮</td><td>Phone（及竖屏单列）仅在首页连接卡滚出视口后显示 48 pt 圆钮</td><td>Pad 横屏双列与 PC 不显示</td><td>出现时底部预留 80 pt；键盘弹出或浮层打开时隐藏</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="sec-head" style="margin-top:8px"><h3>Paws 自有壳层（Gallery 未规定，本稿自行定义）</h3></div>
+  <div class="rules">
+    <table>
+      <thead><tr><th>项目</th><th>数值</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Phone 页头 / 底栏 / 悬浮按钮</td><td>页头 52 pt · 底栏 64 pt（图标 18，选中描边 2.2，未选中 1.8）· 悬浮按钮 48 pt · 底部预留 80 pt</td><td>Gallery 的 PageHeader 面向其演示壳层，Paws 的手机页头与底栏是 Paws 自有壳层</td></tr><tr><td>Pad 侧栏</td><td>64 pt 图标轨（图标块 42 pt）· 展开 232 pt · 导航行 36 pt</td><td>触屏目标不低于 36 pt；Gallery 的 28 pt 侧栏项只用于指针</td></tr><tr><td>触屏紧凑 Picker</td><td>32 pt · 字 13 · 圆角 9，与 32 pt 次级分段控件并排</td><td>Gallery 的 Picker 触屏只有 44 pt 一档；32 pt 是 Paws 为紧凑筛选行加的，与指针档 32 pt 同高</td></tr><tr><td>PC 壳层</td><td>232 pt 侧栏 · 导航行 28 pt · 窄窗口 64 pt 图标轨（图标块 36 pt）· 品牌块 40 pt 无分隔线 · 工具栏 54 pt · 标题栏 38 pt</td><td>导航行 28 pt 取自 Gallery App.tsx；其余是 Paws 自有壳层</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note-card">
+    <h3>主题令牌与 Gallery 的已知差异</h3>
+    <p class="lede">Paws 主题（<code>ui/nsh/theme.json</code>）有意与 Gallery 不同：新增 <code>stop-fill</code>、<code>on-stop</code>、<code>brand-fill</code>；圆角令牌 <code>radius-control</code> 10（Gallery 7）、<code>radius</code> 12（Gallery 10）、<code>radius-card</code> 16（Gallery 12）；背景、卡片等色值也不同。控件尺寸按上表对齐，主题色值和圆角令牌保持 Paws 的取值。</p>
+  </div>
+</section>
+
+</div>
