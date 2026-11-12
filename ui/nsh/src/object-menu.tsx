@@ -18,6 +18,8 @@ import {
   spacing,
   useApp,
   useLifetime,
+  useOverlay,
+  RouteOwner,
 } from "./components";
 import type { IconName } from "./icons";
 import { feedbackStyle } from "./motion";
@@ -28,6 +30,7 @@ export type ObjectCommand = {
   icon: IconName;
   id?: string;
   disabled?: boolean;
+  disabledReason?: string;
   danger?: boolean;
   run: () => void;
 };
@@ -36,14 +39,17 @@ export type ObjectCommand = {
 export function ObjectMenu(props: {
   id: string;
   title: string;
+  subtitle?: string;
+  triggerLabel?: string;
   commands: ObjectCommand[];
   row: (trigger: JSX.Element) => JSX.Element;
 }) {
   const ui = useApp(),
     alive = useLifetime(),
-    route = ui.route();
+    route = RouteOwner() || ui.route();
   const open = signal(false),
     contextOpen = signal(false);
+  useOverlay(() => open() || contextOpen());
   let pending: { source: "menu" | "context"; run: () => void } | undefined;
   const close = () => {
     open.set(false);
@@ -63,22 +69,41 @@ export function ObjectMenu(props: {
             flexDirection: "row",
             alignItems: "center",
             paddingLeft: spacing.md,
+            paddingVertical: density.space(4),
+            borderBottomWidth: 1,
+            borderBottomColor: palette().line,
+            marginBottom: density.space(2),
           }}
         >
-          <Text
-            role="header"
-            accessibilityLabel={props.title}
-            style={{
-              flex: 1,
-              minWidth: 0,
-              numberOfLines: 2,
-              fontSize: density.font(13),
-              lineHeight: density.line(20),
-              color: palette().muted,
-            }}
-          >
-            {props.title}
-          </Text>
+          <View style={{ flex: 1, minWidth: 0, gap: density.space(2) }}>
+            <Text
+              role="header"
+              accessibilityLabel={props.title}
+              style={{
+                minWidth: 0,
+                numberOfLines: 2,
+                fontSize: density.font(13),
+                lineHeight: density.line(18),
+                fontWeight: "600",
+                color: palette().text,
+              }}
+            >
+              {props.title}
+            </Text>
+            <If when={props.subtitle}>
+              <Text
+                style={{
+                  minWidth: 0,
+                  numberOfLines: 1,
+                  fontSize: density.font(11),
+                  lineHeight: density.line(15),
+                  color: palette().muted,
+                }}
+              >
+                {props.subtitle}
+              </Text>
+            </If>
+          </View>
           <IconButton
             id={`${props.id}-close`}
             icon="x"
@@ -125,24 +150,24 @@ export function ObjectMenu(props: {
                   close();
                 }}
                 focusStyle={focusRing()}
-                hoverStyle={{ backgroundColor: palette().soft }}
+                hoverStyle={{ backgroundColor: palette().hover }}
                 activeStyle={{ backgroundColor: palette().soft }}
                 style={{
-                  minHeight: control.row,
+                  minHeight: 42,
                   paddingHorizontal: spacing.md,
-                  paddingVertical: spacing.sm,
-                  borderRadius: radius.sm,
+                  paddingVertical: spacing.xs,
+                  borderRadius: 8,
                   borderCurve: "continuous",
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: spacing.md,
-                  opacity: command().disabled ? 0.4 : 1,
+                  gap: 10,
+                  opacity: command().disabled ? 0.45 : 1,
                   ...feedbackStyle(),
                 }}
               >
                 <Icon
                   name={command().icon}
-                  size={18}
+                  size={16}
                   color={command().danger ? palette().danger : palette().muted}
                 />
                 <Text
@@ -151,11 +176,23 @@ export function ObjectMenu(props: {
                     minWidth: 0,
                     fontSize: density.font(14),
                     lineHeight: density.line(20),
+                    fontWeight: "500",
                     color: command().danger ? palette().danger : palette().text,
                   }}
                 >
                   {command().label}
                 </Text>
+                <If when={command().disabled && !!command().disabledReason}>
+                  <Text
+                    style={{
+                      fontSize: density.font(12),
+                      lineHeight: density.line(16),
+                      color: palette().muted,
+                    }}
+                  >
+                    {command().disabledReason}
+                  </Text>
+                </If>
               </MenuItem>
             </>
           )}
@@ -172,17 +209,20 @@ export function ObjectMenu(props: {
       align="end"
       offset={4}
       margin={8}
-      popupStartingStyle={{ opacity: 0, transform: [{ translateY: -4 }] }}
+      popupStartingStyle={{
+        opacity: 0,
+        transform: [{ scale: 0.96 }, { translateY: -4 }],
+      }}
       popupEndingStyle={{ opacity: 0 }}
       backdropStyle={{ backgroundColor: palette().scrim }}
       trigger={
         <View
           testID={props.id}
           role="button"
-          accessibilityLabel={ui.t(
-            `${props.title}的操作`,
-            `Actions for ${props.title}`,
-          )}
+          accessibilityLabel={
+            props.triggerLabel ||
+            ui.t(`${props.title}的操作`, `Actions for ${props.title}`)
+          }
           hitSlop={control.hitSlop(control.icon)}
           accessibilityState={{ expanded: open() }}
           focusStyle={focusRing()}
@@ -199,7 +239,7 @@ export function ObjectMenu(props: {
             backgroundColor: open() ? palette().soft : "transparent",
           }}
         >
-          <Icon name="ellipsis-vertical" size={18} color={palette().muted} />
+          <Icon name="ellipsis" size={18} color={palette().muted} />
         </View>
       }
     >

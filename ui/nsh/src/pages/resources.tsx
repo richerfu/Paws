@@ -27,12 +27,15 @@ import {
   Hint,
   Icon,
   IconButton,
+  IconTile,
   SearchField,
   Spinner,
   palette,
   radius,
   useApp,
   useLifetime,
+  useDraftGuard,
+  RouteOwner,
 } from "../components";
 import { bytes, timestamp } from "../locale";
 import { matchesGeodata, matchesProvider, matchesRule } from "../query";
@@ -40,7 +43,7 @@ import { ManualRuleDialog, type RuleContext } from "../manual-rule";
 import type { UiState, Rule, Provider } from "../model";
 import { ObjectMenu } from "../object-menu";
 import { feedbackStyle } from "../motion";
-import { focusRing } from "../theme";
+import { focusRing, surfaceFinish } from "../theme";
 import { PageError } from "../page-error";
 
 type Lookup = {
@@ -66,7 +69,12 @@ export function Resources() {
   const selectedRule = signal<Rule | undefined>(),
     runtimeRulesOpen = signal(false);
   const runtimeRules = () => ui.client.domains.data("rules")?.runtimeRules;
+  const orderDraft = signal<{ ids: string[]; revision: number }>();
+  const orderConflict = () => !!orderDraft() && orderDraft()!.revision !== ui.client.state()!.configRevision;
+  useDraftGuard(() => !!orderDraft(), () => orderDraft.set(undefined), () => ui.client.isPending("rules.reorder"));
+  const owner = RouteOwner() || ui.route();
   let lookupGeneration = 0;
+  let afterLookup: RuleContext | undefined;
   const closeLookup = () => {
     lookupGeneration++;
     lookupOpen.set(false);
@@ -74,6 +82,7 @@ export function Resources() {
   };
   effect(() => {
     const intent = ui.resourceIntent();
+    if (ui.route() !== owner) return;
     if (intent)
       untracked(() => {
         if (!ui.consumeResourceIntent(intent.id)) return;
@@ -88,7 +97,10 @@ export function Resources() {
       ui.client.pending() > 0 ||
       !ui.client.domains.fresh(["config", "rules", "providers", "geodata"]);
   const rules = computed(() =>
-      current().rules.filter((rule) => matchesRule(rule, query())),
+      (orderDraft() ? orderDraft()!.ids.flatMap((id, order) => {
+        const rule = current().rules.find((rule) => rule.id === id);
+        return rule ? [{ ...rule, order }] : [];
+      }) : current().rules).filter((rule) => matchesRule(rule, query())),
     ),
     providers = computed(() =>
       current().providers.filter((provider) =>
@@ -111,16 +123,23 @@ export function Resources() {
           item.providerType === selectedProvider()?.providerType,
       );
   const moveRule = (id: string, distance: number) => {
-    const ids = current().rules.map((rule) => rule.id),
+    if (orderConflict() || busy()) return;
+    const ids = orderDraft()?.ids.slice() || current().rules.map((rule) => rule.id),
       from = ids.indexOf(id),
       to = from + distance;
     if (from < 0 || to < 0 || to >= ids.length) return;
     [ids[from], ids[to]] = [ids[to], ids[from]];
-    void ui.client.run(
+    orderDraft.set({ ids, revision: orderDraft()?.revision ?? current().configRevision });
+  };
+  const saveOrder = async () => {
+    const submitted = orderDraft();
+    if (!submitted || orderConflict() || busy()) return;
+    const result = await ui.client.run(
       "rules.reorder",
-      { ids, expectedRevision: current().configRevision },
+      { ids: submitted.ids, expectedRevision: submitted.revision },
       ui.t("规则设置已保存", "Rule settings saved"),
     );
+    if (alive() && result !== undefined && orderDraft() === submitted) orderDraft.set(undefined);
   };
   const ruleLookup = async () => {
     if (lookupBusy() || !lookup().trim() || !current().activeProfile) return;
@@ -138,10 +157,10 @@ export function Resources() {
     const result = lookupResult();
     if (!result) return;
     closeLookup();
-    manual.set(
+    afterLookup = (
       result.inputKind === "domain"
         ? { domain: result.query, destinationIp: result.resolvedIp }
-        : { destinationIp: result.query },
+        : { destinationIp: result.query }
     );
   };
   const importRules = async () => {
@@ -310,7 +329,7 @@ export function Resources() {
                 onPress={() => geodata.set(row().file)}
                 style={{
                   minHeight: Math.max(
-                    control.compact ? 64 : 76,
+                    68,
                     density.line(38) * Math.max(1, fontScale()) +
                       density.space(24),
                   ),
@@ -322,30 +341,18 @@ export function Resources() {
                   ...feedbackStyle(),
                   borderWidth: 1,
                   borderColor: palette().border,
-                  borderRadius: radius.lg,
+                  borderRadius: radius.xl,
                   borderCurve: "continuous",
                   backgroundColor: palette().panel,
+                  ...surfaceFinish("card"),
                 }}
               >
-                <View
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: radius.lg,
-                    borderCurve: "continuous",
-                    backgroundColor: palette().soft,
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <Icon
-                    name="file-text"
-                    size={17}
-                    color={
-                      row().file!.exists ? palette().success : palette().danger
-                    }
-                  />
-                </View>
+                <IconTile
+                  icon="file-text"
+                  color={
+                    row().file!.exists ? palette().success : palette().danger
+                  }
+                />
                 <View style={{ flex: 1, minWidth: 0, gap: density.space(3) }}>
                   <Text
                     style={{
@@ -485,6 +492,12 @@ export function Resources() {
           </>
         )}
       </List>
+      <If when={orderDraft()}>
+        <View style={{ paddingVertical: density.space(12), gap: density.space(8), borderTopWidth: 1, borderTopColor: palette().border }}>
+          <Hint danger={orderConflict()} text={orderConflict() ? ui.t("配置已变化，无法提交旧顺序。放弃预览后重新排列。", "Configuration changed. Discard this preview and reorder the current rules.") : ui.t("规则顺序预览，尚未保存。", "Rule order preview; not saved yet.")} />
+          <Actions><Action id="discard-rule-order" label={ui.t("放弃排序", "Discard order")} onPress={() => orderDraft.set(undefined)} /><Action id="save-rule-order" primary label={ui.t("保存顺序", "Save order")} loading={ui.client.isPending("rules.reorder")} disabled={orderConflict() || busy()} onPress={() => void saveOrder()} /></Actions>
+        </View>
+      </If>
       <If when={runtimeRulesOpen()}>
         <Dialog
           title={ui.t("内核运行规则", "Engine runtime rules")}
@@ -599,6 +612,10 @@ export function Resources() {
             "Preview the current profile with the shared rule compiler; this is not an observed routing decision from the running engine.",
           )}
           onClose={closeLookup}
+          afterClose={() => {
+            if (alive() && afterLookup) manual.set(afterLookup);
+            afterLookup = undefined;
+          }}
           footer={
             <Action
               loading={lookupBusy()}
@@ -882,7 +899,7 @@ function RuleRow(props: {
           label: ui.t("上移", "Move up"),
           icon: "arrow-up",
           disabled:
-            readonly() || busy() || current().rules[0]?.id === rule().id,
+            readonly() || busy() || rule().order === 0,
           run: () => props.onMove(rule().id, -1),
         },
         {
@@ -892,7 +909,7 @@ function RuleRow(props: {
           disabled:
             readonly() ||
             busy() ||
-            current().rules[current().rules.length - 1]?.id === rule().id,
+            rule().order === current().rules.length - 1,
           run: () => props.onMove(rule().id, 1),
         },
         {
@@ -944,19 +961,20 @@ function RuleRow(props: {
         <View
           style={{
             minHeight: Math.max(
-              control.compact ? 68 : 80,
+              68,
               density.line(38) * Math.max(1, fontScale()) + density.space(24),
             ),
             padding: density.space(12),
             gap: density.space(8),
             borderWidth: 1,
             borderColor: palette().border,
-            borderRadius: radius.lg,
+            borderRadius: radius.xl,
             borderCurve: "continuous",
             backgroundColor: palette().panel,
             opacity: rule().enabled ? 1 : 0.65,
             flexDirection: "row",
             alignItems: "center",
+            ...surfaceFinish("card"),
           }}
         >
           <Text
@@ -1078,7 +1096,7 @@ function ProviderCard(props: { provider: Provider; onDetails: () => void }) {
           accessibilityState={{ busy: refreshing() || checking() }}
           style={{
             minHeight: Math.max(
-              control.compact ? 68 : 80,
+              68,
               density.line(38) * Math.max(1, fontScale()) + density.space(24),
             ),
             padding: density.space(12),
@@ -1087,14 +1105,15 @@ function ProviderCard(props: { provider: Provider; onDetails: () => void }) {
             alignItems: "center",
             borderWidth: 1,
             borderColor: palette().border,
-            borderRadius: radius.lg,
+            borderRadius: radius.xl,
             borderCurve: "continuous",
             backgroundColor: palette().panel,
+            ...surfaceFinish("card"),
           }}
         >
           <If
             when={refreshing() || checking()}
-            else={<Icon name="database" size={18} color={palette().muted} />}
+            else={<IconTile icon="layers" color={palette().muted} />}
           >
             <Spinner size={18} color={palette().muted} />
           </If>

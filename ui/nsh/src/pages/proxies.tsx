@@ -5,7 +5,6 @@ import {
   signal,
   Text,
   View,
-  windowSize,
   List,
   platform,
 } from "nsh";
@@ -16,30 +15,465 @@ import {
   Empty,
   Hint,
   Icon,
+  IconTile,
+  ListSurface,
   palette,
   radius,
   SearchField,
+  SectionHeader,
   spacing,
   Spinner,
   useApp,
   useDomainInterests,
   useLifetime,
+  useLayout,
+  useViewState,
+  Actions,
+  copyText,
 } from "../components";
 import { includes } from "../locale";
-import { focusRing, statusColors } from "../theme";
+import { focusRing, statusColors, surfaceFinish } from "../theme";
 import { PageError } from "../page-error";
-import { feedbackStyle } from "../motion";
+import { animateDisclosure, feedbackStyle, follow } from "../motion";
+import type { IconName } from "../icons";
 import type { ProxyGroup, Proxy, ProxyGroupHeader } from "../model";
 import {
   groupMembers,
   selectableGroup,
   selectedMember,
-  proxyGroupSummary,
   groupSelectionMode,
 } from "../proxy-groups";
 
 type Group = ProxyGroup | ProxyGroupHeader;
 type Row = { key: string; group: Group; proxy?: Proxy; loading?: boolean };
+
+function groupIcon(group: Group): IconName {
+  const upper = group.name.toUpperCase();
+  if (upper === "GLOBAL") return "network";
+  if (
+    upper.includes("REJECT") ||
+    upper.includes("ADBLOCK") ||
+    group.name.includes("广告") ||
+    group.name.includes("拦截")
+  )
+    return "shield-check";
+  if (groupSelectionMode(group) === "automatic") return "zap";
+  return "layers";
+}
+
+function SelectionMark(props: {
+  selected: boolean;
+  selectable: boolean;
+  nestedGroup: boolean;
+  busy: boolean;
+}) {
+  const ring = () => 22;
+  const dot = () => 8;
+  const dotScale = follow(() => (props.selected ? 1 : 0));
+  return (
+    <If
+      when={props.busy}
+      else={
+        <If
+          when={props.selectable && !props.nestedGroup}
+          else={
+            <Icon
+              name={props.nestedGroup ? "layers" : "network"}
+              size={17}
+              color={props.selected ? palette().accent : palette().muted}
+            />
+          }
+        >
+          <View
+            style={{
+              width: ring(),
+              height: ring(),
+              borderRadius: ring() / 2,
+              borderWidth: 1,
+              borderColor: props.selected
+                ? surfaceFinish("accent").borderColor
+                : palette().fieldBorder,
+              boxShadow: props.selected
+                ? surfaceFinish("accent").boxShadow
+                : undefined,
+              backgroundColor: props.selected
+                ? palette().brandFill
+                : palette().field,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <View
+              style={{
+                width: dot(),
+                height: dot(),
+                borderRadius: dot() / 2,
+                backgroundColor: palette().primaryText,
+                opacity: dotScale,
+                transform: [{ scale: dotScale }],
+              }}
+            />
+          </View>
+        </If>
+      }
+    >
+      <Spinner size={17} color={palette().accent} />
+    </If>
+  );
+}
+
+function groupModeLabel(
+  group: Group,
+  t: (zh: string, en: string) => string,
+): string {
+  const mode = groupSelectionMode(group);
+  return mode === "automatic"
+    ? t("自动选择", "Automatic")
+    : mode === "pinned"
+      ? t("已固定", "Pinned")
+      : mode === "manual"
+        ? t("手动选择", "Manual")
+        : t("自动策略", "Policy");
+}
+
+function isTimeout(proxy: Proxy) {
+  return proxy.delayMs === 0;
+}
+
+function latencyTone(proxy: Proxy) {
+  return isTimeout(proxy)
+    ? ("danger" as const)
+    : proxy.delayMs == null
+      ? ("neutral" as const)
+      : proxy.delayMs < 150
+        ? ("success" as const)
+        : proxy.delayMs < 400
+          ? ("warning" as const)
+          : ("danger" as const);
+}
+
+/** Inline non-scrolling summary groups for Overview (no nested ScrollView). */
+export function SummaryPolicyGroups() {
+  const ui = useApp(),
+    alive = useLifetime(),
+    expanded = signal("");
+  useDomainInterests(() =>
+    expanded() ? [{ domain: "proxies", groupKey: expanded() }] : [],
+  );
+  const allGroups = () =>
+    ui.client.domains
+      .data("summary")!
+      .groups.slice()
+      .sort((a, b) =>
+        a.name.toUpperCase() === "GLOBAL"
+          ? -1
+          : b.name.toUpperCase() === "GLOBAL"
+            ? 1
+            : a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
+      );
+  const interest = (group: Group) => ({
+    domain: "proxies" as const,
+    groupKey: group.name,
+  });
+  const roster = (group: Group): ProxyGroup | undefined =>
+    ui.client.domains
+      .data("proxies", group.name)
+      ?.proxyGroups.find((row) => row.name === group.name);
+  const members = (group: Group) => {
+    const value = roster(group);
+    return value ? groupMembers(allGroups(), value) : [];
+  };
+  const selection = (group: string) =>
+    ui.client
+      .pendingRequests()
+      .find(
+        (request) =>
+          ["proxies.select", "proxies.unfix"].includes(request.command) &&
+          request.payload.group === group,
+      );
+  const selected = (group: Group) => {
+    const value = roster(group),
+      name = value && selectedMember(value);
+    return name && members(group).some((proxy) => proxy.name === name)
+      ? name
+      : ("effectiveSelectedNode" in group && group.effectiveSelectedNode) ||
+          group.selected ||
+          undefined;
+  };
+  const select = async (group: Group, proxy: Proxy) => {
+    if (
+      selection(group.name) ||
+      !selectableGroup(group) ||
+      !ui.client.domains.fresh([interest(group)])
+    )
+      return;
+    const pinned = group.fixed === proxy.name;
+    await ui.client.run(
+      pinned ? "proxies.unfix" : "proxies.select",
+      pinned ? { group: group.name } : { group: group.name, name: proxy.name },
+    );
+    if (!alive()) return;
+  };
+  return (
+    <ListSurface id="summary-groups-list">
+      <Each of={allGroups()} key={(group) => group.name}>
+        {(group, index) => {
+          const isOpen = () => expanded() === group().name;
+          return (
+            <View>
+              <View
+                testID={`summary-group-${group().name}`}
+                role="button"
+                accessibilityLabel={group().name}
+                accessibilityState={{ expanded: isOpen() }}
+                onPress={() => {
+                  animateDisclosure();
+                  expanded.set(isOpen() ? "" : group().name);
+                }}
+                focusStyle={focusRing()}
+                hoverStyle={{ backgroundColor: palette().hover }}
+                activeStyle={{ backgroundColor: palette().soft }}
+                style={{
+                  minHeight: Math.max(
+                    52,
+                    density.line(20) * Math.max(1, fontScale()) + spacing.lg,
+                  ),
+                  paddingHorizontal: 14,
+                  paddingVertical: density.space(10),
+                  gap: spacing.md,
+                  borderBottomWidth:
+                    isOpen() || index() < allGroups().length - 1 ? 1 : 0,
+                  borderBottomColor: palette().line,
+                  backgroundColor: isOpen() ? palette().inset : "transparent",
+                  flexDirection: "row",
+                  alignItems: "center",
+                  ...feedbackStyle(),
+                }}
+              >
+                <IconTile icon={groupIcon(group())} selected={isOpen()} />
+                <View style={{ flex: 1, minWidth: 0, gap: density.space(2) }}>
+                  <Text
+                    style={{
+                      numberOfLines: 1,
+                      fontSize: density.font(15),
+                      lineHeight: density.line(20),
+                      fontWeight: "600",
+                      color: palette().text,
+                    }}
+                  >
+                    {group().name.toUpperCase() === "GLOBAL"
+                      ? ui.t("全局节点", "Global nodes")
+                      : group().name}
+                  </Text>
+                  <Text
+                    style={{
+                      numberOfLines: 1,
+                      fontSize: density.font(13),
+                      lineHeight: density.line(18),
+                      color: palette().muted,
+                    }}
+                  >
+                    {groupModeLabel(group(), ui.t)} ·{" "}
+                    {group().effectiveSelectedNode ||
+                      group().selected ||
+                      ui.t("未选择节点", "No node selected")}
+                  </Text>
+                </View>
+                <Text
+                  style={{
+                    fontSize: density.font(13),
+                    lineHeight: density.line(18),
+                    color: palette().muted,
+                    fontVariant: ["tabular-nums"],
+                  }}
+                >
+                  {group().memberCount}
+                </Text>
+                <Chevron expanded={isOpen()} />
+              </View>
+              <If when={isOpen()}>
+                <If
+                  when={ui.client.domains.has([interest(group())])}
+                  else={
+                    <View
+                      style={{
+                        minHeight: 48,
+                        padding: 14,
+                        borderBottomWidth:
+                          index() < allGroups().length - 1 ? 1 : 0,
+                        borderBottomColor: palette().line,
+                        gap: spacing.sm,
+                      }}
+                    >
+                      <If
+                        when={ui.client.domains.error([interest(group())])}
+                        else={
+                          <View
+                            style={{
+                              flexDirection: "row",
+                              alignItems: "center",
+                              gap: spacing.sm,
+                            }}
+                          >
+                            <Spinner size={16} />
+                            <Hint
+                              text={ui.t(
+                                "正在读取分组节点…",
+                                "Loading group members…",
+                              )}
+                            />
+                          </View>
+                        }
+                      >
+                        <PageError
+                          id={`group-error-${group().name}`}
+                          text={ui.client.domains.error([interest(group())])}
+                        />
+                        <Action
+                          small
+                          secondary
+                          label={ui.t("重试", "Retry")}
+                          onPress={() =>
+                            ui.client.domains.retry([interest(group())])
+                          }
+                        />
+                      </If>
+                    </View>
+                  }
+                >
+                  <Each of={members(group())} key={(proxy) => proxy.name}>
+                    {(proxy, memberIndex) => {
+                      const active = () =>
+                        selected(group()) === proxy().name;
+                      const nested = () =>
+                        allGroups().some((item) => item.name === proxy().name);
+                      const rowDisabled = () =>
+                        !!selection(group().name) ||
+                        !selectableGroup(group()) ||
+                        !ui.client.domains.fresh([interest(group())]);
+                      return (
+                        <View
+                          testID={`summary-select-proxy-${proxy().name}`}
+                          role="button"
+                          accessibilityLabel={
+                            group().fixed === proxy().name
+                              ? ui.t("恢复自动选择", "Use automatic selection")
+                              : proxy().name
+                          }
+                          accessibilityState={{
+                            disabled: rowDisabled(),
+                            selected: active(),
+                          }}
+                          disabled={rowDisabled()}
+                          onPress={() => void select(group(), proxy())}
+                          focusStyle={focusRing()}
+                          hoverStyle={
+                            rowDisabled()
+                              ? undefined
+                              : { backgroundColor: palette().hover }
+                          }
+                          activeStyle={
+                            rowDisabled()
+                              ? undefined
+                              : { backgroundColor: palette().soft }
+                          }
+                          style={{
+                            minHeight: Math.max(
+                              50,
+                              density.line(20) * Math.max(1, fontScale()) +
+                                spacing.md,
+                            ),
+                            paddingLeft: spacing.xl,
+                            paddingRight: 14,
+                            paddingVertical: density.space(9),
+                            borderBottomWidth:
+                              memberIndex() < members(group()).length - 1 ||
+                              index() < allGroups().length - 1
+                                ? 1
+                                : 0,
+                            borderBottomColor: palette().line,
+                            backgroundColor: active()
+                              ? palette().accentFill
+                              : palette().panel,
+                            flexDirection: "row",
+                            alignItems: "center",
+                            gap: spacing.md,
+                            ...feedbackStyle(),
+                          }}
+                        >
+                          <SelectionMark
+                            selected={active()}
+                            selectable={selectableGroup(group())}
+                            nestedGroup={nested()}
+                            busy={
+                              !!selection(group().name) &&
+                              (selection(group().name)!.payload.name ===
+                                proxy().name ||
+                                group().fixed === proxy().name)
+                            }
+                          />
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Text
+                              style={{
+                                numberOfLines: 1,
+                                fontSize: density.font(15),
+                                lineHeight: density.line(20),
+                                fontWeight: active() ? "600" : "500",
+                                color: palette().text,
+                              }}
+                            >
+                              {proxy().name}
+                            </Text>
+                            <Text
+                              style={{
+                                numberOfLines: 1,
+                                fontSize: density.font(13),
+                                lineHeight: density.line(18),
+                                color: palette().muted,
+                              }}
+                            >
+                              {nested()
+                                ? ui.t("策略分组", "Policy group")
+                                : proxy().proxyType.toUpperCase()}
+                              {group().fixed === proxy().name
+                                ? ui.t(" · 已固定", " · Pinned")
+                                : active()
+                                  ? ui.t(" · 当前", " · Current")
+                                  : ""}
+                            </Text>
+                          </View>
+                          <Text
+                            style={{
+                              fontSize: density.font(13),
+                              lineHeight: density.line(18),
+                              fontWeight: "600",
+                              fontVariant: ["tabular-nums"],
+                              color:
+                                proxy().delayMs == null && !isTimeout(proxy())
+                                  ? palette().faint
+                                  : statusColors(latencyTone(proxy())).text,
+                            }}
+                          >
+                            {isTimeout(proxy())
+                              ? ui.t("超时", "Timeout")
+                              : proxy().delayMs == null
+                                ? "—"
+                                : `${proxy().delayMs} ms`}
+                          </Text>
+                        </View>
+                      );
+                    }}
+                  </Each>
+                </If>
+              </If>
+            </View>
+          );
+        }}
+      </Each>
+    </ListSurface>
+  );
+}
+
 export function ProxyGroupList(props: {
   query?: string;
   section?: boolean;
@@ -48,6 +482,8 @@ export function ProxyGroupList(props: {
 }) {
   const ui = useApp(),
     expanded = signal("");
+  const feedback = signal<Record<string, string>>({});
+  const alive = useLifetime();
   const groups = (): Group[] =>
     props.summary
       ? ui.client.domains.data("summary")!.groups
@@ -98,12 +534,15 @@ export function ProxyGroupList(props: {
           ),
         );
         if (
+          !props.groupKey &&
           query &&
           !filtered.length &&
           !includes(query, group.name, group.groupType)
         )
           return [];
-        const result: Row[] = [{ key: `group:${group.name}`, group }];
+        const result: Row[] = props.groupKey
+          ? []
+          : [{ key: `group:${group.name}`, group }];
         if (props.groupKey || expanded() === group.name || !!query) {
           if (props.summary && !ui.client.domains.has([interest(group)]))
             result.push({ key: `loading:${group.name}`, group, loading: true });
@@ -137,7 +576,7 @@ export function ProxyGroupList(props: {
     "effectiveSelectedNode" in group
       ? group.effectiveSelectedNode || group.selected
       : selected(group);
-  const select = (row: Row) => {
+  const select = async (row: Row) => {
     if (
       selection(row.group.name) ||
       !selectableGroup(row.group) ||
@@ -145,46 +584,44 @@ export function ProxyGroupList(props: {
     )
       return;
     const pinned = row.group.fixed === row.proxy?.name;
-    void ui.client.run(
+    feedback.set({
+      ...feedback(),
+      [row.group.name]: ui.t("正在提交选择", "Applying selection"),
+    });
+    const result = await ui.client.run(
       pinned ? "proxies.unfix" : "proxies.select",
       pinned
         ? { group: row.group.name }
         : { group: row.group.name, name: row.proxy!.name },
     );
-  };
-  const modeLabel = (group: Group) => {
-    const mode = groupSelectionMode(group);
-    return mode === "automatic"
-      ? ui.t("自动选择", "Automatic")
-      : mode === "pinned"
-        ? ui.t("已固定", "Pinned")
-        : mode === "manual"
-          ? ui.t("手动选择", "Manual")
-          : ui.t("自动策略", "Policy");
+    if (!alive()) return;
+    feedback.set({
+      ...feedback(),
+      [row.group.name]:
+        result === undefined
+          ? ui.client.error() ||
+            ui.t(
+              "选择失败，保留先前节点。",
+              "Selection failed; the previous node is retained.",
+            )
+          : ui.client.warning() || ui.t("选择已生效", "Selection applied"),
+    });
   };
   const disabled = (group: Group) =>
     !!selection(group.name) || !selectableGroup(group) || !fresh(group);
   const isSelected = (row: Row) => selected(row.group) === row.proxy?.name;
   const isGroup = (proxy: Proxy) =>
     groups().some((group) => group.name === proxy.name);
-  const latencyTone = (proxy: Proxy) =>
-    proxy.delayMs == null
-      ? "neutral"
-      : proxy.delayMs <= 200
-        ? "success"
-        : proxy.delayMs <= 500
-          ? "warning"
-          : "danger";
   const isOpen = (group: Group) =>
     props.groupKey === group.name || !!props.query || expanded() === group.name;
   const groupHeight = () =>
     Math.max(
-      control.compact ? 56 : 64,
+      56,
       density.line(36) * Math.max(1, fontScale()) + spacing.lg,
     );
   const nodeHeight = () =>
     Math.max(
-      control.compact ? 48 : 56,
+      48,
       density.line(36) * Math.max(1, fontScale()) + spacing.sm,
     );
   return (
@@ -195,45 +632,87 @@ export function ProxyGroupList(props: {
       keyboardShouldPersistTaps="handled"
       each={rows()}
       keyExtractor={(row) => row.key}
-      estimatedItemSize={groupHeight()}
+      estimatedItemSize={props.groupKey ? nodeHeight() : groupHeight()}
       style={{
         flex: 1,
         minHeight: 0,
         borderWidth: 1,
         borderColor: palette().border,
-        borderRadius: radius.lg,
+        borderRadius: radius.xl,
         borderCurve: "continuous",
         backgroundColor: palette().panel,
         overflow: "hidden",
+        ...surfaceFinish("card"),
       }}
-      contentStyle={{ paddingBottom: density.space(8) }}
+      contentStyle={{ paddingBottom: density.space(4) }}
       header={
-        props.section ? (
-          <View
-            style={{
-              padding: density.space(12),
-              borderBottomWidth: 1,
-              borderBottomColor: palette().border,
-            }}
-          >
-            <Text
-              style={{
-                fontSize: density.font(12),
-                lineHeight: density.line(18),
-                color: palette().muted,
-              }}
-            >
-              {ui.t(
-                "展开分组选择节点，点击已固定的节点恢复自动。",
-                "Expand a group to choose a node. Press a pinned node to restore automatic selection.",
-              )}
-            </Text>
+        props.section ||
+        (platform.desktop && !!props.groupKey) ||
+        (props.groupKey && feedback()[props.groupKey]) ? (
+          <View>
+            <If when={platform.desktop && !!props.groupKey}>
+              <View
+                style={{
+                  minHeight: 30,
+                  paddingHorizontal: spacing.md,
+                  borderBottomWidth: 1,
+                  borderBottomColor: palette().line,
+                  backgroundColor: palette().soft,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: spacing.md,
+                }}
+              >
+                <Text
+                  style={{
+                    flex: 1,
+                    fontSize: density.font(11),
+                    fontWeight: "600",
+                    color: palette().muted,
+                  }}
+                >
+                  {ui.t("节点", "Node")}
+                </Text>
+                <Text
+                  style={{
+                    width: 96,
+                    fontSize: density.font(11),
+                    fontWeight: "600",
+                    color: palette().muted,
+                  }}
+                >
+                  {ui.t("协议", "Protocol")}
+                </Text>
+                <Text
+                  style={{
+                    width: 88,
+                    textAlign: "right",
+                    fontSize: density.font(11),
+                    fontWeight: "600",
+                    color: palette().muted,
+                  }}
+                >
+                  {ui.t("延迟", "Latency")}
+                </Text>
+              </View>
+            </If>
+            <If when={props.groupKey && feedback()[props.groupKey]}>
+              <View
+                style={{
+                  padding: density.space(10),
+                  borderBottomWidth: 1,
+                  borderBottomColor: palette().line,
+                }}
+              >
+                <Hint text={feedback()[props.groupKey!]} />
+              </View>
+            </If>
           </View>
         ) : undefined
       }
       empty={
         <Empty
-          icon="git-branch"
+          icon="layers"
           title={ui.t("暂无代理节点", "No proxy nodes")}
           text={ui.t(
             "添加并启用订阅后即可选择节点",
@@ -262,9 +741,9 @@ export function ProxyGroupList(props: {
                     selected: isSelected(item()),
                   }}
                   disabled={disabled(item().group)}
-                  onPress={() => select(item())}
+                  onPress={() => void select(item())}
                   focusStyle={focusRing()}
-                  hoverStyle={{ backgroundColor: palette().soft }}
+                  hoverStyle={{ backgroundColor: palette().hover }}
                   activeStyle={{
                     backgroundColor: isSelected(item())
                       ? palette().accentFill
@@ -273,48 +752,32 @@ export function ProxyGroupList(props: {
                   style={{
                     height: nodeHeight(),
                     paddingLeft: props.groupKey
-                      ? density.space(16)
+                      ? spacing.md
                       : density.space(28),
-                    paddingRight: density.space(12),
+                    paddingRight: spacing.md,
                     borderBottomWidth: 1,
-                    borderBottomColor: palette().border,
+                    borderBottomColor: palette().line,
                     backgroundColor: isSelected(item())
                       ? palette().accentFill
                       : palette().panel,
                     flexDirection: "row",
                     alignItems: "center",
-                    gap: density.space(10),
+                    gap: spacing.md,
                     ...feedbackStyle(),
                   }}
                 >
-                  <If
-                    when={
-                      selection(item().group.name) &&
+                  <SelectionMark
+                    selected={isSelected(item())}
+                    selectable={selectableGroup(item().group)}
+                    nestedGroup={isGroup(item().proxy!)}
+                    busy={
+                      !!selection(item().group.name) &&
                       (selection(item().group.name)!.payload.name ===
                         item().proxy!.name ||
                         item().group.fixed === item().proxy!.name)
                     }
-                    else={
-                      <Icon
-                        name={
-                          isSelected(item())
-                            ? "circle-check"
-                            : isGroup(item().proxy!)
-                              ? "folder-tree"
-                              : "circle"
-                        }
-                        size={17}
-                        color={
-                          isSelected(item())
-                            ? palette().accent
-                            : palette().muted
-                        }
-                      />
-                    }
-                  >
-                    <Spinner size={17} color={palette().accent} />
-                  </If>
-                  <View style={{ flex: 1, minWidth: 0, gap: density.space(3) }}>
+                  />
+                  <View style={{ flex: 1, minWidth: 0, gap: density.space(2) }}>
                     <Text
                       style={{
                         numberOfLines: 1,
@@ -326,8 +789,30 @@ export function ProxyGroupList(props: {
                     >
                       {item().proxy!.name}
                     </Text>
+                    <If when={!(platform.desktop && !!props.groupKey)}>
+                      <Text
+                        style={{
+                          numberOfLines: 1,
+                          fontSize: density.font(12),
+                          lineHeight: density.line(16),
+                          color: palette().muted,
+                        }}
+                      >
+                        {isGroup(item().proxy!)
+                          ? ui.t("策略分组", "Policy group")
+                          : item().proxy!.proxyType.toUpperCase()}
+                        {item().group.fixed === item().proxy!.name
+                          ? ui.t(" · 已固定", " · Pinned")
+                          : isSelected(item())
+                            ? ui.t(" · 当前", " · Current")
+                            : ""}
+                      </Text>
+                    </If>
+                  </View>
+                  <If when={platform.desktop && !!props.groupKey}>
                     <Text
                       style={{
+                        width: 96,
                         numberOfLines: 1,
                         fontSize: density.font(12),
                         lineHeight: density.line(16),
@@ -338,44 +823,36 @@ export function ProxyGroupList(props: {
                         ? ui.t("策略分组", "Policy group")
                         : item().proxy!.proxyType.toUpperCase()}
                       {item().group.fixed === item().proxy!.name
-                        ? ui.t(" · 已固定", " · Pinned")
-                        : isSelected(item())
-                          ? ui.t(" · 当前使用", " · In use")
-                          : ""}
+                        ? ui.t(" · 固定", " · Pin")
+                        : ""}
                     </Text>
-                  </View>
+                  </If>
                   <View
-                    style={{ alignItems: "flex-end", gap: density.space(3) }}
+                    style={{
+                      width: platform.desktop && !!props.groupKey ? 88 : undefined,
+                      alignItems: "flex-end",
+                      gap: density.space(2),
+                    }}
                   >
-                    <View
+                    <Text
                       style={{
-                        minWidth: 52,
-                        minHeight: 24,
-                        paddingVertical: density.space(4),
-                        paddingHorizontal: density.space(7),
-                        borderRadius: density.space(6),
-                        borderCurve: "continuous",
-                        backgroundColor: statusColors(
-                          latencyTone(item().proxy!),
-                        ).background,
-                        alignItems: "center",
-                        justifyContent: "center",
+                        fontSize: density.font(12),
+                        lineHeight: density.line(16),
+                        fontWeight: "600",
+                        fontVariant: ["tabular-nums"],
+                        color:
+                          item().proxy!.delayMs == null &&
+                          !isTimeout(item().proxy!)
+                            ? palette().faint
+                            : statusColors(latencyTone(item().proxy!)).text,
                       }}
                     >
-                      <Text
-                        style={{
-                          fontSize: density.font(12),
-                          lineHeight: density.line(16),
-                          fontWeight: "500",
-                          fontVariant: ["tabular-nums"],
-                          color: statusColors(latencyTone(item().proxy!)).text,
-                        }}
-                      >
-                        {item().proxy!.delayMs == null
+                      {isTimeout(item().proxy!)
+                        ? ui.t("超时", "Timeout")
+                        : item().proxy!.delayMs == null
                           ? ui.t("未测试", "Not tested")
                           : `${item().proxy!.delayMs} ms`}
-                      </Text>
-                    </View>
+                    </Text>
                     <If
                       when={
                         item().group.fixed === item().proxy!.name ||
@@ -408,54 +885,40 @@ export function ProxyGroupList(props: {
                 }}
                 disabled={!!props.query || !!props.groupKey}
                 onPress={() => {
-                  // List recycles visible rows when members are inserted. A global
-                  // create/delete fade would fade those reused cells as well.
                   if (!props.groupKey)
                     expanded.set(
                       expanded() === item().group.name ? "" : item().group.name,
                     );
                 }}
                 focusStyle={focusRing()}
-                hoverStyle={{ backgroundColor: palette().soft }}
+                hoverStyle={{ backgroundColor: palette().hover }}
                 activeStyle={{ backgroundColor: palette().soft }}
                 style={{
                   height: groupHeight(),
                   paddingHorizontal: spacing.md,
-                  gap: density.space(10),
+                  gap: spacing.md,
                   borderBottomWidth: 1,
-                  borderBottomColor: palette().border,
+                  borderBottomColor: palette().line,
                   backgroundColor: isOpen(item().group)
-                    ? palette().raised
+                    ? palette().inset
                     : palette().panel,
                   flexDirection: "row",
                   alignItems: "center",
                   ...feedbackStyle(),
                 }}
               >
-                <View
-                  style={{
-                    width: 28,
-                    height: 28,
-                    borderRadius: radius.sm,
-                    borderCurve: "continuous",
-                    backgroundColor: palette().soft,
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <Icon
-                    name={
-                      item().group.name.toUpperCase() === "GLOBAL"
-                        ? "network"
-                        : "git-branch"
-                    }
-                    size={15}
-                    color={
-                      isOpen(item().group) ? palette().accent : palette().muted
-                    }
-                  />
-                </View>
-                <View style={{ flex: 1, minWidth: 0, gap: density.space(4) }}>
+                <Icon
+                  name={
+                    item().group.name.toUpperCase() === "GLOBAL"
+                      ? "network"
+                      : "layers"
+                  }
+                  size={17}
+                  color={
+                    isOpen(item().group) ? palette().accent : palette().muted
+                  }
+                />
+                <View style={{ flex: 1, minWidth: 0, gap: density.space(2) }}>
                   <Text
                     style={{
                       numberOfLines: 1,
@@ -474,16 +937,14 @@ export function ProxyGroupList(props: {
                       numberOfLines: 1,
                       fontSize: density.font(12),
                       lineHeight: density.line(16),
-                      color: headerSelected(item().group)
-                        ? palette().text
-                        : palette().muted,
+                      color: palette().muted,
                     }}
                   >
                     {headerSelected(item().group) ||
                       ui.t("未选择节点", "No node selected")}
                   </Text>
                 </View>
-                <View style={{ alignItems: "flex-end", gap: density.space(4) }}>
+                <View style={{ alignItems: "flex-end", gap: density.space(2) }}>
                   <Text
                     style={{
                       fontSize: density.font(11),
@@ -491,7 +952,9 @@ export function ProxyGroupList(props: {
                       color: palette().muted,
                     }}
                   >
-                    {modeLabel(item().group)}
+                    {selection(item().group.name)
+                      ? ui.t("提交中", "Applying")
+                      : groupModeLabel(item().group, ui.t)}
                   </Text>
                   <Text
                     style={{
@@ -555,15 +1018,45 @@ export function ProxyGroupList(props: {
   );
 }
 
-export function Proxies() {
+export function Proxies(props: { groupKey?: string } = {}) {
   const ui = useApp(),
-    alive = useLifetime(),
-    query = signal(""),
-    activeGroup = signal(""),
+    layout = useLayout(),
+    alive = useLifetime();
+  const saved = useViewState("proxies.collection", () => ({
+    query: signal(""),
+    active: signal(""),
+    offset: 0,
+  }));
+  if (props.groupKey) saved.active.set(props.groupKey);
+  const query = saved.query,
+    activeGroup = saved.active,
     testingGroup = signal("");
   const groups = () => ui.client.state()!.proxyGroups;
+  // An explicit selection that disappears is never silently replaced.
   const selectedGroup = () =>
-    groups().find((group) => group.name === activeGroup()) || groups()[0];
+    activeGroup()
+      ? groups().find((group) => group.name === activeGroup())
+      : layout().masterDetail
+        ? groups()[0]
+        : undefined;
+  const filtered = () =>
+    groups().filter(
+      (group) =>
+        includes(
+          query(),
+          group.name,
+          group.groupType,
+          selectedMember(group),
+        ) ||
+        groupMembers(groups(), group).some((proxy) =>
+          includes(query(), proxy.name, proxy.proxyType),
+        ),
+    );
+  const choose = (group: ProxyGroup) => {
+    activeGroup.set(group.name);
+    if (!props.groupKey && !layout().masterDetail)
+      ui.navigate("proxy-group", group.name);
+  };
   const testSelectedGroup = async () => {
     const target = selectedGroup();
     if (!target || testingGroup() || !ui.client.domains.fresh(["proxies"]))
@@ -575,162 +1068,280 @@ export function Proxies() {
       if (alive()) testingGroup.set("");
     }
   };
-  const summary = () =>
-    proxyGroupSummary(
-      groups().filter(
-        (group) =>
-          includes(
-            query(),
-            group.name,
-            group.groupType,
-            selectedMember(group),
-          ) ||
-          groupMembers(groups(), group).some((proxy) =>
-            includes(
-              query(),
-              proxy.name,
-              proxy.proxyType,
-              proxy.delayMs == null ? "" : String(proxy.delayMs),
-            ),
-          ),
-      ),
-    );
   return (
     <View
       style={{
         flex: 1,
-        paddingHorizontal:
-          windowSize().width >= 840 ? density.space(24) : density.space(16),
-        paddingTop:
-          windowSize().width >= 840 ? density.space(24) : density.space(16),
+        minHeight: 0,
+        padding: layout().inset,
+        gap: spacing.md,
       }}
     >
       <SearchField
-        label={ui.t("搜索节点", "Search nodes")}
+        id="proxies-search"
         value={query()}
         onChange={(value) => query.set(value)}
-        placeholder={ui.t(
-          "输入节点名、类型、延迟或当前",
-          "Search node, type, latency or current",
-        )}
+        placeholder={ui.t("搜索节点或策略组", "Search nodes or groups")}
       />
+      <If when={!!query()}>
+        <Actions align="start">
+          <Hint
+            text={`${filtered().length} ${ui.t("个匹配分组", "matching groups")}`}
+          />
+          <Action
+            small
+            label={ui.t("清除筛选", "Clear filters")}
+            onPress={() => query.set("")}
+          />
+        </Actions>
+      </If>
       <View
+        testID={platform.desktop ? "desktop-proxy-workspace" : "proxy-workspace"}
         style={{
-          minHeight: 34,
-          paddingVertical: density.space(4),
+          flex: 1,
+          minHeight: 0,
           flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: spacing.sm,
+          gap: layout().masterDetail ? layout().gap : 0,
         }}
       >
-        <Hint
-          text={`${summary().global} ${ui.t("个全局节点", "global nodes")} · ${summary().groups} ${ui.t("个策略组", "policy groups")}`}
-        />
-        <If when={platform.desktop && !!selectedGroup()}>
-          <Action
-            variant="ghost"
-            small
-            icon="zap"
-            loading={testingGroup() === selectedGroup()?.name}
-            disabled={
-              !!testingGroup() || !ui.client.domains.fresh(["proxies"])
-            }
-            label={ui.t("测速当前分组", "Test group")}
-            onPress={() => void testSelectedGroup()}
-          />
-        </If>
-      </View>
-      <If
-        when={platform.desktop}
-        else={<ProxyGroupList query={query()} section />}
-      >
-        <View
-          testID="desktop-proxy-workspace"
-          style={{
-            flex: 1,
-            flexDirection: "row",
-            gap: spacing.lg,
-            minHeight: 0,
+        <List
+          testID="desktop-proxy-groups"
+          each={filtered()}
+          keyExtractor={(group) => group.name}
+          estimatedItemSize={control.row + spacing.md}
+          bounces={false}
+          contentOffset={{ y: saved.offset }}
+          onScroll={(event) => {
+            saved.offset = event.offset.y;
           }}
+          style={{
+            display:
+              props.groupKey && !layout().masterDetail ? "none" : "flex",
+            width: layout().masterDetail ? layout().collection : undefined,
+            flex: layout().masterDetail ? undefined : 1,
+            minWidth: 0,
+            borderWidth: 1,
+            borderColor: layout().masterDetail ? palette().line : palette().border,
+            borderRadius: radius.xl,
+            borderCurve: "continuous",
+            backgroundColor: layout().masterDetail
+              ? palette().inset
+              : palette().panel,
+            overflow: "hidden",
+            ...(layout().masterDetail ? surfaceFinish("inset") : surfaceFinish("card")),
+          }}
+          contentStyle={{
+            padding: layout().masterDetail ? spacing.xs : 0,
+          }}
+          empty={
+            <Empty
+              icon="layers"
+              text={
+                query()
+                  ? ui.t(
+                      "没有匹配的分组。清除筛选后查看全部。",
+                      "No matching groups. Clear filters to see all.",
+                    )
+                  : ui.t(
+                      "添加并启用订阅后即可选择节点",
+                      "Add and activate a subscription to select nodes",
+                    )
+              }
+            />
+          }
         >
-          <List
-            testID="desktop-proxy-groups"
-            each={groups()}
-            keyExtractor={(group) => group.name}
-            estimatedItemSize={64}
-            bounces={false}
-            keyboardDismissMode="on-drag"
-            keyboardShouldPersistTaps="handled"
-            style={{
-              width: windowSize().width >= 1000 ? 224 : 164,
-              borderRadius: radius.lg,
-              borderCurve: "continuous",
-              borderWidth: 1,
-              borderColor: palette().border,
-              backgroundColor: palette().panel,
-            }}
-            contentStyle={{ padding: spacing.xxs }}
-          >
-            {(group) => (
+          {(group, index) => {
+            const active = () => group().name === selectedGroup()?.name;
+            return (
               <View
-                testID={`desktop-group-${group().name}`}
+                testID={`${layout().masterDetail ? "desktop-" : ""}group-${group().name}`}
                 role="button"
                 accessibilityLabel={group().name}
-                accessibilityState={{
-                  selected: group().name === selectedGroup()?.name,
-                }}
-                onPress={() => activeGroup.set(group().name)}
+                accessibilityState={{ selected: active() }}
+                onPress={() => choose(group())}
                 focusStyle={focusRing()}
-                hoverStyle={{ backgroundColor: palette().soft }}
-                activeStyle={{ backgroundColor: palette().accentFill }}
+                hoverStyle={
+                  layout().masterDetail && active()
+                    ? undefined
+                    : { backgroundColor: palette().hover }
+                }
+                activeStyle={{ backgroundColor: palette().soft }}
                 style={{
-                  minHeight: 64,
-                  justifyContent: "center",
-                  padding: spacing.md,
-                  gap: spacing.xxs,
-                  borderRadius: radius.md,
+                  minHeight: control.row + spacing.sm,
+                  paddingHorizontal: spacing.md,
+                  paddingVertical: density.space(10),
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: spacing.md,
+                  borderRadius: layout().masterDetail ? radius.md : 0,
                   borderCurve: "continuous",
-                  backgroundColor:
-                    group().name === selectedGroup()?.name
-                      ? palette().raised
+                  borderWidth: layout().masterDetail ? 1 : 0,
+                  borderColor:
+                    layout().masterDetail && active()
+                      ? palette().border
                       : "transparent",
+                  borderBottomWidth:
+                    !layout().masterDetail && index() < filtered().length - 1
+                      ? 1
+                      : layout().masterDetail
+                        ? 1
+                        : 0,
+                  borderBottomColor: !layout().masterDetail
+                    ? palette().line
+                    : active()
+                      ? palette().border
+                      : "transparent",
+                  backgroundColor:
+                    layout().masterDetail && active()
+                      ? palette().panel
+                      : "transparent",
+                  ...(layout().masterDetail && active()
+                    ? surfaceFinish("card")
+                    : {}),
+                  ...feedbackStyle(),
                 }}
               >
+                <Icon
+                  name={
+                    group().name.toUpperCase() === "GLOBAL"
+                      ? "network"
+                      : "layers"
+                  }
+                  size={17}
+                  color={
+                    layout().masterDetail && active()
+                      ? palette().accent
+                      : palette().muted
+                  }
+                />
+                <View style={{ flex: 1, minWidth: 0, gap: density.space(2) }}>
+                  <Text
+                    style={{
+                      fontSize: density.font(14),
+                      lineHeight: density.line(20),
+                      fontWeight: active() ? "600" : "500",
+                      color: palette().text,
+                      numberOfLines: 1,
+                    }}
+                  >
+                    {group().name}
+                  </Text>
+                  <Text
+                    style={{
+                      fontSize: density.font(12),
+                      lineHeight: density.line(16),
+                      color: palette().muted,
+                      numberOfLines: 1,
+                    }}
+                  >
+                    {groupModeLabel(group(), ui.t)} ·{" "}
+                    {selectedMember(group()) || ui.t("未选择", "Not selected")}
+                  </Text>
+                </View>
                 <Text
                   style={{
-                    fontSize: 14,
-                    lineHeight: 20,
-                    fontWeight: "600",
-                    color: palette().text,
-                    numberOfLines: 1,
-                  }}
-                >
-                  {group().name.toUpperCase() === "GLOBAL"
-                    ? ui.t("全局节点", "Global nodes")
-                    : group().name}
-                </Text>
-                <Text
-                  style={{
-                    fontSize: 12,
-                    lineHeight: 18,
+                    fontSize: density.font(12),
+                    lineHeight: density.line(16),
                     color: palette().muted,
                     fontVariant: ["tabular-nums"],
-                    numberOfLines: 1,
                   }}
                 >
-                  {selectedMember(group())
-                    ? `${selectedMember(group())} · `
-                    : ""}
-                  {groupMembers(groups(), group()).length}{" "}
-                  {ui.t("个节点", "nodes")}
+                  {groupMembers(groups(), group()).length}
                 </Text>
+                <If when={!layout().masterDetail}>
+                  <Icon
+                    name="chevron-right"
+                    size={16}
+                    color={palette().faint}
+                  />
+                </If>
               </View>
-            )}
-          </List>
-          <ProxyGroupList query={query()} groupKey={selectedGroup()?.name} />
+            );
+          }}
+        </List>
+        <View
+          testID="proxy-members-panel"
+          style={{
+            display: props.groupKey || layout().masterDetail ? "flex" : "none",
+            flex: 1,
+            minWidth: 0,
+            flexDirection: "column",
+            gap: spacing.sm,
+          }}
+        >
+          <If
+            when={selectedGroup()}
+            else={
+              <Empty
+                text={
+                  activeGroup()
+                    ? ui.t(
+                        "此分组已移除，请返回选择其他分组。",
+                        "This group was removed. Return to choose another.",
+                      )
+                    : ui.t("选择分组查看节点", "Select a group to view nodes")
+                }
+              />
+            }
+          >
+            <SectionHeader
+              title={`${selectedGroup()!.name} · ${groupModeLabel(selectedGroup()!, ui.t)}`}
+              meta={`${groupMembers(groups(), selectedGroup()!).length} ${ui.t("个节点", "nodes")}`}
+            />
+            <Actions align="start">
+              <Action
+                small
+                icon="zap"
+                loading={!!testingGroup()}
+                disabled={!ui.client.domains.fresh(["proxies"])}
+                label={ui.t("测速当前分组", "Test group")}
+                onPress={() => void testSelectedGroup()}
+              />
+              <Action
+                small
+                label={ui.t("复制分组与节点", "Copy group and node")}
+                onPress={() =>
+                  copyText(
+                    ui,
+                    `${selectedGroup()?.name}\n${selectedGroup() ? selectedMember(selectedGroup()!) || "" : ""}`,
+                    ui.t("已复制", "Copied"),
+                  )
+                }
+              />
+            </Actions>
+            <Hint
+              text={
+                testingGroup()
+                  ? ui.t(
+                      "正在测速，保留上次结果。",
+                      "Testing; previous results remain visible.",
+                    )
+                  : ui.t(
+                      "延迟为上次结果，测量时间未知；可重新测速。",
+                      "Latency is a previous result with no timestamp. Test again to update.",
+                    )
+              }
+            />
+            <If
+              when={
+                !!query() &&
+                selectedGroup() &&
+                !filtered().some(
+                  (group) => group.name === selectedGroup()!.name,
+                )
+              }
+            >
+              <Hint
+                text={ui.t(
+                  "当前分组不在筛选结果中，选择保持不变。",
+                  "The selected group is outside the filter. Selection is unchanged.",
+                )}
+              />
+            </If>
+            <ProxyGroupList query={query()} groupKey={selectedGroup()?.name} />
+          </If>
         </View>
-      </If>
+      </View>
     </View>
   );
 }

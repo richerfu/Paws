@@ -50,16 +50,16 @@ mount(() => {
         .filter((request) => request.command === "state.query")
         .map((request) => request.payload.domain);
       if (
-        queried.join(",") !== "summary" ||
+        queried.sort().join(",") !== "summary,traffic" ||
         host.interests.some(
-          (interest) => !["config", "status", "summary"].includes(interest.domain),
+          (interest) => !["config", "status", "summary", "traffic"].includes(interest.domain),
         )
       )
         throw new Error(
           "A retained Stack page or collapsed group kept background detail interests",
         );
       console.log(
-        "PASS: production Stack forward/back releases detail interests and Home only requeries its cheap summary",
+        "PASS: production Stack forward/back releases detail interests and Home only requeries summary and traffic",
       );
     }, 10);
   };

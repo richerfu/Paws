@@ -1,5 +1,5 @@
-import { density } from "../theme";
-import { Scroll, signal, Text, View } from "nsh";
+import { density, surfaceFinish } from "../theme";
+import { platform, Scroll, signal, Text, View } from "nsh";
 import {
   Action,
   Actions,
@@ -12,22 +12,27 @@ import {
   ExternalLink,
   Hint,
   Icon,
+  ListRow,
+  ListSurface,
   palette,
   radius,
+  SectionHeader,
   Select,
   Separator,
+  spacing,
   Toggle,
   type Page,
   useApp,
+  useLayout,
   useLifetime,
+  useDraftGuard,
 } from "../components";
-import { feedbackStyle } from "../motion";
-import { control, focusRing } from "../theme";
 
 import { ABOUT_LINKS } from "../about";
 import { COPY } from "../product-copy";
 import { PageError } from "../page-error";
 import type { IconName } from "../icons";
+import { connectionState } from "../connection-state";
 
 type Tool = {
   page: Page;
@@ -39,9 +44,17 @@ type Tool = {
 };
 const sections: { zh: string; en: string; rows: Tool[] }[] = [
   {
-    zh: "界面",
-    en: "Interface",
+    zh: "偏好",
+    en: "Preferences",
     rows: [
+      {
+        page: "settings",
+        zh: "网络设置",
+        en: "Network settings",
+        descriptionZh: "VPN、DNS 与网络栈",
+        descriptionEn: "VPN, DNS and network stack",
+        icon: "sliders-horizontal",
+      },
       {
         page: "appearance",
         zh: COPY["page-tr-001"][0],
@@ -57,40 +70,34 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
     en: "Network",
     rows: [
       {
-        page: "settings",
-        zh: "网络设置",
-        en: "Network settings",
-        descriptionZh: "VPN、DNS 与网络栈",
-        descriptionEn: "VPN, DNS and network stack",
-        icon: "settings",
+        page: "connections",
+        zh: "连接与请求",
+        en: "Connections & requests",
+        descriptionZh: "活动连接与请求历史",
+        descriptionEn: "Active connections and request history",
+        icon: "list-filter",
+      },
+      {
+        page: "resources",
+        zh: "资源与规则",
+        en: "Resources & rules",
+        descriptionZh: "分流规则与外部规则集",
+        descriptionEn: "Routing rules and external rule sets",
+        icon: "layers",
+      },
+      {
+        page: "logs",
+        zh: "日志",
+        en: "Logs",
+        descriptionZh: COPY["page-tr-030"][0],
+        descriptionEn: COPY["page-tr-030"][1],
+        icon: "file-text",
       },
     ],
   },
   {
     zh: "工具",
     en: "Tools",
-    rows: [
-      {
-        page: "converter",
-        zh: COPY["page-tr-002"][0],
-        en: COPY["page-tr-002"][1],
-        descriptionZh: COPY["hard-zh-023"][0],
-        descriptionEn: COPY["hard-zh-023"][1],
-        icon: "refresh-cw",
-      },
-      {
-        page: "backups",
-        zh: "备份与恢复",
-        en: "Backup & restore",
-        descriptionZh: COPY["backup-subtitle"][0],
-        descriptionEn: COPY["backup-subtitle"][1],
-        icon: "archive",
-      },
-    ],
-  },
-  {
-    zh: "诊断与管理",
-    en: "Diagnostics & management",
     rows: [
       {
         page: "diagnostics",
@@ -109,50 +116,28 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
         icon: "stethoscope",
       },
       {
-        page: "requests",
-        zh: "请求",
-        en: "Requests",
-        descriptionZh: "检查最近的请求与规则命中",
-        descriptionEn: "Recent requests and matching rules",
-        icon: "activity",
+        page: "backups",
+        zh: "备份与恢复",
+        en: "Backup & restore",
+        descriptionZh: COPY["backup-subtitle"][0],
+        descriptionEn: COPY["backup-subtitle"][1],
+        icon: "download",
       },
       {
-        page: "connections",
-        zh: "连接",
-        en: "Connections",
-        descriptionZh: "查看或断开活动连接",
-        descriptionEn: "Inspect or close active connections",
-        icon: "unplug",
+        page: "converter",
+        zh: COPY["page-tr-002"][0],
+        en: COPY["page-tr-002"][1],
+        descriptionZh: COPY["hard-zh-023"][0],
+        descriptionEn: COPY["hard-zh-023"][1],
+        icon: "refresh-cw",
       },
-      {
-        page: "resources",
-        zh: "资源",
-        en: "Resources",
-        descriptionZh: "规则、Provider 与 GeoData",
-        descriptionEn: "Rules, providers and geodata",
-        icon: "database",
-      },
-      {
-        page: "logs",
-        zh: "日志",
-        en: "Logs",
-        descriptionZh: COPY["page-tr-030"][0],
-        descriptionEn: COPY["page-tr-030"][1],
-        icon: "scroll-text",
-      },
-    ],
-  },
-  {
-    zh: "关于",
-    en: "About",
-    rows: [
       {
         page: "about",
         zh: "关于",
         en: "About",
         descriptionZh: "开源信息、组件版本与隐私说明",
         descriptionEn: "Open source, component versions and privacy",
-        icon: "paw-print",
+        icon: "info",
       },
     ],
   },
@@ -169,114 +154,33 @@ export function Tools() {
       <Body>
         <Each of={sections}>
           {(section) => (
-            <View
-              style={{ gap: density.space(8), marginBottom: density.space(4) }}
-            >
-              <Text
-                role="header"
-                style={{
-                  color: palette().muted,
-                  fontSize: density.font(14),
-                  fontWeight: "600",
-                  marginLeft: density.space(4),
-                }}
-              >
-                {ui.t(section().zh, section().en)}
-              </Text>
-              <View
-                style={{
-                  borderWidth: 1,
-                  borderColor: palette().border,
-                  borderRadius: radius.lg,
-                  borderCurve: "continuous",
-                  overflow: "hidden",
-                  backgroundColor: palette().panel,
-                }}
-              >
+            <View style={{ gap: spacing.sm }}>
+              <SectionHeader title={ui.t(section().zh, section().en)} />
+              <ListSurface>
                 <Each of={section().rows}>
                   {(tool, index) => (
-                    <>
-                      <View
-                        testID={`tool-${tool().page}`}
-                        role="button"
-                        accessibilityLabel={ui.t(tool().zh, tool().en)}
-                        onPress={() => ui.navigate(tool().page)}
-                        focusStyle={focusRing()}
-                        hoverStyle={{ backgroundColor: palette().hover }}
-                        activeStyle={{ backgroundColor: palette().soft }}
-                        style={{
-                          minHeight: control.height >= 44 ? 76 : 64,
-                          ...feedbackStyle(),
-                          padding: density.space(12),
-                          flexDirection: "row",
-                          alignItems: "center",
-                          gap: density.space(12),
-                        }}
-                      >
-                        <View
-                          style={{
-                            width: 34,
-                            height: 34,
-                            borderRadius: radius.md,
-                            borderCurve: "continuous",
-                            backgroundColor: palette().soft,
-                            alignItems: "center",
-                            justifyContent: "center",
-                          }}
-                        >
-                          <Icon
-                            name={tool().icon}
-                            size={17}
-                            color={palette().text}
-                          />
-                        </View>
-                        <View
-                          style={{
-                            flex: 1,
-                            minWidth: 0,
-                            gap: density.space(4),
-                          }}
-                        >
-                          <Text
-                            style={{
-                              fontSize: density.font(14),
-                              lineHeight: density.line(20),
-                              fontWeight: "600",
-                              color: palette().text,
-                            }}
-                          >
-                            {ui.t(tool().zh, tool().en)}
-                          </Text>
-                          <Text
-                            style={{
-                              fontSize: density.font(12),
-                              lineHeight: density.line(18),
-                              color: palette().muted,
-                            }}
-                          >
-                            {ui.t(tool().descriptionZh, tool().descriptionEn)}
-                          </Text>
-                        </View>
-                        <Icon
-                          name="chevron-right"
-                          size={16}
-                          color={palette().muted}
-                        />
-                      </View>
-                      <If when={index() + 1 < section().rows.length}>
-                        <Separator />
-                      </If>
-                    </>
+                    <ListRow
+                      id={`tool-${tool().page}`}
+                      icon={tool().icon}
+                      title={ui.t(tool().zh, tool().en)}
+                      subtitle={ui.t(
+                        tool().descriptionZh,
+                        tool().descriptionEn,
+                      )}
+                      divider={index() + 1 < section().rows.length}
+                      chevron
+                      onPress={() => ui.navigate(tool().page)}
+                    />
                   )}
                 </Each>
-              </View>
+              </ListSurface>
             </View>
           )}
         </Each>
         <Text
           style={{
             textAlign: "center",
-            marginTop: density.space(24),
+            marginTop: density.space(12),
             fontSize: density.font(12),
             color: palette().muted,
           }}
@@ -299,17 +203,27 @@ type Health = {
 type Watch = { enabled: boolean; group: string; url: string };
 export function Diagnostics() {
   const ui = useApp(),
+    layout = useLayout(),
     current = () => ui.client.state()!,
     alive = useLifetime();
+  const prefilled = ui.viewState?.get("diagnostics.prefillUrl");
+  if (typeof prefilled === "string") {
+    ui.viewState?.delete("diagnostics.prefillUrl");
+  }
   const group = signal(
       ui.client.domains.data("summary")!.groups[0]?.name || "",
     ),
-    url = signal("https://www.gstatic.com/generate_204"),
+    url = signal(
+      typeof prefilled === "string" && prefilled
+        ? prefilled
+        : "https://www.gstatic.com/generate_204",
+    ),
     watch = signal<Watch>({ enabled: false, group: "", url: "" }),
     health = signal<Health | null>(null),
     result = signal("");
-  const busy = () => ui.client.pending() > 0;
-  let changed = false;
+  const resultSession = signal(""), resultTime = signal("");
+  const busy = () => ["diagnostics.probe", "diagnostics.watchSet", "diagnostics.watchGet"].some((command) => ui.client.isPending(command));
+  let changed = typeof prefilled === "string" && prefilled.length > 0;
   const loadWatch = async () => {
     const value = await ui.client.run<Watch>("diagnostics.watchGet");
     if (alive() && value) {
@@ -356,14 +270,19 @@ export function Diagnostics() {
   };
   const probe = async () => {
     if (busy()) return;
+    const submittedGroup = group(), submittedUrl = url(), session = current().vpnSessionId;
     const value = await ui.client.run<{ delay: number; sessionId: string }>(
       "diagnostics.probe",
       {
-        group: group(),
-        url: url(),
+        group: submittedGroup,
+        url: submittedUrl,
       },
     );
-    if (alive() && value) result.set(`${value.delay} ms · ${group()}`);
+    if (alive() && value && session === current().vpnSessionId) {
+      result.set(`${value.delay} ms · ${submittedGroup} · ${submittedUrl}`);
+      resultSession.set(value.sessionId);
+      resultTime.set(new Date().toISOString());
+    }
   };
   const checkTone = (state: string) =>
     state === "passed"
@@ -387,6 +306,50 @@ export function Diagnostics() {
     health()?.engine === current().activeEngine
       ? health()
       : null;
+  const recoveryCard = (
+    <Card
+      title={ui.t("自动恢复", "Automatic recovery")}
+      subtitle={ui.t(
+        "持续检测目标服务，在符合策略时尝试恢复连接。",
+        "Watch the target service and recover according to the saved policy.",
+      )}
+    >
+      <Toggle
+        label={ui.t("启用自动恢复", "Enable recovery")}
+        description={ui.t(
+          "仅支持手动 Selector 策略组。",
+          "Available for manual Selector groups.",
+        )}
+        value={watch().enabled}
+        disabled={
+          busy() || (!watch().enabled && (!selector() || !validUrl()))
+        }
+        onChange={(enabled) => void saveWatch(enabled)}
+      />
+      <If when={watch().enabled}>
+        <Hint text={`${watch().group} · ${watch().url}`} />
+        <Action
+          secondary
+          label={ui.t("保存当前探测目标", "Save current target")}
+          disabled={
+            busy() ||
+            !selector() ||
+            !validUrl() ||
+            (watch().group === group() && watch().url === url())
+          }
+          onPress={() => void saveWatch(true)}
+        />
+      </If>
+      <If when={!selector()}>
+        <Hint
+          text={ui.t(
+            "请选择手动 Selector 分组以启用自动恢复。",
+            "Select a manual Selector group to enable recovery.",
+          )}
+        />
+      </If>
+    </Card>
+  );
   return (
     <Scroll
       bounces={false}
@@ -405,229 +368,232 @@ export function Diagnostics() {
             onPress={() => ui.navigate("advanced-diagnostics")}
           />
         </Actions>
-        <Card
-          title={ui.t("连接状态", "Connection status")}
-          subtitle={ui.t(
-            "检测真实 VPN 会话，不以配置已载入代替网络连通。",
-            "Checks belong to the actual VPN session; loaded configuration does not prove connectivity.",
-          )}
+        <View
+          style={{
+            flexDirection: layout().overview ? "row" : "column",
+            gap: layout().overview ? layout().gap : spacing.section,
+            alignItems: "flex-start",
+          }}
         >
-          <Detail
-            tone={
-              current().vpnRunning
-                ? current().networkProtected && !current().networkProtectError
-                  ? "success"
-                  : "warning"
-                : "neutral"
-            }
-            label="VPN"
-            value={
-              current().vpnRunning
-                ? ui.t("已连接", "Connected")
-                : ui.t("未连接", "Disconnected")
-            }
-          />
-          <Detail
-            tone="neutral"
-            label={ui.t("运行内核", "Active engine")}
-            value={current().activeEngine || "—"}
-          />
-          <Detail
-            label="DNS"
-            value={
-              current().dns.statisticsAvailable
-                ? `${current().dns.handledPackets} / ${current().dns.cacheHits} / ${current().dns.cacheMisses}`
-                : ui.t(
-                    "当前内核未提供统计",
-                    "Statistics unavailable from the engine",
-                  )
-            }
-          />
-          <Separator />
-          <Detail
-            tone={checkTone(current().engineLoaded ? "passed" : "notTested")}
-            label={ui.t("配置载入", "Configuration")}
-            value={checkValue(current().engineLoaded ? "passed" : "notTested")}
-          />
-          <Detail
-            tone={checkTone(
-              current().networkProtectError
-                ? "failed"
-                : current().networkProtected
-                  ? "passed"
-                  : "notTested",
-            )}
-            label={ui.t("出站保护", "Outbound protection")}
-            value={checkValue(
-              current().networkProtectError
-                ? "failed"
-                : current().networkProtected
-                  ? "passed"
-                  : "notTested",
-            )}
-          />
-          <Detail
-            tone={checkTone(currentHealth()?.dns || "notTested")}
-            label="DNS"
-            value={checkValue(currentHealth()?.dns || "notTested")}
-          />
-          <Detail
-            tone={checkTone(currentHealth()?.nodeTcp || "notTested")}
-            label={ui.t("节点 TCP", "Node TCP")}
-            value={checkValue(currentHealth()?.nodeTcp || "notTested")}
-          />
-          <Detail
-            tone={checkTone(currentHealth()?.https || "notTested")}
-            label="HTTPS"
-            value={checkValue(currentHealth()?.https || "notTested")}
-          />
-          <Action
-            id="refresh-checks"
-            secondary
-            icon="refresh-cw"
-            loading={ui.client.isPending("diagnostics.healthGet")}
-            label={ui.t("刷新检测状态", "Refresh checks")}
-            disabled={busy()}
-            onPress={() => void loadHealth(true)}
-          />
-          <If when={current().networkProtectError}>
-            <PageError
-              id="diagnostics-protection-error"
-              text={current().networkProtectError || ""}
-            />
-          </If>
-        </Card>
-        <Card
-          title={ui.t("目标服务探测", "Target service probe")}
-          subtitle={ui.t(
-            "通过指定代理组发送 HTTPS 探测，不改变分组选择。",
-            "Probe an HTTPS target through a group without changing its selection.",
-          )}
-        >
-          <Select
-            label={ui.t("策略组", "Proxy group")}
-            value={group()}
-            options={options()}
-            disabled={busy()}
-            onChange={(value) => {
-              changed = true;
-              group.set(value);
+          <View
+            style={{
+              flex: layout().overview ? 1 : undefined,
+              width: layout().overview ? undefined : "100%",
+              minWidth: 0,
+              gap: spacing.section,
             }}
-          />
-          <Select
-            label={ui.t("预设目标", "Target preset")}
-            value={
-              [
-                "https://www.gstatic.com/generate_204",
-                "https://cp.cloudflare.com/generate_204",
-                "https://github.com/robots.txt",
-              ].includes(url())
-                ? url()
-                : "custom"
-            }
-            options={[
-              {
-                value: "https://www.gstatic.com/generate_204",
-                label: "Gstatic 204",
-              },
-              {
-                value: "https://cp.cloudflare.com/generate_204",
-                label: "Cloudflare",
-              },
-              { value: "https://github.com/robots.txt", label: "GitHub" },
-              { value: "custom", label: ui.t("自定义", "Custom") },
-            ]}
-            disabled={busy()}
-            onChange={(value) => {
-              if (value !== "custom") {
-                changed = true;
-                url.set(value);
-              }
-            }}
-          />
-          <Field
-            label={ui.t("探测地址", "Probe URL")}
-            value={url()}
-            keyboardType="url"
-            disabled={busy()}
-            onChange={(value) => {
-              changed = true;
-              url.set(value);
-            }}
-          />
-          <If when={!validUrl()}>
-            <Hint
-              danger
-              text={ui.t(
-                "请输入不含凭据、查询参数或片段的 HTTPS 地址。",
-                "Enter an HTTPS URL without credentials, query or fragment.",
+          >
+            <Card
+              title={ui.t("连接状态", "Connection status")}
+              subtitle={ui.t(
+                "检测真实 VPN 会话，不以配置已载入代替网络连通。",
+                "Checks belong to the actual VPN session; loaded configuration does not prove connectivity.",
               )}
-            />
-          </If>
-          <Action
-            primary
-            id="diagnostics-probe"
-            loading={ui.client.isPending("diagnostics.probe")}
-            label={
-              current().vpnRunning
-                ? ui.t("开始探测", "Run probe")
-                : ui.t("请先连接 VPN", "Connect VPN first")
-            }
-            disabled={
-              busy() || !current().vpnRunning || !group() || !validUrl()
-            }
-            onPress={() => void probe()}
-          />
-          <If when={result()}>
-            <Detail
-              tone="success"
-              label={ui.t("最近探测", "Last probe")}
-              value={result()}
-            />
-          </If>
-        </Card>
-        <Card
-          title={ui.t("自动恢复", "Automatic recovery")}
-          subtitle={ui.t(
-            "持续检测目标服务，在符合策略时尝试恢复连接。",
-            "Watch the target service and recover according to the saved policy.",
-          )}
-        >
-          <Toggle
-            label={ui.t("启用自动恢复", "Enable recovery")}
-            description={ui.t(
-              "仅支持手动 Selector 策略组。",
-              "Available for manual Selector groups.",
-            )}
-            value={watch().enabled}
-            disabled={
-              busy() || (!watch().enabled && (!selector() || !validUrl()))
-            }
-            onChange={(enabled) => void saveWatch(enabled)}
-          />
-          <If when={watch().enabled}>
-            <Hint text={`${watch().group} · ${watch().url}`} />
-            <Action
-              secondary
-              label={ui.t("保存当前探测目标", "Save current target")}
-              disabled={
-                busy() ||
-                !selector() ||
-                !validUrl() ||
-                (watch().group === group() && watch().url === url())
-              }
-              onPress={() => void saveWatch(true)}
-            />
-          </If>
-          <If when={!selector()}>
-            <Hint
-              text={ui.t(
-                "请选择手动 Selector 分组以启用自动恢复。",
-                "Select a manual Selector group to enable recovery.",
+            >
+              <Detail
+                tone={
+                  current().vpnRunning
+                    ? current().networkProtected && !current().networkProtectError
+                      ? "success"
+                      : "warning"
+                    : "neutral"
+                }
+                label="VPN"
+                value={
+                  connectionState(current(), ui.client.vpnOperation()) === "protected"
+                    ? ui.t("已连接", "Connected")
+                    : current().vpnRunning
+                      ? ui.t("保护未确认", "Protection unconfirmed")
+                      : ui.t("未连接", "Disconnected")
+                }
+              />
+              <If when={current().vpnRunning || current().vpnLifecycle === "starting"}>
+                <Action
+                  id="diagnostics-stop"
+                  stop
+                  icon="stop"
+                  label={ui.t("停止连接", "Stop connection")}
+                  loading={ui.client.vpnOperation() === "stop"}
+                  onPress={() => void ui.client.run("vpn.stop")}
+                />
+              </If>
+              <Detail
+                tone="neutral"
+                label={ui.t("运行内核", "Active engine")}
+                value={current().activeEngine || "—"}
+              />
+              <Detail
+                label="DNS"
+                value={
+                  current().dns.statisticsAvailable
+                    ? `${current().dns.handledPackets} / ${current().dns.cacheHits} / ${current().dns.cacheMisses}`
+                    : ui.t(
+                        "当前内核未提供统计",
+                        "Statistics unavailable from the engine",
+                      )
+                }
+              />
+              <Separator />
+              <Detail
+                tone={checkTone(current().engineLoaded ? "passed" : "notTested")}
+                label={ui.t("配置载入", "Configuration")}
+                value={checkValue(current().engineLoaded ? "passed" : "notTested")}
+              />
+              <Detail
+                tone={checkTone(
+                  current().networkProtectError
+                    ? "failed"
+                    : current().networkProtected
+                      ? "passed"
+                      : "notTested",
+                )}
+                label={ui.t("出站保护", "Outbound protection")}
+                value={checkValue(
+                  current().networkProtectError
+                    ? "failed"
+                    : current().networkProtected
+                      ? "passed"
+                      : "notTested",
+                )}
+              />
+              <Detail
+                tone={checkTone(currentHealth()?.dns || "notTested")}
+                label="DNS"
+                value={checkValue(currentHealth()?.dns || "notTested")}
+              />
+              <Detail
+                tone={checkTone(currentHealth()?.nodeTcp || "notTested")}
+                label={ui.t("节点 TCP", "Node TCP")}
+                value={checkValue(currentHealth()?.nodeTcp || "notTested")}
+              />
+              <Detail
+                tone={checkTone(currentHealth()?.https || "notTested")}
+                label="HTTPS"
+                value={checkValue(currentHealth()?.https || "notTested")}
+              />
+              <Action
+                id="refresh-checks"
+                secondary
+                icon="refresh-cw"
+                loading={ui.client.isPending("diagnostics.healthGet")}
+                label={ui.t("刷新检测状态", "Refresh checks")}
+                disabled={busy()}
+                onPress={() => void loadHealth(true)}
+              />
+              <If when={current().networkProtectError}>
+                <PageError
+                  id="diagnostics-protection-error"
+                  text={current().networkProtectError || ""}
+                />
+              </If>
+            </Card>
+            <If when={layout().overview}>{recoveryCard}</If>
+          </View>
+          <View
+            style={{
+              flex: layout().overview ? 1 : undefined,
+              width: layout().overview ? undefined : "100%",
+              minWidth: 0,
+              gap: spacing.section,
+            }}
+          >
+            <Card
+              title={ui.t("目标服务探测", "Target service probe")}
+              subtitle={ui.t(
+                "通过指定代理组发送 HTTPS 探测，不改变分组选择。",
+                "Probe an HTTPS target through a group without changing its selection.",
               )}
-            />
-          </If>
-        </Card>
+            >
+              <Select
+                label={ui.t("策略组", "Proxy group")}
+                value={group()}
+                options={options()}
+                disabled={busy()}
+                onChange={(value) => {
+                  changed = true;
+                  group.set(value);
+                }}
+              />
+              <Select
+                label={ui.t("预设目标", "Target preset")}
+                value={
+                  [
+                    "https://www.gstatic.com/generate_204",
+                    "https://cp.cloudflare.com/generate_204",
+                    "https://github.com/robots.txt",
+                  ].includes(url())
+                    ? url()
+                    : "custom"
+                }
+                options={[
+                  {
+                    value: "https://www.gstatic.com/generate_204",
+                    label: "Gstatic 204",
+                  },
+                  {
+                    value: "https://cp.cloudflare.com/generate_204",
+                    label: "Cloudflare",
+                  },
+                  { value: "https://github.com/robots.txt", label: "GitHub" },
+                  { value: "custom", label: ui.t("自定义", "Custom") },
+                ]}
+                disabled={busy()}
+                onChange={(value) => {
+                  if (value !== "custom") {
+                    changed = true;
+                    url.set(value);
+                  }
+                }}
+              />
+              <Field
+                label={ui.t("探测地址", "Probe URL")}
+                value={url()}
+                keyboardType="url"
+                disabled={busy()}
+                onChange={(value) => {
+                  changed = true;
+                  url.set(value);
+                }}
+              />
+              <If when={!validUrl()}>
+                <Hint
+                  danger
+                  text={ui.t(
+                    "请输入不含凭据、查询参数或片段的 HTTPS 地址。",
+                    "Enter an HTTPS URL without credentials, query or fragment.",
+                  )}
+                />
+              </If>
+              <Action
+                primary
+                id="diagnostics-probe"
+                loading={ui.client.isPending("diagnostics.probe")}
+                label={
+                  current().vpnRunning
+                    ? ui.t("开始探测", "Run probe")
+                    : ui.t("请先连接 VPN", "Connect VPN first")
+                }
+                disabled={
+                  busy() || !current().vpnRunning || !group() || !validUrl()
+                }
+                onPress={() => void probe()}
+              />
+              <If when={result()}>
+                <Detail
+                  tone={
+                    resultSession() === current().vpnSessionId &&
+                    current().vpnRunning
+                      ? "success"
+                      : "neutral"
+                  }
+                  label={ui.t("最近探测", "Last probe")}
+                  value={`${result()}\n${resultTime()}\n${resultSession() === current().vpnSessionId && current().vpnRunning ? ui.t("当前会话", "Current session") : ui.t("历史会话结果", "Previous session result")}`}
+                />
+              </If>
+            </Card>
+            <If when={!layout().overview}>{recoveryCard}</If>
+          </View>
+        </View>
       </Body>
     </Scroll>
   );
@@ -640,6 +606,7 @@ export function AdvancedDiagnostics() {
     domains = signal(""),
     report = signal("");
   const busy = () => ui.client.pending() > 0;
+  useDraftGuard(() => !!domains().trim(), () => domains.set(""), () => ui.client.isPending("diagnostics.serviceDns"));
   const generate = async () => {
     if (busy()) return;
     const value = await ui.client.run<string>("diagnostics.report");
@@ -699,7 +666,8 @@ export function AdvancedDiagnostics() {
             loading={ui.client.isPending("diagnostics.serviceDns")}
             label={ui.t("应用 DoH 策略", "Apply DoH policy")}
             disabled={busy() || !group() || !domains().trim()}
-            onPress={() =>
+            onPress={() => {
+              const submitted = domains();
               void ui.client.run(
                 "diagnostics.serviceDns",
                 {
@@ -708,8 +676,8 @@ export function AdvancedDiagnostics() {
                   expectedRevision: ui.client.state()!.configRevision,
                 },
                 ui.t("域名 DoH 策略已应用", "Domain DoH policy applied"),
-              )
-            }
+              ).then((value) => { if (alive() && value !== undefined && domains() === submitted) domains.set(""); });
+            }}
           />
         </Card>
         <Card
@@ -784,9 +752,11 @@ export function AdvancedDiagnostics() {
 
 export function Backups() {
   const ui = useApp(),
+    layout = useLayout(),
     url = signal(""),
     username = signal(""),
     password = signal("");
+  useDraftGuard(() => !!(url() || username() || password()), () => { url.set(""); username.set(""); password.set(""); }, () => ui.client.isPending("backups.webdavRestore") || ui.client.isPending("backups.webdavUpload"));
   const validUrl = () => /^https:\/\/[^/?#@\s]+(?:\/[^?#\s]*)?$/.test(url());
   const alive = useLifetime();
   const exportBackup = async () => {
@@ -817,6 +787,7 @@ export function Backups() {
         {
           actionLabel: ui.t("恢复配置副本", "Restore profile copies"),
           destructive: false,
+          description: ui.t("来源：本地文件。备份格式未记录生成时间。将新建配置副本，保留现有订阅和当前连接。", "Source: local file. The backup format has no creation timestamp. Creates profile copies and keeps existing subscriptions and the current connection."),
         },
       );
   };
@@ -826,6 +797,7 @@ export function Backups() {
       { url: url(), username: username(), password: password() },
       ui.t("操作已完成", "Operation completed"),
     );
+  const twoColumns = () => platform.desktop && layout().overview;
   return (
     <Scroll
       bounces={false}
@@ -834,116 +806,140 @@ export function Backups() {
       style={{ flex: 1 }}
     >
       <Body>
-        <Card
-          title={ui.t("本地备份", "Local backup")}
-          subtitle={ui.t(
-            "导出完整配置，或从备份文件恢复配置副本。",
-            "Export the full configuration, or restore profile copies from a backup file.",
-          )}
+        <View
+          style={{
+            flexDirection: twoColumns() ? "row" : "column",
+            gap: twoColumns() ? layout().gap : spacing.section,
+            alignItems: "flex-start",
+          }}
         >
-          <Hint text={ui.t("导出配置", "Export configuration")} />
-          <Hint
-            text={ui.t(
-              "备份包含订阅地址、覆写与节点密钥，请妥善保管。",
-              "Backups include subscription URLs, overrides and node secrets. Store them securely.",
-            )}
-          />
-          <Action
-            secondary
-            icon="download"
-            loading={ui.client.isPending("backups.export")}
-            label={ui.t("导出备份文件…", "Export backup file…")}
-            disabled={ui.client.pending() > 0}
-            onPress={() => void exportBackup()}
-          />
-          <Separator />
-          <Hint text={ui.t("从文件恢复", "Restore from file")} />
-          <Hint
-            text={ui.t(
-              "恢复时新建配置副本，保留当前配置与连接状态。",
-              "Restoring creates profile copies and preserves the active profile and connection.",
-            )}
-          />
-          <Action
-            secondary
-            icon="file-up"
-            loading={ui.client.isPending("backups.restore")}
-            label={ui.t("选择备份文件…", "Choose a backup file…")}
-            disabled={ui.client.pending() > 0}
-            onPress={() => void restore()}
-          />
-        </Card>
-        <Card
-          title={ui.t("WebDAV 备份", "WebDAV backup")}
-          subtitle={ui.t(
-            "账号与密码仅保存在当前页面内存中。点击上传或下载时才会连接服务器。",
-            "Credentials remain in this page’s memory. The server is contacted only when uploading or downloading.",
-          )}
-        >
-          <Field
-            label={ui.t("备份文件地址", "Backup file URL")}
-            value={url()}
-            keyboardType="url"
-            onChange={(text) => url.set(text)}
-            placeholder="https://example.com/Paws-backup.json"
-          />
-          <Field
-            label={ui.t("用户名", "Username")}
-            value={username()}
-            onChange={(text) => username.set(text)}
-          />
-          <Hint
-            text={ui.t(
-              "填写完整的 HTTPS 文件地址。上传会创建新的备份，下载会恢复配置副本。",
-              "Enter the complete HTTPS file URL. Upload creates a new backup; download restores profile copies.",
-            )}
-          />
-          <If when={url() && !validUrl()}>
-            <Hint
-              danger
-              text={ui.t(
-                "请输入不含凭据、查询参数或片段的 HTTPS 地址。",
-                "Enter an HTTPS URL without credentials, query or fragment.",
+          <View
+            style={{
+              flex: twoColumns() ? 1 : undefined,
+              width: twoColumns() ? undefined : "100%",
+              minWidth: 0,
+            }}
+          >
+            <Card
+              title={ui.t("本地备份", "Local backup")}
+              subtitle={ui.t(
+                "导出完整配置，或从备份文件恢复配置副本。",
+                "Export the full configuration, or restore profile copies from a backup file.",
               )}
-            />
-          </If>
-          <Field
-            label={ui.t("密码或应用专用密码", "Password or app password")}
-            value={password()}
-            onChange={(text) => password.set(text)}
-            password
-          />
-          <Actions>
-            <Action
-              primary
-              loading={ui.client.isPending("backups.webdavUpload")}
-              label={ui.t("上传备份", "Upload backup")}
-              disabled={!validUrl() || ui.client.pending() > 0}
-              onPress={() => webdav("backups.webdavUpload")}
-            />
-            <Action
-              secondary
-              loading={ui.client.isPending("backups.webdavRestore")}
-              label={ui.t("下载并恢复…", "Download and restore…")}
-              disabled={!validUrl() || ui.client.pending() > 0}
-              onPress={() =>
-                void confirm(
-                  ui,
-                  ui.t(
-                    "下载远程备份并恢复？",
-                    "Download and restore the remote backup?",
-                  ),
-                  () => webdav("backups.webdavRestore"),
-                  {
-                    actionLabel: ui.t("下载并恢复", "Download and restore"),
-                    description: url(),
-                    destructive: false,
-                  },
-                )
-              }
-            />
-          </Actions>
-        </Card>
+            >
+              <Hint text={ui.t("导出配置", "Export configuration")} />
+              <Hint
+                text={ui.t(
+                  "备份包含订阅地址、覆写与节点密钥，请妥善保管。",
+                  "Backups include subscription URLs, overrides and node secrets. Store them securely.",
+                )}
+              />
+              <Action
+                secondary
+                icon="download"
+                loading={ui.client.isPending("backups.export")}
+                label={ui.t("导出备份文件…", "Export backup file…")}
+                disabled={ui.client.pending() > 0}
+                onPress={() => void exportBackup()}
+              />
+              <Separator />
+              <Hint text={ui.t("从文件恢复", "Restore from file")} />
+              <Hint
+                text={ui.t(
+                  "恢复时新建配置副本，保留当前配置与连接状态。",
+                  "Restoring creates profile copies and preserves the active profile and connection.",
+                )}
+              />
+              <Action
+                secondary
+                icon="file-up"
+                loading={ui.client.isPending("backups.restore")}
+                label={ui.t("选择备份文件…", "Choose a backup file…")}
+                disabled={ui.client.pending() > 0}
+                onPress={() => void restore()}
+              />
+            </Card>
+          </View>
+          <View
+            style={{
+              flex: twoColumns() ? 1 : undefined,
+              width: twoColumns() ? undefined : "100%",
+              minWidth: 0,
+            }}
+          >
+            <Card
+              title={ui.t("WebDAV 备份", "WebDAV backup")}
+              subtitle={ui.t(
+                "账号与密码仅保存在当前页面内存中。点击上传或下载时才会连接服务器。",
+                "Credentials remain in this page’s memory. The server is contacted only when uploading or downloading.",
+              )}
+            >
+              <Field
+                label={ui.t("备份文件地址", "Backup file URL")}
+                value={url()}
+                keyboardType="url"
+                onChange={(text) => url.set(text)}
+                placeholder="https://example.com/Paws-backup.json"
+              />
+              <Field
+                label={ui.t("用户名", "Username")}
+                value={username()}
+                onChange={(text) => username.set(text)}
+              />
+              <Hint
+                text={ui.t(
+                  "填写完整的 HTTPS 文件地址。上传会创建新的备份，下载会恢复配置副本。",
+                  "Enter the complete HTTPS file URL. Upload creates a new backup; download restores profile copies.",
+                )}
+              />
+              <If when={url() && !validUrl()}>
+                <Hint
+                  danger
+                  text={ui.t(
+                    "请输入不含凭据、查询参数或片段的 HTTPS 地址。",
+                    "Enter an HTTPS URL without credentials, query or fragment.",
+                  )}
+                />
+              </If>
+              <Field
+                label={ui.t("密码或应用专用密码", "Password or app password")}
+                value={password()}
+                onChange={(text) => password.set(text)}
+                password
+              />
+              <Actions>
+                <Action
+                  primary
+                  loading={ui.client.isPending("backups.webdavUpload")}
+                  label={ui.t("上传备份", "Upload backup")}
+                  disabled={!validUrl() || ui.client.pending() > 0}
+                  onPress={() => webdav("backups.webdavUpload")}
+                />
+                <Action
+                  secondary
+                  loading={ui.client.isPending("backups.webdavRestore")}
+                  label={ui.t("下载并恢复…", "Download and restore…")}
+                  disabled={!validUrl() || ui.client.pending() > 0}
+                  onPress={() =>
+                    void confirm(
+                      ui,
+                      ui.t(
+                        "下载远程备份并恢复？",
+                        "Download and restore the remote backup?",
+                      ),
+                      () => webdav("backups.webdavRestore"),
+                      {
+                        actionLabel: ui.t("下载并恢复", "Download and restore"),
+                        description: `${url()}\n${ui.t("将新建配置副本，保留现有订阅与连接。服务器未在恢复前提供备份时间或内容预览。", "Creates profile copies and keeps existing subscriptions and connections. The server provides no timestamp or content preview before restore.")}`,
+                        destructive: false,
+                      },
+                    )
+                  }
+                />
+              </Actions>
+            </Card>
+          </View>
+        </View>
       </Body>
     </Scroll>
   );
@@ -1020,16 +1016,15 @@ export function About() {
             style={{
               width: 56,
               height: 56,
-              backgroundColor: palette().soft,
               borderWidth: 1,
-              borderColor: palette().border,
               borderRadius: radius.xxl,
               borderCurve: "continuous",
               alignItems: "center",
               justifyContent: "center",
+              ...surfaceFinish("raised"),
             }}
           >
-            <Icon name="paw-print" size={26} color={palette().text} />
+            <Icon name="paw-print" size={26} color={palette().accent} />
           </View>
           <Text
             style={{
@@ -1065,6 +1060,26 @@ export function About() {
               value={`${about().uiRuntime} ${about().uiRuntimeVersion}`}
             />
             <Detail label="Rust" value={about().rustVersion} />
+            <Actions align="start">
+              <Action
+                secondary
+                small
+                icon="copy"
+                label={ui.t("复制版本信息", "Copy version info")}
+                onPress={() =>
+                  copyText(
+                    ui,
+                    [
+                      `Paws ${about().appVersion}`,
+                      `Core ${about().coreVersion}`,
+                      `UI ${about().uiRuntime} ${about().uiRuntimeVersion}`,
+                      `Rust ${about().rustVersion}`,
+                    ].join("\n"),
+                    ui.t("版本信息已复制", "Version info copied"),
+                  )
+                }
+              />
+            </Actions>
           </Card>
         </View>
         <View testID="about-engine-section">

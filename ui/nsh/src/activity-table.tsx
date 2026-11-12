@@ -1,11 +1,101 @@
-import { Text, View, windowSize, type JSX } from "nsh";
-import { Badge, IconButton, useApp } from "./components";
+import { Text, View, fontScale, type JSX } from "nsh";
+import { Badge, IconButton, useApp, useLayout } from "./components";
 import type { Connection } from "./model";
-import { palette, spacing, focusRing, radius } from "./theme";
+import {
+  palette,
+  spacing,
+  focusRing,
+  radius,
+  typography,
+  control,
+  density,
+  type StatusTone,
+} from "./theme";
 import { bytes, timestamp } from "./locale";
+import { feedbackStyle } from "./motion";
 
-export function ActivityTableHeader() {
-  const ui = useApp();
+export function isBlockedConnection(connection: Connection): boolean {
+  const haystack =
+    `${connection.proxy || ""} ${connection.chains?.join(" ") || ""} ${connection.rule || ""}`.toUpperCase();
+  return (
+    haystack.includes("REJECT") ||
+    haystack.includes("BLOCK") ||
+    connection.proxy === "广告拦截"
+  );
+}
+
+export function historyStatusTone(connection: Connection): StatusTone {
+  if (connection.active) return "success";
+  if (isBlockedConnection(connection)) return "warning";
+  return "neutral";
+}
+
+export function historyStatusLabel(
+  connection: Connection,
+  t: (zh: string, en: string) => string,
+): string {
+  if (connection.active) return t("活跃", "Active");
+  if (isBlockedConnection(connection)) return t("已拦截", "Blocked");
+  return t("已结束", "Ended");
+}
+
+export function formatActivityTime(raw?: string): string {
+  const formatted = timestamp(raw);
+  if (formatted === "—") return "—";
+  const parts = formatted.split(" ");
+  return parts.length > 1 ? parts[parts.length - 1]! : formatted;
+}
+
+export function formatActivityElapsed(
+  startedAt: string | undefined,
+  t: (zh: string, en: string) => string,
+): string {
+  if (!startedAt) return "—";
+  const numeric = Number(startedAt);
+  const ms = Number.isFinite(numeric)
+    ? numeric > 1e17
+      ? numeric / 1e6
+      : numeric > 1e14
+        ? numeric / 1e3
+        : numeric > 1e11
+          ? numeric
+          : numeric * 1000
+    : Date.parse(startedAt);
+  if (!Number.isFinite(ms)) return formatActivityTime(startedAt);
+  const seconds = Math.floor((Date.now() - ms) / 1000);
+  if (seconds < 0 || seconds > 86400 * 7) return formatActivityTime(startedAt);
+  const compact =
+    seconds < 60
+      ? `${seconds}s`
+      : seconds < 3600
+        ? `${Math.floor(seconds / 60)}m`
+        : `${Math.floor(seconds / 3600)}h`;
+  return t(`持续 ${compact}`, compact);
+}
+
+export function formatRouteChain(connection: Connection): string {
+  const chains = connection.chains?.filter(Boolean);
+  if (chains && chains.length > 0) return chains.join(" → ");
+  if (
+    connection.rule &&
+    connection.proxy &&
+    connection.rule !== connection.proxy
+  ) {
+    return `${connection.rule} → ${connection.proxy}`;
+  }
+  return connection.proxy || connection.rule || "—";
+}
+
+export function ActivityTableHeader(props: {
+  history?: boolean;
+  usable?: number;
+}) {
+  const ui = useApp(),
+    layout = useLayout();
+  const available = () => props.usable ?? layout().usable;
+  const details = () => available() >= 760 * Math.max(1, fontScale());
+  const transfer = () => available() >= 520 * Math.max(1, fontScale());
+  const actionsWidth = () => control.icon * 2 + 4;
   return (
     <View
       testID="activity-table-header"
@@ -14,43 +104,90 @@ export function ActivityTableHeader() {
         flexDirection: "row",
         alignItems: "center",
         gap: spacing.md,
-        paddingHorizontal: spacing.md,
+        paddingHorizontal: 14,
         borderBottomWidth: 1,
         borderBottomColor: palette().border,
         backgroundColor: palette().soft,
       }}
     >
       <Text
-        style={{ flex: 2, minWidth: 0, fontSize: 12, color: palette().muted }}
+        style={{
+          flex: 2,
+          minWidth: 0,
+          fontSize: typography.xs,
+          lineHeight: density.line(16),
+          fontWeight: "600",
+          color: palette().muted,
+        }}
       >
-        {ui.t("目标地址", "Destination")}
+        {details()
+          ? ui.t("目标地址", "Destination")
+          : ui.t("目标与命中规则", "Destination & rule")}
       </Text>
-      <If when={windowSize().width >= 1000}>
-        <Text style={{ width: 64, fontSize: 12, color: palette().muted }}>
-          {ui.t("网络", "Network")}
-        </Text>
+      <If when={details()}>
         <Text
-          style={{ flex: 1, minWidth: 0, fontSize: 12, color: palette().muted }}
+          style={{
+            flex: 1.5,
+            minWidth: 0,
+            fontSize: typography.xs,
+            lineHeight: density.line(16),
+            fontWeight: "600",
+            color: palette().muted,
+          }}
         >
-          {ui.t("代理", "Proxy")}
-        </Text>
-        <Text
-          style={{ flex: 1, minWidth: 0, fontSize: 12, color: palette().muted }}
-        >
-          {ui.t("规则", "Rule")}
+          {ui.t("规则 / 代理链", "Rule / Chain")}
         </Text>
       </If>
       <Text
         style={{
-          width: 120,
-          fontSize: 12,
+          width: props.history ? 84 : 72,
+          fontSize: typography.xs,
+          lineHeight: density.line(16),
+          fontWeight: "600",
+          color: palette().muted,
+        }}
+      >
+        {props.history
+          ? ui.t("状态", "Status")
+          : ui.t("网络", "Network")}
+      </Text>
+      <If when={props.history && details()}>
+        <Text
+          style={{
+            width: 84,
+            fontSize: typography.xs,
+            lineHeight: density.line(16),
+            fontWeight: "600",
+            color: palette().muted,
+          }}
+        >
+          {ui.t("时间", "Time")}
+        </Text>
+      </If>
+      <If when={transfer()}>
+        <Text
+          style={{
+            width: props.history ? 96 : 112,
+            fontSize: typography.xs,
+            lineHeight: density.line(16),
+            fontWeight: "600",
+            textAlign: "right",
+            color: palette().muted,
+          }}
+        >
+          {ui.t("流量", "Traffic")}
+        </Text>
+      </If>
+      <Text
+        style={{
+          width: actionsWidth(),
+          fontSize: typography.xs,
+          lineHeight: density.line(16),
+          fontWeight: "600",
           textAlign: "right",
           color: palette().muted,
         }}
       >
-        {ui.t("传输", "Transfer")}
-      </Text>
-      <Text style={{ width: 72, fontSize: 12, color: palette().muted }}>
         {ui.t("操作", "Actions")}
       </Text>
     </View>
@@ -60,27 +197,37 @@ export function ActivityTableHeader() {
 export function ActivityTableRow(props: {
   connection: Connection;
   history: boolean;
+  selected?: boolean;
+  usable?: number;
   menu: JSX.Element;
   onDetails: () => void;
   onRule: () => void;
 }) {
-  const ui = useApp();
+  const ui = useApp(),
+    layout = useLayout();
+  const available = () => props.usable ?? layout().usable;
+  const details = () => available() >= 760 * Math.max(1, fontScale());
+  const transfer = () => available() >= 520 * Math.max(1, fontScale());
+  const actionsWidth = () => control.icon * 2 + 4;
   const host = () =>
     props.connection.domain ||
     props.connection.host ||
     props.connection.destinationIp;
+  const totalBytes = () =>
+    bytes(props.connection.downloadBytes + props.connection.uploadBytes);
   return (
     <View
       testID={`activity-table-row-${props.connection.id}`}
       style={{
-        minHeight: 72,
+        minHeight: details() ? 46 : 56,
         flexDirection: "row",
         alignItems: "center",
         gap: spacing.md,
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
+        paddingHorizontal: 14,
+        paddingVertical: 6,
         borderBottomWidth: 1,
         borderBottomColor: palette().line,
+        backgroundColor: props.selected ? palette().accentFill : "transparent",
       }}
     >
       <View
@@ -94,137 +241,121 @@ export function ActivityTableRow(props: {
         style={{
           flex: 2,
           minWidth: 0,
-          minHeight: 40,
+          minHeight: 34,
           justifyContent: "center",
-          gap: spacing.xxs,
+          gap: 2,
           borderRadius: radius.sm,
           borderCurve: "continuous",
+          ...feedbackStyle(),
         }}
       >
         <Text
           style={{
+            minWidth: 0,
             numberOfLines: 1,
-            fontSize: 14,
-            lineHeight: 20,
-            fontWeight: "600",
+            fontSize: density.font(14),
+            lineHeight: density.line(20),
+            fontWeight: props.selected ? "600" : "500",
             color: palette().text,
           }}
         >
           {host()}
         </Text>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: spacing.sm,
-          }}
-        >
-          <If when={props.history}>
-            <Badge
-              tone={props.connection.active ? "success" : "neutral"}
-              label={
-                props.connection.active
-                  ? ui.t("活跃", "Active")
-                  : ui.t("已结束", "Ended")
-              }
-            />
-          </If>
-          <Text
-            style={{
-              flex: 1,
-              numberOfLines: 1,
-              fontSize: 12,
-              lineHeight: 18,
-              fontVariant: ["tabular-nums"],
-              color: palette().muted,
-            }}
-          >
-            {timestamp(
-              props.history
-                ? props.connection.updatedAt
-                : props.connection.startedAt,
-            )}
-          </Text>
-        </View>
-        <If when={windowSize().width < 1000}>
+        <If when={!details()}>
           <Text
             style={{
               numberOfLines: 1,
-              fontSize: 12,
-              lineHeight: 18,
+              fontSize: density.font(12.5),
+              lineHeight: density.line(17),
               color: palette().muted,
             }}
           >
-            {props.connection.network.toUpperCase()} · {props.connection.proxy}{" "}
-            · {props.connection.rule}
+            {formatRouteChain(props.connection)}
+            {!transfer() ? ` · ${totalBytes()}` : ""}
           </Text>
         </If>
       </View>
-      <If when={windowSize().width >= 1000}>
-        <Text style={{ width: 64, fontSize: 12, color: palette().muted }}>
-          {props.connection.network.toUpperCase()}
-        </Text>
+      <If when={details()}>
         <Text
-          accessibilityLabel={props.connection.proxy}
+          accessibilityLabel={formatRouteChain(props.connection)}
           style={{
-            flex: 1,
+            flex: 1.5,
             minWidth: 0,
             numberOfLines: 1,
-            fontSize: 13,
-            lineHeight: 20,
-            color: palette().text,
-          }}
-        >
-          {props.connection.proxy}
-        </Text>
-        <Text
-          accessibilityLabel={props.connection.rule}
-          style={{
-            flex: 1,
-            minWidth: 0,
-            numberOfLines: 1,
-            fontSize: 13,
-            lineHeight: 20,
+            fontSize: typography.note,
+            lineHeight: density.line(18),
             color: palette().muted,
           }}
         >
-          {props.connection.rule}
+          {formatRouteChain(props.connection)}
         </Text>
       </If>
-      <View style={{ width: 120, alignItems: "flex-end", gap: spacing.xxs }}>
+      <View
+        style={{
+          width: props.history ? 84 : 72,
+          justifyContent: "center",
+          alignItems: "flex-start",
+        }}
+      >
+        <Badge
+          tone={
+            props.history ? historyStatusTone(props.connection) : "neutral"
+          }
+          label={
+            props.history
+              ? historyStatusLabel(props.connection, ui.t)
+              : props.connection.network.toUpperCase()
+          }
+        />
+      </View>
+      <If when={props.history && details()}>
         <Text
           style={{
-            fontSize: 12,
-            lineHeight: 18,
-            fontVariant: ["tabular-nums"],
-            color: palette().text,
-          }}
-        >
-          ↓ {bytes(props.connection.downloadBytes)}
-        </Text>
-        <Text
-          style={{
-            fontSize: 12,
-            lineHeight: 18,
+            width: 84,
+            fontSize: typography.note,
+            lineHeight: density.line(18),
             fontVariant: ["tabular-nums"],
             color: palette().muted,
           }}
         >
-          ↑ {bytes(props.connection.uploadBytes)}
+          {formatActivityTime(props.connection.startedAt)}
         </Text>
-      </View>
+      </If>
+      <If when={transfer()}>
+        <View
+          style={{
+            width: props.history ? 96 : 112,
+            alignItems: "flex-end",
+            justifyContent: "center",
+          }}
+        >
+          <Text
+            style={{
+              fontSize: density.font(13.5),
+              lineHeight: density.line(18),
+              fontWeight: "500",
+              fontVariant: ["tabular-nums"],
+              color: palette().text,
+            }}
+          >
+            {totalBytes()}
+          </Text>
+        </View>
+      </If>
       <View
         testID={`activity-table-actions-${props.connection.id}`}
         style={{
-          width: 72,
+          width: actionsWidth(),
           flexDirection: "row",
           alignItems: "center",
-          gap: spacing.sm,
+          justifyContent: "flex-end",
+          gap: 4,
         }}
       >
         <IconButton
           id={`rule-for-${props.connection.id}`}
           icon="plus"
+          iconColor={palette().muted}
           label={ui.t("添加规则…", "Add rule…")}
           onPress={props.onRule}
         />

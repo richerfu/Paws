@@ -14,6 +14,8 @@ import tempfile
 def navigation_steps(page, width):
     """Follow the production navigation for the fixture's actual idiom."""
     if width < 840:
+        if page == 'requests':
+            return ['nav-tools', 'tool-connections', 'activity-view-requests']
         return ['nav-tools', f'tool-{page}']
     if page == 'requests':
         return ['desktop-nav-connections', 'activity-view-requests']

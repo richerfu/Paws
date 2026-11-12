@@ -8,9 +8,11 @@ export function pageDomains(page: Page): DomainInput[] {
     case "dashboard":
       return ["summary"];
     case "profiles":
+    case "profile-detail":
     case "editor":
       return ["profiles"];
     case "proxies":
+    case "proxy-group":
       return ["proxies"];
     case "traffic":
       return ["traffic", "dns"];
@@ -20,6 +22,8 @@ export function pageDomains(page: Page): DomainInput[] {
       return ["connections"];
     case "requests":
       return ["requests"];
+    case "activity-detail":
+      return ["connections", "requests"];
     case "logs":
       return ["logs"];
     case "diagnostics":

@@ -122,7 +122,8 @@ def run(binary, stage, out, name, width, taps, summary_index, detail_index=None,
 
 
 def run_nested(binary, stage, out):
-    taps = ["error-rules-failure", "nav-tools", "tool-connections", "rule-for-connection-1",
+    taps = ["error-rules-failure", "nav-tools", "tool-connections",
+            "activity-row-connection-connection-1", "rule-for-connection-1",
             "manual-rule-read-error-details", "manual-rule-read-error-close",
             "error-assert-nested-closed", "dialog-close", "error-assert-nested-closed"]
     cmd = [str(binary), "trace", str(stage / ENTRY), "--wait", "50", "--width", "390", "--height", "844"]
@@ -138,15 +139,15 @@ def run_nested(binary, stage, out):
     assert len(re.findall(r"PAWS PRESS #\b", output)) == len(taps)
     assert output.count("PASS PAGE ERROR: nested details close does not retry or mutate") == 2
     states = snapshots(output)
-    verify_summary(states[4], "manual-rule-read-error")
-    chunks = verify_detail(states[5], 390, None, "manual-rule-read-error")
-    verify_summary(states[7], "manual-rule-read-error")
-    assert not any(n.get("testId") == "manual-rule-read-error-list" and states[7].visible(n)
-                   for n in states[7].nodes.values())
-    one(states[7], "dialog-close")
-    assert not any(n.get("testId") == "manual-rule-read-error-summary" and states[9].visible(n)
-                   for n in states[9].nodes.values())
-    print("PASS page error: nested details close leaves parent, then parent closes (9 completed step)")
+    verify_summary(states[5], "manual-rule-read-error")
+    chunks = verify_detail(states[6], 390, None, "manual-rule-read-error")
+    verify_summary(states[8], "manual-rule-read-error")
+    assert not any(n.get("testId") == "manual-rule-read-error-list" and states[8].visible(n)
+                   for n in states[8].nodes.values())
+    one(states[8], "dialog-close")
+    assert not any(n.get("testId") == "manual-rule-read-error-summary" and states[10].visible(n)
+                   for n in states[10].nodes.values())
+    print("PASS page error: nested details close leaves parent, then parent closes (10 completed step)")
     return {"case": "nested-dialog-readonly-close", "width": 390, "actualPresses": len(taps),
             "mountedChunksAtOpen": chunks, "log": str(log)}
 

@@ -48,7 +48,7 @@ test("desktop commands, context menus and drafts survive window resizing", async
   expect(app.shows("id:desktop-nav-requests")).toBe(false);
   await app.keyboard.press("mod+2");
   await app.waitFor("id:profile-menu-test-profile");
-  await app.rightClick("id:activate-profile-test-profile");
+  await app.rightClick("id:open-profile-test-profile");
   await app.waitFor("id:edit-subscription-test-profile");
   await app.press("id:edit-subscription-test-profile");
   await app.waitFor("id:save-subscription");
@@ -71,7 +71,7 @@ test("desktop commands, context menus and drafts survive window resizing", async
   expect(app.enabled("id:save-vpn")).toBe(true);
   await app.setViewport(1280, 900);
   await app.keyboard.press("mod+1");
-  expect(app.dialogs().at(-1)!.buttons).toEqual(["取消", "丢弃草稿"]);
+  expect(app.dialogs().at(-1)!.buttons).toEqual(["继续编辑", "丢弃草稿"]);
   expect(app.enabled("id:save-vpn")).toBe(true);
   await app.press("id:save-vpn");
   expect(reports.filter((command) => command === "settings.vpn")).toHaveLength(

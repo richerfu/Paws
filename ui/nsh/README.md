@@ -13,9 +13,11 @@ then `paws_app::Application` through the thin Rust N-API binding. Configuration,
 persistence, engine policy and VPN ownership remain outside the view layer.
 
 Shared controls use `nsh/base` behavior in `src/components.tsx`. The theme
-(`theme.json`) and surface finishes follow the local NSH Gallery UI, with
-paper/graphite surfaces, citrus accents and 44 pt controls. `src/theme.ts`
-maps application roles to NSH tokens; there is no separate Zinc theme.
+(`theme.json`) and surface finishes (`src/finishes.json`) follow the NSH Gallery
+UI across Phone, Pad and PC, with paper/graphite surfaces, citrus accents, solid
+red stop actions and unified 40 pt standard controls (36 pt small buttons/icon
+buttons, 32 pt compact filters, and non-overlapping touch hit areas of at least
+44 pt). `src/theme.ts` maps application roles to NSH tokens; there is no separate Zinc theme.
 Configuration editing is a retained navigation page in
 `src/pages/profile-editor.tsx`, using NSH's YAML `Editor` with native input,
 syntax highlighting, line numbers, wrapping, undo and find. Unsaved edits

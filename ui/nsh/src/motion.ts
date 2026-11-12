@@ -1,6 +1,8 @@
 import {
   cleanup,
   createAnimatedValue,
+  createMotion,
+  Easing,
   effect,
   LayoutAnimation,
   reduceMotion,
@@ -57,7 +59,7 @@ export function useGlyphTransition(key: () => string | undefined): AnimatedValue
   return value;
 }
 
-export function usePressFeedback(disabled: () => boolean) {
+export function usePressFeedback(disabled: () => boolean, activeScale = 0.97) {
   const scale = createAnimatedValue(1);
   effect(() => {
     if (disabled() || reduceMotion()) scale.set(1);
@@ -68,13 +70,25 @@ export function usePressFeedback(disabled: () => boolean) {
   return {
     scale,
     down: () => {
-      if (!disabled() && !reduceMotion()) scale.spring(0.97, motion.press);
+      if (!disabled() && !reduceMotion()) scale.spring(activeScale, motion.press);
     },
     up: () => {
       if (reduceMotion()) scale.set(1);
       else scale.spring(1, motion.press);
     },
   };
+}
+
+export function usePopIn() {
+  const enter = createMotion({
+    enter: {
+      duration: 150,
+      easing: Easing.bezier(0.16, 1, 0.3, 1),
+      keyframes: { opacity: [0.01, 1], scale: [0.96, 1] },
+    },
+  });
+  cleanup(() => enter.stop());
+  return enter;
 }
 
 export function feedbackStyle(): ViewStyle {

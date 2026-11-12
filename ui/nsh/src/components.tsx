@@ -14,6 +14,7 @@ import {
   View,
   type JSX,
   type Signal,
+  type ViewStyle,
   Animated,
   createAnimatedValue as createNativeValue,
   Easing,
@@ -40,6 +41,7 @@ import {
 import type { CoreClient } from "./client";
 import type { DomainInput } from "./model";
 import { isChinese } from "./locale";
+import { workspaceLayout } from "./layout";
 import {
   palette,
   control,
@@ -59,6 +61,7 @@ import {
   follow,
   motion,
   useGlyphTransition,
+  usePopIn,
   usePressFeedback,
 } from "./motion";
 export { palette, control, radius, spacing, typography, Icon };
@@ -67,13 +70,16 @@ export type { StatusTone };
 export type Page =
   | "dashboard"
   | "profiles"
+  | "profile-detail"
   | "proxies"
+  | "proxy-group"
   | "traffic"
   | "tools"
   | "settings"
   | "appearance"
   | "connections"
   | "requests"
+  | "activity-detail"
   | "resources"
   | "logs"
   | "diagnostics"
@@ -99,7 +105,11 @@ export type AppContext = {
   logRecordingIntent: Signal<number>;
   refreshProfiles?: () => Promise<void>;
   editProfile: (id: string) => void;
-  beforeLeave?: (guard: () => boolean | Promise<boolean>) => () => void;
+  switchActivity?: (mode: "connections" | "requests") => void;
+  beforeLeave?: (guard: () => boolean | Promise<boolean>, owner?: unknown) => () => void;
+  layout?: () => ReturnType<typeof workspaceLayout>;
+  viewState?: Map<string, unknown>;
+  overlays?: Signal<number>;
   t: (zh: string, en: string) => string;
 };
 export const App = context<AppContext | undefined>(undefined);
@@ -108,6 +118,42 @@ export function useApp(): AppContext {
   const value = App();
   if (!value) throw new Error("Paws UI context is missing");
   return value;
+}
+export function useLayout() {
+  const ui = useApp();
+  return () => ui.layout?.() || workspaceLayout(windowSize().width, platform.desktop, undefined, fontScale());
+}
+/** Session-only state for collection/detail pairs. No preference writes. */
+export function useViewState<T>(key: string, create: () => T): T {
+  const ui = useApp();
+  if (!ui.viewState) return create();
+  if (!ui.viewState.has(key)) ui.viewState.set(key, create());
+  return ui.viewState.get(key) as T;
+}
+export function useOverlay(open: () => boolean) {
+  const ui = App();
+  effect(() => {
+    if (!open() || !ui?.overlays) return;
+    ui.overlays.update((count) => count + 1);
+    cleanup(() => ui.overlays!.update((count) => Math.max(0, count - 1)));
+  });
+}
+/** Register every draft with the current route, and reuse its discard choice
+ * for modal dismissal. Auto-saved converter drafts use their own policy. */
+export function useDraftGuard(dirty: () => boolean, discard: () => void, busy: () => boolean = () => false) {
+  const ui = useApp();
+  const check = async () => {
+    if (busy()) return false;
+    if (!dirty()) return true;
+    const accepted = await askConfirmation(ui, ui.t("放弃未保存的修改？", "Discard unsaved changes?"), {
+      actionLabel: ui.t("放弃修改", "Discard changes"),
+      cancelLabel: ui.t("继续编辑", "Keep editing"),
+    });
+    if (accepted) discard();
+    return accepted;
+  };
+  cleanup(ui.beforeLeave?.(check, RouteOwner() || ui.route()) || (() => {}));
+  return check;
 }
 export function copyText(ui: AppContext, text: string, notice: string): void {
   Clipboard.writeText(text);
@@ -122,6 +168,419 @@ export function useDomainInterests(inputs: () => DomainInput[]): void {
     if (required.length) cleanup(ui.client.domains.acquire(required));
   });
 }
+export function SectionHeader(props: {
+  title: string;
+  meta?: string;
+  right?: JSX.Element;
+}) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: spacing.sm,
+        paddingHorizontal: spacing.xxs,
+      }}
+    >
+      <Text
+        role="header"
+        style={{
+          flex: 1,
+          minWidth: 0,
+          color: palette().text,
+          fontSize: typography.sm,
+          lineHeight: density.line(20),
+          fontWeight: "600",
+        }}
+      >
+        {props.title}
+      </Text>
+      <If when={props.meta}>
+        <Text
+          style={{
+            color: palette().muted,
+            fontSize: typography.note,
+            lineHeight: density.line(18),
+            fontVariant: ["tabular-nums"],
+          }}
+        >
+          {props.meta}
+        </Text>
+      </If>
+      {props.right}
+    </View>
+  );
+}
+
+export function IconTile(props: {
+  icon: IconName;
+  selected?: boolean;
+  color?: string;
+  alignTop?: boolean;
+}) {
+  return (
+    <View
+      style={{
+        width: 26,
+        height: 26,
+        borderRadius: 8,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+        marginTop: props.alignTop ? 2 : 0,
+        ...surfaceFinish("raised"),
+      }}
+    >
+      <Icon
+        name={props.icon}
+        size={16}
+        color={props.color || (props.selected ? palette().accent : palette().text)}
+      />
+    </View>
+  );
+}
+
+export function ListSurface(props: {
+  children?: JSX.Element;
+  id?: string;
+  style?: ViewStyle;
+}) {
+  return (
+    <View
+      testID={props.id}
+      style={{
+        minWidth: 0,
+        borderRadius: radius.xl,
+        borderCurve: "continuous",
+        backgroundColor: palette().panel,
+        borderWidth: 1,
+        borderColor: palette().border,
+        overflow: "hidden",
+        ...surfaceFinish("card"),
+        ...props.style,
+      }}
+    >
+      {props.children}
+    </View>
+  );
+}
+
+export function ListRow(props: {
+  id?: string;
+  icon?: IconName;
+  leading?: JSX.Element;
+  title: string;
+  badge?: JSX.Element;
+  subtitle?: string;
+  value?: string;
+  valueTone?: StatusTone;
+  tabular?: boolean;
+  chevron?: boolean;
+  trailing?: JSX.Element;
+  onPress?: () => void;
+  disabled?: boolean;
+  selected?: boolean;
+  divider?: boolean;
+  alignTop?: boolean;
+  children?: JSX.Element;
+}) {
+  const interactive = () => !!props.onPress;
+  const content = (
+    <>
+      <If when={props.leading || props.icon}>
+        <If
+          when={props.leading}
+          else={
+            <IconTile
+              icon={props.icon!}
+              selected={props.selected}
+              alignTop={props.alignTop}
+            />
+          }
+        >
+          {props.leading}
+        </If>
+      </If>
+      <View style={{ flex: 1, minWidth: 0, gap: density.space(2) }}>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: density.space(6),
+            minWidth: 0,
+          }}
+        >
+          <Text
+            style={{
+              flexShrink: 1,
+              minWidth: 0,
+              numberOfLines: 1,
+              color: palette().text,
+              fontSize: typography.sm,
+              lineHeight: density.line(20),
+              fontWeight: props.selected ? "600" : "500",
+            }}
+          >
+            {props.title}
+          </Text>
+          {props.badge}
+        </View>
+        <If when={props.subtitle}>
+          <Text
+            style={{
+              minWidth: 0,
+              numberOfLines: 2,
+              color: palette().muted,
+              fontSize: typography.note,
+              lineHeight: density.line(18),
+            }}
+          >
+            {props.subtitle}
+          </Text>
+        </If>
+        {props.children}
+      </View>
+      <If when={props.value !== undefined || props.trailing || props.chevron}>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: density.space(6),
+            flexShrink: 0,
+            maxWidth: "52%",
+          }}
+        >
+          <If when={props.value !== undefined}>
+            <Text
+              style={{
+                minWidth: 0,
+                flexShrink: 1,
+                numberOfLines: 1,
+                fontSize: typography.note,
+                lineHeight: density.line(18),
+                color: props.valueTone
+                  ? statusColors(props.valueTone).text
+                  : palette().muted,
+                fontVariant: props.tabular ? ["tabular-nums"] : undefined,
+              }}
+            >
+              {props.value}
+            </Text>
+          </If>
+          {props.trailing}
+          <If when={props.chevron}>
+            <Icon name="chevron-right" size={16} color={palette().faint} />
+          </If>
+        </View>
+      </If>
+    </>
+  );
+  const rowStyle = () => ({
+    minHeight: Math.max(
+      52,
+      density.line(20) * Math.max(1, fontScale()) + spacing.lg,
+    ),
+    paddingHorizontal: 14,
+    paddingVertical: density.space(10),
+    flexDirection: "row" as const,
+    alignItems: (props.alignTop ? "flex-start" : "center") as
+      | "flex-start"
+      | "center",
+    gap: spacing.md,
+    borderBottomWidth: props.divider ? 1 : 0,
+    borderBottomColor: palette().line,
+    backgroundColor: props.selected ? palette().accentFill : "transparent",
+    opacity: props.disabled ? 0.45 : 1,
+    ...feedbackStyle(),
+  });
+  return (
+    <If
+      when={interactive()}
+      else={
+        <View testID={props.id} style={rowStyle()}>
+          {content}
+        </View>
+      }
+    >
+      <View
+        testID={props.id}
+        role="button"
+        accessibilityLabel={props.title}
+        accessibilityState={{
+          disabled: !!props.disabled,
+          selected: !!props.selected,
+        }}
+        disabled={props.disabled}
+        onPress={() => {
+          if (!props.disabled) props.onPress?.();
+        }}
+        focusStyle={focusRing()}
+        hoverStyle={
+          props.disabled ? undefined : { backgroundColor: palette().hover }
+        }
+        activeStyle={
+          props.disabled ? undefined : { backgroundColor: palette().soft }
+        }
+        style={rowStyle()}
+      >
+        {content}
+      </View>
+    </If>
+  );
+}
+
+export function MeterBar(props: { ratio: number }) {
+  const clamped = () =>
+    Math.max(0, Math.min(100, Math.round((Number.isFinite(props.ratio) ? props.ratio : 0) * 100)));
+  return (
+    <View
+      style={{
+        height: 6,
+        width: "100%",
+        borderRadius: 3,
+        borderWidth: 1,
+        backgroundColor: palette().track,
+        overflow: "hidden",
+        marginTop: density.space(6),
+        ...surfaceFinish("track"),
+      }}
+    >
+      <View
+        style={{
+          height: "100%",
+          width: `${clamped()}%`,
+          borderRadius: 2,
+          backgroundColor: palette().brandFill,
+          transitionProperty: "width",
+          transitionDuration: reduceMotion() ? 0 : 180,
+          transitionTimingFunction: "ease-out",
+          ...surfaceFinish("fill"),
+        }}
+      />
+    </View>
+  );
+}
+
+function splitRate(value: number | undefined, formatBytes: (n: number) => string) {
+  if (!value || value <= 0) return { amount: "0", unit: "B/s" };
+  const formatted = formatBytes(value);
+  const space = formatted.lastIndexOf(" ");
+  if (space <= 0) return { amount: formatted, unit: "/s" };
+  return {
+    amount: formatted.slice(0, space),
+    unit: `${formatted.slice(space + 1)}/s`,
+  };
+}
+
+export function SpeedGrid(props: {
+  upload?: number;
+  download?: number;
+  connected: boolean;
+  formatBytes: (n: number) => string;
+}) {
+  const ui = useApp();
+  const stacked = () => windowSize().width < 340 || fontScale() > 1.35;
+  const up = () =>
+    splitRate(props.connected ? props.upload : 0, props.formatBytes);
+  const down = () =>
+    splitRate(props.connected ? props.download : 0, props.formatBytes);
+  const Cell = (cell: {
+    upload?: boolean;
+    amount: string;
+    unit: string;
+    divider?: boolean;
+  }) => (
+    <View
+      style={{
+        flex: stacked() ? undefined : 1,
+        minWidth: 0,
+        paddingHorizontal: 14,
+        paddingVertical: density.space(12),
+        gap: density.space(4),
+        borderLeftWidth: !stacked() && cell.divider ? 1 : 0,
+        borderTopWidth: stacked() && cell.divider ? 1 : 0,
+        borderColor: palette().line,
+      }}
+    >
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          gap: density.space(4),
+        }}
+      >
+        <Icon
+          name={cell.upload ? "arrow-up" : "arrow-down"}
+          size={14}
+          color={cell.upload ? palette().chartUpload : palette().chartDownload}
+        />
+        <Text
+          style={{
+            fontSize: typography.note,
+            lineHeight: density.line(18),
+            color: palette().muted,
+          }}
+        >
+          {cell.upload ? ui.t("上传", "Upload") : ui.t("下载", "Download")}
+        </Text>
+      </View>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "baseline",
+          gap: density.space(4),
+          minWidth: 0,
+        }}
+      >
+        <Text
+          style={{
+            numberOfLines: 1,
+            flexShrink: 1,
+            fontSize: typography.xl,
+            lineHeight: density.line(26),
+            fontWeight: "600",
+            color: palette().text,
+            fontVariant: ["tabular-nums"],
+          }}
+        >
+          {cell.amount}
+        </Text>
+        <Text
+          style={{
+            fontSize: typography.note,
+            lineHeight: density.line(18),
+            fontWeight: "500",
+            color: palette().muted,
+          }}
+        >
+          {cell.unit}
+        </Text>
+      </View>
+    </View>
+  );
+  return (
+    <View
+      style={{
+        minWidth: 0,
+        flexDirection: stacked() ? "column" : "row",
+        borderRadius: radius.xl,
+        borderCurve: "continuous",
+        backgroundColor: palette().panel,
+        borderWidth: 1,
+        borderColor: palette().border,
+        overflow: "hidden",
+        ...surfaceFinish("card"),
+      }}
+    >
+      <Cell upload amount={up().amount} unit={up().unit} />
+      <Cell divider amount={down().amount} unit={down().unit} />
+    </View>
+  );
+}
+
 export function Card(props: {
   title?: string;
   subtitle?: string;
@@ -146,8 +605,8 @@ export function Card(props: {
                 role="header"
                 style={{
                   color: palette().text,
-                  fontSize: density.font(15),
-                  lineHeight: density.line(22),
+                  fontSize: typography.sm,
+                  lineHeight: props.subtitle ? density.line(22) : density.line(20),
                   fontWeight: "600",
                 }}
               >
@@ -171,6 +630,8 @@ export function Card(props: {
           backgroundColor: palette().panel,
           borderWidth: 1,
           borderColor: palette().border,
+          overflow: props.flush ? "hidden" : undefined,
+          ...surfaceFinish("card"),
         }}
       >
         {props.children}
@@ -185,11 +646,14 @@ export function Action(props: {
   id?: string;
   secondary?: boolean;
   danger?: boolean;
+  stop?: boolean;
   disabled?: boolean;
   selected?: boolean;
   primary?: boolean;
-  variant?: "primary" | "default" | "outline" | "secondary" | "ghost" | "link";
+  variant?: "primary" | "stop" | "default" | "outline" | "secondary" | "ghost" | "link";
   small?: boolean;
+  fullWidth?: boolean;
+  flex?: number;
   icon?: IconName;
   loading?: boolean;
 }) {
@@ -197,35 +661,69 @@ export function Action(props: {
   const press = usePressFeedback(disabled);
   const glyph = useGlyphTransition(() => (props.loading ? "busy" : props.icon));
   const variant = () =>
-    props.danger
-      ? "danger"
-      : props.primary
-        ? "primary"
-        : props.variant || (props.secondary ? "outline" : "default");
+    props.stop || props.variant === "stop"
+      ? "stop"
+      : props.danger
+        ? "danger"
+        : props.primary
+          ? "primary"
+          : props.variant || (props.secondary ? "outline" : "default");
   const foreground = () =>
-    variant() === "danger"
-      ? props.primary
-        ? palette().dangerText
-        : palette().danger
-      : variant() === "primary"
-        ? palette().primaryText
-        : variant() === "link"
-          ? palette().accent
-          : palette().text;
-  const background = () =>
-    variant() === "danger"
-      ? props.primary
-        ? palette().danger
-        : palette().dangerFill
-      : variant() === "primary"
-        ? palette().brandFill
-        : variant() === "secondary" || variant() === "default" || props.selected
-          ? palette().raised
-          : variant() === "outline"
-            ? palette().raised
-            : "transparent";
+    variant() === "stop"
+      ? props.disabled && !props.loading
+        ? palette().muted
+        : palette().onStop
+      : variant() === "danger"
+        ? props.primary
+          ? palette().dangerText
+          : palette().danger
+        : variant() === "primary"
+          ? props.disabled && !props.loading
+            ? palette().muted
+            : palette().primaryText
+          : variant() === "link"
+            ? palette().accent
+            : palette().text;
+  const raised = () =>
+    variant() === "default" ||
+    variant() === "secondary" ||
+    variant() === "outline";
   const solid = () =>
-    variant() === "primary" || (variant() === "danger" && !!props.primary);
+    variant() === "primary" ||
+    variant() === "stop" ||
+    (variant() === "danger" && !!props.primary);
+  const restFinish = () => {
+    if (variant() === "stop") {
+      return props.disabled && !props.loading
+        ? surfaceFinish("raised")
+        : surfaceFinish("stop");
+    }
+    if (variant() === "primary") {
+      return props.disabled && !props.loading
+        ? surfaceFinish("raised")
+        : surfaceFinish("accent");
+    }
+    if (variant() === "danger") {
+      return props.primary
+        ? {
+            backgroundColor: palette().danger,
+            borderColor: "transparent",
+            boxShadow: surfaceFinish("accent").boxShadow,
+          }
+        : {
+            backgroundColor: palette().dangerFill,
+            borderColor: palette().danger,
+            boxShadow: surfaceFinish("raised").boxShadow,
+          };
+    }
+    if (raised()) {
+      return props.selected ? surfaceFinish("on") : surfaceFinish("raised");
+    }
+    return {
+      backgroundColor: props.selected ? palette().soft : "transparent",
+      borderColor: "transparent",
+    };
+  };
   return (
     <Button
       testID={props.id}
@@ -234,17 +732,22 @@ export function Action(props: {
       hoverStyle={
         disabled()
           ? undefined
-          : solid()
-            ? { opacity: 0.92 }
-            : {
-                backgroundColor:
-                  variant() === "ghost" || variant() === "link"
-                    ? palette().soft
-                    : palette().hover,
-              }
+          : variant() === "stop"
+            ? surfaceFinish("stopHover")
+            : solid()
+              ? { opacity: 0.94 }
+              : raised()
+                ? props.selected
+                  ? undefined
+                  : surfaceFinish("hover")
+                : { backgroundColor: palette().hover }
       }
       selected={props.selected}
-      selectedStyle={{ borderWidth: 1, borderColor: palette().accent }}
+      selectedStyle={
+        raised()
+          ? surfaceFinish("on")
+          : { borderWidth: 1, borderColor: palette().accent }
+      }
       accessibilityLabel={props.label}
       disabled={disabled()}
       onPressDown={press.down}
@@ -252,35 +755,35 @@ export function Action(props: {
       activeStyle={
         disabled()
           ? undefined
-          : solid()
-            ? { opacity: 0.86 }
-            : { backgroundColor: palette().soft }
+          : variant() === "stop"
+            ? surfaceFinish("stopPressed")
+            : solid()
+              ? { opacity: 0.88 }
+              : raised()
+                ? surfaceFinish("pressed")
+                : { backgroundColor: palette().soft }
       }
       onPress={() => {
         if (!disabled()) props.onPress();
       }}
       style={{
+        width: props.fullWidth ? "100%" : undefined,
+        flex: props.flex,
         minWidth: 0,
         maxWidth: "100%",
         flexShrink: 1,
         minHeight: props.small ? control.small : control.height,
         paddingVertical: props.small ? spacing.xxs : density.space(6),
-        paddingHorizontal: props.small ? spacing.md : spacing.lg,
-        borderRadius: radius.md,
+        paddingHorizontal: props.small ? 12 : 14,
+        borderRadius: props.small ? 9 : radius.md,
         borderCurve: "continuous",
         flexDirection: "row",
-        gap: spacing.sm,
+        gap: props.small ? 6 : spacing.sm,
         alignItems: "center",
         justifyContent: "center",
-        opacity: props.loading ? 1 : props.disabled ? 0.4 : 1,
+        opacity: props.loading ? 1 : props.disabled ? 0.5 : 1,
         borderWidth: 1,
-        borderColor:
-          variant() === "ghost" ||
-          variant() === "link" ||
-          variant() === "primary"
-            ? "transparent"
-            : palette().border,
-        backgroundColor: background(),
+        ...restFinish(),
         ...feedbackStyle(),
         transform: [{ scale: press.scale }],
       }}
@@ -304,8 +807,8 @@ export function Action(props: {
           minWidth: 0,
           flexShrink: 1,
           lineHeight: density.line(20),
-          fontSize: props.small ? typography.xs : typography.sm,
-          fontWeight: "500",
+          fontSize: props.small ? density.font(14) : typography.sm,
+          fontWeight: variant() === "primary" || variant() === "stop" ? "600" : "500",
           color: foreground(),
         }}
       >
@@ -323,6 +826,7 @@ export function IconButton(props: {
   disabled?: boolean;
   small?: boolean;
   size?: number;
+  iconColor?: string;
   loading?: boolean;
   shortcut?: string;
   tooltip?: boolean;
@@ -398,7 +902,13 @@ export function IconButton(props: {
       <View style={{ opacity: glyph, transform: [{ scale: glyph }] }}>
         <If
           when={props.loading}
-          else={<Icon name={props.icon} size={18} color={palette().text} />}
+          else={
+            <Icon
+              name={props.icon}
+              size={18}
+              color={props.iconColor || palette().text}
+            />
+          }
         >
           <Spinner size={18} />
         </If>
@@ -460,17 +970,36 @@ export function ExternalLink(props: {
 export function Separator() {
   return (
     <View
-      style={{ height: 1, backgroundColor: palette().border, width: "100%" }}
+      style={{ height: 1, backgroundColor: palette().line, width: "100%" }}
     />
   );
 }
 export function Badge(props: {
   label: string;
   secondary?: boolean;
-  tone?: StatusTone;
+  tone?: StatusTone | "brand" | "info";
   id?: string;
 }) {
-  const colors = () => statusColors(props.tone);
+  const colors = () =>
+    props.tone === "brand"
+      ? {
+          text: palette().accent,
+          background: palette().accentFill,
+          border: palette().border,
+        }
+      : props.tone === "info"
+        ? {
+            text: palette().info,
+            background: palette().infoFill,
+            border: palette().border,
+          }
+        : !props.tone || props.tone === "neutral"
+          ? {
+              text: palette().text,
+              background: palette().soft,
+              border: palette().border,
+            }
+          : statusColors(props.tone);
   return (
     <View
       testID={props.id}
@@ -481,13 +1010,15 @@ export function Badge(props: {
         flexShrink: 1,
         minWidth: 0,
         maxWidth: "100%",
-        minHeight: control.compact ? 20 : 22,
+        minHeight: 20,
         borderRadius: radius.full,
-        paddingHorizontal: spacing.sm,
+        borderCurve: "continuous",
+        paddingHorizontal: 8,
         paddingVertical: density.space(2),
         borderWidth: 0,
         borderColor: colors().border,
         backgroundColor: colors().background,
+        justifyContent: "center",
       }}
     >
       <Text
@@ -495,7 +1026,8 @@ export function Badge(props: {
           minWidth: 0,
           fontSize: typography.xs,
           lineHeight: density.line(16),
-          fontWeight: "500",
+          fontWeight: !props.tone || props.tone === "neutral" ? "500" : "600",
+          fontVariant: ["tabular-nums"],
           color: colors().text,
         }}
       >
@@ -505,73 +1037,481 @@ export function Badge(props: {
   );
 }
 export function Tabs(props: {
-  options: { value: string; label: string }[];
+  options: { value: string; label: string; count?: number }[];
   value: string;
   onChange: (value: string) => void;
   idPrefix?: string;
   disabled?: boolean;
+  inline?: boolean;
+  flex?: number;
+  size?: "regular" | "small";
 }) {
+  const inline = () =>
+    props.flex !== undefined
+      ? false
+      : (props.inline ?? props.size === "small");
+  const small = () => props.size === "small";
   return (
     <NativeTabs
       style={{
-        minHeight: control.height + 4,
-        padding: density.space(2),
+        flex: props.flex,
+        minWidth: props.flex !== undefined ? 0 : undefined,
+        alignSelf:
+          props.flex !== undefined
+            ? "auto"
+            : inline()
+              ? "flex-start"
+              : "stretch",
+        maxWidth: "100%",
+        minHeight: small() ? control.compactHeight : 36,
+        padding: 2,
         flexDirection: "row",
-        backgroundColor: palette().soft,
-        borderRadius: radius.lg,
+        backgroundColor: palette().inset,
+        borderRadius: small() ? 9 : radius.md,
         borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: palette().border,
+        ...surfaceFinish("track"),
       }}
       indicatorStyle={{
         top: 2,
         bottom: 2,
-        borderRadius: Math.max(0, radius.lg - density.space(2)),
+        borderRadius: small() ? 7 : 8,
         borderCurve: "continuous",
-        backgroundColor: palette().panel,
         borderWidth: 1,
-        borderColor: palette().border,
-        ...surfaceFinish("pill"),
+        ...surfaceFinish("thumb"),
       }}
     >
       <Each of={props.options} key={(option) => option.value}>
-        {(option) => (
-          <Tab
-            focusStyle={focusRing()}
-            testID={
-              props.idPrefix ? `${props.idPrefix}-${option().value}` : undefined
-            }
-            selected={props.value === option().value}
-            accessibilityLabel={option().label}
-            disabled={props.disabled}
-            onPress={() => props.onChange(option().value)}
-            style={{
-              flex: 1,
-              minHeight: control.height,
-              alignItems: "center",
-              justifyContent: "center",
-              paddingHorizontal: spacing.sm,
-              borderRadius: Math.max(0, radius.lg - density.space(2)),
-              borderCurve: "continuous",
-              backgroundColor: "transparent",
-              opacity: props.disabled ? 0.5 : 1,
-              ...feedbackStyle(),
-            }}
-          >
-            <Text
+        {(option) => {
+          const active = () => props.value === option().value;
+          return (
+            <Tab
+              focusStyle={focusRing()}
+              hoverStyle={
+                props.disabled ? undefined : { backgroundColor: palette().hover }
+              }
+              activeStyle={
+                props.disabled ? undefined : { backgroundColor: palette().soft }
+              }
+              testID={
+                props.idPrefix ? `${props.idPrefix}-${option().value}` : undefined
+              }
+              selected={active()}
+              accessibilityLabel={option().label}
+              disabled={props.disabled}
+              onPress={() => props.onChange(option().value)}
               style={{
-                fontSize: typography.sm,
-                fontWeight: "500",
-                color:
-                  props.value === option().value
-                    ? palette().text
-                    : palette().muted,
+                flex: inline() ? undefined : 1,
+                minWidth: 0,
+                minHeight: small() ? 26 : 30,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 5,
+                paddingHorizontal: small()
+                  ? inline()
+                    ? 11
+                    : 6
+                  : inline()
+                    ? 12
+                    : 10,
+                borderRadius: small() ? 7 : 8,
+                borderCurve: "continuous",
+                backgroundColor: "transparent",
+                opacity: props.disabled ? 0.5 : 1,
+                ...feedbackStyle(),
               }}
             >
-              {option().label}
-            </Text>
-          </Tab>
-        )}
+              <Text
+                style={{
+                  flexShrink: 1,
+                  minWidth: 0,
+                  numberOfLines: 1,
+                  fontSize: small() ? typography.note : density.font(14),
+                  lineHeight: density.line(small() ? 18 : 20),
+                  fontWeight: active() ? "600" : "500",
+                  color: active() ? palette().text : palette().muted,
+                }}
+              >
+                {option().label}
+              </Text>
+              <If when={option().count !== undefined}>
+                <Text
+                  style={{
+                    flexShrink: 0,
+                    fontSize: typography.xs,
+                    lineHeight: density.line(16),
+                    fontWeight: "500",
+                    fontVariant: ["tabular-nums"],
+                    color: active() ? palette().muted : palette().faint,
+                  }}
+                >
+                  {String(option().count)}
+                </Text>
+              </If>
+            </Tab>
+          );
+        }}
       </Each>
     </NativeTabs>
+  );
+}
+
+export function CompactPicker(props: {
+  id?: string;
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  const ui = App();
+  const open = signal(false);
+  useOverlay(open);
+  const disabled = () => !!props.disabled;
+  const press = usePressFeedback(disabled);
+  const selectedLabel = () =>
+    props.options.find((option) => option.value === props.value)?.label ||
+    props.value;
+  return (
+    <Menu
+      open={open()}
+      onOpenChange={(event) => {
+        if (!event.open || !disabled()) open.set(event.open);
+      }}
+      placement="bottom"
+      align="end"
+      offset={4}
+      margin={8}
+      popupStyle={popupSurface()}
+      popupStartingStyle={{
+        opacity: 0,
+        transform: [{ scale: 0.96 }, { translateY: -4 }],
+      }}
+      popupEndingStyle={{ opacity: 0 }}
+      backdropStyle={{ backgroundColor: palette().scrim }}
+      trigger={
+        <View
+          testID={props.id}
+          role="button"
+          accessibilityLabel={props.label}
+          accessibilityValue={{ text: selectedLabel() }}
+          hitSlop={control.hitSlop(control.compactHeight)}
+          accessibilityState={{
+            expanded: open(),
+            disabled: disabled(),
+          }}
+          disabled={disabled()}
+          onPressDown={press.down}
+          onPressUp={press.up}
+          focusStyle={focusRing()}
+          hoverStyle={disabled() ? undefined : surfaceFinish("hover")}
+          activeStyle={disabled() ? undefined : surfaceFinish("pressed")}
+          style={{
+            minHeight: control.compactHeight,
+            paddingLeft: 11,
+            paddingRight: 9,
+            borderRadius: 9,
+            borderCurve: "continuous",
+            borderWidth: 1,
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 6,
+            opacity: disabled() ? 0.45 : 1,
+            ...(open() ? surfaceFinish("on") : surfaceFinish("raised")),
+            ...feedbackStyle(),
+            transform: [{ scale: press.scale }],
+          }}
+        >
+          <Text
+            style={{
+              fontSize: typography.note,
+              lineHeight: density.line(18),
+              fontWeight: "500",
+              color: palette().text,
+            }}
+          >
+            {selectedLabel()}
+          </Text>
+          <Chevron expanded={open()} size={14} />
+        </View>
+      }
+    >
+      <View style={{ minWidth: 180 }}>
+        <Each of={props.options} key={(option) => option.value}>
+          {(option) => (
+            <MenuItem
+              testID={
+                props.id ? `${props.id}-option-${option().value}` : undefined
+              }
+              role="menuitemradio"
+              disabled={props.disabled}
+              checked={option().value === props.value}
+              accessibilityLabel={option().label}
+              onSelect={() => {
+                if (option().value !== props.value)
+                  props.onChange(option().value);
+              }}
+              focusStyle={focusRing()}
+              hoverStyle={{ backgroundColor: palette().soft }}
+              activeStyle={{ backgroundColor: palette().soft }}
+              style={{
+                minHeight: 40,
+                paddingHorizontal: spacing.md,
+                paddingVertical: spacing.xs,
+                borderRadius: 8,
+                borderCurve: "continuous",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: spacing.sm,
+                backgroundColor:
+                  option().value === props.value
+                    ? palette().soft
+                    : "transparent",
+                ...feedbackStyle(),
+              }}
+            >
+              <Text
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  fontSize: density.font(14),
+                  lineHeight: density.line(20),
+                  fontWeight: option().value === props.value ? "600" : "500",
+                  color: palette().text,
+                }}
+              >
+                {option().label}
+              </Text>
+              <View
+                style={{
+                  width: 16,
+                  opacity: option().value === props.value ? 1 : 0,
+                }}
+              >
+                <Icon
+                  name="check"
+                  size={16}
+                  color={ui ? palette().accent : palette().text}
+                />
+              </View>
+            </MenuItem>
+          )}
+        </Each>
+      </View>
+    </Menu>
+  );
+}
+
+export function ChoiceTile(props: {
+  id?: string;
+  icon: IconName;
+  title: string;
+  subtitle: string;
+  loading?: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  const disabled = () => !!props.disabled || !!props.loading;
+  const press = usePressFeedback(disabled, 0.97);
+  const glyph = useGlyphTransition(() => (props.loading ? "busy" : props.icon));
+  return (
+    <Button
+      testID={props.id}
+      accessibilityLabel={`${props.title}，${props.subtitle}`}
+      disabled={disabled()}
+      onPressDown={press.down}
+      onPressUp={press.up}
+      focusStyle={focusRing()}
+      hoverStyle={disabled() ? undefined : surfaceFinish("hover")}
+      activeStyle={disabled() ? undefined : surfaceFinish("pressed")}
+      onPress={() => {
+        if (!disabled()) props.onPress();
+      }}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        minHeight: 88,
+        paddingVertical: 12,
+        paddingHorizontal: 13,
+        borderRadius: radius.lg,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        alignItems: "stretch",
+        justifyContent: "space-between",
+        gap: 10,
+        opacity: props.loading ? 1 : props.disabled ? 0.45 : 1,
+        ...surfaceFinish("raised"),
+        ...feedbackStyle(),
+        transform: [{ scale: press.scale }],
+      }}
+    >
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+        }}
+      >
+        <View
+          style={{
+            width: 32,
+            height: 32,
+            borderRadius: 10,
+            borderCurve: "continuous",
+            borderWidth: 1,
+            borderColor: palette().fieldBorder,
+            backgroundColor: palette().field,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <View style={{ opacity: glyph, transform: [{ scale: glyph }] }}>
+            <If
+              when={props.loading}
+              else={<Icon name={props.icon} size={17} color={palette().text} />}
+            >
+              <Spinner size={17} color={palette().text} />
+            </If>
+          </View>
+        </View>
+        <Icon name="chevron-right" size={15} color={palette().faint} />
+      </View>
+      <View style={{ minWidth: 0, gap: 2 }}>
+        <Text
+          style={{
+            numberOfLines: 1,
+            fontSize: typography.sm,
+            lineHeight: density.line(20),
+            fontWeight: "600",
+            color: palette().text,
+          }}
+        >
+          {props.title}
+        </Text>
+        <Text
+          style={{
+            numberOfLines: 2,
+            fontSize: density.font(12.5),
+            lineHeight: density.line(17),
+            color: palette().muted,
+          }}
+        >
+          {props.subtitle}
+        </Text>
+      </View>
+    </Button>
+  );
+}
+
+export function OrRule(props: { label: string }) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        marginVertical: 2,
+      }}
+    >
+      <View style={{ flex: 1, height: 1, backgroundColor: palette().line }} />
+      <Text
+        style={{
+          fontSize: typography.xs,
+          lineHeight: density.line(16),
+          color: palette().faint,
+        }}
+      >
+        {props.label}
+      </Text>
+      <View style={{ flex: 1, height: 1, backgroundColor: palette().line }} />
+    </View>
+  );
+}
+
+export function Well(props: { children?: JSX.Element; style?: ViewStyle }) {
+  return (
+    <View
+      style={{
+        minWidth: 0,
+        padding: 12,
+        gap: spacing.xs,
+        borderRadius: radius.lg,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: palette().line,
+        backgroundColor: palette().inset,
+        ...surfaceFinish("inset"),
+        ...props.style,
+      }}
+    >
+      {props.children}
+    </View>
+  );
+}
+
+export function FilterChips(props: {
+  options: { value: string; label: string }[];
+  value: string;
+  onChange: (value: string) => void;
+  idPrefix?: string;
+  trailing?: JSX.Element;
+}) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: 6,
+      }}
+    >
+      <Each of={props.options} key={(option) => option.value}>
+        {(option) => {
+          const active = () => props.value === option().value;
+          return (
+            <Button
+              testID={
+                props.idPrefix
+                  ? `${props.idPrefix}-${option().value}`
+                  : undefined
+              }
+              selected={active()}
+              accessibilityLabel={option().label}
+              focusStyle={focusRing()}
+              hoverStyle={active() ? undefined : surfaceFinish("hover")}
+              activeStyle={surfaceFinish("pressed")}
+              onPress={() => props.onChange(option().value)}
+              style={{
+                minHeight: 30,
+                paddingHorizontal: 11,
+                borderRadius: 8,
+                borderCurve: "continuous",
+                borderWidth: 1,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "center",
+                ...(active() ? surfaceFinish("on") : surfaceFinish("raised")),
+                ...feedbackStyle(),
+              }}
+            >
+              <Text
+                style={{
+                  fontSize: density.font(12),
+                  lineHeight: density.line(16),
+                  fontWeight: active() ? "600" : "500",
+                  color: active() ? palette().text : palette().muted,
+                }}
+              >
+                {option().label}
+              </Text>
+            </Button>
+          );
+        }}
+      </Each>
+      {props.trailing}
+    </View>
   );
 }
 
@@ -596,6 +1536,7 @@ export function Actions(props: {
 
 export function Field(props: {
   label: string;
+  accessibilityLabel?: string;
   value: string;
   onChange: (value: string) => void;
   onSubmit?: () => void;
@@ -642,6 +1583,7 @@ export function Field(props: {
         <Input
           testID={props.id}
           accessibilityLabel={
+            props.accessibilityLabel ||
             props.label ||
             props.placeholder ||
             ui?.t("文本输入", "Text input") ||
@@ -778,7 +1720,8 @@ export function SearchField(props: {
   return (
     <Field
       id={props.id}
-      label={props.label || ""}
+      label=""
+      accessibilityLabel={props.label || props.placeholder}
       value={draft()}
       onChange={(next) => {
         draft.set(next);
@@ -806,6 +1749,8 @@ export function Toggle(props: {
   value: boolean;
   onChange: (value: boolean) => void;
   disabled?: boolean;
+  insetRow?: boolean;
+  divider?: boolean;
 }) {
   const position = follow(() => (props.value ? 1 : 0), motion.move);
   return (
@@ -819,42 +1764,52 @@ export function Toggle(props: {
         flexDirection: "row-reverse",
         alignItems: "center",
         gap: spacing.md,
-        minHeight: control.row,
-        opacity: props.disabled ? 0.4 : 1,
+        minHeight: 48,
+        paddingHorizontal: props.insetRow ? spacing.md : 0,
+        paddingVertical: props.insetRow ? density.space(10) : 0,
+        borderBottomWidth: props.divider ? 1 : 0,
+        borderBottomColor: palette().line,
+        opacity: props.disabled ? 0.45 : 1,
       }}
       trackStyle={{
-        width: control.compact ? 38 : 44,
-        height: control.compact ? 24 : 26,
+        width: 42,
+        height: 24,
         borderRadius: radius.full,
         padding: 2,
         borderWidth: 1,
-        borderColor: palette().border,
+        borderColor: props.value
+          ? surfaceFinish("accent").borderColor
+          : surfaceFinish("track").borderColor,
+        boxShadow: props.value
+          ? surfaceFinish("accent").boxShadow
+          : surfaceFinish("track").boxShadow,
         backgroundColor: position.interpolate({
           inputRange: [0, 1],
-          outputRange: [palette().soft, palette().brandFill],
+          outputRange: [palette().track, palette().brandFill],
         }),
       }}
       thumbStyle={{
-        width: control.compact ? 18 : 20,
-        height: control.compact ? 18 : 20,
+        width: 18,
+        height: 18,
         borderRadius: radius.full,
-        backgroundColor: palette().panel,
-        ...surfaceFinish("knob"),
+        borderWidth: 1,
+        ...(props.value ? surfaceFinish("knobOn") : surfaceFinish("knob")),
         transform: [
           {
             translateX: position.interpolate({
               inputRange: [0, 1],
-              outputRange: [0, control.compact ? 14 : 18],
+              outputRange: [0, 18],
             }),
           },
         ],
       }}
     >
-      <View style={{ flex: 1, gap: spacing.xs }}>
+      <View style={{ flex: 1, minWidth: 0, gap: density.space(2) }}>
         <Text
           style={{
             color: palette().text,
             fontSize: typography.sm,
+            lineHeight: density.line(20),
             fontWeight: "500",
           }}
         >
@@ -875,6 +1830,8 @@ export function Check(props: {
   value: boolean;
   onChange: (value: boolean) => void;
   disabled?: boolean;
+  insetRow?: boolean;
+  divider?: boolean;
 }) {
   const selected = follow(() => (props.value ? 1 : 0));
   return (
@@ -888,16 +1845,23 @@ export function Check(props: {
         flexDirection: "row",
         alignItems: "center",
         gap: spacing.md,
-        minHeight: control.row,
-        opacity: props.disabled ? 0.4 : 1,
+        minHeight: 46,
+        paddingHorizontal: props.insetRow ? spacing.md : 0,
+        paddingVertical: props.insetRow ? density.space(8) : 0,
+        borderBottomWidth: props.divider ? 1 : 0,
+        borderBottomColor: palette().line,
+        opacity: props.disabled ? 0.45 : 1,
       }}
       indicatorStyle={{
-        width: control.compact ? 18 : 20,
-        height: control.compact ? 18 : 20,
-        borderRadius: radius.sm,
+        width: 22,
+        height: 22,
+        borderRadius: 7,
         borderCurve: "continuous",
         borderWidth: 1,
-        borderColor: props.value ? palette().accent : palette().fieldBorder,
+        borderColor: props.value
+          ? surfaceFinish("accent").borderColor
+          : palette().fieldBorder,
+        boxShadow: props.value ? surfaceFinish("accent").boxShadow : undefined,
         backgroundColor: props.value ? palette().brandFill : palette().field,
         alignItems: "center",
         justifyContent: "center",
@@ -905,7 +1869,12 @@ export function Check(props: {
       }}
       indicator={
         <View style={{ opacity: selected, transform: [{ scale: selected }] }}>
-          <Icon name="check" size={14} color={palette().primaryText} />
+          <Icon
+            name="check"
+            size={14}
+            strokeWidth={2.6}
+            color={palette().primaryText}
+          />
         </View>
       }
     >
@@ -915,6 +1884,7 @@ export function Check(props: {
             color: palette().text,
             fontSize: typography.sm,
             lineHeight: density.line(20),
+            fontWeight: "500",
           }}
         >
           {props.label}
@@ -957,7 +1927,7 @@ export function Detail(props: {
         maxWidth: "100%",
         flexDirection: stacked() ? "column" : "row",
         gap: stacked() ? density.space(4) : density.space(12),
-        minHeight: control.compact ? 28 : 32,
+        minHeight: 30,
         alignItems: stacked() ? "stretch" : "flex-start",
       }}
     >
@@ -965,7 +1935,7 @@ export function Detail(props: {
         style={{
           minWidth: 0,
           flex: stacked() ? undefined : 1,
-          fontSize: density.font(12),
+          fontSize: typography.note,
           lineHeight: density.line(20),
           color: palette().muted,
         }}
@@ -1005,6 +1975,7 @@ export function Empty(props: {
   text?: string;
   title?: string;
   icon?: IconName;
+  children?: JSX.Element;
 }) {
   const ui = useApp();
   return (
@@ -1017,14 +1988,15 @@ export function Empty(props: {
     >
       <View
         style={{
-          width: control.compact ? 40 : 48,
-          height: control.compact ? 40 : 48,
-          backgroundColor: palette().soft,
-          borderRadius: radius.xl,
+          width: 44,
+          height: 44,
+          borderWidth: 1,
+          borderRadius: 13,
           borderCurve: "continuous",
           alignItems: "center",
           justifyContent: "center",
           marginBottom: spacing.xxs,
+          ...surfaceFinish("raised"),
         }}
       >
         <Icon
@@ -1047,20 +2019,26 @@ export function Empty(props: {
       <Text
         style={{
           color: palette().muted,
-          fontSize: density.font(14),
+          fontSize: density.font(13),
+          lineHeight: density.line(18),
           textAlign: "center",
+          maxWidth: 280,
         }}
       >
         {props.text || ui.t("暂无数据", "No data yet")}
       </Text>
+      <If when={props.children}>
+        <View style={{ marginTop: spacing.xs }}>{props.children}</View>
+      </If>
     </View>
   );
 }
 export function Body(props: { children?: JSX.Element }) {
+  const layout = useLayout();
   return (
     <View
       style={{
-        padding: windowSize().width >= 840 ? spacing.xxl : spacing.lg,
+        padding: layout().inset,
         gap: spacing.section,
         width: "100%",
       }}
@@ -1068,6 +2046,9 @@ export function Body(props: { children?: JSX.Element }) {
       {props.children}
     </View>
   );
+}
+export function FormFooter(props: { children?: JSX.Element }) {
+  return <View style={{ padding: spacing.lg, gap: spacing.sm, borderTopWidth: 1, borderTopColor: palette().line, backgroundColor: palette().background }}>{props.children}</View>;
 }
 
 export function Loading(props: { text: string }) {
@@ -1114,9 +2095,9 @@ export function Code(props: { text: string; lines?: number }) {
         numberOfLines: props.lines,
         minWidth: 0,
         maxWidth: "100%",
-        fontSize: density.font(12),
-        lineHeight: density.line(19),
-        color: palette().text,
+        fontSize: density.font(13.5),
+        lineHeight: density.line(20),
+        color: palette().code,
         fontFamily: "monospace",
       }}
     >
@@ -1127,6 +2108,7 @@ export function Code(props: { text: string; lines?: number }) {
 
 type ConfirmationOptions = {
   actionLabel: string;
+  cancelLabel?: string;
   description?: string;
   destructive?: boolean;
 };
@@ -1136,12 +2118,14 @@ export async function askConfirmation(
   options?: ConfirmationOptions,
 ): Promise<boolean> {
   const route = ui.route();
+  ui.overlays?.update((count) => count + 1);
+  try {
   const result = await AlertDialog.show({
     title,
     description: options?.description,
     closeOnEscape: true,
     actions: [
-      { id: "cancel", label: ui.t("取消", "Cancel"), role: "cancel" },
+      { id: "cancel", label: options?.cancelLabel || ui.t("取消", "Cancel"), role: "cancel" },
       {
         id: "commit",
         label: options?.actionLabel || ui.t("继续", "Continue"),
@@ -1150,6 +2134,7 @@ export async function askConfirmation(
     ],
   });
   return result.action === "commit" && ui.alive() && ui.route() === route;
+  } finally { ui.overlays?.update((count) => Math.max(0, count - 1)); }
 }
 export async function confirm(
   ui: AppContext,
@@ -1162,22 +2147,29 @@ export async function confirm(
 
 export function Dialog(props: {
   title: string;
+  subtitle?: string;
   description?: string;
   onClose: () => void;
+  afterClose?: () => void;
   children?: JSX.Element;
   footer?: JSX.Element;
   width?: number;
 }) {
   const ui = App();
   const notificationLayer = useNotificationLayer();
+  const enter = usePopIn();
+  useOverlay(() => true);
+  // Own Escape so an asynchronous draft decision can keep this dialog open.
+  cleanup(keymap.bind("escape", () => props.onClose(), { when: "always" }));
   return (
     <NativeDialog
       open
-      closeOnEscape
+      closeOnEscape={false}
       closeOnBackdropPress={false}
       closeOnSwipe={false}
       onCancel={props.onClose}
-      animation="fade"
+      onClose={props.afterClose}
+      animation={reduceMotion() ? "none" : "fade"}
       style={{ flex: 1 }}
     >
       <View style={{ flex: 1, paddingBottom: "env(keyboard-inset-height)" }}>
@@ -1214,36 +2206,52 @@ export function Dialog(props: {
               backgroundColor: palette().popover,
               borderWidth: 1,
               borderColor: palette().border,
+              opacity: enter.opacity,
+              transform: [{ scale: enter.scale }],
               ...surfaceFinish("overlay"),
             }}
           >
             <View
               style={{
                 flexDirection: "row",
-                alignItems: "center",
+                alignItems: "flex-start",
                 gap: spacing.sm,
                 paddingLeft: spacing.lg,
                 paddingRight: spacing.xs,
-                paddingVertical: spacing.xs,
+                paddingTop: 12,
+                paddingBottom: 10,
                 borderBottomWidth: 1,
                 borderBottomColor: palette().line,
               }}
             >
-              <Text
-                role="header"
-                accessibilityLabel={props.title}
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  numberOfLines: 2,
-                  fontSize: typography.lg,
-                  lineHeight: density.line(24),
-                  fontWeight: "600",
-                  color: palette().text,
-                }}
-              >
-                {props.title}
-              </Text>
+              <View style={{ flex: 1, minWidth: 0, gap: 2, paddingTop: 4 }}>
+                <Text
+                  role="header"
+                  accessibilityLabel={props.title}
+                  style={{
+                    minWidth: 0,
+                    numberOfLines: 2,
+                    fontSize: typography.md,
+                    lineHeight: density.line(24),
+                    fontWeight: "600",
+                    color: palette().text,
+                  }}
+                >
+                  {props.title}
+                </Text>
+                <If when={props.subtitle}>
+                  <Text
+                    style={{
+                      minWidth: 0,
+                      fontSize: typography.note,
+                      lineHeight: density.line(18),
+                      color: palette().muted,
+                    }}
+                  >
+                    {props.subtitle}
+                  </Text>
+                </If>
+              </View>
               <IconButton
                 icon="x"
                 tooltip={false}
@@ -1257,7 +2265,7 @@ export function Dialog(props: {
               keyboardDismissMode="on-drag"
               keyboardShouldPersistTaps="handled"
               style={{ flexShrink: 1, minHeight: 0 }}
-              contentStyle={{ padding: spacing.lg, gap: spacing.lg }}
+              contentStyle={{ padding: spacing.lg, gap: 14 }}
             >
               <If when={props.description}>
                 <Hint text={props.description!} />
@@ -1287,6 +2295,210 @@ export function Dialog(props: {
   );
 }
 
+export function BottomSheet(props: {
+  title: string;
+  subtitle?: string;
+  onClose: () => void;
+  afterClose?: () => void;
+  children?: JSX.Element;
+  footer?: JSX.Element;
+}) {
+  const ui = App();
+  const notificationLayer = useNotificationLayer();
+  useOverlay(() => true);
+  cleanup(keymap.bind("escape", () => props.onClose(), { when: "always" }));
+  return (
+    <NativeDialog
+      open
+      closeOnEscape={false}
+      closeOnBackdropPress={false}
+      closeOnSwipe={false}
+      onCancel={props.onClose}
+      onClose={props.afterClose}
+      animation={reduceMotion() ? "none" : "slide"}
+      backdropStyle={{ backgroundColor: palette().scrim }}
+      style={{ flex: 1 }}
+    >
+      <View
+        style={{
+          flex: 1,
+          justifyContent: "flex-end",
+          paddingBottom: "env(keyboard-inset-height)",
+        }}
+      >
+        <View
+          onPress={props.onClose}
+          style={{
+            position: "absolute",
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0,
+          }}
+        />
+        <View
+          accessibilityLabel={props.title}
+          style={{
+            width: "100%",
+            maxHeight: "88%",
+            minHeight: 0,
+            borderTopLeftRadius: 20,
+            borderTopRightRadius: 20,
+            borderCurve: "continuous",
+            backgroundColor: palette().popover,
+            borderTopWidth: 1,
+            borderLeftWidth: 1,
+            borderRightWidth: 1,
+            borderColor: palette().border,
+            ...surfaceFinish("overlay"),
+          }}
+        >
+          <View
+            style={{
+              width: 36,
+              height: 5,
+              borderRadius: radius.full,
+              backgroundColor: palette().border,
+              alignSelf: "center",
+              marginTop: 8,
+              marginBottom: 4,
+            }}
+          />
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "flex-start",
+              gap: spacing.sm,
+              paddingLeft: spacing.lg,
+              paddingRight: spacing.xs,
+              paddingBottom: 10,
+              borderBottomWidth: 1,
+              borderBottomColor: palette().line,
+            }}
+          >
+            <View style={{ flex: 1, minWidth: 0, gap: 2, paddingTop: 4 }}>
+              <Text
+                role="header"
+                accessibilityLabel={props.title}
+                style={{
+                  minWidth: 0,
+                  numberOfLines: 2,
+                  fontSize: typography.md,
+                  lineHeight: density.line(24),
+                  fontWeight: "600",
+                  color: palette().text,
+                }}
+              >
+                {props.title}
+              </Text>
+              <If when={props.subtitle}>
+                <Text
+                  style={{
+                    minWidth: 0,
+                    fontSize: typography.note,
+                    lineHeight: density.line(18),
+                    color: palette().muted,
+                  }}
+                >
+                  {props.subtitle}
+                </Text>
+              </If>
+            </View>
+            <IconButton
+              icon="x"
+              tooltip={false}
+              label={ui?.t("关闭面板", "Close sheet") || "Close sheet"}
+              id="dialog-close"
+              onPress={props.onClose}
+            />
+          </View>
+          <Scroll
+            bounces={false}
+            keyboardDismissMode="on-drag"
+            keyboardShouldPersistTaps="handled"
+            style={{ flexShrink: 1, minHeight: 0 }}
+            contentStyle={{ padding: spacing.lg, gap: 14 }}
+          >
+            {props.children}
+          </Scroll>
+          <If when={props.footer}>
+            <View
+              style={{
+                paddingHorizontal: spacing.lg,
+                paddingTop: 12,
+                paddingBottom: spacing.lg,
+                borderTopWidth: 1,
+                borderTopColor: palette().line,
+              }}
+            >
+              {props.footer}
+            </View>
+          </If>
+        </View>
+        <NotificationViewport
+          owner={notificationLayer}
+          modal
+          dismissLabel={ui?.t("关闭通知", "Dismiss notification")}
+        />
+      </View>
+    </NativeDialog>
+  );
+}
+
+export function SheetActionItem(props: {
+  id?: string;
+  icon: IconName;
+  label: string;
+  danger?: boolean;
+  disabled?: boolean;
+  onPress: () => void;
+}) {
+  const color = () => (props.danger ? palette().danger : palette().text);
+  return (
+    <Button
+      testID={props.id}
+      accessibilityLabel={props.label}
+      disabled={props.disabled}
+      focusStyle={focusRing()}
+      hoverStyle={props.disabled ? undefined : { backgroundColor: palette().hover }}
+      activeStyle={props.disabled ? undefined : { backgroundColor: palette().soft }}
+      onPress={() => {
+        if (!props.disabled) props.onPress();
+      }}
+      style={{
+        minHeight: 46,
+        paddingHorizontal: 12,
+        borderRadius: 9,
+        borderCurve: "continuous",
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 10,
+        backgroundColor: "transparent",
+        opacity: props.disabled ? 0.45 : 1,
+        ...feedbackStyle(),
+      }}
+    >
+      <Icon
+        name={props.icon}
+        size={16}
+        color={props.danger ? palette().danger : palette().muted}
+      />
+      <Text
+        style={{
+          flex: 1,
+          minWidth: 0,
+          fontSize: typography.sm,
+          lineHeight: density.line(20),
+          fontWeight: "500",
+          color: color(),
+        }}
+      >
+        {props.label}
+      </Text>
+    </Button>
+  );
+}
+
 export function Select(props: {
   label: string;
   value: string;
@@ -1299,6 +2511,7 @@ export function Select(props: {
 }) {
   const ui = App();
   const open = signal(false);
+  useOverlay(open);
   const disabled = () => !!props.disabled;
   const selectedLabel = () =>
     props.options.find((option) => option.value === props.value)?.label ||
@@ -1338,7 +2551,10 @@ export function Select(props: {
         offset={4}
         margin={8}
         popupStyle={popupSurface()}
-        popupStartingStyle={{ opacity: 0, transform: [{ translateY: -4 }] }}
+        popupStartingStyle={{
+          opacity: 0,
+          transform: [{ scale: 0.96 }, { translateY: -4 }],
+        }}
         popupEndingStyle={{ opacity: 0 }}
         backdropStyle={{ backgroundColor: palette().scrim }}
         trigger={
@@ -1501,14 +2717,17 @@ export function RadioGroup(props: {
   value: string;
   options: { value: string; label: string }[];
   onChange: (value: string) => void;
+  insetRow?: boolean;
 }) {
   return (
-    <NativeRadioGroup style={{ gap: spacing.xxs }}>
+    <NativeRadioGroup style={{ gap: props.insetRow ? 0 : spacing.xxs }}>
       <Each of={props.options} key={(option) => option.value}>
-        {(option) => (
+        {(option, index) => (
           <RadioChoice
             label={option().label}
             selected={props.value === option().value}
+            insetRow={props.insetRow}
+            divider={props.insetRow && index() < props.options.length - 1}
             onSelect={() => {
               if (props.value !== option().value)
                 props.onChange(option().value);
@@ -1522,6 +2741,8 @@ export function RadioGroup(props: {
 function RadioChoice(props: {
   label: string;
   selected: boolean;
+  insetRow?: boolean;
+  divider?: boolean;
   onSelect: () => void;
 }) {
   const selected = follow(() => (props.selected ? 1 : 0));
@@ -1531,40 +2752,50 @@ function RadioChoice(props: {
       accessibilityLabel={props.label}
       checked={props.selected}
       onChange={props.onSelect}
-      hoverStyle={{ backgroundColor: palette().soft }}
+      hoverStyle={{ backgroundColor: palette().hover }}
       activeStyle={{ backgroundColor: palette().soft }}
       style={{
-        minHeight: control.row,
+        minHeight: 48,
         flexDirection: "row",
         alignItems: "center",
         gap: spacing.md,
-        paddingVertical: spacing.sm,
+        paddingVertical: density.space(10),
         paddingHorizontal: spacing.md,
-        borderRadius: radius.md,
-        borderCurve: "continuous",
-        backgroundColor: props.selected ? palette().soft : "transparent",
+        borderRadius: props.insetRow ? 0 : radius.md,
+        borderCurve: props.insetRow ? undefined : "continuous",
+        borderBottomWidth: props.divider ? 1 : 0,
+        borderBottomColor: palette().line,
+        backgroundColor: props.insetRow
+          ? "transparent"
+          : props.selected
+            ? palette().soft
+            : "transparent",
         ...feedbackStyle(),
       }}
     >
       <View
         style={{
-          width: control.compact ? 18 : 20,
-          height: control.compact ? 18 : 20,
+          width: 22,
+          height: 22,
           borderRadius: radius.full,
           borderWidth: 1,
           borderColor: props.selected
-            ? palette().accent
+            ? surfaceFinish("accent").borderColor
             : palette().fieldBorder,
+          boxShadow: props.selected
+            ? surfaceFinish("accent").boxShadow
+            : undefined,
+          backgroundColor: props.selected ? palette().brandFill : palette().field,
           alignItems: "center",
           justifyContent: "center",
         }}
       >
         <View
           style={{
-            width: control.compact ? 6 : 8,
-            height: control.compact ? 6 : 8,
+            width: 8,
+            height: 8,
             borderRadius: radius.full,
-            backgroundColor: palette().accent,
+            backgroundColor: palette().primaryText,
             opacity: selected,
             transform: [{ scale: selected }],
           }}
@@ -1576,6 +2807,7 @@ function RadioChoice(props: {
           minWidth: 0,
           fontSize: typography.sm,
           lineHeight: density.line(20),
+          fontWeight: props.selected ? "600" : "500",
           color: palette().text,
         }}
       >
@@ -1640,56 +2872,76 @@ export function Spinner(props: { size?: number; color?: string }) {
 export function Alert(props: {
   title?: string;
   text: string;
+  tone?: "danger" | "warning" | "info";
   danger?: boolean;
   warning?: boolean;
+  info?: boolean;
   children?: JSX.Element;
 }) {
+  const isDanger = () => props.danger || props.tone === "danger";
+  const isWarning = () => props.warning || props.tone === "warning";
+  const isInfo = () => props.info || props.tone === "info";
   const tone = (): StatusTone =>
-    props.danger ? "danger" : props.warning ? "warning" : "neutral";
+    isDanger() ? "danger" : isWarning() ? "warning" : "neutral";
   return (
     <View
       role="alert"
       style={{
         borderWidth: 1,
-        borderColor: props.danger
+        borderColor: isDanger()
           ? palette().danger
-          : props.warning
+          : isWarning()
             ? palette().warning
-            : palette().border,
+            : isInfo()
+              ? palette().info
+              : palette().border,
         borderRadius: radius.lg,
         borderCurve: "continuous",
-        padding: density.space(16),
+        paddingHorizontal: spacing.md,
+        paddingVertical: density.space(11),
         flexDirection: "row",
         alignItems: "flex-start",
-        gap: density.space(12),
-        backgroundColor:
-          props.danger || props.warning
-            ? statusColors(tone()).background
+        gap: spacing.sm,
+        backgroundColor: isDanger() || isWarning()
+          ? statusColors(tone()).background
+          : isInfo()
+            ? palette().infoFill
             : palette().panel,
       }}
     >
       <Icon
-        name={props.danger || props.warning ? "triangle-alert" : "circle-check"}
+        name={
+          isDanger() || isWarning()
+            ? "triangle-alert"
+            : isInfo()
+              ? "info"
+              : "circle-check"
+        }
         size={16}
         color={
-          props.danger
+          isDanger()
             ? palette().danger
-            : props.warning
+            : isWarning()
               ? palette().warning
-              : palette().text
+              : isInfo()
+                ? palette().info
+                : palette().text
         }
       />
-      <View style={{ flex: 1, gap: density.space(4) }}>
+      <View style={{ flex: 1, minWidth: 0, gap: density.space(4) }}>
         <If when={props.title}>
           <Text
             style={{
-              fontSize: density.font(14),
+              fontSize: density.font(13),
+              lineHeight: density.line(18),
               fontWeight: "600",
               color: props.danger
                 ? palette().danger
                 : props.warning
                   ? palette().warning
-                  : palette().text,
+                  : props.info
+                    ? palette().info
+                    : palette().text,
             }}
           >
             {props.title}
@@ -1697,8 +2949,8 @@ export function Alert(props: {
         </If>
         <Text
           style={{
-            fontSize: density.font(14),
-            lineHeight: density.line(20),
+            fontSize: density.font(13),
+            lineHeight: density.line(18),
             color: palette().text,
           }}
         >

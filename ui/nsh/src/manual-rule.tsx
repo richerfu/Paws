@@ -14,6 +14,7 @@ import {
   useApp,
   useLifetime,
   useDomainInterests,
+  useDraftGuard,
 } from "./components";
 import { PageError } from "./page-error";
 
@@ -75,6 +76,10 @@ export function ManualRuleDialog(props: {
     );
   });
   const busy = signal(false);
+  const initial = { kind: kind(), value: value(), target: target(), disconnect: disconnect() };
+  const guard = useDraftGuard(() => kind() !== initial.kind || value() !== initial.value || target() !== initial.target || disconnect() !== initial.disconnect,
+    () => { kind.set(initial.kind); value.set(initial.value); target.set(initial.target); disconnect.set(initial.disconnect); }, busy);
+  const close = async () => { if (await guard()) props.onClose(); };
   const canSave = computed(
     () =>
       !busy() &&
@@ -127,7 +132,7 @@ export function ManualRuleDialog(props: {
         "为此域名或 IP 添加优先匹配的规则。",
         "Add a priority rule for this domain or IP.",
       )}
-      onClose={props.onClose}
+      onClose={() => void close()}
       footer={
         <If when={ui.client.domains.has(["rules", "summary"])}>
           <Action

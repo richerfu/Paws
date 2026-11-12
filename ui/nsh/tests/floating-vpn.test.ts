@@ -60,8 +60,9 @@ test("the floating area lets navigation through and yields to the inline desktop
   expect(app.shows("id:vpn-floating-area")).toBe(true);
   await app.setViewport(1280, 900);
   expect(app.shows("id:vpn-floating-area")).toBe(false);
-  expect(app.count("id:vpn-toggle")).toBe(1);
-  await app.press("id:vpn-toggle");
+  expect(app.count("id:vpn-toggle")).toBe(0);
+  expect(app.shows("id:home-connection-action")).toBe(true);
+  await app.press("id:home-connection-action");
   await app.setViewport(390, 844);
   expect(app.shows("id:vpn-floating-area")).toBe(true);
   await app.press("id:vpn-toggle");

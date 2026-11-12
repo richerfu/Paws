@@ -60,7 +60,7 @@ export function groupSelectionMode(
     ? "automatic"
     : group.fixed
       ? "pinned"
-      : selectableGroup(group)
+      : group.groupType.toLowerCase().replace(/[^a-z0-9]/g, "") === "selector"
         ? "manual"
-        : "policy";
+        : selectableGroup(group) ? "automatic" : "policy";
 }

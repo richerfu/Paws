@@ -1,11 +1,11 @@
-import { signal, Text, View, Scroll, windowSize, keymap, platform } from "nsh";
+import { signal, Text, View, Scroll, windowSize, keymap, platform, fontScale } from "nsh";
 import { Button, Tooltip } from "nsh/base";
 import { Icon, type IconName } from "./icons";
 import type { Page } from "./components";
-import { palette, spacing, radius, control, density, focusRing } from "./theme";
+import { palette, spacing, radius, control, density, focusRing, surfaceFinish } from "./theme";
 import { feedbackStyle } from "./motion";
 
-type Destination = { page: Page; zh: string; en: string; icon: IconName };
+type Destination = { page: Page; zh: string; en: string; icon: IconName; keybinding?: string };
 export const desktopPrimary: Destination[] = [
   { page: "dashboard", zh: "概览", en: "Overview", icon: "house" },
   { page: "profiles", zh: "订阅", en: "Subscriptions", icon: "rss" },
@@ -19,21 +19,33 @@ const sections: { title: [string, string]; items: Destination[] }[] = [
       {
         page: "connections",
         zh: "连接与请求",
-        en: "Connections",
-        icon: "unplug",
+        en: "Connections & requests",
+        icon: "list-filter",
       },
       {
         page: "resources",
         zh: "资源与规则",
         en: "Resources & rules",
-        icon: "database",
+        icon: "layers",
       },
-      { page: "logs", zh: "日志", en: "Logs", icon: "scroll-text" },
+      { page: "logs", zh: "日志", en: "Logs", icon: "file-text" },
     ],
   },
   {
-    title: ["工具", "Tools"],
+    title: ["工具与偏好", "Tools & preferences"],
     items: [
+      {
+        page: "diagnostics",
+        zh: "诊断",
+        en: "Diagnostics",
+        icon: "shield-check",
+      },
+      {
+        page: "backups",
+        zh: "备份与恢复",
+        en: "Backup & restore",
+        icon: "download",
+      },
       {
         page: "converter",
         zh: "订阅转换",
@@ -41,59 +53,73 @@ const sections: { title: [string, string]; items: Destination[] }[] = [
         icon: "refresh-cw",
       },
       {
-        page: "backups",
-        zh: "备份与恢复",
-        en: "Backup & restore",
-        icon: "archive",
-      },
-      {
-        page: "diagnostics",
-        zh: "诊断",
-        en: "Diagnostics",
-        icon: "shield-check",
-      },
-    ],
-  },
-  {
-    title: ["偏好设置", "Preferences"],
-    items: [
-      {
         page: "settings",
         zh: "网络设置",
         en: "Network settings",
-        icon: "settings",
+        icon: "sliders-horizontal",
       },
-      { page: "appearance", zh: "外观", en: "Appearance", icon: "palette" },
+      {
+        page: "appearance",
+        zh: "外观",
+        en: "Appearance",
+        icon: "settings",
+        keybinding: "mod+,",
+      },
+      {
+        page: "about",
+        zh: "关于",
+        en: "About",
+        icon: "info",
+      },
     ],
   },
 ];
-const about: Destination = {
-  page: "about",
-  zh: "关于 Paws",
-  en: "About Paws",
-  icon: "info",
-};
+export function desktopGroupTitle(page: Page): [string, string] {
+  const normalized =
+    page === "requests" || page === "activity-detail"
+      ? "connections"
+      : page === "editor" || page === "profile-detail"
+        ? "profiles"
+        : page === "proxy-group"
+          ? "proxies"
+          : page === "privacy"
+            ? "about"
+            : page === "advanced-diagnostics"
+              ? "diagnostics"
+              : page;
+  if (desktopPrimary.some((item) => item.page === normalized))
+    return ["主要", "Main"];
+  if (sections[0].items.some((item) => item.page === normalized))
+    return sections[0].title;
+  return sections[1].title;
+}
 export const desktopRootPages: Page[] = [
   ...desktopPrimary.map((item) => item.page),
   ...sections.flatMap((section) => section.items.map((item) => item.page)),
   "requests",
-  "about",
 ];
 
 export function DesktopNavigation(props: {
   page: Page;
   version: string;
+  statusLabel?: string;
+  connected?: boolean;
   navigate: (page: Page) => void;
   t: (zh: string, en: string) => string;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
-  const preference = signal<boolean | undefined>();
-  const expanded = () => preference() ?? windowSize().width >= 1100;
+  const expanded = () => props.expanded;
   const selected = (page: Page) => {
     const current =
       props.page === "requests"
         ? "connections"
-        : props.page === "editor"
+        : props.page === "editor" || props.page === "profile-detail"
           ? "profiles"
+          : props.page === "proxy-group"
+            ? "proxies"
+            : props.page === "activity-detail"
+              ? "connections"
           : props.page === "privacy"
             ? "about"
             : props.page === "advanced-diagnostics"
@@ -149,35 +175,51 @@ export function DesktopNavigation(props: {
       selected={selected(item.destination.page)}
       onPress={() => props.navigate(item.destination.page)}
       focusStyle={focusRing()}
-      hoverStyle={{ backgroundColor: palette().soft }}
-      activeStyle={{ backgroundColor: palette().accentFill }}
+      hoverStyle={
+        selected(item.destination.page)
+          ? undefined
+          : { backgroundColor: palette().hover }
+      }
+      activeStyle={{ backgroundColor: palette().soft }}
       style={{
-        minHeight: control.row,
+        minHeight: expanded()
+          ? Math.max(36, density.line(20) * Math.max(1, fontScale()) + 12)
+          : 42,
         paddingHorizontal: expanded() ? spacing.md : 0,
         flexDirection: "row",
         alignItems: "center",
         justifyContent: expanded() ? "flex-start" : "center",
-        gap: spacing.md,
-        borderRadius: radius.md,
+        gap: 10,
+        borderRadius: expanded() ? 9 : 10,
         borderCurve: "continuous",
-        backgroundColor: selected(item.destination.page)
-          ? palette().raised
+        borderWidth: 1,
+        borderColor: selected(item.destination.page)
+          ? palette().border
           : "transparent",
+        backgroundColor: selected(item.destination.page)
+          ? palette().sidebarAccent
+          : "transparent",
+        ...(selected(item.destination.page) ? surfaceFinish("card") : {}),
         ...feedbackStyle(),
       }}
     >
       <Icon
         name={item.destination.icon}
         size={18}
+        strokeWidth={selected(item.destination.page) ? 2.1 : 1.85}
         color={
-          selected(item.destination.page) ? palette().accent : palette().muted
+          selected(item.destination.page)
+            ? palette().text
+            : palette().muted
         }
       />
       <If when={expanded()}>
         <View style={{ flex: 1, minWidth: 0 }}>
           <Text
             style={{
-              color: palette().text,
+              color: selected(item.destination.page)
+                ? palette().text
+                : palette().muted,
               fontSize: density.font(14),
               lineHeight: density.line(20),
               numberOfLines: 1,
@@ -186,21 +228,25 @@ export function DesktopNavigation(props: {
           >
             {props.t(item.destination.zh, item.destination.en)}
           </Text>
-          <If when={item.footer && props.version}>
-            <Text
-              style={{
-                color: palette().muted,
-                fontSize: density.font(11),
-                lineHeight: density.line(16),
-              }}
-            >
-              {props.version}
-            </Text>
-          </If>
         </View>
-        <If when={platform.desktop && !!item.shortcut}>
-          <Text style={{ color: palette().muted, fontSize: density.font(11) }}>
-            {keymap.label(`mod+${item.shortcut}`)}
+        <If
+          when={
+            platform.desktop &&
+            (!!item.shortcut || !!item.destination.keybinding)
+          }
+        >
+          <Text
+            style={{
+              color: palette().faint,
+              fontSize: 11,
+              fontVariant: ["tabular-nums"],
+            }}
+          >
+            {keymap.label(
+              item.shortcut
+                ? `mod+${item.shortcut}`
+                : item.destination.keybinding!,
+            )}
           </Text>
         </If>
       </If>
@@ -213,7 +259,7 @@ export function DesktopNavigation(props: {
         width: expanded() ? 232 : 64,
         backgroundColor: palette().sidebar,
         borderRightWidth: 1,
-        borderRightColor: palette().border,
+        borderRightColor: palette().sidebarBorder,
       }}
     >
       <Button
@@ -245,41 +291,84 @@ export function DesktopNavigation(props: {
             ? props.t("收起导航栏", "Collapse sidebar")
             : props.t("展开导航栏", "Expand sidebar")
         }
-        onPress={() => preference.set(!expanded())}
+        onPress={props.onToggle}
         focusStyle={focusRing()}
-        hoverStyle={{ backgroundColor: palette().soft }}
+        hoverStyle={{ backgroundColor: palette().hover }}
         activeStyle={{ backgroundColor: palette().soft }}
         style={{
-          minHeight: 64,
-          paddingHorizontal: expanded() ? 24 : 20,
+          minHeight: 54,
+          paddingHorizontal: expanded() ? 14 : 0,
           flexDirection: "row",
           alignItems: "center",
-          gap: spacing.md,
+          justifyContent: expanded() ? "flex-start" : "center",
+          gap: 10,
           borderBottomWidth: 1,
-          borderBottomColor: palette().border,
+          borderBottomColor: palette().sidebarBorder,
         }}
       >
-        <Icon name="paw-print" size={24} color={palette().accent} />
+        <View
+          style={{
+            width: 24,
+            height: 24,
+            borderRadius: 7,
+            borderCurve: "continuous",
+            borderWidth: 1,
+            alignItems: "center",
+            justifyContent: "center",
+            ...surfaceFinish("accent"),
+          }}
+        >
+          <Text
+            style={{
+              fontSize: 12,
+              lineHeight: 15,
+              fontWeight: "700",
+              color: palette().primaryText,
+            }}
+          >
+            P
+          </Text>
+        </View>
         <If when={expanded()}>
           <Text
             style={{
               flex: 1,
               color: palette().text,
-              fontSize: density.font(18),
-              fontWeight: "700",
+              fontSize: 15,
+              fontWeight: "600",
+              letterSpacing: -0.2,
             }}
           >
             Paws
           </Text>
-          <Icon name="arrow-left" size={16} color={palette().muted} />
+          <Icon name="panel-left" size={16} color={palette().muted} />
         </If>
       </Button>
       <Scroll
         bounces={false}
         style={{ flex: 1 }}
-        contentStyle={{ padding: spacing.sm, gap: spacing.lg }}
+        contentStyle={{
+          paddingHorizontal: 8,
+          paddingVertical: 10,
+          gap: platform.desktop ? 10 : spacing.md,
+        }}
       >
-        <View style={{ gap: spacing.xxs }}>
+        <View style={{ gap: 2 }}>
+          <If when={expanded()}>
+            <Text
+              role="header"
+              style={{
+                paddingLeft: 9,
+                paddingBottom: 3,
+                fontSize: 12,
+                lineHeight: 16,
+                fontWeight: "600",
+                color: palette().muted,
+              }}
+            >
+              {props.t("主要", "Main")}
+            </Text>
+          </If>
           <Each of={desktopPrimary}>
             {(destination, index) => (
               <Item destination={destination()} shortcut={index() + 1} />
@@ -288,15 +377,16 @@ export function DesktopNavigation(props: {
         </View>
         <Each of={sections}>
           {(section) => (
-            <View style={{ gap: spacing.xxs }}>
+            <View style={{ gap: 2 }}>
               <If
                 when={expanded()}
                 else={
                   <View
                     style={{
                       height: 1,
-                      marginHorizontal: spacing.md,
-                      backgroundColor: palette().line,
+                      marginHorizontal: 8,
+                      marginVertical: 2,
+                      backgroundColor: palette().sidebarBorder,
                     }}
                   />
                 }
@@ -304,10 +394,12 @@ export function DesktopNavigation(props: {
                 <Text
                   role="header"
                   style={{
-                    paddingLeft: spacing.md + 18 + spacing.md,
-                    paddingBottom: spacing.xxs,
-                    fontSize: density.font(11),
-                    lineHeight: density.line(16),
+                    paddingLeft: 9,
+                    paddingTop: 4,
+                    paddingBottom: 3,
+                    fontSize: 12,
+                    lineHeight: 16,
+                    fontWeight: "600",
                     color: palette().muted,
                   }}
                 >
@@ -321,15 +413,71 @@ export function DesktopNavigation(props: {
           )}
         </Each>
       </Scroll>
-      <View
-        style={{
-          padding: spacing.sm,
-          borderTopWidth: 1,
-          borderTopColor: palette().border,
-        }}
-      >
-        <Item destination={about} footer />
-      </View>
+      <If when={expanded() && (props.statusLabel || props.version)}>
+        <View
+          style={{
+            paddingHorizontal: 14,
+            paddingVertical: 10,
+            borderTopWidth: 1,
+            borderTopColor: palette().sidebarBorder,
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+          }}
+        >
+          <View
+            style={{
+              flex: 1,
+              minWidth: 0,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <View
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: radius.full,
+                backgroundColor: props.connected
+                  ? palette().success
+                  : palette().faint,
+              }}
+            />
+            <Text
+              style={{
+                flexShrink: 1,
+                minWidth: 0,
+                numberOfLines: 1,
+                fontSize: 12,
+                lineHeight: 16,
+                color: palette().muted,
+              }}
+            >
+              {props.statusLabel || ""}
+            </Text>
+          </View>
+          <If when={props.version}>
+            <Text
+              style={{
+                flexShrink: 1,
+                minWidth: 0,
+                maxWidth: 88,
+                numberOfLines: 1,
+                fontSize: 12,
+                lineHeight: 16,
+                color: palette().muted,
+                fontVariant: ["tabular-nums"],
+              }}
+            >
+              {props.version.startsWith("v")
+                ? props.version
+                : `v${props.version}`}
+            </Text>
+          </If>
+        </View>
+      </If>
     </View>
   );
 }

@@ -1,4 +1,4 @@
-import { density } from "../theme";
+import { density, surfaceFinish } from "../theme";
 import {
   cleanup,
   computed,
@@ -13,6 +13,7 @@ import { Editor, type EditorRef, type EditorSearchResult } from "nsh/base";
 import {
   Action,
   Actions,
+  Alert,
   askConfirmation,
   Badge,
   Field,
@@ -21,6 +22,7 @@ import {
   palette,
   radius,
   RouteOwner,
+  spacing,
   Spinner,
   useApp,
   useLifetime,
@@ -57,18 +59,19 @@ export function ProfileEditor(props: { profileId: string }) {
     "";
 
   cleanup(
-    ui.beforeLeave?.(() => {
+    ui.beforeLeave?.(async () => {
       if (busy() && operation() !== "load") return false;
-      return (
-        !dirty() ||
-        askConfirmation(
+      if (!dirty()) return true;
+      const accepted = await askConfirmation(
           ui,
           ui.t("丢弃未保存的修改？", "Discard unsaved changes?"),
           {
             actionLabel: ui.t("丢弃修改", "Discard changes"),
+            cancelLabel: ui.t("继续编辑", "Keep editing"),
           },
-        )
-      );
+        );
+      if (accepted) text.set(original());
+      return accepted;
     }) || (() => {}),
   );
 
@@ -347,21 +350,24 @@ export function ProfileEditor(props: { profileId: string }) {
           </Actions>
         </If>
         <If when={conflict()}>
-          <Hint
-            danger
+          <Alert
+            tone="warning"
+            title={ui.t("配置已变更", "Configuration changed")}
             text={ui.t(
               "配置已在其他操作中变更，请重新载入后保存。",
               "Configuration changed elsewhere. Reload before saving.",
             )}
           />
-          <Action
-            id="reload-profile"
-            secondary
-            small
-            label={ui.t("重新载入", "Reload")}
-            disabled={busy()}
-            onPress={() => void reload()}
-          />
+          <Actions align="start">
+            <Action
+              id="reload-profile"
+              secondary
+              small
+              label={ui.t("重新载入", "Reload")}
+              disabled={busy()}
+              onPress={() => void reload()}
+            />
+          </Actions>
         </If>
         <If when={error()}>
           <Scroll bounces={false} style={{ maxHeight: 104 }}>
@@ -420,11 +426,12 @@ export function ProfileEditor(props: { profileId: string }) {
             flex: 1,
             minHeight: 0,
             marginHorizontal: density.space(16),
-            borderRadius: radius.lg,
+            borderRadius: radius.xl,
             borderCurve: "continuous",
             borderWidth: 1,
             borderColor: palette().border,
             backgroundColor: palette().panel,
+            ...surfaceFinish("card"),
           }}
         />
       </If>
@@ -435,8 +442,22 @@ export function ProfileEditor(props: { profileId: string }) {
           paddingVertical: density.space(8),
           borderTopWidth: 1,
           borderTopColor: palette().line,
+          backgroundColor: palette().inset,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: spacing.sm,
         }}
       >
+        <Text
+          style={{
+            fontSize: density.font(12),
+            lineHeight: density.line(18),
+            color: palette().muted,
+          }}
+        >
+          {`${name() || "config"}.yaml · UTF-8`}
+        </Text>
         <Text
           style={{
             fontSize: density.font(12),

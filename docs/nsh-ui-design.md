@@ -9,33 +9,43 @@ outside presentation. See [the three-layer architecture](nsh-three-layer-archite
 - `theme.json` defines light/dark semantic colors and radius tokens.
   `src/theme.ts` maps them to application roles. Ordinary sections have a flat
   surface and an external heading; shadows belong to raised controls and overlays.
-- Phone and Pad use one shared small scale, independent of window width:
-  40-point standard buttons/fields, 32-point small actions and 36-point icon
-  buttons. Body/action labels use 13-point text, small labels use 11-point text,
-  and spacing, radii, icons and data rows use the same compact scale. Native
-  `hitSlop` retains 44-point button press areas without enlarging
-  the painted control. Text rows grow with font scale. Desktop controls retain their scale,
-  including in narrow desktop windows. Long values wrap or have
-  a complete details view, and comparable numbers
-  use tabular figures.
-- Desktop always uses its own workspace: a 232-point scrolling sidebar, or a
-  64-point icon rail in a narrow window, with tooltips and keyboard focus.
-  Brand and content toolbars share a 64-point baseline. Root destinations are
-  direct switches; Back belongs to nested tasks. The mobile Settings hub and
-  duplicate request-history link are absent from the desktop sidebar.
-- Desktop Overview separates the connection controls and the group list into
-  two columns. Desktop nodes use a group browser and member pane. Connections and request
-  history share one workspace with tabs and aligned table columns. A narrow
-  desktop keeps the table, moving secondary columns into destination metadata.
-  Object commands use anchored menus and right click; forms are centered dialogs.
-- Phone and portrait Pad use bottom navigation for root destinations and native
-  Back for details. Landscape Pad can use the sidebar while retaining small
-  controls. Resizing retains the current route and its drafts.
+- Phone, Pad and PC share one unified NSH Gallery scale across platforms:
+  40-point standard buttons, inputs and selects, 36-point small buttons and
+  primary segmented tabs, 32-point secondary filter tabs and compact pickers,
+  and 36-point icon buttons. Header titles use 17-point text, body/section/row
+  labels use 15-point text, secondary/note text uses 13-point text, and badges
+  use 12-point text (`height: 20`). Touch `hitSlop` retains 44-point press areas
+  without enlarging the painted control, and segmented tabs reserve a full
+  44-point touch lane. Text rows grow with font scale. Long values wrap or have
+  a complete details view, and comparable numbers use tabular figures.
+- Desktop always uses its own workspace: a 232-point scrolling sidebar (36-point
+  items), or a 64-point icon rail (42-point tiles) in a narrow window, with
+  tooltips and keyboard focus. Brand and content toolbars share a 56-point
+  header baseline. Root destinations are direct switches; Back belongs to nested
+  tasks. The mobile Settings hub and duplicate request-history link are absent
+  from the desktop sidebar.
+- Overview renders all policy groups directly without truncation or collapse on
+  every platform; wide viewports separate the status column (connection hero,
+  node summary and speed) and the full policy-group column. Desktop nodes use a
+  group browser and member pane. Connections and request history share one
+  workspace with count-badged tabs, compact protocol/sort/status filters, Phone
+  bottom-sheet details, Pad master-detail, and PC `DataTable` (`>= 46 pt` rows)
+  plus a closable inspector. Object commands use anchored menus and right click;
+  short forms use Phone bottom sheets or centered Pad/PC dialogs.
+- Phone and narrow Pad use bottom navigation for root destinations and native
+  Back for details. Pad uses the sidebar from 840 logical points, independent of
+  orientation. `src/layout.ts` subtracts its 64/232-point sidebar, page cap,
+  padding and gutter before admitting 240/320-point collection/detail minima.
+  Font growth increases those minima; insufficient space uses two pages.
+  Root switches retain each workspace stack, query, object and scroll anchor;
+  Back only pops the current workspace. Resize preserves mounted drafts.
 
 ## Controls and surfaces
 
-- Primary buttons commit the focused task. Ordinary commands use default,
-  outline or ghost buttons. Busy actions keep their label and show a spinner.
+- Primary buttons commit the focused task; active VPN stop actions use solid red
+  (`stop` token) with white foreground and icon/spinner. Ordinary commands use
+  default, outline or ghost buttons. Busy actions keep their label and show a
+  spinner.
 - Switches commit immediate settings. Checkboxes collect independent draft
   choices for an explicit Save. Native radio groups select immediate preferences.
 - Selects use native Menu radio items. Object commands use the same command set
@@ -55,13 +65,13 @@ outside presentation. See [the three-layer architecture](nsh-three-layer-archite
 
 | Area | Presentation and interaction |
 | --- | --- |
-| Home and proxies | Connection focal point, quiet metadata, continuous group/member list, stable selection and explicit disclosure |
-| Subscriptions | Search above a continuous list, current/update/usage metadata, native object menus, short import/edit forms |
+| Home and proxies | Connection focal point with solid red stop action, all policy groups expanded on Home, group/member browsing, stable selection |
+| Subscriptions | Search above a continuous list, current/update/usage metadata, native object menus, Gallery `ChoiceTile` local/QR import + URL form |
 | Traffic | Comparable usage figures, distinct upload/download chart series, a true zero baseline, connection and DNS drill-down |
-| Connections and requests | Virtual lists, network/status filters, full destination and route details, per-object commands |
+| Connections and requests | Unified workspace with active/history tabs, compact filters, Phone bottom sheet, Pad master-detail, PC `DataTable` + inspector |
 | Resources | Compact provider/rule rows, details on demand, explicit ordering and scoped revision-safe commands |
-| Logs | Stable row identities, visible recording/filter state, full-message details and archive menus |
-| Settings and converter | Grouped draft forms, saved choices, one explicit commitment for each task, local validation and failure feedback |
+| Logs | Pause/resume & clear header actions, current/archive tabs, 5-level tabs, `13.5 pt` monospace rows, follow pill, sheet/inspector details |
+| Settings and converter | VPN/DNS/network drafts save independently; converter auto-saves on departure, marks generated output stale after edits, and preserves failed drafts |
 | Diagnostics and backups | Separate current state, probes/policy and local/remote workflows; specific restoration confirmations |
 | Appearance, About and privacy | Native preferences, readable full version/data text and external links |
 | YAML editor | Retained native Editor, find/wrap/validate/save, exact drafts and native discard decisions |

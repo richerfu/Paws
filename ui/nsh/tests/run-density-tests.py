@@ -21,12 +21,12 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     results = []
     for name, platform, width, height, button, line in [
-        ('phone', 'ios', 390, 844, 40, 16),
-        ('small-phone', 'ios', 320, 844, 40, 16),
-        ('pad-portrait', 'ios', 768, 1024, 40, 16),
-        ('pad-landscape', 'ios', 1024, 768, 40, 16),
-        ('pc', 'windows', 1280, 900, 32, 17),
-        ('pc-narrow', 'windows', 620, 760, 32, 17),
+        ('phone', 'ios', 390, 844, 40, 18),
+        ('small-phone', 'ios', 320, 844, 40, 18),
+        ('pad-portrait', 'ios', 768, 1024, 40, 18),
+        ('pad-landscape', 'ios', 1024, 768, 40, 18),
+        ('pc', 'windows', 1280, 900, 40, 18),
+        ('pc-narrow', 'windows', 620, 760, 40, 18),
     ]:
         nav = ['desktop-nav-settings'] if platform == 'windows' else navigation_steps('settings', width)
         command = [str(args.nsh_bin.resolve()), 'trace', 'ui/nsh/tests/Preview.tsx',
@@ -41,8 +41,8 @@ def main():
             tree.apply(record)
         save, mtu, engine = (tree.one(key) for key in ['save-vpn', 'vpn-mtu', 'vpn-engine'])
         assert abs(save['frame'][3] - button) < 1, (name, 'button', save['frame'])
-        assert abs(mtu['frame'][3] - (40 if platform == 'ios' else 36)) < 1, (name, 'input', mtu['frame'])
-        assert abs(engine['frame'][3] - (40 if platform == 'ios' else 35)) < 1, (name, 'select', engine['frame'])
+        assert abs(mtu['frame'][3] - 40) < 1, (name, 'input', mtu['frame'])
+        assert abs(engine['frame'][3] - 40) < 1, (name, 'select', engine['frame'])
         label = next(node for node in tree.descendants(save) if node.get('text') == '保存 VPN 设置')
         assert abs(label['frame'][3] - line) < 1, (name, 'button text', label['frame'])
         reader.contains(tree.rect(save), tree.rect(label), 'Button label containment')

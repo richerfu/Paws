@@ -15,13 +15,14 @@ class NativeTree:
         self.nodes = {}
         self.root = None
         self.clipboard = []
+        self.sibling_order = {}
 
     def apply(self, line):
         clipboard = re.search(r'Command \{ id: \d+, command: SetClipboard\(("(?:[^"\\]|\\.)*")\)', line)
         if clipboard:
             self.clipboard.append(json.loads(clipboard[1]))
         create = re.search(r'Create \{ id: (\d+), kind: (\w+) \}', line)
-        insert = re.search(r'Insert \{ parent: (\d+), child: (\d+),', line)
+        insert = re.search(r'Insert \{ parent: (\d+), child: (\d+), before: (?:Some\((\d+)\)|None)', line)
         remove = re.search(r'(Remove|Delete) \{ id: (\d+) \}', line)
         frame = re.search(r'Frame \{ id: (\d+), x: ([\deE.+-]+), y: ([\deE.+-]+), w: ([\deE.+-]+), h: ([\deE.+-]+) \}', line)
         text = re.search(r'Text \{ id: (\d+), text: ("(?:[^"\\]|\\.)*"), content:', line)
@@ -32,7 +33,15 @@ class NativeTree:
                 self.root = create[1]
         if insert and insert[2] in self.nodes:
             self.nodes[insert[2]]['parent'] = insert[1]
+            for order in self.sibling_order.values():
+                if insert[2] in order:
+                    order.remove(insert[2])
+            order = self.sibling_order.setdefault(insert[1], [])
+            order.insert(order.index(insert[3]) if insert[3] in order else len(order), insert[2])
         if remove and remove[2] in self.nodes:
+            for order in self.sibling_order.values():
+                if remove[2] in order:
+                    order.remove(remove[2])
             if remove[1] == 'Delete':
                 del self.nodes[remove[2]]
             else:
@@ -68,6 +77,13 @@ class NativeTree:
             parent = self.nodes.get(node['parent'])
             if parent is None:
                 return False
+            # NavStack retains prior native Screens. Only its last Screen is
+            # presented; retained frames are not additional visible pages.
+            if node['kind'] == 'Screen' and parent['kind'] == 'Stack':
+                screens = [key for key in self.sibling_order.get(parent['id'], [])
+                           if self.nodes.get(key, {}).get('kind') == 'Screen']
+                if screens and node['id'] != screens[-1]:
+                    return False
             node = parent
         return not node['hidden']
 
@@ -111,7 +127,7 @@ CASES = {
     'provider-detail': ['nav-tools', 'tool-resources', 'provider-menu-proxy-Synthetic failed provider', 'provider-details-Synthetic failed provider'],
     'resources-end': ['nav-tools', 'tool-resources'],
     'rule-detail': ['nav-tools', 'tool-resources', 'rule-details-rule-1'],
-    'history': ['nav-tools', 'tool-requests'],
+    'history': ['nav-tools', 'tool-connections', 'activity-view-requests'],
     'logs-detail': ['nav-tools', 'tool-logs', 'log-2026-10-22T00:00:00Z'],
     'traffic': ['nav-traffic'], 'diagnostics': ['nav-tools', 'tool-diagnostics'],
     'stale-health': ['nav-tools', 'tool-diagnostics', 'visual-stale-health', 'refresh-checks'],
@@ -122,7 +138,7 @@ LABELS = {
     'resources': ['已加载', '规则'],
     'resources-end': [],
     'rule-detail': ['启用'], 'history': ['活跃', '已结束'],
-    'logs-detail': ['日志记录已关闭', 'ERROR', 'WARN'], 'traffic': ['保护未确认'],
+    'logs-detail': ['日志记录已关闭', '错误', '警告'], 'traffic': ['保护未确认'],
     'diagnostics': ['通过', '失败', '不适用', '未测试'], 'stale-health': ['通过', '失败', '未测试'],
 }
 

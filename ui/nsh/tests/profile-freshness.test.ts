@@ -5,7 +5,8 @@ async function fixture() {
   let blocked = 0;
   const commands: string[] = [];
   const app = await open("./ProfileFreshness.tsx", {
-    width: 390,
+    width: 1280,
+    platform: "windows",
     height: 844,
     locale: "zh-CN",
     host: {

@@ -74,10 +74,10 @@ test("unsaved edits guard native Back and desktop navigation; cancel and undo re
   await openEditor(app);
   await append(app);
   await app.back();
-  expect(app.dialogs().at(-1)!.buttons).toEqual(["取消", "丢弃修改"]);
+  expect(app.dialogs().at(-1)!.buttons).toEqual(["继续编辑", "丢弃修改"]);
   expect(app.shows("id:profile-yaml-editor")).toBe(true);
   await app.press("id:desktop-nav-settings");
-  expect(app.dialogs().at(-1)!.buttons).toEqual(["取消", "丢弃修改"]);
+  expect(app.dialogs().at(-1)!.buttons).toEqual(["继续编辑", "丢弃修改"]);
   await app.press("text:x");
   await app.keyboard.press("mod+z");
   await app.waitFor("text:YAML");

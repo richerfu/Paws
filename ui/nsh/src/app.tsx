@@ -15,6 +15,8 @@ import {
   keymap,
   platform,
   reduceMotion,
+  safeArea,
+  keyboardFrame,
 } from "nsh";
 import { BackHandler } from "nsh/mobile";
 import {
@@ -29,7 +31,7 @@ import {
   App,
   Action,
   Actions,
-  Tabs,
+  Badge,
   Loading,
   control,
   Alert,
@@ -51,7 +53,7 @@ import { chrome, focusRing } from "./theme";
 import {
   DesktopNavigation,
   desktopPrimary,
-  desktopRootPages,
+  desktopGroupTitle,
 } from "./desktop-navigation";
 import { Dashboard, Traffic } from "./pages/overview";
 import { FloatingVpnPowerButton } from "./floating-vpn";
@@ -82,6 +84,10 @@ import { pageDomains } from "./page-data";
 import { PageError } from "./page-error";
 import { isChinese } from "./locale";
 import type { DomainInput } from "./model";
+import { workspaceLayout } from "./layout";
+import { Workspaces } from "./workspaces";
+import { ActivityDetail } from "./pages/activity";
+import { ObjectMenu } from "./object-menu";
 
 const primary: { page: Page; zh: string; en: string; icon: IconName }[] = [
   { page: "dashboard", zh: "首页", en: "Home", icon: "house" },
@@ -92,14 +98,17 @@ const primary: { page: Page; zh: string; en: string; icon: IconName }[] = [
 const titles: Record<Page, [string, string]> = {
   dashboard: ["首页", "Home"],
   profiles: ["订阅", "Subscriptions"],
+  "profile-detail": ["订阅详情", "Subscription details"],
   proxies: ["代理节点", "Proxy nodes"],
+  "proxy-group": ["分组节点", "Group members"],
   traffic: ["流量", "Traffic"],
   tools: ["设置", "Settings"],
   settings: ["网络设置", "Network settings"],
   appearance: [...COPY["page-tr-001"]],
-  connections: ["连接", "Connections"],
-  requests: ["请求", "Requests"],
-  resources: ["资源", "Resources"],
+  connections: ["连接与请求", "Connections & requests"],
+  requests: ["连接与请求", "Connections & requests"],
+  "activity-detail": ["连接详情", "Connection details"],
+  resources: ["资源与规则", "Resources & rules"],
   logs: ["日志", "Logs"],
   diagnostics: [...COPY["diagnostics-title"]],
   "advanced-diagnostics": ["高级诊断", "Advanced diagnostics"],
@@ -111,24 +120,24 @@ const titles: Record<Page, [string, string]> = {
 };
 export function parentPage(page: Page): Page | undefined {
   if (primary.some((item) => item.page === page)) return undefined;
-  return page === "proxies" || page === "editor"
+  if (page === "proxy-group") return "proxies";
+  if (page === "activity-detail") return "connections";
+  return page === "proxies" || page === "editor" || page === "profile-detail"
     ? "profiles"
     : page === "privacy"
       ? "about"
       : "tools";
 }
 export function pageMeasure(page: Page, wide: boolean): number {
-  return !wide
-    ? 640
-    : page === "dashboard"
-      ? 960
-      : page === "profiles" || page === "proxies"
-        ? 1120
-        : page === "traffic"
-          ? 1040
-          : ["requests", "connections", "resources", "logs"].includes(page)
-            ? 1180
-            : 840;
+  if (!wide) return 640;
+  if (page === "dashboard") return 960;
+  if (["profiles", "profile-detail", "proxies", "proxy-group"].includes(page))
+    return 1120;
+  if (["traffic", "converter", "diagnostics"].includes(page)) return 1120;
+  if (page === "backups") return platform.desktop ? 1120 : 640;
+  if (["requests", "connections", "resources", "logs"].includes(page))
+    return 1180;
+  return platform.desktop ? 720 : 640;
 }
 
 export function PawsApp(props: {
@@ -150,16 +159,18 @@ export function PawsApp(props: {
       });
     });
   cleanup(() => notifications.dispose());
-  const nav = createNavStack<{ name: Page; query?: string }>([
-    { name: "dashboard" },
-  ]);
+  type Route = { name: Page; query?: string };
+  const workspaces = new Workspaces<Route>("dashboard", { name: "dashboard" });
+  const nav = createNavStack<Route>(workspaces.routes());
+  const sidebarExpanded = signal<boolean | undefined>();
+  const layout = () => workspaceLayout(windowSize().width - safeArea().left - safeArea().right,
+    platform.desktop, sidebarExpanded(), fontScale(), pageMeasure(page(), platform.desktop || windowSize().width >= 840));
+  const overlays = signal(0);
   const alive = useLifetime(),
     importIntent = signal(0),
     resourceIntent: AppContext["resourceIntent"] = signal(undefined),
     proxyDelayLoading = signal(false);
-  const leaveGuard = signal<
-    { route: unknown; check: () => boolean | Promise<boolean> } | undefined
-  >();
+  const leaveGuards = new Map<unknown, Set<() => boolean | Promise<boolean>>>();
   let leaving = false;
   let importConsumed = 0,
     resourceConsumed = 0,
@@ -169,42 +180,45 @@ export function PawsApp(props: {
   const route = () => nav.routes()[nav.routes().length - 1],
     page = () => route().name;
   const requestNavigation = (action: () => void) => {
-    const guard = leaveGuard();
-    if (!guard || guard.route !== route()) {
+    if (overlays() > 0) return;
+    const guards = [...(leaveGuards.get(route()) || [])];
+    if (!guards.length) {
       action();
       return;
     }
     if (leaving) return;
-    const current = route(),
-      result = guard.check();
-    if (typeof result === "boolean") {
-      if (result) action();
-      return;
-    }
+    const current = route();
     leaving = true;
-    void result
+    void (async () => {
+      for (const check of guards) if (!(await check())) return false;
+      return true;
+    })()
       .then((accepted) => {
         if (accepted && alive() && route() === current) action();
       })
+      .catch((error) => { props.client.error.set(String(error)); })
       .finally(() => {
         leaving = false;
       });
   };
+  const switchWorkspace = (next: Page) => {
+    if (workspaces.root === next) return;
+    requestNavigation(() => {
+    nav.setRoutes(workspaces.switch(next, () => ({ name: next })));
+    });
+  };
   const navigate = (next: Page, query?: string) =>
     requestNavigation(() => {
-      if (
-        (platform.desktop && desktopRootPages.includes(next)) ||
-        primary.some((item) => item.page === next)
-      )
-        nav.setRoutes([{ name: next, query }]);
-      else nav.push({ name: next, query });
+      if (primary.some((item) => item.page === next) && !query)
+        nav.setRoutes(workspaces.switch(next, () => ({ name: next })));
+      else nav.setRoutes(workspaces.push({ name: next, query }));
     });
   const back = () =>
     requestNavigation(() => {
-      if (nav.routes().length > 1) nav.pop();
+      if (workspaces.depth > 1) nav.setRoutes(workspaces.back());
       else {
         const parent = parentPage(page());
-        if (parent) nav.setRoutes([{ name: parent }]);
+        if (parent) nav.setRoutes(workspaces.switch(parent, () => ({ name: parent })));
       }
     });
   const t = translator(props.client);
@@ -267,19 +281,36 @@ export function PawsApp(props: {
     refreshProfiles,
     t,
     editProfile: (id) => navigate("editor", id),
-    beforeLeave: (check) => {
-      const guard = { route: route(), check };
-      leaveGuard.set(guard);
+    switchActivity: (mode) => {
+      if (mode === page()) return;
+      requestNavigation(() => {
+        if (workspaces.depth > 1)
+          nav.setRoutes(workspaces.replace({ name: mode }));
+        else
+          nav.setRoutes(
+            workspaces.switch(mode, () => ({ name: mode })),
+          );
+      });
+    },
+    layout,
+    viewState: new Map(),
+    overlays,
+    beforeLeave: (check, owner = route()) => {
+      const guards = leaveGuards.get(owner) || new Set();
+      guards.add(check);
+      leaveGuards.set(owner, guards);
       return () => {
-        if (leaveGuard() === guard) leaveGuard.set(undefined);
+        guards.delete(check);
+        if (!guards.size) leaveGuards.delete(owner);
       };
     },
   };
-  const wide = () => platform.desktop || windowSize().width >= 840;
+  const wide = () => layout().sidebar;
+  const depth = () => { route(); return workspaces.depth; };
   const canBack = () =>
-    nav.routes().length > 1 || (!platform.desktop && !!parentPage(page()));
+    depth() > 1 || (!wide() && !!parentPage(page()));
   const group = () =>
-    page() === "proxies" || page() === "editor"
+    page() === "proxies" || page() === "editor" || page() === "profile-detail"
       ? "profiles"
       : primary.some((tab) => tab.page === page())
         ? page()
@@ -293,6 +324,7 @@ export function PawsApp(props: {
     setColorScheme(theme());
   });
   const stopHardwareBack = BackHandler.on("press", () => {
+    if (overlays() > 0) return false;
     if (!canBack()) return false;
     back();
     return true;
@@ -304,10 +336,13 @@ export function PawsApp(props: {
     for (let index = 0; index < desktopPrimary.length; index++)
       cleanup(
         keymap.bind(`mod+${index + 1}`, () =>
-          navigate(desktopPrimary[index].page),
+          switchWorkspace(desktopPrimary[index].page),
         ),
       );
-    cleanup(keymap.bind("mod+,", () => navigate("appearance")));
+    cleanup(keymap.bind("mod+,", () => switchWorkspace("appearance")));
+    cleanup(
+      keymap.bind("mod+b", () => sidebarExpanded.set(!layout().expanded)),
+    );
     effect(() => {
       if (page() === "editor") return;
       cleanup(
@@ -328,9 +363,35 @@ export function PawsApp(props: {
           <If when={wide()}>
             <DesktopNavigation
               page={page()}
-              navigate={navigate}
+              navigate={switchWorkspace}
+              expanded={layout().expanded}
+              onToggle={() => sidebarExpanded.set(!layout().expanded)}
               t={ui.t}
               version={props.client.domains.data("summary")?.appVersion || ""}
+              connected={
+                !!(
+                  props.client.state()?.vpnRunning &&
+                  props.client.state()?.networkProtected &&
+                  props.client.state()?.vpnLifecycle === "connected"
+                )
+              }
+              statusLabel={(() => {
+                const current = props.client.state();
+                if (!current) return "";
+                const connected =
+                  current.vpnRunning &&
+                  current.networkProtected &&
+                  current.vpnLifecycle === "connected";
+                const engine = current.activeEngine
+                  ? current.activeEngine === "meow"
+                    ? "Meow"
+                    : current.activeEngine
+                  : "";
+                const stateText = connected
+                  ? ui.t("已连接", "Connected")
+                  : ui.t("未连接", "Disconnected");
+                return engine ? `${engine} · ${stateText}` : stateText;
+              })()}
             />
           </If>
           <View style={{ flex: 1, minWidth: 0 }}>
@@ -338,10 +399,10 @@ export function PawsApp(props: {
               style={{
                 minHeight: Math.max(
                   chrome.header,
-                  density.line(28) * Math.max(1, fontScale()) + spacing.lg,
+                  density.line(24) * Math.max(1, fontScale()) + spacing.md,
                 ),
                 borderBottomWidth: 1,
-                borderBottomColor: palette().border,
+                borderBottomColor: palette().line,
                 alignItems: "center",
                 justifyContent: "center",
               }}
@@ -349,11 +410,11 @@ export function PawsApp(props: {
               <View
                 style={{
                   width: "100%",
-                  maxWidth: pageMeasure(page(), wide()),
-                  paddingHorizontal: wide() ? spacing.xxl : spacing.lg,
+                  maxWidth: wide() ? undefined : pageMeasure(page(), false),
+                  paddingHorizontal: wide() ? layout().inset : spacing.lg,
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: spacing.xxs,
+                  gap: 8,
                 }}
               >
                 <If when={canBack()}>
@@ -364,49 +425,119 @@ export function PawsApp(props: {
                     onPress={back}
                   />
                 </If>
+                <If when={platform.desktop && !canBack()}>
+                  <View
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      gap: 4,
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 13,
+                        lineHeight: 18,
+                        color: palette().muted,
+                      }}
+                    >
+                      {ui.t(...desktopGroupTitle(page()))}
+                    </Text>
+                    <Icon
+                      name="chevron-right"
+                      size={13}
+                      color={palette().faint}
+                    />
+                  </View>
+                </If>
                 <Text
                   role="header"
                   style={{
                     flex: 1,
+                    minWidth: 0,
+                    numberOfLines: 1,
                     color: palette().text,
-                    fontSize: density.font(20),
-                    lineHeight: density.line(28),
+                    fontSize: density.font(17),
+                    lineHeight: density.line(24),
                     fontWeight: "600",
                     letterSpacing: isChinese(props.client.preferences())
                       ? 0
-                      : -0.3,
+                      : -0.2,
                   }}
                 >
-                  {platform.desktop &&
-                  (page() === "connections" || page() === "requests")
-                    ? ui.t("连接与请求", "Network activity")
-                    : ui.t(...titles[page()])}
+                  {ui.t(...titles[page()])}
                 </Text>
-                <If when={page() === "profiles"}>
-                  <IconButton
-                    id="refresh-profiles"
+                <If when={wide() && page() === "dashboard"}>
+                  <Action
+                    small
+                    secondary
                     icon="refresh-cw"
-                    shortcut="mod+r"
-                    label={ui.t("全部更新", "Refresh all")}
-                    loading={props.client.isPending("profiles.refreshAll")}
-                    disabled={
-                      props.client.pending() > 0 ||
-                      !props.client.domains.readyForCommand([
-                        "config",
-                        "profiles",
-                      ])
+                    label={ui.t("刷新", "Refresh")}
+                    disabled={!props.client.state()}
+                    onPress={() =>
+                      props.client.domains.retry(pageDomains("dashboard"))
                     }
-                    onPress={() => void refreshProfiles()}
-                  />
-                  <IconButton
-                    id="add-profile"
-                    icon="plus"
-                    label={ui.t("添加订阅", "Add subscription")}
-                    onPress={() => importIntent.set(importIntent() + 1)}
                   />
                 </If>
-                <If when={page() === "proxies"}>
-                  <IconButton
+                <If when={page() === "profiles"}>
+                  <If when={platform.desktop}>
+                    <Action
+                      id="refresh-profiles"
+                      small
+                      secondary
+                      icon="refresh-cw"
+                      label={ui.t("全部更新", "Refresh all")}
+                      loading={props.client.isPending("profiles.refreshAll")}
+                      disabled={
+                        props.client.pending() > 0 ||
+                        !props.client.domains.readyForCommand([
+                          "config",
+                          "profiles",
+                        ])
+                      }
+                      onPress={() => void refreshProfiles()}
+                    />
+                    <Action
+                      id="add-profile"
+                      small
+                      primary
+                      icon="plus"
+                      label={ui.t("添加订阅…", "Add subscription…")}
+                      onPress={() => importIntent.set(importIntent() + 1)}
+                    />
+                  </If>
+                  <If when={!platform.desktop}>
+                    <IconButton
+                      id="add-profile"
+                      icon="plus"
+                      label={ui.t("添加订阅", "Add subscription")}
+                      onPress={() => importIntent.set(importIntent() + 1)}
+                    />
+                    <ObjectMenu
+                      id="profiles-more"
+                      title={ui.t("订阅操作", "Subscription actions")}
+                      commands={[
+                        {
+                          id: "refresh-profiles",
+                          icon: "refresh-cw",
+                          label: ui.t("全部更新", "Refresh all"),
+                          disabled:
+                            props.client.pending() > 0 ||
+                            !props.client.domains.readyForCommand([
+                              "config",
+                              "profiles",
+                            ]),
+                          run: () => void refreshProfiles(),
+                        },
+                      ]}
+                      row={(trigger) => trigger}
+                    />
+                  </If>
+                </If>
+                <If when={page() === "proxies" || page() === "proxy-group"}>
+                  <Action
+                    small
+                    secondary
                     icon="zap"
                     label={ui.t("测试延迟", "Test latency")}
                     loading={proxyDelayLoading()}
@@ -420,7 +551,11 @@ export function PawsApp(props: {
                       void (async () => {
                         try {
                           for (const group of props.client.state()!
-                            .proxyGroups) {
+                            .proxyGroups.filter(
+                              (group) =>
+                                page() !== "proxy-group" ||
+                                group.name === ui.query(),
+                            )) {
                             if (!alive()) return;
                             await props.client.run("proxies.testGroup", {
                               group: group.name,
@@ -434,21 +569,14 @@ export function PawsApp(props: {
                   />
                 </If>
                 <If when={page() === "requests" || page() === "connections"}>
-                  <IconButton
-                    icon="trash-2"
-                    label={
-                      page() === "requests"
-                        ? ui.t("清空记录", "Clear history")
-                        : ui.t("关闭全部", "Close all")
-                    }
-                    disabled={
-                      props.client.pending() > 0 ||
-                      !props.client.domains.fresh([
-                        page() === "requests" ? "requests" : "connections",
-                      ])
-                    }
-                    onPress={() => {
+                  {(() => {
+                    const clearOrCloseAll = () => {
                       const history = page() === "requests";
+                      const state = props.client.state()!;
+                      const ids = (
+                        history ? state.requestHistory : state.connections
+                      ).map((row) => row.id);
+                      const session = state.vpnSessionId;
                       void confirm(
                         ui,
                         history
@@ -457,36 +585,103 @@ export function PawsApp(props: {
                               "关闭全部活动连接？",
                               "Close all active connections?",
                             ),
-                        () =>
-                          void props.client.run(
-                            history ? "requests.clear" : "connections.closeAll",
-                          ),
+                        () => {
+                          const now = props.client.state()!;
+                          if (
+                            session !== now.vpnSessionId ||
+                            (history &&
+                              ids.join("\n") !==
+                                now.requestHistory
+                                  .map((row) => row.id)
+                                  .join("\n"))
+                          ) {
+                            props.client.warning.set(
+                              ui.t(
+                                "记录或会话已变化，请重新确认范围。",
+                                "Records or session changed. Review the scope again.",
+                              ),
+                            );
+                            return;
+                          }
+                          if (history)
+                            void props.client.run("requests.clear");
+                          else
+                            void (async () => {
+                              for (const id of ids) {
+                                if (
+                                  props.client.state()!.vpnSessionId !==
+                                  session
+                                )
+                                  break;
+                                if (
+                                  props.client
+                                    .state()!
+                                    .connections.some((row) => row.id === id)
+                                )
+                                  await props.client.run("connections.close", {
+                                    id,
+                                  });
+                              }
+                            })();
+                        },
                         {
                           actionLabel: history
                             ? ui.t("清空记录", "Clear history")
                             : ui.t("关闭全部连接", "Close all connections"),
                           description: history
                             ? ui.t(
-                                "清除本地保存的请求历史。",
-                                "Remove the locally stored request history.",
+                                `清除当前 ${ids.length} 条请求历史，不影响活动连接。`,
+                                `Clear these ${ids.length} history records. Active connections are unaffected.`,
                               )
                             : ui.t(
-                                "当前 TCP 与 UDP 会话将断开。",
-                                "Disconnect the current TCP and UDP sessions.",
+                                `关闭当前 ${ids.length} 条连接；确认后新建的连接不受影响。`,
+                                `Close these ${ids.length} connections. Connections opened after this confirmation are unaffected.`,
                               ),
                         },
                       );
-                    }}
-                  />
+                    };
+                    const actionDisabled = () =>
+                      props.client.pending() > 0 ||
+                      !props.client.domains.fresh([
+                        page() === "requests" ? "requests" : "connections",
+                      ]);
+                    return (
+                      <Action
+                        id="activity-clear-all"
+                        small
+                        secondary
+                        icon={page() === "requests" ? "trash-2" : "x"}
+                        label={
+                          page() === "requests"
+                            ? ui.t("清空…", "Clear…")
+                            : ui.t("关闭全部…", "Close all…")
+                        }
+                        disabled={actionDisabled()}
+                        onPress={clearOrCloseAll}
+                      />
+                    );
+                  })()}
                 </If>
                 <If when={page() === "logs"}>
-                  <IconButton
+                  <If when={wide()}>
+                    <Badge
+                      tone={logRecording() ? "brand" : "neutral"}
+                      label={
+                        logRecording()
+                          ? ui.t("正在监听", "Listening")
+                          : ui.t("已暂停", "Paused")
+                      }
+                    />
+                  </If>
+                  <Action
                     id="log-recording"
-                    icon={logRecording() ? "square" : "play"}
+                    small
+                    secondary
+                    icon={logRecording() ? "pause" : "play"}
                     label={
                       logRecording()
-                        ? ui.t("停止记录日志", "Stop recording logs")
-                        : ui.t("开始记录日志", "Record logs")
+                        ? ui.t("暂停", "Pause")
+                        : ui.t("继续", "Resume")
                     }
                     disabled={
                       props.client.isPending("logs.setRecording") ||
@@ -495,6 +690,48 @@ export function PawsApp(props: {
                     onPress={() =>
                       logRecordingIntent.set(logRecordingIntent() + 1)
                     }
+                  />
+                  <Action
+                    id="logs-clear"
+                    small
+                    secondary
+                    label={ui.t("清空…", "Clear…")}
+                    disabled={
+                      !props.client.domains.fresh(["logs"]) ||
+                      props.client.isPending("logs.clear") ||
+                      (props.client.state()?.logs.length || 0) === 0
+                    }
+                    onPress={() => {
+                      const state = props.client.state()!,
+                        session = state.vpnSessionId;
+                      const scope = JSON.stringify(state.logs);
+                      void confirm(
+                        ui,
+                        ui.t("清空当前内存日志？", "Clear current in-memory logs?"),
+                        () => {
+                          if (
+                            session !== props.client.state()!.vpnSessionId ||
+                            scope !== JSON.stringify(props.client.state()!.logs)
+                          ) {
+                            props.client.warning.set(
+                              ui.t(
+                                "日志或会话已变化，请重新确认。",
+                                "Logs or session changed. Review again.",
+                              ),
+                            );
+                            return;
+                          }
+                          void props.client.run("logs.clear");
+                        },
+                        {
+                          actionLabel: ui.t("清空当前日志", "Clear current logs"),
+                          description: ui.t(
+                            `清空确认时的全部 ${state.logs.length} 条内存日志，不受筛选影响；保留归档，继续记录状态不变。`,
+                            `Clear all ${state.logs.length} in-memory entries, including filtered entries. Archives and recording state remain unchanged.`,
+                          ),
+                        },
+                      );
+                    }}
                   />
                 </If>
                 <If when={page() === "converter"}>
@@ -512,69 +749,79 @@ export function PawsApp(props: {
                   />
                 </If>
                 <If when={page() === "resources"}>
-                  <IconButton
-                    id="lookup-rule"
-                    icon="search"
-                    label={ui.t("规则查询", "Rule lookup")}
-                    disabled={
-                      !props.client.domains.fresh(pageDomains("resources"))
-                    }
-                    onPress={() =>
-                      resourceIntent.set({
-                        id: ++resourceSequence,
-                        kind: "lookup",
-                      })
-                    }
-                  />
-                  <IconButton
-                    id="add-rule"
-                    icon="plus"
-                    label={ui.t("添加规则", "Add rule")}
-                    disabled={
-                      !props.client.domains.fresh(pageDomains("resources"))
-                    }
-                    onPress={() =>
-                      resourceIntent.set({
-                        id: ++resourceSequence,
-                        kind: "add",
-                      })
-                    }
-                  />
+                  <If when={platform.desktop}>
+                    <Action
+                      id="lookup-rule"
+                      small
+                      secondary
+                      icon="search"
+                      label={ui.t("规则查询…", "Rule lookup…")}
+                      disabled={
+                        !props.client.domains.fresh(pageDomains("resources"))
+                      }
+                      onPress={() =>
+                        resourceIntent.set({
+                          id: ++resourceSequence,
+                          kind: "lookup",
+                        })
+                      }
+                    />
+                    <Action
+                      id="add-rule"
+                      small
+                      primary
+                      icon="plus"
+                      label={ui.t("添加规则…", "Add rule…")}
+                      disabled={
+                        !props.client.domains.fresh(pageDomains("resources"))
+                      }
+                      onPress={() =>
+                        resourceIntent.set({
+                          id: ++resourceSequence,
+                          kind: "add",
+                        })
+                      }
+                    />
+                  </If>
+                  <If when={!platform.desktop}>
+                    <IconButton
+                      id="add-rule"
+                      icon="plus"
+                      label={ui.t("添加规则", "Add rule")}
+                      disabled={
+                        !props.client.domains.fresh(pageDomains("resources"))
+                      }
+                      onPress={() =>
+                        resourceIntent.set({
+                          id: ++resourceSequence,
+                          kind: "add",
+                        })
+                      }
+                    />
+                    <ObjectMenu
+                      id="resources-more"
+                      title={ui.t("资源操作", "Resource actions")}
+                      commands={[
+                        {
+                          id: "lookup-rule",
+                          icon: "search",
+                          label: ui.t("规则查询", "Rule lookup"),
+                          disabled: !props.client.domains.fresh(
+                            pageDomains("resources"),
+                          ),
+                          run: () =>
+                            resourceIntent.set({
+                              id: ++resourceSequence,
+                              kind: "lookup",
+                            }),
+                        },
+                      ]}
+                      row={(trigger) => trigger}
+                    />
+                  </If>
                 </If>
               </View>
             </View>
-            <If
-              when={
-                platform.desktop &&
-                (page() === "connections" || page() === "requests")
-              }
-            >
-              <View
-                style={{
-                  paddingHorizontal: spacing.xxl,
-                  paddingTop: spacing.md,
-                  alignSelf: "center",
-                  width: "100%",
-                  maxWidth: pageMeasure(page(), true),
-                }}
-              >
-                <Tabs
-                  idPrefix="activity-view"
-                  value={page()}
-                  options={[
-                    {
-                      value: "connections",
-                      label: ui.t("活动连接", "Active connections"),
-                    },
-                    {
-                      value: "requests",
-                      label: ui.t("请求历史", "Request history"),
-                    },
-                  ]}
-                  onChange={(value) => navigate(value as Page)}
-                />
-              </View>
-            </If>
             <If when={props.client.vpnUnconfirmed()}>
               <View
                 style={{
@@ -607,8 +854,9 @@ export function PawsApp(props: {
                     />
                     <Action
                       id="vpn-recover"
-                      secondary
+                      stop
                       small
+                      icon="stop"
                       label={ui.t("停止并重新同步", "Stop and resynchronize")}
                       loading={props.client.isPending("vpn.recover")}
                       disabled={props.client.pending() > 0}
@@ -632,9 +880,9 @@ export function PawsApp(props: {
                   alignItems: "center",
                 }}
               >
-                <Loading
+                <If when={!props.client.domains.error(["config", "status"])}><Loading
                   text={ui.t("正在读取连接状态…", "Loading connection state…")}
-                />
+                /></If>
                 <If when={props.client.domains.error(["config", "status"])}>
                   <PageError
                     id="critical-error"
@@ -678,11 +926,17 @@ export function PawsApp(props: {
                             <If when={current.name === "profiles"}>
                               <Profiles />
                             </If>
+                            <If when={current.name === "profile-detail"}>
+                              <Profiles profileId={current.query} />
+                            </If>
                             <If when={current.name === "editor"}>
                               <ProfileEditor profileId={current.query || ""} />
                             </If>
                             <If when={current.name === "proxies"}>
                               <Proxies />
+                            </If>
+                            <If when={current.name === "proxy-group"}>
+                              <Proxies groupKey={current.query} />
                             </If>
                             <If when={current.name === "traffic"}>
                               <Traffic />
@@ -692,6 +946,9 @@ export function PawsApp(props: {
                             </If>
                             <If when={current.name === "requests"}>
                               <Activity history />
+                            </If>
+                            <If when={current.name === "activity-detail"}>
+                              <ActivityDetail identity={current.query || ""} />
                             </If>
                             <If when={current.name === "resources"}>
                               <Resources />
@@ -744,15 +1001,10 @@ export function PawsApp(props: {
                               ? "default"
                               : "fade"
                       }
-                      popOnBack={
-                        current.name !== "editor" && current.name !== "settings"
-                      }
+                      title={ui.t(...titles[current.name])}
+                      popOnBack={false}
                       onBackPress={() => {
-                        if (
-                          current.name === "editor" ||
-                          current.name === "settings"
-                        )
-                          back();
+                        if (current === route() && overlays() === 0 && canBack()) back();
                       }}
                     >
                       {content}
@@ -763,7 +1015,7 @@ export function PawsApp(props: {
             </If>
           </View>
         </View>
-        <If when={!wide() && !parentPage(page())}>
+        <If when={!wide() && depth() === 1 && !parentPage(page())}>
           <BaseTabs
             testID="bottom-navigation"
             style={{
@@ -774,14 +1026,7 @@ export function PawsApp(props: {
               gap: spacing.xxs,
               backgroundColor: palette().background,
               borderTopWidth: 1,
-              borderTopColor: palette().border,
-            }}
-            indicatorStyle={{
-              top: spacing.xxs,
-              bottom: spacing.xxs,
-              borderRadius: radius.md,
-              borderCurve: "continuous",
-              backgroundColor: palette().soft,
+              borderTopColor: palette().line,
             }}
           >
             <Each of={primary}>
@@ -790,29 +1035,42 @@ export function PawsApp(props: {
                   testID={`nav-${tab().page}`}
                   selected={group() === tab().page}
                   accessibilityLabel={ui.t(tab().zh, tab().en)}
-                  onPress={() => navigate(tab().page)}
+                  onPress={() => switchWorkspace(tab().page)}
                   focusStyle={focusRing()}
+                  hoverStyle={{ backgroundColor: palette().hover }}
                   activeStyle={{ backgroundColor: palette().soft }}
                   style={{
                     flex: 1,
-                    minHeight: control.compact ? 44 : 52,
+                    minHeight: 52,
                     alignItems: "center",
                     justifyContent: "center",
-                    gap: spacing.xxs,
-                    borderRadius: radius.md,
+                    gap: 2,
+                    borderRadius: radius.lg,
                     borderCurve: "continuous",
                     ...feedbackStyle(),
                   }}
                 >
-                  <Icon
-                    name={tab().icon}
-                    size={20}
-                    color={
-                      group() === tab().page
-                        ? palette().accent
-                        : palette().muted
-                    }
-                  />
+                  <View
+                    style={{
+                      width: 48,
+                      height: 28,
+                      borderRadius: 14,
+                      borderCurve: "continuous",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <Icon
+                      name={tab().icon}
+                      size={20}
+                      strokeWidth={group() === tab().page ? 2.25 : 1.85}
+                      color={
+                        group() === tab().page
+                          ? palette().accent
+                          : palette().muted
+                      }
+                    />
+                  </View>
                   <Text
                     maxFontSizeMultiplier={1.2}
                     style={{
@@ -833,7 +1091,14 @@ export function PawsApp(props: {
           </BaseTabs>
         </If>
         <FloatingVpnPowerButton
-          visible={!wide() && page() === "dashboard" && !!props.client.state()}
+          visible={
+            !wide() &&
+            !layout().overview &&
+            page() === "dashboard" &&
+            !!props.client.state() &&
+            overlays() === 0 &&
+            keyboardFrame().height === 0
+          }
         />
         <NotificationViewport
           dismissLabel={ui.t("关闭通知", "Dismiss notification")}
@@ -865,7 +1130,8 @@ export function PawsApp(props: {
 }
 
 function PageData(props: { domains: DomainInput[]; children?: JSX.Element }) {
-  const ui = useApp();
+  const ui = useApp(), owner = RouteOwner() || ui.route();
+  const error = () => ui.route() === owner ? ui.client.domains.error(props.domains) : "";
   return (
     <>
       <If
@@ -879,11 +1145,11 @@ function PageData(props: { domains: DomainInput[]; children?: JSX.Element }) {
               gap: density.space(12),
             }}
           >
-            <Loading text={ui.t("正在读取页面数据…", "Loading page data…")} />
-            <If when={ui.client.domains.error(props.domains)}>
-              <PageError text={ui.client.domains.error(props.domains)} />
+            <If when={!error()}><Loading text={ui.t("正在读取页面数据…", "Loading page data…")} /></If>
+            <If when={error()}>
+              <PageError text={error()} />
             </If>
-            <If when={ui.client.domains.error(props.domains)}>
+            <If when={error()}>
               <Action
                 id="page-data-retry"
                 secondary
@@ -899,11 +1165,11 @@ function PageData(props: { domains: DomainInput[]; children?: JSX.Element }) {
       <If
         when={
           ui.client.domains.has(props.domains) &&
-          ui.client.domains.error(props.domains)
+          error()
         }
       >
         <View style={{ padding: density.space(12), gap: density.space(8) }}>
-          <PageError text={ui.client.domains.error(props.domains)} />
+          <PageError text={error()} />
           <Action
             id="page-data-retry"
             secondary

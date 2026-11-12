@@ -75,7 +75,7 @@ def snapshots(output):
 
 
 def run_case(binary, output_dir, name, taps, checks, markers=(), blocked=False):
-    args = [str(binary), "trace", ENTRY, "--wait", "30", "--width", "390", "--height", "844"]
+    args = [str(binary), "trace", ENTRY, "--wait", "30", "--width", "1280" if name.startswith("all-profiles-") else "390", "--height", "844"]
     for tap in taps:
         args.extend(["--tap", "id:" + tap])
     result = run_nsh(args, cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=45)
@@ -99,7 +99,7 @@ def run_case(binary, output_dir, name, taps, checks, markers=(), blocked=False):
         states[index].control(test_id, busy)
     if name == "profile-failure-retry":
         for index, busy in [(4, True), (7, False), (9, True), (12, False)]:
-            assert states[index].progress(states[index].node("activate-profile-test-profile")) == busy, "Per-profile leading Spinner did not follow the real receipt"
+            assert states[index].progress(states[index].node("open-profile-test-profile")) == busy, "Per-profile leading Spinner did not follow the real receipt"
     if name == "all-profiles-config-gate":
         assert "disabled: true" in states[4].props[states[4].node("refresh-profiles")], "Header stayed enabled while its required config domain was stale"
     if name == "report-failure-retry":

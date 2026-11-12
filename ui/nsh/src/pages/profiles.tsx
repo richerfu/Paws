@@ -18,39 +18,62 @@ import {
   Action,
   Actions,
   Badge,
+  BottomSheet,
+  ChoiceTile,
   confirm,
   copyText,
   Dialog,
+  Detail,
+  Body,
   Empty,
   Field,
   Hint,
   Icon,
   IconButton,
+  IconTile,
+  ListSurface,
+  MeterBar,
+  OrRule,
   palette,
   radius,
   SearchField,
+  SectionHeader,
   control,
   spacing,
   Separator,
   Spinner,
   useApp,
   useLifetime,
+  useLayout,
+  useViewState,
+  useDraftGuard,
+  useOverlay,
+  RouteOwner,
 } from "../components";
 import { ContextMenu, Menu, MenuItem, MenuSeparator } from "nsh/base";
 import { feedbackStyle } from "../motion";
-import { focusRing, popupSurface } from "../theme";
+import { focusRing, popupSurface, surfaceFinish } from "../theme";
 import { bytes, timestamp } from "../locale";
 
 import { matchesProfile } from "../query";
 import { PageError } from "../page-error";
 import type { Profile } from "../model";
 
-export function Profiles() {
+export function Profiles(props: { profileId?: string } = {}) {
   const ui = useApp(),
-    query = signal(""),
+    layout = useLayout(),
     name = signal(""),
     input = signal(""),
     open = signal(false);
+  const collection = useViewState("profiles.collection", () => ({ query: signal(""), selected: signal(""), offset: 0 }));
+  const query = collection.query;
+  if (props.profileId) collection.selected.set(props.profileId);
+  const selectedProfile = () => ui.client.state()!.profiles.find((profile) => profile.id === collection.selected());
+  const owner = RouteOwner() || ui.route();
+  const selectProfile = (profile: Profile) => {
+    collection.selected.set(profile.id);
+    if (!props.profileId) ui.navigate("profile-detail", profile.id);
+  };
   const alive = useLifetime(),
     busy = signal(false),
     importOp = signal<"" | "url" | "file" | "scan">(""),
@@ -80,14 +103,24 @@ export function Profiles() {
     busy.set(false);
     importOp.set("");
   };
-  const closeImport = () => {
+  const importGuard = useDraftGuard(() => open() && !!(name() || input()), () => { name.set(""); input.set(""); });
+  const closeImport = async () => {
+    if (!(await importGuard())) return;
     dialogGeneration++;
     open.set(false);
     cancelImport();
   };
+  const initialEdit = signal({ name: "", url: "" });
+  const guard = useDraftGuard(
+    () => !!editing() && (editName() !== initialEdit().name || editUrl() !== initialEdit().url),
+    () => editing.set(undefined),
+    () => ui.client.isPending("profiles.subscription"),
+  );
+  const closeEdit = async () => { if (await guard()) editing.set(undefined); };
   cleanup(cancelImport);
   effect(() => {
     const id = ui.importIntent();
+    if (ui.route() !== owner) return;
     untracked(() => {
       if (ui.consumeImportIntent(id)) open.set(true);
     });
@@ -262,9 +295,28 @@ export function Profiles() {
     });
     editName.set(profile.name);
     editUrl.set(profile.subscriptionUrl || "");
+    initialEdit.set({ name: profile.name, url: profile.subscriptionUrl || "" });
   };
+  const row = (profile: Profile, detail = false) => <ProfileRow
+    detail={detail}
+    profile={profile} refreshing={refreshing(profile)}
+    selected={collection.selected() === profile.id}
+    compact={layout().masterDetail}
+    onDetails={() => selectProfile(profile)}
+    onAction={(command) => { void profileAction(command, profile.id); }}
+    onEdit={() => openEdit(profile)}
+    onExport={() => { exporting.set(profile); qr.set(undefined); }}
+    onError={() => refreshError.set(profile.lastRefreshError || "")}
+  />;
   return (
     <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, minHeight: 0, flexDirection: "row", gap: layout().masterDetail ? spacing.lg : 0 }}>
+      <View testID="profiles-collection" style={{
+        display: props.profileId && !layout().masterDetail ? "none" : "flex",
+        flexDirection: "column",
+        width: layout().masterDetail ? layout().collection : undefined,
+        flex: layout().masterDetail ? undefined : 1, minWidth: 0,
+      }}>
       <View
         style={{
           paddingHorizontal:
@@ -274,6 +326,7 @@ export function Profiles() {
         }}
       >
         <SearchField
+          id="profiles-search"
           label={ui.t("搜索订阅", "Search subscriptions")}
           placeholder={ui.t(
             "名称、地址、当前或备份",
@@ -284,6 +337,9 @@ export function Profiles() {
         />
       </View>
       <List
+        testID="profiles-list"
+        contentOffset={{ y: collection.offset }}
+        onScroll={(event) => { if (ui.route() === owner) collection.offset = event.offset.y; }}
         bounces={false}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
@@ -296,7 +352,7 @@ export function Profiles() {
         estimatedItemSize={120}
         style={{
           flex: 1,
-          margin: windowSize().width >= 840 ? spacing.xxl : spacing.lg,
+          margin: spacing.lg,
           marginTop: 0,
           borderWidth: 1,
           borderColor: palette().border,
@@ -304,6 +360,7 @@ export function Profiles() {
           borderCurve: "continuous",
           backgroundColor: palette().panel,
           overflow: "hidden",
+          ...surfaceFinish("card"),
         }}
         contentStyle={{ padding: 0 }}
         empty={
@@ -343,116 +400,223 @@ export function Profiles() {
                 onPress={() => open.set(true)}
               />
             </If>
+            <If when={!!query()}>
+              <Action label={ui.t("清除搜索", "Clear search")} onPress={() => query.set("")} />
+            </If>
           </View>
         }
       >
-        {(profile) => (
-          <ProfileRow
-            profile={profile()}
-            refreshing={refreshing(profile())}
-            onAction={(command) => {
-              void profileAction(command, profile().id);
-            }}
-            onEdit={() => openEdit(profile())}
-            onExport={() => {
-              exporting.set(profile());
-              qr.set(undefined);
-            }}
-            onError={() => refreshError.set(profile().lastRefreshError || "")}
-          />
-        )}
+        {(profile) => row(profile())}
       </List>
+      </View>
+      <View testID="profile-detail-panel" style={{ display: props.profileId || layout().masterDetail ? "flex" : "none", flex: 1, minWidth: 0, flexDirection: "column" }}>
+        <Scroll bounces={false} style={{ flex: 1 }}>
+          <Body>
+            <If when={selectedProfile()} else={<Empty icon="rss" text={collection.selected() ? ui.t("此订阅已移除。返回列表选择其他订阅。", "This subscription was removed. Return to the list.") : ui.t("选择订阅查看详情", "Select a subscription to view details")} />}>
+              <If when={selectedProfile() && !profiles().some((profile) => profile.id === collection.selected())}>
+                <Hint text={ui.t("当前订阅不在筛选结果中。已保留详情。", "This subscription is outside the filter. Its details are retained.")} />
+              </If>
+              <ListSurface>
+                {selectedProfile() ? row(selectedProfile()!, true) : undefined}
+              </ListSurface>
+              <View style={{ gap: spacing.sm }}>
+                <SectionHeader title={ui.t("订阅信息", "Subscription details")} />
+                <ListSurface>
+                  <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: 1, borderBottomColor: palette().line }}>
+                    <Detail stacked label={ui.t("名称", "Name")} value={selectedProfile()?.name || ""} />
+                  </View>
+                  <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: 1, borderBottomColor: palette().line }}>
+                    <Detail stacked label={ui.t("来源", "Source")} value={selectedProfile()?.subscriptionUrl || selectedProfile()?.source || ""} />
+                  </View>
+                  <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: 1, borderBottomColor: palette().line }}>
+                    <Detail label={ui.t("更新时间", "Updated")} value={timestamp(selectedProfile()?.lastRefreshAt || selectedProfile()?.updatedAt)} />
+                  </View>
+                  <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10) }}>
+                    <Detail label={ui.t("本地备份", "Local backup")} value={selectedProfile()?.hasBackup ? ui.t("有上次备份", "Previous backup available") : ui.t("无备份", "No backup")} />
+                  </View>
+                </ListSurface>
+              </View>
+              <If when={selectedProfile()?.subscriptionUserInfo}>
+                <View style={{ gap: spacing.sm }}>
+                  <SectionHeader title={ui.t("流量配额", "Quota")} />
+                  <ListSurface style={{ padding: spacing.md, gap: spacing.sm }}>
+                    <Detail
+                      label={ui.t("已用流量", "Usage")}
+                      value={
+                        selectedProfile()?.subscriptionUserInfo?.totalBytes
+                          ? `${bytes((selectedProfile()?.subscriptionUserInfo?.uploadBytes || 0) + (selectedProfile()?.subscriptionUserInfo?.downloadBytes || 0))} / ${bytes(selectedProfile()!.subscriptionUserInfo!.totalBytes!)}`
+                          : bytes((selectedProfile()?.subscriptionUserInfo?.uploadBytes || 0) + (selectedProfile()?.subscriptionUserInfo?.downloadBytes || 0))
+                      }
+                    />
+                    <If when={!!selectedProfile()?.subscriptionUserInfo?.totalBytes}>
+                      <MeterBar
+                        ratio={Math.min(
+                          1,
+                          ((selectedProfile()?.subscriptionUserInfo?.uploadBytes || 0) +
+                            (selectedProfile()?.subscriptionUserInfo?.downloadBytes || 0)) /
+                            (selectedProfile()?.subscriptionUserInfo?.totalBytes || 1),
+                        )}
+                      />
+                    </If>
+                  </ListSurface>
+                </View>
+              </If>
+              <If when={selectedProfile()?.lastRefreshError}>
+                <PageError id="profile-detail-error" text={selectedProfile()?.lastRefreshError || ""} />
+              </If>
+              <Actions align="start">
+                <If when={selectedProfile() && !selectedProfile()!.active}>
+                  <Action id="profile-activate" primary label={ui.t("启用此订阅", "Use this subscription")} disabled={ui.client.pending() > 0 || !ui.client.domains.readyForCommand(["config", "profiles"])} onPress={() => void profileAction("profiles.activate", collection.selected())} />
+                </If>
+                <If when={selectedProfile()?.subscriptionUrl}>
+                  <Action icon="refresh-cw" label={selectedProfile()?.lastRefreshError ? ui.t("重试更新", "Retry update") : ui.t("更新订阅", "Update subscription")} loading={!!selectedProfile() && refreshing(selectedProfile()!)} disabled={ui.client.pending() > 0} onPress={() => void profileAction("profiles.refresh", collection.selected())} />
+                </If>
+                <If when={selectedProfile()?.active}>
+                  <Action id="profile-proxies" label={ui.t("代理节点", "Proxy nodes")} onPress={() => ui.navigate("proxies")} />
+                </If>
+                <Action icon="file-pen-line" label={ui.t("编辑 YAML", "Edit YAML")} onPress={() => { if (selectedProfile()) ui.editProfile(selectedProfile()!.id); }} />
+                <Action icon="download" label={ui.t("导出…", "Export…")} onPress={() => { if (selectedProfile()) { exporting.set(selectedProfile()); qr.set(undefined); } }} />
+                <Action icon="copy" label={ui.t("复制完整来源", "Copy source")} onPress={() => copyText(ui, selectedProfile()?.subscriptionUrl || selectedProfile()?.source || "", ui.t("来源已复制", "Source copied"))} />
+              </Actions>
+            </If>
+          </Body>
+        </Scroll>
+      </View>
+      </View>
       <If when={open()}>
-        <Dialog
-          title={ui.t("网络导入", "Network import")}
-          description={ui.t(
-            "填写订阅地址，导入后会保存到本地。",
-            "Enter a subscription URL. The imported profile is saved locally.",
-          )}
-          onClose={closeImport}
-          footer={
-            <Actions>
-              <Action
-                secondary
-                label={ui.t("取消", "Cancel")}
-                onPress={closeImport}
+        {(() => {
+          const importBody = (
+            <View style={{ gap: 14 }}>
+              <View style={{ flexDirection: "row", gap: 10 }}>
+                <ChoiceTile
+                  id="import-local-file"
+                  icon="file-up"
+                  title={ui.t("从本地导入", "Local file")}
+                  subtitle={ui.t("选择 YAML 配置文件", "Pick a YAML profile")}
+                  loading={importOp() === "file"}
+                  disabled={busy()}
+                  onPress={() => void pick()}
+                />
+                <ChoiceTile
+                  id="import-scan-qr"
+                  icon="scan-qr-code"
+                  title={ui.t("扫码导入", "Scan QR")}
+                  subtitle={ui.t("扫描订阅二维码", "Scan subscription QR")}
+                  loading={importOp() === "scan"}
+                  disabled={busy()}
+                  onPress={() => void scan()}
+                />
+              </View>
+              <OrRule
+                label={ui.t("或粘贴订阅链接", "Or paste subscription URL")}
               />
-              <Action
-                primary
-                id="submit-import"
-                icon="download"
-                loading={importOp() === "url"}
-                label={ui.t("导入", "Import")}
-                disabled={busy() || !input().trim()}
-                onPress={() => void importContent()}
-              />
-            </Actions>
-          }
-        >
-          <View style={{ gap: density.space(12) }}>
-            <Field
-              onSubmit={() => void importContent()}
-              id="profile-input"
-              keyboardType="url"
-              label={ui.t("订阅地址", "Subscription URL")}
-              value={input()}
-              onChange={(text) => {
-                input.set(text);
-                ui.client.error.set("");
-              }}
-              placeholder={ui.t("配置 URL", "Profile URL")}
-              disabled={busy()}
-            />
-            <Field
-              label={ui.t("名称（可选）", "Name (optional)")}
-              value={name()}
-              onChange={(text) => {
-                name.set(text);
-                ui.client.error.set("");
-              }}
-              placeholder={ui.t(
-                "留空时自动使用文件名",
-                "Leave blank to use the filename",
-              )}
-              disabled={busy()}
-            />
-          </View>
-          <Separator />
-          <View
-            style={{
-              flexDirection: "row",
-              flexWrap: "wrap",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: spacing.sm,
-            }}
-          >
-            <Action
-              variant="ghost"
-              small
-              icon="file-up"
-              label={ui.t("从本地文件导入", "Import a local file")}
-              loading={importOp() === "file"}
-              disabled={busy()}
-              onPress={() => void pick()}
-            />
-            <Action
-              variant="ghost"
-              small
-              icon="scan-qr-code"
-              label={ui.t("扫码添加", "Scan to add")}
-              loading={importOp() === "scan"}
-              disabled={busy()}
-              onPress={() => void scan()}
-            />
-          </View>
-          <If when={ui.client.error()}>
-            <PageError id="profile-import-error" text={ui.client.error()} />
-          </If>
-        </Dialog>
+              <View style={{ gap: density.space(12) }}>
+                <Field
+                  onSubmit={() => void importContent()}
+                  id="profile-input"
+                  keyboardType="url"
+                  label={ui.t("订阅地址", "Subscription URL")}
+                  value={input()}
+                  onChange={(text) => {
+                    input.set(text);
+                    ui.client.error.set("");
+                  }}
+                  placeholder="https://example.com/sub?token=…"
+                  disabled={busy()}
+                />
+                <Field
+                  label={ui.t("名称（可选）", "Name (optional)")}
+                  value={name()}
+                  onChange={(text) => {
+                    name.set(text);
+                    ui.client.error.set("");
+                  }}
+                  placeholder={ui.t(
+                    "留空时自动使用配置名称",
+                    "Leave blank to use profile name",
+                  )}
+                  disabled={busy()}
+                />
+              </View>
+              <If when={ui.client.error()}>
+                <PageError
+                  id="profile-import-error"
+                  text={ui.client.error()}
+                />
+              </If>
+            </View>
+          );
+          const importTitle = ui.t("添加订阅", "Add subscription");
+          const importSubtitle = ui.t(
+            "从本地文件、二维码直接导入，或填写订阅地址",
+            "Import from a local file or QR code, or paste a subscription URL",
+          );
+          return (
+            <If
+              when={layout().sidebar || platform.desktop}
+              else={
+                <BottomSheet
+                  title={importTitle}
+                  subtitle={importSubtitle}
+                  onClose={closeImport}
+                  footer={
+                    <View style={{ flexDirection: "row", gap: 8 }}>
+                      <Action
+                        flex={1}
+                        secondary
+                        label={ui.t("取消", "Cancel")}
+                        onPress={closeImport}
+                      />
+                      <Action
+                        flex={1}
+                        primary
+                        id="submit-import"
+                        icon="download"
+                        loading={importOp() === "url"}
+                        label={ui.t("导入订阅", "Import subscription")}
+                        disabled={busy() || !input().trim()}
+                        onPress={() => void importContent()}
+                      />
+                    </View>
+                  }
+                >
+                  {importBody}
+                </BottomSheet>
+              }
+            >
+              <Dialog
+                width={440}
+                title={importTitle}
+                subtitle={importSubtitle}
+                onClose={closeImport}
+                footer={
+                  <Actions>
+                    <Action
+                      secondary
+                      label={ui.t("取消", "Cancel")}
+                      onPress={closeImport}
+                    />
+                    <Action
+                      primary
+                      id="submit-import"
+                      icon="download"
+                      loading={importOp() === "url"}
+                      label={ui.t("导入订阅", "Import subscription")}
+                      disabled={busy() || !input().trim()}
+                      onPress={() => void importContent()}
+                    />
+                  </Actions>
+                }
+              >
+                {importBody}
+              </Dialog>
+            </If>
+          );
+        })()}
       </If>
       <If when={refreshError()}>
         <Dialog
+          width={platform.desktop ? 400 : 460}
           title={ui.t("刷新失败", "Refresh failed")}
           onClose={() => refreshError.set("")}
           footer={
@@ -487,18 +651,19 @@ export function Profiles() {
       </If>
       <If when={editing()}>
         <Dialog
+          width={platform.desktop ? 400 : 460}
           title={ui.t("编辑订阅", "Edit subscription")}
           description={ui.t(
             "修改名称或订阅地址，保存后可手动刷新。",
             "Change the name or subscription URL. Refresh manually after saving.",
           )}
-          onClose={() => editing.set(undefined)}
+          onClose={() => void closeEdit()}
           footer={
             <Actions>
               <Action
                 secondary
                 label={ui.t("取消", "Cancel")}
-                onPress={() => editing.set(undefined)}
+                onPress={() => void closeEdit()}
               />
               <Action
                 primary
@@ -539,6 +704,7 @@ export function Profiles() {
       </If>
       <If when={exporting()}>
         <Dialog
+          width={platform.desktop ? 400 : 460}
           title={ui.t("导出配置", "Export profile")}
           description={exporting()!.name}
           onClose={() => {
@@ -568,7 +734,7 @@ export function Profiles() {
                     padding: 12,
                     borderRadius: radius.lg,
                     borderCurve: "continuous",
-                    backgroundColor: "#ffffff",
+                    backgroundColor: palette().qrCanvas,
                     borderWidth: 1,
                     borderColor: palette().border,
                   }}
@@ -651,17 +817,22 @@ function ProfileRow(props: {
   onEdit: () => void;
   onExport: () => void;
   onError: () => void;
+  onDetails: () => void;
+  selected?: boolean;
+  compact?: boolean;
+  detail?: boolean;
 }) {
   const ui = useApp(),
     alive = useLifetime(),
-    route = ui.route();
+    route = RouteOwner() || ui.route();
   const open = signal(false),
     contextual = signal(false);
+  useOverlay(() => open() || contextual());
   let pending: { source: "menu" | "context"; action: () => void } | undefined;
   const ready = () => ui.client.domains.readyForCommand(["config", "profiles"]);
   const height = () =>
     Math.max(
-      control.compact ? (windowSize().width >= 840 ? 76 : 88) : 88,
+      84,
       density.line(52) * Math.max(1, fontScale()) + spacing.xl,
     );
   const afterClose = (source: "menu" | "context") => {
@@ -800,7 +971,7 @@ function ProfileRow(props: {
       <If when={props.profile.subscriptionUrl}>
         <Command
           source={value.source}
-          id={`edit-subscription-${props.profile.id}`}
+          id={`edit-subscription-${props.detail ? "detail-" : ""}${props.profile.id}`}
           icon="file-pen-line"
           label={ui.t("编辑订阅…", "Edit subscription…")}
           action={props.onEdit}
@@ -808,14 +979,14 @@ function ProfileRow(props: {
       </If>
       <Command
         source={value.source}
-        id={`edit-yaml-${props.profile.id}`}
+        id={`edit-yaml-${props.detail ? "detail-" : ""}${props.profile.id}`}
         icon="file-pen-line"
         label={ui.t("编辑 YAML…", "Edit YAML…")}
         action={() => ui.editProfile(props.profile.id)}
       />
       <Command
         source={value.source}
-        id={`profile-export-${props.profile.id}`}
+        id={`profile-export-${props.detail ? "detail-" : ""}${props.profile.id}`}
         icon="download"
         label={ui.t("导出…", "Export…")}
         action={props.onExport}
@@ -823,7 +994,7 @@ function ProfileRow(props: {
       <If when={props.profile.subscriptionUrl}>
         <Command
           source={value.source}
-          id={`refresh-profile-${props.profile.id}`}
+          id={`refresh-profile-${props.detail ? "detail-" : ""}${props.profile.id}`}
           icon="refresh-cw"
           label={ui.t("更新订阅", "Update subscription")}
           disabled={ui.client.pending() > 0 || props.refreshing}
@@ -844,10 +1015,10 @@ function ProfileRow(props: {
               ),
               () => props.onAction("profiles.restore"),
               {
-                actionLabel: ui.t("恢复备份", "Restore backup"),
+                actionLabel: ui.t("恢复并覆盖", "Restore and replace"),
                 description: ui.t(
-                  "当前配置会被上次备份替换。",
-                  "This replaces the profile with its previous backup.",
+                  `仅替换“${props.profile.name}”。${props.profile.active ? "这是当前订阅，可能重新连接 VPN。" : "不影响当前连接。"}`,
+                  `Replace only “${props.profile.name}”. ${props.profile.active ? "This is the active subscription; VPN may reconnect." : "The active connection is unaffected."}`,
                 ),
               },
             );
@@ -874,7 +1045,7 @@ function ProfileRow(props: {
               `Delete “${props.profile.name}”?`,
             ),
             () => props.onAction("profiles.delete"),
-            { actionLabel: ui.t("删除", "Delete") },
+            { actionLabel: ui.t("删除订阅", "Delete subscription"), description: props.profile.active ? ui.t("删除当前订阅会影响正在使用它的连接；不会删除其他订阅。", "Deleting the active subscription affects its connection. Other subscriptions are kept.") : ui.t("仅删除此订阅及其本地副本，其他订阅保持不变。", "Delete only this subscription and its local copies. Other subscriptions are kept.") },
           );
         }}
       />
@@ -883,36 +1054,40 @@ function ProfileRow(props: {
   const trigger = (
     <View
       style={{
-        height: height(),
+        minHeight: height(),
         flexDirection: "row",
         alignItems: "center",
-        borderBottomWidth: 1,
+        borderBottomWidth: props.detail ? 0 : 1,
         borderBottomColor: palette().line,
         backgroundColor:
-          props.profile.active || contextual()
-            ? palette().soft
-            : palette().panel,
+          props.selected && props.compact && !props.detail
+            ? palette().accentFill
+            : contextual()
+              ? palette().soft
+              : palette().panel,
       }}
     >
       <View
-        testID={`activate-profile-${props.profile.id}`}
+        testID={`open-profile-${props.detail ? "detail-" : ""}${props.profile.id}`}
         role="button"
         accessibilityLabel={props.profile.name}
         accessibilityState={{
-          selected: props.profile.active,
-          disabled: ui.client.pending() > 0 || !ready(),
+          selected: !!props.selected,
         }}
-        disabled={ui.client.pending() > 0 || !ready()}
         focusStyle={focusRing()}
-        hoverStyle={{ backgroundColor: palette().soft }}
-        activeStyle={{ backgroundColor: palette().soft }}
-        onPress={() => {
-          if (!props.profile.active) props.onAction("profiles.activate");
+        hoverStyle={{
+          backgroundColor:
+            props.selected && props.compact && !props.detail
+              ? palette().accentFill
+              : palette().hover,
         }}
+        activeStyle={{ backgroundColor: palette().soft }}
+        onPress={props.onDetails}
         style={{
           flex: 1,
-          height: height() - 1,
+          minHeight: height() - 1,
           paddingHorizontal: spacing.lg,
+          paddingVertical: density.space(10),
           flexDirection: "row",
           alignItems: "center",
           gap: spacing.md,
@@ -922,9 +1097,8 @@ function ProfileRow(props: {
         <If
           when={props.refreshing}
           else={
-            <Icon
-              name={props.profile.active ? "circle-check" : "rss"}
-              size={20}
+            <IconTile
+              icon={props.profile.active ? "circle-check" : "rss"}
               color={props.profile.active ? palette().accent : palette().muted}
             />
           }
@@ -953,7 +1127,7 @@ function ProfileRow(props: {
               {props.profile.name}
             </Text>
             <If when={props.profile.active}>
-              <Badge tone="success" label={ui.t("当前", "Current")} />
+              <Badge tone="brand" label={ui.t("当前", "Current")} />
             </If>
           </View>
           <Text
@@ -967,7 +1141,7 @@ function ProfileRow(props: {
           >
             {props.profile.subscriptionUrl || props.profile.source}
           </Text>
-          <If when={windowSize().width < 840}>
+          <If when={props.compact || windowSize().width < 840}>
             <Text
               style={{
                 numberOfLines: 1,
@@ -983,8 +1157,20 @@ function ProfileRow(props: {
               {usage() ? ` · ${usage()}` : ""}
             </Text>
           </If>
+          <If when={!!props.profile.subscriptionUserInfo?.totalBytes && !props.detail}>
+            <View style={{ paddingTop: density.space(4) }}>
+              <MeterBar
+                ratio={Math.min(
+                  1,
+                  ((props.profile.subscriptionUserInfo?.uploadBytes || 0) +
+                    (props.profile.subscriptionUserInfo?.downloadBytes || 0)) /
+                    (props.profile.subscriptionUserInfo?.totalBytes || 1),
+                )}
+              />
+            </View>
+          </If>
         </View>
-        <If when={windowSize().width >= 840}>
+        <If when={!props.compact && windowSize().width >= 840}>
           <View
             style={{ width: 160, gap: spacing.xxs, alignItems: "flex-end" }}
           >
@@ -1015,7 +1201,7 @@ function ProfileRow(props: {
       </View>
       <Menu
         open={open()}
-        onOpenChange={(event) => open.set(event.open && !props.refreshing)}
+        onOpenChange={(event) => open.set(event.open)}
         onClose={() => afterClose("menu")}
         popupStyle={popupSurface()}
         align="end"
@@ -1026,12 +1212,11 @@ function ProfileRow(props: {
         backdropStyle={{ backgroundColor: palette().scrim }}
         trigger={
           <View
-            testID={`profile-menu-${props.profile.id}`}
+            testID={`profile-menu-${props.detail ? "detail-" : ""}${props.profile.id}`}
             role="button"
             hitSlop={control.hitSlop(control.icon)}
             accessibilityLabel={ui.t("订阅操作", "Subscription actions")}
             accessibilityState={{ expanded: open() }}
-            disabled={props.refreshing}
             focusStyle={focusRing()}
             hoverStyle={{ backgroundColor: palette().soft }}
             activeStyle={{ backgroundColor: palette().soft }}
@@ -1056,7 +1241,6 @@ function ProfileRow(props: {
   );
   return (
     <ContextMenu
-      disabled={props.refreshing}
       open={contextual()}
       onOpenChange={(event) => contextual.set(event.open)}
       onClose={() => afterClose("context")}

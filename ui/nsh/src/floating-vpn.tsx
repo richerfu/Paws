@@ -10,7 +10,8 @@ import {
 } from "nsh";
 import { useApp } from "./components";
 import { VpnPowerButton } from "./pages/overview";
-import { chrome, control, spacing } from "./theme";
+import { chrome, spacing } from "./theme";
+import { motion } from "./motion";
 
 const clamp = (value: number, maximum: number) =>
   Math.max(0, Math.min(value, maximum));
@@ -18,7 +19,7 @@ const clamp = (value: number, maximum: number) =>
 /** Keep this owner mounted when changing tabs so the dock position survives. */
 export function FloatingVpnPowerButton(props: { visible: boolean }) {
   const ui = useApp();
-  const size = () => (control.compact ? 48 : 56);
+  const size = () => 48;
   const area = computed(() => {
     const viewport = windowSize(),
       insets = safeArea();
@@ -108,7 +109,7 @@ export function FloatingVpnPowerButton(props: { visible: boolean }) {
             y.set(releaseY);
             const target = right ? maxX() : 0;
             if (reduceMotion()) x.set(target);
-            else void x.spring(target, { stiffness: 320, damping: 32 });
+            else void x.spring(target, motion.move);
           }}
         />
       </Overlay>

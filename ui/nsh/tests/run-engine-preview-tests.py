@@ -73,7 +73,7 @@ def verify_geometry(states, width):
         assert geometry == baseline, (index, geometry, baseline)
         engine, stack = geometry['vpn-engine'], geometry['vpn-stack']
         assert 0 < stack[1] - engine[1] - engine[3] <= 48, (index, engine, stack)
-        assert one(tree, 'engine-preview-status')['frame'][3] == (32 if width >= 840 else 36)
+        assert one(tree, 'engine-preview-status')['frame'][3] == 36
         for name in ('engine-preview-reasons', 'engine-preview-info-summary', 'page-data-issues'):
             assert not mounted(tree, name), (index, name)
         # Internal observation metadata remains in the actual store, while no
@@ -190,7 +190,7 @@ def main():
             shift = len(prefix)
             taps = prefix + nav + ['id:preview-release-first'] + pick('singbox') + [
                 'id:preview-release-fallback', info, close] + pick('meow') + [
-                'id:preview-fail-first', info, close, 'id:nav-back', 'id:tool-settings', 'id:preview-release-first']
+                'id:preview-fail-first', info, close, 'id:nav-back', 'id:tool-settings', 'id:preview-release-last']
             checks = [(6, 'mihomo', None, True, True), (7, 'mihomo', FALLBACK_REASON, True, True),
                       (11, 'Engine check failed' if english else '内核检查失败', None, True, True),
                       (12, 'Engine check failed' if english else '内核检查失败', 'Error: Controlled preview failure', True, True),

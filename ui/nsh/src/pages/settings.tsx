@@ -12,8 +12,10 @@ import {
 import {
   Action,
   Actions,
+  Alert,
   askConfirmation,
   Body,
+  FormFooter,
   Card,
   copyText,
   Detail,
@@ -21,13 +23,16 @@ import {
   Field,
   Hint,
   IconButton,
+  ListSurface,
   RadioGroup,
   RouteOwner,
+  SectionHeader,
   Select,
+  spacing,
   palette,
   radius,
   Separator,
-  Check,
+  Toggle,
   useApp,
   useLifetime,
 } from "../components";
@@ -93,23 +98,25 @@ export function Settings() {
   effect(() => {
     if (ui.route() !== route) return;
     cleanup(
-      ui.beforeLeave?.(() => {
+      ui.beforeLeave?.(async () => {
         if (
           ["settings.vpn", "settings.dns", "settings.network"].some((command) =>
             ui.client.isPending(command),
           )
         )
           return false;
-        return (
-          !dirty().size ||
-          askConfirmation(
+        if (!dirty().size) return true;
+        const accepted = await askConfirmation(
             ui,
             ui.t("丢弃未保存的网络设置？", "Discard unsaved network settings?"),
             {
               actionLabel: ui.t("丢弃草稿", "Discard draft"),
+              cancelLabel: ui.t("继续编辑", "Keep editing"),
+              description: ui.t("只放弃本页尚未保存的分区。已经保存的 VPN、DNS 或网络设置不会回退。", "Discard only unsaved sections on this page. Saved VPN, DNS and network settings are kept."),
             },
-          )
-        );
+          );
+        if (accepted) reset();
+        return accepted;
       }) || (() => {}),
     );
   });
@@ -162,6 +169,11 @@ export function Settings() {
     previewFailed = signal(false);
   let previewGeneration = 0;
   effect(() => {
+    if (ui.route() !== route) {
+      previewGeneration++;
+      previewBusy.set(false);
+      return;
+    }
     const engine = vpn().engine,
       revision = current().configRevision,
       active = current().activeProfile;
@@ -302,6 +314,7 @@ export function Settings() {
     }
   };
   return (
+    <View style={{ flex: 1, minHeight: 0, paddingBottom: "env(keyboard-inset-height)" }}>
     <Scroll
       bounces={false}
       keyboardDismissMode="on-drag"
@@ -360,20 +373,23 @@ export function Settings() {
           }
         >
           <If when={conflict()}>
-            <Card title={ui.t("配置已变更", "Configuration changed")}>
-              <Hint
-                danger
+            <View style={{ gap: spacing.sm }}>
+              <Alert
+                tone="warning"
+                title={ui.t("配置已变更", "Configuration changed")}
                 text={ui.t(
                   "保留了当前草稿。重新载入最新配置后再保存。",
                   "Your draft is preserved. Reload the latest configuration before saving.",
                 )}
               />
-              <Action
-                secondary
-                label={ui.t("丢弃草稿并重新载入", "Discard draft and reload")}
-                onPress={reset}
-              />
-            </Card>
+              <Actions align="start">
+                <Action
+                  secondary
+                  label={ui.t("丢弃草稿并重新载入", "Discard draft and reload")}
+                  onPress={reset}
+                />
+              </Actions>
+            </View>
           </If>
           <Card
             title={ui.t("VPN 基础", "VPN basics")}
@@ -382,7 +398,7 @@ export function Settings() {
               "Saving requests a reconnect for the running VPN",
             )}
           >
-            <Check
+            <Toggle
               label={ui.t("DNS 劫持", "DNS hijacking")}
               description={ui.t(
                 "将应用的 DNS 请求交由 VPN 处理。",
@@ -600,22 +616,7 @@ export function Settings() {
                 }
               />
             </Actions>
-            <Action
-              primary
-              id="save-vpn"
-              loading={ui.client.isPending("settings.vpn")}
-              label={ui.t("保存 VPN 设置", "Save VPN settings")}
-              disabled={
-                blocked() ||
-                !dirty().has("vpn") ||
-                !validMtu() ||
-                !!(
-                  vpn().trustedApplications?.length &&
-                  vpn().blockedApplications?.length
-                )
-              }
-              onPress={() => void save("vpn")}
-            />
+
           </Card>
           <Card
             title={ui.t("网络端口与控制器", "Network ports and controller")}
@@ -624,7 +625,7 @@ export function Settings() {
               "Defaults: 7890 and 9090. Ports must be distinct integers from 1024 to 65535.",
             )}
           >
-            <Check
+            <Toggle
               label={ui.t("启用混合代理服务", "Enable mixed proxy service")}
               description={ui.t(
                 "仅在 VPN 已连接时监听代理端口",
@@ -651,7 +652,8 @@ export function Settings() {
                 mark("network");
               }}
             />
-            <Check
+            <Separator />
+            <Toggle
               label={ui.t("启用 Controller 服务", "Enable controller service")}
               description={ui.t(
                 "仅在 VPN 已连接时监听控制端口",
@@ -686,7 +688,8 @@ export function Settings() {
                 mark("network");
               }}
             />
-            <Check
+            <Separator />
+            <Toggle
               label={ui.t("允许局域网访问", "Allow LAN access")}
               value={controller().allowLan}
               onChange={(allowLan) => changeController({ allowLan })}
@@ -719,16 +722,7 @@ export function Settings() {
                 }
               />
             </If>
-            <Action
-              primary
-              id="save-network"
-              loading={ui.client.isPending("settings.network")}
-              label={ui.t("保存网络设置", "Save network settings")}
-              disabled={
-                blocked() || !dirty().has("network") || !validNetwork()
-              }
-              onPress={() => void save("network")}
-            />
+
           </Card>
           <Card
             title="DNS"
@@ -771,6 +765,41 @@ export function Settings() {
               height={104}
               placeholder="geosite:cn=223.5.5.5,119.29.29.29"
             />
+
+          </Card>
+        </If>
+      </Body>
+    </Scroll>
+    <If when={profile()}>
+      <FormFooter>
+        <Hint text={ui.t("各分区独立保存。保存当前配置可能重新连接 VPN；失败会保留草稿。", "Sections save independently. Saving the active profile may reconnect VPN; failed saves keep drafts.")} />
+        <Actions align="start">
+            <Action
+              primary
+              id="save-vpn"
+              loading={ui.client.isPending("settings.vpn")}
+              label={ui.t("保存 VPN 设置", "Save VPN settings")}
+              disabled={
+                blocked() ||
+                !dirty().has("vpn") ||
+                !validMtu() ||
+                !!(
+                  vpn().trustedApplications?.length &&
+                  vpn().blockedApplications?.length
+                )
+              }
+              onPress={() => void save("vpn")}
+            />
+            <Action
+              primary
+              id="save-network"
+              loading={ui.client.isPending("settings.network")}
+              label={ui.t("保存网络设置", "Save network settings")}
+              disabled={
+                blocked() || !dirty().has("network") || !validNetwork()
+              }
+              onPress={() => void save("network")}
+            />
             <Action
               primary
               id="save-dns"
@@ -781,10 +810,10 @@ export function Settings() {
               }
               onPress={() => void save("dns")}
             />
-          </Card>
-        </If>
-      </Body>
-    </Scroll>
+        </Actions>
+      </FormFooter>
+    </If>
+    </View>
   );
 }
 
@@ -794,46 +823,54 @@ export function Appearance() {
   return (
     <Scroll bounces={false} style={{ flex: 1 }}>
       <Body>
-        <Card
-          title={ui.t("语言", "Language")}
-          subtitle={ui.t(
-            "选择界面语言；跟随系统会响应系统语言变化",
-            "Choose the interface language or follow system settings.",
-          )}
-        >
-          <RadioGroup
-            label={ui.t("语言", "Language")}
-            value={prefs().language}
-            options={[
-              { value: "system", label: ui.t("跟随系统", "System") },
-              { value: "zh_cn", label: "简体中文" },
-              { value: "en", label: "English" },
-            ]}
-            onChange={(language) =>
-              void ui.client.run("preferences.set", { language })
-            }
+        <View style={{ gap: spacing.sm }}>
+          <SectionHeader title={ui.t("语言", "Language")} />
+          <ListSurface>
+            <RadioGroup
+              insetRow
+              label={ui.t("语言", "Language")}
+              value={prefs().language}
+              options={[
+                { value: "system", label: ui.t("跟随系统", "System") },
+                { value: "zh_cn", label: "简体中文" },
+                { value: "en", label: "English" },
+              ]}
+              onChange={(language) =>
+                void ui.client.run("preferences.set", { language })
+              }
+            />
+          </ListSurface>
+          <Hint
+            text={ui.t(
+              "选择界面语言；跟随系统会响应系统语言变化",
+              "Choose the interface language or follow system settings.",
+            )}
           />
-        </Card>
-        <Card
-          title={ui.t("主题", "Theme")}
-          subtitle={ui.t(
-            "切换浅色、深色或跟随系统；修改会立即生效",
-            "Choose light, dark or follow the system appearance.",
-          )}
-        >
-          <RadioGroup
-            label={ui.t("主题", "Theme")}
-            value={prefs().theme}
-            options={[
-              { value: "system", label: ui.t("跟随系统", "System") },
-              { value: "light", label: ui.t("浅色", "Light") },
-              { value: "dark", label: ui.t("深色", "Dark") },
-            ]}
-            onChange={(theme) =>
-              void ui.client.run("preferences.set", { theme })
-            }
+        </View>
+        <View style={{ gap: spacing.sm }}>
+          <SectionHeader title={ui.t("主题", "Theme")} />
+          <ListSurface>
+            <RadioGroup
+              insetRow
+              label={ui.t("主题", "Theme")}
+              value={prefs().theme}
+              options={[
+                { value: "system", label: ui.t("跟随系统", "System") },
+                { value: "light", label: ui.t("浅色", "Light") },
+                { value: "dark", label: ui.t("深色", "Dark") },
+              ]}
+              onChange={(theme) =>
+                void ui.client.run("preferences.set", { theme })
+              }
+            />
+          </ListSurface>
+          <Hint
+            text={ui.t(
+              "切换浅色、深色或跟随系统；修改会立即生效",
+              "Choose light, dark or follow the system appearance.",
+            )}
           />
-        </Card>
+        </View>
       </Body>
     </Scroll>
   );
