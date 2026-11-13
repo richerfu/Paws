@@ -146,11 +146,15 @@ export const control = {
   get box() {
     return pointer() ? 16 : 22;
   },
-  /** Least height of a list row: 40 pointer, 48 touch. */
+  /** Vertical inset for list cells: 6 pointer, 12 touch. */
+  get rowPadding() {
+    return pointer() ? 6 : 12;
+  },
+  /** Least height of a list row: 40 pointer, 56 touch. */
   get row() {
     return Math.max(
-      pointer() ? 40 : 48,
-      density.line(20) * Math.max(1, fontScale()) + 16,
+      pointer() ? 40 : 56,
+      density.line(20) * Math.max(1, fontScale()) + (pointer() ? 16 : 24),
     );
   },
   hitSlop(size: number) {

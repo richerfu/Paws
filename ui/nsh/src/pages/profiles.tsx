@@ -349,7 +349,7 @@ export function Profiles(props: { profileId?: string } = {}) {
         }
         each={profiles()}
         keyExtractor={(profile) => profile.id}
-        estimatedItemSize={120}
+        estimatedItemSize={!platform.desktop && windowSize().width < 840 ? 88 : 120}
         style={{
           flex: 1,
           margin: spacing.lg,
@@ -655,10 +655,6 @@ export function Profiles(props: { profileId?: string } = {}) {
         <Dialog
           width={platform.desktop ? 400 : 460}
           title={ui.t("编辑订阅", "Edit subscription")}
-          description={ui.t(
-            "修改名称或订阅地址，保存后可手动刷新。",
-            "Change the name or subscription URL. Refresh manually after saving.",
-          )}
           onClose={() => void closeEdit()}
           footer={
             <Actions>
@@ -832,11 +828,11 @@ function ProfileRow(props: {
   useOverlay(() => open() || contextual());
   let pending: { source: "menu" | "context"; action: () => void } | undefined;
   const ready = () => ui.client.domains.readyForCommand(["config", "profiles"]);
+  const phoneRow = () => !platform.desktop && windowSize().width < 840 && !props.detail;
   const height = () =>
-    Math.max(
-      84,
-      density.line(52) * Math.max(1, fontScale()) + spacing.xl,
-    );
+    phoneRow()
+      ? 64
+      : Math.max(84, density.line(52) * Math.max(1, fontScale()) + spacing.xl);
   const afterClose = (source: "menu" | "context") => {
     if (pending?.source !== source) return;
     const action = pending.action;
@@ -1088,11 +1084,11 @@ function ProfileRow(props: {
         style={{
           flex: 1,
           minHeight: height() - 1,
-          paddingHorizontal: spacing.lg,
-          paddingVertical: density.space(10),
+          paddingHorizontal: phoneRow() ? spacing.md : spacing.lg,
+          paddingVertical: phoneRow() ? 8 : density.space(10),
           flexDirection: "row",
           alignItems: "center",
-          gap: spacing.md,
+          gap: phoneRow() ? spacing.sm : spacing.md,
           ...feedbackStyle(),
         }}
       >
@@ -1107,7 +1103,7 @@ function ProfileRow(props: {
         >
           <Spinner size={20} />
         </If>
-        <View style={{ flex: 1, minWidth: 0, gap: spacing.xxs }}>
+        <View style={{ flex: 1, minWidth: 0, gap: phoneRow() ? 2 : spacing.xxs }}>
           <View
             style={{
               flexDirection: "row",
@@ -1161,7 +1157,7 @@ function ProfileRow(props: {
             </Text>
           </If>
           <If when={!!props.profile.subscriptionUserInfo?.totalBytes && !props.detail}>
-            <View style={{ paddingTop: density.space(4) }}>
+            <View style={{ paddingTop: phoneRow() ? 0 : density.space(4) }}>
               <MeterBar
                 ratio={Math.min(
                   1,

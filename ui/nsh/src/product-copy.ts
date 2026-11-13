@@ -37,8 +37,8 @@ export const COPY = {
   ],
   "diagnostics-advanced-title": ["高级诊断", "Advanced diagnostics"],
   "diagnostics-advanced-subtitle": [
-    "域名 DoH 策略、脱敏报告与内核验收",
-    "Domain DoH policies, redacted reports, and engine qualification",
+    "域名 DoH 策略与脱敏报告",
+    "Domain DoH policies and redacted reports",
   ],
   "backup-title": ["备份与恢复", "Backup and restore"],
   "backup-subtitle": ["本地配置备份与 WebDAV 同步", "Local configuration backups and WebDAV sync"],

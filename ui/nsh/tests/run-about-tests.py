@@ -21,8 +21,6 @@ VISUAL_READER = Path(__file__).with_name('run-visual-tests.py')
 spec = importlib.util.spec_from_file_location('visual_mount_reader', VISUAL_READER)
 visual = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(visual)
-NSH_VERSION = ('c8779bac2365a790efd9c7aa91d3fb635815c66e+dirty.worktree-sha256-'
-               + '0123456789abcdef' * 8)
 
 
 class AboutTree(visual.NativeTree):
@@ -101,13 +99,17 @@ def validate_layout(tree, width, height, language, theme):
         assert tree.rect(a)[3] <= tree.rect(b)[1] + 1, 'About sections overlap/reorder vertically'
     component_results = []
     for index, name in [(0, 'Mihomo'), (2, 'sing-box'), (4, 'meow-rs'), (6, 'Native Shell')]:
-        component, title, version, actions = [tree.one(f'about-{part}-{index}') for part in ('component', 'name', 'version', 'actions')]
+        component, title, actions = [tree.one(f'about-{part}-{index}') for part in ('component', 'name', 'actions')]
         assert title.get('text') == name
         assert title['frame'][2] >= 80 and 0 < title['frame'][3] <= 40, f'{name}: name squeezed into narrow/tall column'
-        assert tree.rect(title)[3] <= tree.rect(version)[1] + 1, f'{name}: name/version overlap'
-        assert tree.rect(version)[3] <= tree.rect(actions)[1] + 1, f'{name}: version/actions overlap'
         if index == 6:
-            assert version.get('text') == NSH_VERSION, '191-character NSH revision was truncated before native mount'
+            version = None
+            assert not any(n.get('testId') == 'about-version-6' for n in nodes), 'Internal UI revision is exposed in acknowledgements'
+            assert tree.rect(title)[3] <= tree.rect(actions)[1] + 1, f'{name}: name/actions overlap'
+        else:
+            version = tree.one(f'about-version-{index}')
+            assert tree.rect(title)[3] <= tree.rect(version)[1] + 1, f'{name}: name/version overlap'
+            assert tree.rect(version)[3] <= tree.rect(actions)[1] + 1, f'{name}: version/actions overlap'
         source, license = tree.one(f'about-source-{index}'), tree.one(f'about-license-{index}')
         for button in (source, license):
             assert button.get('events', 0) != 0, 'Link lost native event registration'
@@ -116,8 +118,8 @@ def validate_layout(tree, width, height, language, theme):
             assert 'role: Link' in button.get('props', ''), 'External destination lost native Link semantics'
             assert any(n.get('text') for n in tree.descendants(button)), 'Link label missing'
         no_overlap(tree.rect(source), tree.rect(license), name + ' link buttons')
-        component_results.append({'name': name, 'nameFrame': title['frame'], 'versionChars': len(version['text']),
-                                  'versionFrame': version['frame'], 'componentFrame': component['frame']})
+        component_results.append({'name': name, 'nameFrame': title['frame'], 'versionChars': len(version['text']) if version else 0,
+                                  'versionFrame': version['frame'] if version else None, 'componentFrame': component['frame']})
     for parent_id, component_ids in [('about-engine-section', ['about-component-0', 'about-component-2', 'about-component-4']),
                                      ('about-ack-section', ['about-component-6', 'about-component-flclash'])]:
         parent = tree.one(parent_id)
@@ -213,7 +215,7 @@ def main():
     assert inputs == source_hashes(), 'UI/test source changed during traces'
     assert binary_hash == hashlib.sha256(args.nsh_bin.read_bytes()).hexdigest(), 'Matching CLI changed during traces'
     summary = {'passed': len(results), 'results': results, 'sourceSha256': inputs, 'nshBinSha256': binary_hash,
-               'sourceFenceStable': True, 'fixtureNshVersionChars': len(NSH_VERSION),
+               'sourceFenceStable': True,
                'coverageBlindSpotCorrected': 'Prior horizontal-only About checks accepted a 10x169 Native Shell name column at 320px; these tests check vertical containment, sibling ordering, button labels, full long-version payloads and scroll extent.',
                'limits': ['Actual PawsApp/About/CoreClient with public synthetic fake host; no Core/network/VPN',
                           'ApproxTextEngine/native mount geometry does not certify physical glyph clipping, contrast, FPS or touch targeting',
