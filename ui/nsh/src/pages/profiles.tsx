@@ -655,10 +655,6 @@ export function Profiles(props: { profileId?: string } = {}) {
         <Dialog
           width={platform.desktop ? 400 : 460}
           title={ui.t("编辑订阅", "Edit subscription")}
-          description={ui.t(
-            "修改名称或订阅地址，保存后可手动刷新。",
-            "Change the name or subscription URL. Refresh manually after saving.",
-          )}
           onClose={() => void closeEdit()}
           footer={
             <Actions>

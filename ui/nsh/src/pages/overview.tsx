@@ -153,16 +153,6 @@ export function Dashboard() {
           label={ui.t("重新读取速率", "Reload speed")}
           onPress={() => ui.client.domains.retry(["traffic"])} />
       </If>
-      <Hint
-        text={
-          state() === "protected"
-            ? ui.t(
-                "查看流量详情，可查看速率历史与活动连接。",
-                "Open Traffic for rate history and active connections.",
-              )
-            : ui.t("连接后显示实时速率。", "Connect to view live speed.")
-        }
-      />
     </View>
   );
   return (
@@ -565,7 +555,6 @@ export function Traffic() {
             <View style={{ gap: spacing.sm }}>
               <SectionHeader
                 title={ui.t("速率", "Speed")}
-                meta={`${history().length} ${ui.t("个采样", "samples")}`}
               />
               <ListSurface style={{ padding: spacing.md, gap: spacing.sm }}>
                 <View
@@ -653,7 +642,7 @@ export function Traffic() {
                 </View>
                 <If when={!history().length}>
                   <Hint
-                    text={ui.t("等待流量采样", "Waiting for traffic samples")}
+                    text={ui.t("暂无流量数据", "No traffic data yet")}
                   />
                 </If>
               </ListSurface>
