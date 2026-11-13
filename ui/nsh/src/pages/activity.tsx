@@ -169,6 +169,85 @@ export function Activity(props: { history?: boolean }) {
       ? activeSelection()
       : undefined;
 
+  // Mount once per selection. Live fields update props without replaying the sheet entrance.
+  const ConnectionSheet = () => {
+    const current = () => sheetSelection()!;
+    const destination = () =>
+      current().domain || current().host || current().destinationIp;
+    const live = () => !!liveSelected();
+    const mode = props.history ? "request" : "connection";
+    const canClose = () => live() && (!props.history || current().active);
+    return (
+      <BottomSheet
+        title={destination()}
+        subtitle={`${current().network.toUpperCase()} · ${
+          props.history
+            ? historyStatusLabel(current(), ui.t)
+            : live() && current().active
+              ? ui.t("活跃", "Active")
+              : ui.t("已结束", "Ended")
+        } · ${ui.t("建立于", "Started")} ${formatActivityTime(current().startedAt)}`}
+        onClose={clearSelection}
+      >
+        <If when={!live()}>
+          <Hint
+            text={ui.t(
+              "此记录已离开当前列表，以下为打开时的详情。",
+              "This record left the list. Details below were captured when opened.",
+            )}
+          />
+        </If>
+        <Well style={{ gap: 8 }}>
+          <ConnectionDetails connection={current()} />
+        </Well>
+        <ListSurface style={{ padding: 6, gap: 2 }}>
+          <SheetActionItem
+            id={`copy-for-${current().id}`}
+            icon="copy"
+            label={ui.t("复制目标地址", "Copy destination")}
+            onPress={() => {
+              copyText(ui, destination(), ui.t("已复制地址", "Address copied"));
+              clearSelection();
+            }}
+          />
+          <SheetActionItem
+            id={`rule-for-${current().id}`}
+            icon="plus"
+            label={ui.t("以此域名添加规则…", "Add rule for this host…")}
+            onPress={() => {
+              const selected = current();
+              clearSelection();
+              rule(selected);
+            }}
+          />
+          <If when={canClose()}>
+            <Separator />
+            <SheetActionItem
+              id={`activity-close-${mode}-${current().id}`}
+              icon="x"
+              danger
+              label={ui.t("关闭此连接", "Close connection")}
+              disabled={
+                ui.client.isPending("connections.close") ||
+                !ui.client.domains.fresh([
+                  props.history ? "requests" : "connections",
+                ])
+              }
+              onPress={() => {
+                void ui.client.run(
+                  "connections.close",
+                  { id: current().id },
+                  ui.t("连接已断开", "Connection closed"),
+                );
+                clearSelection();
+              }}
+            />
+          </If>
+        </ListSurface>
+      </BottomSheet>
+    );
+  };
+
   const tableUsable = () =>
     splitDesktop()
       ? Math.max(320, layout().usable - 330 - layout().gap)
@@ -804,86 +883,11 @@ export function Activity(props: { history?: boolean }) {
         </View>
       </If>
 
-      <If when={sheetSelection()}>
-        {(() => {
-          const current = sheetSelection()!;
-          const host =
-            current.domain || current.host || current.destinationIp;
-          const live = !!liveSelected();
-          const mode = props.history ? "request" : "connection";
-          const canClose = live && (!props.history || current.active);
-          return (
-            <BottomSheet
-              title={host}
-              subtitle={`${current.network.toUpperCase()} · ${
-                props.history
-                  ? historyStatusLabel(current, ui.t)
-                  : live && current.active
-                    ? ui.t("活跃", "Active")
-                    : ui.t("已结束", "Ended")
-              } · ${ui.t("建立于", "Started")} ${formatActivityTime(current.startedAt)}`}
-              onClose={clearSelection}
-            >
-              <If when={!live}>
-                <Hint
-                  text={ui.t(
-                    "此记录已离开当前列表，以下为打开时的详情。",
-                    "This record left the list. Details below were captured when opened.",
-                  )}
-                />
-              </If>
-              <Well style={{ gap: 8 }}>
-                <ConnectionDetails connection={current} />
-              </Well>
-              <ListSurface style={{ padding: 6, gap: 2 }}>
-                <SheetActionItem
-                  id={`copy-for-${current.id}`}
-                  icon="copy"
-                  label={ui.t("复制目标地址", "Copy destination")}
-                  onPress={() => {
-                    copyText(ui, host, ui.t("已复制地址", "Address copied"));
-                    clearSelection();
-                  }}
-                />
-                <SheetActionItem
-                  id={`rule-for-${current.id}`}
-                  icon="plus"
-                  label={ui.t("以此域名添加规则…", "Add rule for this host…")}
-                  onPress={() => {
-                    clearSelection();
-                    rule(current);
-                  }}
-                />
-                <If when={canClose}>
-                  <Separator />
-                  <SheetActionItem
-                    id={`activity-close-${mode}-${current.id}`}
-                    icon="x"
-                    danger
-                    label={ui.t("关闭此连接", "Close connection")}
-                    disabled={
-                      ui.client.isPending("connections.close") ||
-                      !ui.client.domains.fresh([
-                        props.history ? "requests" : "connections",
-                      ])
-                    }
-                    onPress={() => {
-                      void ui.client.run(
-                        "connections.close",
-                        { id: current.id },
-                        ui.t("连接已断开", "Connection closed"),
-                      );
-                      clearSelection();
-                    }}
-                  />
-                </If>
-              </ListSurface>
-            </BottomSheet>
-          );
-        })()}
+      <If when={!!sheetSelection()}>
+        <ConnectionSheet />
       </If>
 
-      <If when={modalSelection()}>
+      <If when={!!modalSelection()}>
         <Dialog
           width={440}
           title={

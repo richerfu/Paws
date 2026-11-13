@@ -18,6 +18,8 @@ UI across Phone, Pad and PC, with paper/graphite surfaces, citrus accents, solid
 red stop actions and the Gallery's two control tiers: touch (Phone, Pad: 40 pt
 buttons, 46 pt fields) and pointer (PC: 28 pt buttons and fields), chosen by
 `platform.desktop`, with non-overlapping touch hit areas of at least 44 pt.
+Settings-style cells on Phone and Pad have a 56 pt minimum height and 12 pt
+vertical padding. Wrapped cell content expands naturally within those insets.
 `src/theme.ts` maps application roles to NSH tokens; there is no separate Zinc theme.
 Configuration editing is a retained navigation page in
 `src/pages/profile-editor.tsx`, using NSH's YAML `Editor` with native input,
@@ -50,8 +52,8 @@ Run from the repository root. Build the local SDK with
 A compatible alternate CLI can be selected with `NSH_BIN` or `--nsh-bin`.
 The SDK uses the commit in `scripts/nsh-revision`, copied from `../nsh` into a
 clean checkout inside Paws (or an explicit `NSH_ROOT`), including binding source
-fingerprints. The UIContext-based host uses current NSH
-input and dialogs directly; legacy Ability editor patches are not applied.
+fingerprints. The UIContext-based host uses NSH input and the Rust system-dialog
+backport in `patches/nsh`; legacy Ability editor patches are not applied.
 Choose an owned, untracked output directory before running:
 
 ```sh
@@ -73,6 +75,12 @@ vertical clipping and end-of-scroll access as well as window bounds.
 real menus and subscription editor. Polling keeps actions available for the same
 loaded configuration; generation changes, config revisions and query failures
 still block commands, and an open editor retains its revision conflict check.
+`live-refresh.test.ts` holds traffic reads and updates actual connection/provider
+details. The suite checks retained rate values, query error/retry, disconnect,
+and native modal node identity across polling. Modal bodies must mount as
+components; a reactive inline function that reads a record before returning JSX
+recreates the body on each record update and replays its entrance animation.
+Home keeps the connection action in its status card; there is no floating toggle.
 
 ## Real-device boundary
 

@@ -241,6 +241,71 @@ export function Logs() {
     platform.desktop && layout().masterDetail && !!selected();
   const showSheet = () => !layout().masterDetail && !!selected();
 
+  // Keep selection/locale reads inside props, outside the modal's mount lifetime.
+  const LogSheet = () => {
+    const entry = () => selected()!;
+    const target = () => extractLogTarget(entry().message);
+    return (
+      <BottomSheet
+        title={ui.t("日志详情", "Log details")}
+        subtitle={`${timestamp(entry().timestamp)} · ${levelLabel(entry().level)}`}
+        onClose={closeSelected}
+      >
+        <Well style={{ padding: 0, overflow: "hidden" }}>
+          <Scroll
+            bounces={false}
+            style={{
+              maxHeight: Math.min(
+                240,
+                Math.max(120, windowSize().height * 0.28),
+              ),
+            }}
+            contentStyle={{ padding: 12 }}
+          >
+            <Code text={entry().message} />
+          </Scroll>
+        </Well>
+        <ListSurface style={{ padding: spacing.md, gap: spacing.sm }}>
+          <Detail
+            label={ui.t("级别", "Level")}
+            value={`${levelLabel(entry().level)} (${entry().level.toUpperCase()})`}
+            tone={levelTone(entry().level)}
+          />
+          <Separator />
+          <Detail
+            label={ui.t("模块", "Module")}
+            value={extractLogModule(entry().message, ui.t)}
+          />
+          <Separator />
+          <Detail
+            stacked={(target()?.length || 0) > 26}
+            label={ui.t("关联目标", "Target")}
+            value={target() || "—"}
+          />
+        </ListSurface>
+        <ListSurface style={{ padding: 6, gap: 2 }}>
+          <SheetActionItem
+            icon="copy"
+            label={ui.t("复制此条日志", "Copy log entry")}
+            onPress={() => {
+              copyText(
+                ui,
+                entry().message,
+                ui.t("已复制日志", "Log copied"),
+              );
+              closeSelected();
+            }}
+          />
+          <SheetActionItem
+            icon="activity"
+            label={ui.t("在诊断中探测目标", "Probe target in diagnostics")}
+            onPress={() => probeInDiagnostics(entry())}
+          />
+        </ListSurface>
+      </BottomSheet>
+    );
+  };
+
   const selectLog = (entry: Log) => {
     if (platform.desktop && layout().masterDetail && !selected()) {
       animateDisclosure();
@@ -966,69 +1031,7 @@ export function Logs() {
       </If>
 
       <If when={showSheet()}>
-        {(() => {
-          const entry = selected()!;
-          const target = extractLogTarget(entry.message);
-          return (
-            <BottomSheet
-              title={ui.t("日志详情", "Log details")}
-              subtitle={`${timestamp(entry.timestamp)} · ${levelLabel(entry.level)}`}
-              onClose={closeSelected}
-            >
-              <Well style={{ padding: 0, overflow: "hidden" }}>
-                <Scroll
-                  bounces={false}
-                  style={{
-                    maxHeight: Math.min(
-                      240,
-                      Math.max(120, windowSize().height * 0.28),
-                    ),
-                  }}
-                  contentStyle={{ padding: 12 }}
-                >
-                  <Code text={entry.message} />
-                </Scroll>
-              </Well>
-              <ListSurface style={{ padding: spacing.md, gap: spacing.sm }}>
-                <Detail
-                  label={ui.t("级别", "Level")}
-                  value={`${levelLabel(entry.level)} (${entry.level.toUpperCase()})`}
-                  tone={levelTone(entry.level)}
-                />
-                <Separator />
-                <Detail
-                  label={ui.t("模块", "Module")}
-                  value={extractLogModule(entry.message, ui.t)}
-                />
-                <Separator />
-                <Detail
-                  stacked={!!target && target.length > 26}
-                  label={ui.t("关联目标", "Target")}
-                  value={target || "—"}
-                />
-              </ListSurface>
-              <ListSurface style={{ padding: 6, gap: 2 }}>
-                <SheetActionItem
-                  icon="copy"
-                  label={ui.t("复制此条日志", "Copy log entry")}
-                  onPress={() => {
-                    copyText(
-                      ui,
-                      entry.message,
-                      ui.t("已复制日志", "Log copied"),
-                    );
-                    closeSelected();
-                  }}
-                />
-                <SheetActionItem
-                  icon="activity"
-                  label={ui.t("在诊断中探测目标", "Probe target in diagnostics")}
-                  onPress={() => probeInDiagnostics(entry)}
-                />
-              </ListSurface>
-            </BottomSheet>
-          );
-        })()}
+        <LogSheet />
       </If>
     </View>
   );

@@ -26,7 +26,7 @@ def cases(log_dir):
         import_taps.extend(["id:add-profile", "id:dialog-close"])
     import_taps.extend(["id:hold-config", "id:add-profile", "id:assert-import-blocked", "id:dialog-close", "id:release-import-reads", "id:assert-import-ready"])
     phone_taps = [
-        "id:vpn-toggle", "id:vpn-toggle", "id:nav-profiles",
+        "id:home-connection-action", "id:home-connection-action", "id:nav-profiles",
         "id:profile-menu-test-profile", "id:edit-subscription-test-profile", "id:save-subscription",
         "id:profile-menu-test-profile", "id:profile-export-test-profile", "label:导出 YAML 文件",
         "id:profile-qr-test-profile", "id:export-profile-qr", "id:dialog-close",
@@ -65,9 +65,8 @@ def cases(log_dir):
         ("redesign", ["test", "--trace", "ui/nsh/tests/redesign.test.ts"], ("4 tests: 4 passed, 0 failed",), None),
         ("profile-editor", ["test", "ui/nsh/tests/profile-editor.test.ts"], ("6 tests: 6 passed, 0 failed",), None),
         ("responsive-interactions", ["test", "ui/nsh/tests/responsive-interactions.test.ts"], ("5 tests: 5 passed, 0 failed",), None),
+        ("live-refresh", ["test", "--trace", "ui/nsh/tests/live-refresh.test.ts"], ("3 tests: 3 passed, 0 failed",), None),
         ("profile-freshness", ["test", "--trace", "ui/nsh/tests/profile-freshness.test.ts"], ("2 tests: 2 passed, 0 failed",), None),
-        ("floating-vpn", ["test", "--trace", "ui/nsh/tests/floating-vpn.test.ts"], ("3 tests: 3 passed, 0 failed",), None),
-        ("floating-vpn-busy", ["test", "ui/nsh/tests/floating-vpn-busy.test.ts"], ("1 test: 1 passed, 0 failed",), None),
         (
             "state", ["trace", "ui/nsh/tests/State.tsx", "--wait", "120", "--taps", "0"],
             (
@@ -128,31 +127,28 @@ def validate_output(name, output, markers, expected_taps):
         taps = len(PRESS.findall(output))
         if taps != expected_taps:
             raise ValueError(f"{name}: expected {expected_taps} completed steps, observed {taps}")
-    if name == "floating-vpn":
-        # Inspect real native animation commands after the public drag steps:
-        # release x/y, then the edge the spring settles at. These assertions
-        # fail when pan is missing, even if a cancelled press still looks safe.
-        vpn_views = set(re.findall(r'ViewProps \{ id: (\d+),[^\n]*test_id: Some\("vpn-toggle"\)', output))
-        pan_nodes = set()
-        for view, x, y in re.findall(r'Gestures \{ id: (\d+), values: GestureValues \{ pan_x: Some\((\d+)\), pan_y: Some\((\d+)\)', output):
-            if view in vpn_views:
-                pan_nodes.update((x, y))
-        assert pan_nodes, "Floating button lost its actual native pan bindings"
-        values, docks = [], []
-        for line in output.splitlines():
-            value = re.search(r'Animation\(Set \{ node: (\d+), value: ([\deE.+-]+) \}', line)
-            spring = re.search(r'Animation\(Start \{ node: (\d+), .*driver: Spring \{ to: ([\deE.+-]+)', line)
-            if value and value[1] in pan_nodes:
-                values.append((value[1], float(value[2])))
-            if spring and spring[1] in pan_nodes and len(values) >= 2 and spring[1] == values[-2][0]:
-                docks.append((values[-2][1], values[-1][1], float(spring[2])))
-        expected = [(214, 427, 294), (54, 277, 0), (260, 457, 294),
-                    (0, 0, 0), (644, 113, 644), (44, 347, 0)]
-        if len(docks) != len(expected) or any(
-            abs(actual - target) > 0.1
-            for dock, wanted in zip(docks, expected) for actual, target in zip(dock, wanted)
-        ):
-            raise ValueError(f"floating-vpn: wrong native releases or snap targets: {docks}")
+    if name == "live-refresh":
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("live_tree", ROOT / "ui/nsh/tests/run-visual-tests.py")
+        visual = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(visual)
+        for kind in ("SHEET", "PROVIDER"):
+            before, remaining = output.split(f"LIVE {kind} BEGIN", 1)
+            changes = remaining.split(f"LIVE {kind} END", 1)[0]
+            tree = visual.NativeTree()
+            for line in before.splitlines():
+                tree.apply(line)
+            modals = [node for node in tree.nodes.values() if node["kind"] == "Modal"]
+            if len(modals) != 1:
+                raise ValueError(f"live-refresh: expected one mounted {kind} modal")
+            modal = modals[0]
+            retained = {modal["id"], *(node["id"] for node in tree.descendants(modal))}
+            deleted = set(re.findall(r"Delete \{ id: (\d+)", changes))
+            for line in changes.splitlines():
+                tree.apply(line)
+            after = {modal["id"], *(node["id"] for node in tree.descendants(modal))}
+            if retained & deleted or retained != after:
+                raise ValueError(f"live-refresh: polling rebuilt mounted {kind} content")
     if name == "import-lifetime":
         modals = re.findall(r"Create \{[^\n]*kind: Modal", output)
         if len(modals) != 12:

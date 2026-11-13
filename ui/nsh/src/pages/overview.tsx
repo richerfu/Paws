@@ -6,7 +6,6 @@ import {
   View,
   platform,
   type JSX,
-  type ViewProps,
 } from "nsh";
 import {
   Action,
@@ -29,7 +28,6 @@ import {
   Separator,
   spacing,
   SpeedGrid,
-  Spinner,
   Tabs,
   useApp,
   useLayout,
@@ -39,121 +37,8 @@ import { bytes } from "../locale";
 import { connectionState } from "../connection-state";
 import { PageError } from "../page-error";
 import { SummaryPolicyGroups } from "./proxies";
-import { feedbackStyle, useGlyphTransition, usePressFeedback } from "../motion";
+import { feedbackStyle } from "../motion";
 import { focusRing, surfaceFinish } from "../theme";
-
-export function VpnPowerButton(
-  props: { size: number } & Pick<
-    ViewProps,
-    "pan" | "onPanEnd" | "style" | "accessibilityHint"
-  >,
-) {
-  const ui = useApp(),
-    current = () => ui.client.state()!;
-  const starting = () =>
-    current().vpnLifecycle === "starting" ||
-    ui.client.vpnOperation() === "start" ||
-    ui.client.vpnOperation() === "restart";
-  const stopping = () => ui.client.vpnOperation() === "stop";
-  const stop = () => current().vpnRunning || starting() || stopping();
-  const pressDisabled = () =>
-    !!ui.client.vpnUnconfirmed() ||
-    stopping() ||
-    (!stop() && (!current().activeProfile || ui.client.pending() > 0));
-  const press = usePressFeedback(pressDisabled, 0.94);
-  const glyph = useGlyphTransition(() =>
-    starting() || stopping() ? "busy" : stop() ? "stop" : "start",
-  );
-  const foreground = () =>
-    stop() ? palette().onStop : palette().primaryText;
-  const finish = () => (stop() ? surfaceFinish("stop") : surfaceFinish("accent"));
-  return (
-    <View
-      testID="vpn-toggle"
-      role="button"
-      accessibilityLabel={
-        stop() ? ui.t("停止 VPN", "Stop VPN") : ui.t("启动 VPN", "Start VPN")
-      }
-      accessibilityHint={props.accessibilityHint}
-      accessibilityState={{ disabled: pressDisabled() }}
-      pan={props.pan}
-      onPanEnd={
-        props.pan
-          ? (event) => {
-              press.up();
-              props.onPanEnd?.(event);
-            }
-          : undefined
-      }
-      // A temporarily unavailable VPN action must not disable its native drag.
-      disabled={!props.pan && pressDisabled()}
-      onPress={() => {
-        if (!pressDisabled())
-          void ui.client.run(stop() ? "vpn.stop" : "vpn.start");
-      }}
-      onPressDown={press.down}
-      onPressUp={press.up}
-      activeStyle={
-        pressDisabled()
-          ? undefined
-          : stop()
-            ? surfaceFinish("stopPressed")
-            : { opacity: 0.88 }
-      }
-      focusStyle={focusRing()}
-      hoverStyle={
-        pressDisabled()
-          ? undefined
-          : stop()
-            ? surfaceFinish("stopHover")
-            : { opacity: 0.94 }
-      }
-      style={[
-        {
-          // Keep the icon within the same input target as the native pan gesture.
-          pointerEvents: "box-only",
-          width: props.size,
-          height: props.size,
-          borderRadius: props.size / 2,
-          alignItems: "center",
-          justifyContent: "center",
-          borderWidth: 1,
-          backgroundColor: stop() ? palette().stopFill : palette().brandFill,
-          borderColor: finish().borderColor,
-          boxShadow: props.pan
-            ? surfaceFinish("floating").boxShadow
-            : finish().boxShadow,
-          opacity: pressDisabled() && !starting() && !stopping() ? 0.5 : 1,
-          transform: [{ scale: press.scale }],
-          ...feedbackStyle(),
-        },
-        props.style,
-      ]}
-    >
-      <View
-        style={{
-          opacity: glyph,
-          transform: [{ scale: glyph }],
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        <If
-          when={starting() || stopping()}
-          else={
-            <Icon
-              name={stop() ? "stop" : "power"}
-              size={Math.round(props.size * 0.42)}
-              color={foreground()}
-            />
-          }
-        >
-          <Spinner size={Math.round(props.size * 0.42)} color={foreground()} />
-        </If>
-      </View>
-    </View>
-  );
-}
 
 export function Dashboard() {
   const ui = useApp(),
@@ -243,7 +128,7 @@ export function Dashboard() {
           : ui.t("正在获取…", "Fetching…");
   const columns = () => layout().overview;
   const sessionTotal = () =>
-    current().traffic.uploadBytes + current().traffic.downloadBytes;
+    (current().traffic?.uploadBytes || 0) + (current().traffic?.downloadBytes || 0);
   const RateSection = () => (
     <View style={{ gap: spacing.sm }}>
       <SectionHeader
@@ -256,12 +141,18 @@ export function Dashboard() {
       />
       <SpeedGrid
         connected={
-          state() === "protected" && ui.client.domains.fresh(["traffic"])
+          state() === "protected" && ui.client.domains.has(["traffic"])
         }
-        upload={current().traffic.uploadSpeed}
-        download={current().traffic.downloadSpeed}
+        upload={current().traffic?.uploadSpeed}
+        download={current().traffic?.downloadSpeed}
         formatBytes={bytes}
       />
+      <If when={!!ui.client.domains.error(["traffic"])}>
+        <PageError text={ui.client.domains.error(["traffic"])} />
+        <Action id="home-traffic-retry" secondary small
+          label={ui.t("重新读取速率", "Reload speed")}
+          onPress={() => ui.client.domains.retry(["traffic"])} />
+      </If>
       <Hint
         text={
           state() === "protected"
@@ -280,9 +171,7 @@ export function Dashboard() {
       bounces={false}
       style={{ flex: 1 }}
       contentStyle={{
-        paddingBottom: layout().sidebar
-          ? layout().inset
-          : Math.max(76, 64 + layout().inset * 2),
+        paddingBottom: layout().inset,
       }}
     >
       <View
