@@ -139,7 +139,13 @@ impl MeowConfigLoader<'_> {
                 })
             })
             .transpose()?;
-        let raw_yaml = self.raw_yaml.to_owned();
+        let raw_yaml = paws_engine_go::config::harden_runtime_dns_yaml(
+            self.raw_yaml,
+            None,
+            &BTreeMap::new(),
+            true,
+        )
+        .unwrap_or_else(|_| self.raw_yaml.to_owned());
         let strict = self.purpose != MeowLoadPurpose::Preview;
         let read_only = self.purpose != MeowLoadPurpose::Runtime;
         let runtime = tokio::runtime::Handle::current();

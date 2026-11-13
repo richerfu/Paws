@@ -134,9 +134,13 @@ pub fn engine_tun_mtu(options_json: String) -> Result<u32> {
         .map_err(super::to_napi_error)
 }
 #[napi]
-pub async fn prepare_engine(options_json: String, attempt_id: String) -> Result<String> {
+pub async fn prepare_engine(
+    options_json: String,
+    attempt_id: String,
+    previous_fingerprint: Option<String>,
+) -> Result<String> {
     paws_core::shared_core()
-        .prepare_engine(&options_json, &attempt_id)
+        .prepare_engine_if_changed(&options_json, &attempt_id, previous_fingerprint.as_deref())
         .await
         .map_err(super::to_napi_error)
 }

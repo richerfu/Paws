@@ -52,7 +52,7 @@ func interfaceOptions(stack, address, dns string, mtu uint32) (LC.Tun, error) {
 	}
 	return LC.Tun{
 		Enable:              true,
-		Device:              "FlClash",
+		Device:              "vpn-tun",
 		Stack:               tunStack,
 		DNSHijack:           dnsHijack,
 		AutoRoute:           false,

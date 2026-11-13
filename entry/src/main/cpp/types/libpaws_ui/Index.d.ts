@@ -73,7 +73,7 @@ export declare function pollEngineObservations(): Promise<void>
 
 export declare function pollEngineTraffic(): Promise<void>
 
-export declare function prepareEngine(optionsJson: string, attemptId: string): Promise<string>
+export declare function prepareEngine(optionsJson: string, attemptId: string, previousFingerprint?: string | undefined | null): Promise<string>
 
 export declare function preparePlatformVpnHandoff(attemptId: string): string
 

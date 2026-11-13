@@ -2516,6 +2516,13 @@ impl CoreHandle {
         };
 
         let runtime_yaml = engine_policy::pin_benchmark_runtime_yaml(&runtime_yaml, &selections)?;
+        let runtime_yaml = paws_engine_go::config::harden_runtime_dns_yaml(
+            &runtime_yaml,
+            Some(mode),
+            &selections,
+            false,
+        )
+        .map_err(engine_error)?;
         let mihomo_home = root.join("mihomo");
         fs::create_dir_all(&mihomo_home).map_err(mihomo_io_error)?;
         install_mihomo_geodata(&root, &mihomo_home)?;
@@ -4678,7 +4685,14 @@ impl CoreHandle {
                 .await;
         }
 
-        let config = load_meow_config_candidate(&runtime_yaml, &runtime_path, purpose).await?;
+        let meow_yaml = paws_engine_go::config::harden_runtime_dns_yaml(
+            &runtime_yaml,
+            Some(mode),
+            &selected_proxies,
+            true,
+        )
+        .map_err(engine_error)?;
+        let config = load_meow_config_candidate(&meow_yaml, &runtime_path, purpose).await?;
         let meow_ready = Instant::now();
         // Match Meow's mobile integration: proxy upstream hostnames use the
         // configured meow DNS (including proxy-server-nameserver) instead of

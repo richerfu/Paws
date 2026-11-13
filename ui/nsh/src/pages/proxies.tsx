@@ -160,7 +160,7 @@ export function SummaryPolicyGroups() {
   useDomainInterests(() =>
     expanded() ? [{ domain: "proxies", groupKey: expanded() }] : [],
   );
-  const allGroups = () =>
+  const allGroups = computed(() =>
     ui.client.domains
       .data("summary")!
       .groups.slice()
@@ -170,16 +170,37 @@ export function SummaryPolicyGroups() {
           : b.name.toUpperCase() === "GLOBAL"
             ? 1
             : a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
-      );
+      ),
+  );
+  const groupNameSet = computed(
+    () => new Set(allGroups().map((group) => group.name)),
+  );
   const interest = (group: Group) => ({
     domain: "proxies" as const,
     groupKey: group.name,
   });
+  const openRoster = computed((): ProxyGroup | undefined => {
+    const key = expanded();
+    if (!key) return undefined;
+    return ui.client.domains
+      .data("proxies", key)
+      ?.proxyGroups.find((row) => row.name === key);
+  });
+  const openMembers = computed(() => {
+    const value = openRoster();
+    return value ? groupMembers(allGroups(), value) : [];
+  });
+  const openMemberSet = computed(
+    () => new Set(openMembers().map((proxy) => proxy.name)),
+  );
   const roster = (group: Group): ProxyGroup | undefined =>
-    ui.client.domains
-      .data("proxies", group.name)
-      ?.proxyGroups.find((row) => row.name === group.name);
+    group.name === expanded()
+      ? openRoster()
+      : ui.client.domains
+          .data("proxies", group.name)
+          ?.proxyGroups.find((row) => row.name === group.name);
   const members = (group: Group) => {
+    if (group.name === expanded()) return openMembers();
     const value = roster(group);
     return value ? groupMembers(allGroups(), value) : [];
   };
@@ -191,10 +212,22 @@ export function SummaryPolicyGroups() {
           ["proxies.select", "proxies.unfix"].includes(request.command) &&
           request.payload.group === group,
       );
+  const openSelection = computed(() =>
+    expanded() ? selection(expanded()) : undefined,
+  );
+  const openFresh = computed(() =>
+    expanded()
+      ? ui.client.domains.fresh([{ domain: "proxies", groupKey: expanded() }])
+      : false,
+  );
   const selected = (group: Group) => {
     const value = roster(group),
       name = value && selectedMember(value);
-    return name && members(group).some((proxy) => proxy.name === name)
+    const hasMember =
+      group.name === expanded()
+        ? !!name && openMemberSet().has(name)
+        : !!name && members(group).some((proxy) => proxy.name === name);
+    return hasMember
       ? name
       : ("effectiveSelectedNode" in group && group.effectiveSelectedNode) ||
           group.selected ||
@@ -343,14 +376,19 @@ export function SummaryPolicyGroups() {
                 >
                   <Each of={members(group())} key={(proxy) => proxy.name}>
                     {(proxy, memberIndex) => {
-                      const active = () =>
-                        selected(group()) === proxy().name;
-                      const nested = () =>
-                        allGroups().some((item) => item.name === proxy().name);
+                      const groupSelected = computed(() => selected(group()));
+                      const active = () => groupSelected() === proxy().name;
+                      const nested = () => groupNameSet().has(proxy().name);
+                      const pendingReq = () =>
+                        group().name === expanded()
+                          ? openSelection()
+                          : selection(group().name);
                       const rowDisabled = () =>
-                        !!selection(group().name) ||
+                        !!pendingReq() ||
                         !selectableGroup(group()) ||
-                        !ui.client.domains.fresh([interest(group())]);
+                        !(group().name === expanded()
+                          ? openFresh()
+                          : ui.client.domains.fresh([interest(group())]));
                       return (
                         <View
                           testID={`summary-select-proxy-${proxy().name}`}
@@ -406,9 +444,8 @@ export function SummaryPolicyGroups() {
                             selectable={selectableGroup(group())}
                             nestedGroup={nested()}
                             busy={
-                              !!selection(group().name) &&
-                              (selection(group().name)!.payload.name ===
-                                proxy().name ||
+                              !!pendingReq() &&
+                              (pendingReq()!.payload.name === proxy().name ||
                                 group().fixed === proxy().name)
                             }
                           />
@@ -498,10 +535,39 @@ export function ProxyGroupList(props: {
           .data("proxies", group.name)
           ?.proxyGroups.find((row) => row.name === group.name)
       : (group as ProxyGroup);
-  const members = (group: Group) => {
-    const value = roster(group);
-    return value ? groupMembers(groups(), value) : [];
-  };
+  const groupNameSet = computed(
+    () => new Set(groups().map((group) => group.name)),
+  );
+  const membersByGroup = computed(() => {
+    const all = groups();
+    const map = new Map<string, Proxy[]>();
+    for (const group of all) {
+      if (props.groupKey && group.name !== props.groupKey) continue;
+      const value = roster(group);
+      map.set(group.name, value ? groupMembers(all, value) : []);
+    }
+    return map;
+  });
+  const members = (group: Group) =>
+    membersByGroup().get(group.name) ??
+    (() => {
+      const value = roster(group);
+      return value ? groupMembers(groups(), value) : [];
+    })();
+  const selectedByGroup = computed(() => {
+    const map = new Map<string, string | undefined>();
+    for (const group of groups()) {
+      if (props.groupKey && group.name !== props.groupKey) continue;
+      const value = roster(group),
+        name = value && selectedMember(value),
+        list = membersByGroup().get(group.name) ?? [];
+      map.set(
+        group.name,
+        name && list.some((proxy) => proxy.name === name) ? name : undefined,
+      );
+    }
+    return map;
+  });
   const memberCount = (group: Group) =>
     "memberCount" in group ? group.memberCount : members(group).length;
   const fresh = (group: Group) => ui.client.domains.fresh([interest(group)]);
@@ -565,13 +631,16 @@ export function ProxyGroupList(props: {
           ["proxies.select", "proxies.unfix"].includes(request.command) &&
           request.payload.group === group,
       );
-  const selected = (group: Group) => {
-    const value = roster(group),
-      name = value && selectedMember(value);
-    return name && members(group).some((proxy) => proxy.name === name)
-      ? name
-      : undefined;
-  };
+  const selected = (group: Group) =>
+    selectedByGroup().has(group.name)
+      ? selectedByGroup().get(group.name)
+      : (() => {
+          const value = roster(group),
+            name = value && selectedMember(value);
+          return name && members(group).some((proxy) => proxy.name === name)
+            ? name
+            : undefined;
+        })();
   const headerSelected = (group: Group) =>
     "effectiveSelectedNode" in group
       ? group.effectiveSelectedNode || group.selected
@@ -610,8 +679,7 @@ export function ProxyGroupList(props: {
   const disabled = (group: Group) =>
     !!selection(group.name) || !selectableGroup(group) || !fresh(group);
   const isSelected = (row: Row) => selected(row.group) === row.proxy?.name;
-  const isGroup = (proxy: Proxy) =>
-    groups().some((group) => group.name === proxy.name);
+  const isGroup = (proxy: Proxy) => groupNameSet().has(proxy.name);
   const isOpen = (group: Group) =>
     props.groupKey === group.name || !!props.query || expanded() === group.name;
   const groupHeight = () =>
@@ -1033,25 +1101,25 @@ export function Proxies(props: { groupKey?: string } = {}) {
     testingGroup = signal("");
   const groups = () => ui.client.state()!.proxyGroups;
   // An explicit selection that disappears is never silently replaced.
-  const selectedGroup = () =>
+  const selectedGroup = computed(() =>
     activeGroup()
       ? groups().find((group) => group.name === activeGroup())
       : layout().masterDetail
         ? groups()[0]
-        : undefined;
-  const filtered = () =>
-    groups().filter(
+        : undefined,
+  );
+  const filtered = computed(() => {
+    const q = query();
+    const all = groups();
+    if (!q) return all;
+    return all.filter(
       (group) =>
-        includes(
-          query(),
-          group.name,
-          group.groupType,
-          selectedMember(group),
-        ) ||
-        groupMembers(groups(), group).some((proxy) =>
-          includes(query(), proxy.name, proxy.proxyType),
+        includes(q, group.name, group.groupType, selectedMember(group)) ||
+        groupMembers(all, group).some((proxy) =>
+          includes(q, proxy.name, proxy.proxyType),
         ),
     );
+  });
   const choose = (group: ProxyGroup) => {
     activeGroup.set(group.name);
     if (!props.groupKey && !layout().masterDetail)

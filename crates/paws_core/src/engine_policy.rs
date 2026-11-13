@@ -475,11 +475,17 @@ impl CoreHandle {
                 continue;
             }
             if cooling(engine) {
+                if requested == VpnEngine::Auto {
+                    reasons.push(format!(
+                        "{}：最近健康检查失败，五分钟内保留正常内核",
+                        engine.as_str()
+                    ));
+                    continue;
+                }
                 reasons.push(format!(
-                    "{}：最近健康检查失败，五分钟内保留正常内核",
+                    "{}：最近健康检查曾失败，按手动指定继续使用该内核",
                     engine.as_str()
                 ));
-                continue;
             }
             if !qualified(engine) {
                 if requested == VpnEngine::Auto {

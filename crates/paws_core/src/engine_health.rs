@@ -179,39 +179,47 @@ impl CoreHandle {
                     .timeout(Duration::from_secs(8))
                     .build()
                     .map_err(|_| "probe-configuration".to_owned())?;
-                let mut response = client
-                    .get("https://cp.cloudflare.com/generate_204")
-                    .send()
-                    .await
-                    .map_err(|error| -> String {
-                        if error.is_timeout() {
-                            "timeout".into()
-                        } else if error.is_connect() {
-                            "dns-or-node-or-tls".into()
-                        } else {
-                            "https".into()
+                let probe_url = |url: &'static str| {
+                    let client = client.clone();
+                    async move {
+                        let mut response =
+                            client.get(url).send().await.map_err(|error| -> String {
+                                if error.is_timeout() {
+                                    "timeout".into()
+                                } else if error.is_connect() {
+                                    "dns-or-node-or-tls".into()
+                                } else {
+                                    "https".into()
+                                }
+                            })?;
+                        let status = response.status().as_u16();
+                        let mut returned = response
+                            .headers()
+                            .iter()
+                            .map(|(k, v)| k.as_str().len() + v.len() + 4)
+                            .sum::<usize>();
+                        while let Some(chunk) = response
+                            .chunk()
+                            .await
+                            .map_err(|_| "return-traffic".to_owned())?
+                        {
+                            returned = returned.saturating_add(chunk.len());
+                            if returned > 65536 {
+                                return Err("response-too-large".into());
+                            }
                         }
-                    })?;
-                let status = response.status().as_u16();
-                let mut returned = response
-                    .headers()
-                    .iter()
-                    .map(|(k, v)| k.as_str().len() + v.len() + 4)
-                    .sum::<usize>();
-                while let Some(chunk) = response
-                    .chunk()
-                    .await
-                    .map_err(|_| "return-traffic".to_owned())?
-                {
-                    returned = returned.saturating_add(chunk.len());
-                    if returned > 65536 {
-                        return Err("response-too-large".into());
+                        if !(200..400).contains(&status) || returned == 0 {
+                            return Err("https-status-or-return-traffic".into());
+                        }
+                        Ok((status, returned))
                     }
+                };
+                match probe_url("https://cp.cloudflare.com/generate_204").await {
+                    Err(stage) if stage == "timeout" => {
+                        probe_url("https://www.gstatic.com/generate_204").await
+                    }
+                    other => other,
                 }
-                if !(200..400).contains(&status) || returned == 0 {
-                    return Err("https-status-or-return-traffic".into());
-                }
-                Ok((status, returned))
             }
             .await;
             result
