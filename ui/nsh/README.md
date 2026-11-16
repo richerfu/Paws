@@ -75,6 +75,8 @@ vertical clipping and end-of-scroll access as well as window bounds.
 real menus and subscription editor. Polling keeps actions available for the same
 loaded configuration; generation changes, config revisions and query failures
 still block commands, and an open editor retains its revision conflict check.
+Retained subscription rows also update their name, active badge and menu/editor
+data when an import activates a different subscription.
 `live-refresh.test.ts` holds traffic reads and updates actual connection/provider
 details. The suite checks retained rate values, query error/retry, disconnect,
 and native modal node identity across polling. Modal bodies must mount as

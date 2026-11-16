@@ -1628,6 +1628,8 @@ impl CoreHandle {
             paws_profile::parse_subscription_metadata_comment(&source_yaml),
         );
         let name = name
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
             .or(header_name)
             .unwrap_or_else(|| profile_name_from_url(url));
         let raw_yaml = normalize_profile_content(&source_yaml)?;

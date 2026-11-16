@@ -192,7 +192,7 @@ export function Profiles(props: { profileId?: string } = {}) {
     if (busy() || !input().trim()) return;
     importOp.set("url");
     return performImport("profiles.importUrl", {
-      name: name().trim(),
+      name: name().trim() || undefined,
       url: input().trim(),
     });
   };
@@ -234,7 +234,7 @@ export function Profiles(props: { profileId?: string } = {}) {
     if (parsed)
       await performImport("profiles.importUrl", {
         url: parsed.url,
-        name: parsed.name || name().trim(),
+        name: parsed.name || name().trim() || undefined,
       });
     else importOp.set("");
   };
@@ -297,16 +297,18 @@ export function Profiles(props: { profileId?: string } = {}) {
     editUrl.set(profile.subscriptionUrl || "");
     initialEdit.set({ name: profile.name, url: profile.subscriptionUrl || "" });
   };
-  const row = (profile: Profile, detail = false) => <ProfileRow
+  // List retains keyed rows; keep its accessor alive instead of capturing the
+  // record from the first render (including in commands that open an editor).
+  const row = (profile: () => Profile, detail = false) => <ProfileRow
     detail={detail}
-    profile={profile} refreshing={refreshing(profile)}
-    selected={collection.selected() === profile.id}
+    profile={profile()} refreshing={refreshing(profile())}
+    selected={collection.selected() === profile().id}
     compact={layout().masterDetail}
-    onDetails={() => selectProfile(profile)}
-    onAction={(command) => { void profileAction(command, profile.id); }}
-    onEdit={() => openEdit(profile)}
-    onExport={() => { exporting.set(profile); qr.set(undefined); }}
-    onError={() => refreshError.set(profile.lastRefreshError || "")}
+    onDetails={() => selectProfile(profile())}
+    onAction={(command) => { void profileAction(command, profile().id); }}
+    onEdit={() => openEdit(profile())}
+    onExport={() => { exporting.set(profile()); qr.set(undefined); }}
+    onError={() => refreshError.set(profile().lastRefreshError || "")}
   />;
   return (
     <View style={{ flex: 1 }}>
@@ -406,7 +408,7 @@ export function Profiles(props: { profileId?: string } = {}) {
           </View>
         }
       >
-        {(profile) => row(profile())}
+        {(profile) => row(profile)}
       </List>
       </View>
       <View testID="profile-detail-panel" style={{ display: props.profileId || layout().masterDetail ? "flex" : "none", flex: 1, minWidth: 0, flexDirection: "column" }}>
@@ -417,7 +419,7 @@ export function Profiles(props: { profileId?: string } = {}) {
                 <Hint text={ui.t("当前订阅不在筛选结果中。已保留详情。", "This subscription is outside the filter. Its details are retained.")} />
               </If>
               <ListSurface>
-                {selectedProfile() ? row(selectedProfile()!, true) : undefined}
+                {selectedProfile() ? row(() => selectedProfile()!, true) : undefined}
               </ListSurface>
               <View style={{ gap: spacing.sm }}>
                 <SectionHeader title={ui.t("信息", "Details")} />
@@ -555,7 +557,9 @@ export function Profiles(props: { profileId?: string } = {}) {
           );
           return (
             <If
-              when={layout().sidebar || platform.desktop}
+              when={
+                layout().sidebar || platform.desktop || platform.idiom === "pad"
+              }
               else={
                 <BottomSheet
                   title={importTitle}

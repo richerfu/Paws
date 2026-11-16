@@ -66,7 +66,7 @@ def cases(log_dir):
         ("profile-editor", ["test", "ui/nsh/tests/profile-editor.test.ts"], ("6 tests: 6 passed, 0 failed",), None),
         ("responsive-interactions", ["test", "ui/nsh/tests/responsive-interactions.test.ts"], ("5 tests: 5 passed, 0 failed",), None),
         ("live-refresh", ["test", "--trace", "ui/nsh/tests/live-refresh.test.ts"], ("3 tests: 3 passed, 0 failed",), None),
-        ("profile-freshness", ["test", "--trace", "ui/nsh/tests/profile-freshness.test.ts"], ("2 tests: 2 passed, 0 failed",), None),
+        ("profile-freshness", ["test", "--trace", "ui/nsh/tests/profile-freshness.test.ts"], ("3 tests: 3 passed, 0 failed",), None),
         (
             "state", ["trace", "ui/nsh/tests/State.tsx", "--wait", "120", "--taps", "0"],
             (

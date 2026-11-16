@@ -1,5 +1,13 @@
 # NSH compatibility patches
 
+`surface-resize-environment.patch` publishes the new window size to the script
+environment after the OHOS surface resizes. The native mounter already resizes
+the viewport, but that alone does not update `windowSize()` or responsive
+breakpoints. This matches the headless host's resize path and preserves mounted
+views and drafts. Validate this on the PC emulator by narrowing and restoring
+its window, and on Pad by rotating while a form is open; headless resize tests
+already send both notifications and cannot reproduce the original host bug.
+
 `system-alert-dialogs.patch` backports the Rust implementation from
 [`nsh-platform-harmonyos` PR #23](https://github.com/huacnlee/nsh-platform-harmonyos/pull/23),
 commit `726117f3b2e5b55dc7b251f46783f39985643045`, to Paws' pinned NSH 0.4
