@@ -173,7 +173,7 @@ impl Application {
         use request::*;
         request.validate()?;
         let before = self.core.command_context()?;
-        let reconfigure = request::requires_reconfigure(
+        let mut reconfigure = request::requires_reconfigure(
             &request.command,
             &request.payload,
             before.active_profile.as_deref(),
@@ -192,7 +192,11 @@ impl Application {
                 if before.active_profile.is_some() {
                     self.core.prepare_active_vpn().await?;
                 }
-                self.core.refresh_due_profiles().await?;
+                reconfigure = self
+                    .core
+                    .refresh_due_profiles()
+                    .await?
+                    .active_config_changed;
                 Value::Null
             }
             "vpn.start" | "vpn.restart" => {
@@ -297,7 +301,11 @@ impl Application {
             }
             "profiles.refresh" => {
                 let p: Profile = payload(p)?;
-                self.core.refresh_profile(&p.profile_id).await?;
+                reconfigure = self
+                    .core
+                    .refresh_profile(&p.profile_id)
+                    .await?
+                    .active_config_changed;
                 Value::Null
             }
             "profiles.read" => {
@@ -315,7 +323,11 @@ impl Application {
                 Value::Null
             }
             "profiles.refreshAll" => {
-                self.core.refresh_all_profiles().await?;
+                reconfigure = self
+                    .core
+                    .refresh_all_profiles()
+                    .await?
+                    .active_config_changed;
                 Value::Null
             }
             "profiles.save" => {

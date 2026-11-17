@@ -104,23 +104,23 @@ pub(crate) fn requires_reconfigure(
     active_profile: Option<&str>,
 ) -> bool {
     match command {
-        "profiles.delete" | "profiles.refresh" | "profiles.restore" | "profiles.save"
-        | "settings.vpn" | "settings.dns" | "settings.network" => {
+        "profiles.delete" | "profiles.restore" | "profiles.save" | "settings.vpn"
+        | "settings.dns" | "settings.network" => {
             active_profile.is_some()
                 && payload.get("profileId").and_then(Value::as_str) == active_profile
         }
-        "bootstrap"
-        | "mode.set"
+        "mode.set"
         | "diagnostics.serviceDns"
         | "profiles.importUrl"
         | "profiles.importContent"
         | "profiles.activate"
-        | "profiles.refreshAll"
         | "rules.import"
         | "rules.add"
         | "rules.enabled"
         | "rules.delete"
         | "rules.reorder" => true,
+        // Refresh commands use their transaction's active_config_changed
+        // result; metadata revisions alone must not restart the VPN.
         // Portable restores add inactive copies; they do not replace the
         // selected profile or change the running engine's configuration.
         _ => false,
@@ -347,12 +347,6 @@ mod tests {
         assert_eq!(effect.kind, "restart");
         assert_eq!(effect.owner, "first-session");
         assert_eq!(effect.config_revision, "8");
-        assert!(requires_reconfigure(
-            "bootstrap",
-            &serde_json::json!({}),
-            Some("subscription")
-        ));
-
         after.config_revision = before.config_revision;
         assert!(PlatformEffect::for_config_change(&before, &after)
             .unwrap()

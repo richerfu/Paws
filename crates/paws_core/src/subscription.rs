@@ -1,3 +1,28 @@
+use paws_model::PawsError;
+use paws_profile::ProfileStore;
+
+/// Refresh metadata changes the editor revision even when the active engine's
+/// configuration is unchanged. Only this transaction's actual impact may
+/// request a VPN restart.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProfileRefreshOutcome {
+    pub active_config_changed: bool,
+}
+
+#[derive(PartialEq)]
+pub(super) struct ProfileRefreshConfiguration(serde_yaml::Value);
+
+impl ProfileRefreshConfiguration {
+    pub(super) fn capture(profiles: &ProfileStore, profile_id: &str) -> Result<Self, PawsError> {
+        // Include persistent user overrides, but ignore comments, formatting
+        // and mapping order in the downloaded subscription.
+        let source = profiles.raw_yaml(profile_id)?;
+        serde_yaml::from_str(&source)
+            .map(Self)
+            .map_err(|error| PawsError::Core(error.to_string()))
+    }
+}
+
 pub(super) fn profile_name_from_url(url: &str) -> String {
     reqwest::Url::parse(url)
         .ok()

@@ -5953,7 +5953,24 @@ async fn refresh_all_profiles_continues_after_single_failure() {
 
     without_test_geodata(&core, &good_id);
     core.reload_config(&good_id).await.unwrap();
-    core.refresh_all_profiles().await.unwrap();
+    assert!(
+        core.refresh_all_profiles()
+            .await
+            .unwrap()
+            .active_config_changed
+    );
+    let tunnel = core.lock_state().unwrap().tunnel.clone().unwrap();
+    assert!(
+        !core
+            .refresh_all_profiles()
+            .await
+            .unwrap()
+            .active_config_changed
+    );
+    assert!(Arc::ptr_eq(
+        tunnel.inner(),
+        core.lock_state().unwrap().tunnel.as_ref().unwrap().inner()
+    ));
 
     let good_yaml = core.profile_raw_yaml(&good_id).unwrap();
     let bad_yaml = core.profile_raw_yaml(&bad_id).unwrap();
@@ -6100,7 +6117,23 @@ async fn subscription_userinfo_header_updates_profile_summary() {
         Some("https://example.test/support")
     );
 
-    core.refresh_profile(&profile_id).await.unwrap();
+    let tunnel = core.lock_state().unwrap().tunnel.clone().unwrap();
+    let revision = core.command_context().unwrap().config_revision;
+    assert!(
+        !core
+            .refresh_profile(&profile_id)
+            .await
+            .unwrap()
+            .active_config_changed
+    );
+    assert!(Arc::ptr_eq(
+        tunnel.inner(),
+        core.lock_state().unwrap().tunnel.as_ref().unwrap().inner()
+    ));
+    assert!(
+        core.command_context().unwrap().config_revision > revision,
+        "metadata still invalidates stale editors and updates profile cards"
+    );
     let snapshot = core.snapshot().unwrap();
     let profile = snapshot
         .profiles
@@ -7080,7 +7113,7 @@ async fn spawn_profile_refresh_http_server(good_body: String) -> (String, String
         .unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        for _ in 0..2 {
+        for _ in 0..4 {
             let Ok((mut stream, _)) = listener.accept().await else {
                 break;
             };

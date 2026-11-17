@@ -114,6 +114,13 @@ Mode changes use the same conditional reconfiguration path: sing-box compiles
 mode-dependent rules, so updating a presentation flag alone cannot change its
 running route policy. Editing an inactive profile or restoring inactive backup
 copies does not request a restart of the active profile.
+Subscription refreshes report whether they actually changed the active
+configuration, including persistent user overrides. Refresh timestamps, usage,
+expiry, comments, formatting and mapping order alone do not reload the engine
+or request a restart. They still advance the editor revision and refresh the
+profile cards. Manual, batch and bootstrap refreshes use this transaction
+result instead of treating any editor revision change as a VPN change; an
+inactive subscription's update or failure cannot restart the active VPN.
 An explicit user Stop claims the current owner through the platform intent
 queue and is not conditional on a configuration revision. A concurrent save
 must not cancel Stop; the intent fence still prevents it from stopping a later
