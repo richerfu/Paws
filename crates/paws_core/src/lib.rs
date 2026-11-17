@@ -30,6 +30,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::Layer;
 
 mod app_http;
+mod connection_probe;
 mod controller;
 mod diagnostics;
 mod engine;

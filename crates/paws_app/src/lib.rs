@@ -581,15 +581,13 @@ impl Application {
                 if !before.vpn_running {
                     return Err(PawsError::VpnNotRunning.into());
                 }
-                let delay = self
-                    .core
-                    .test_proxy_delay_via_controller(&p.group, Some(&p.url), Some(8000))
-                    .await?;
+                let result = self.core.probe_connection(p.group.as_deref(), &p.url).await;
                 if !self.core.is_platform_vpn_session_current(session)? {
                     return Err(AppError::InvalidRequest(
                         "VPN session changed during probe".into(),
                     ));
                 }
+                let delay = result?;
                 json!({"delay":delay,"sessionId":session})
             }
             "diagnostics.watchGet" => value(self.core.service_watch_policy()?)?,

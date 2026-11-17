@@ -187,9 +187,8 @@ export function Diagnostics() {
   if (typeof prefilled === "string") {
     ui.viewState?.delete("diagnostics.prefillUrl");
   }
-  const group = signal(
-      ui.client.domains.data("summary")!.groups[0]?.name || "",
-    ),
+  const probeRoute = signal("current"),
+    group = signal(""),
     url = signal(
       typeof prefilled === "string" && prefilled
         ? prefilled
@@ -197,7 +196,8 @@ export function Diagnostics() {
     ),
     watch = signal<Watch>({ enabled: false, group: "", url: "" }),
     health = signal<Health | null>(null),
-    result = signal("");
+    result = signal(""),
+    resultError = signal("");
   const resultSession = signal(""), resultTime = signal("");
   const busy = () => ["diagnostics.probe", "diagnostics.watchSet", "diagnostics.watchGet"].some((command) => ui.client.isPending(command));
   let changed = typeof prefilled === "string" && prefilled.length > 0;
@@ -226,6 +226,10 @@ export function Diagnostics() {
     ui.client.domains
       .data("summary")!
       .groups.map((group) => ({ value: group.name, label: group.name }));
+  const selectedNode = () => {
+    const entry = ui.client.domains.data("summary")!.groups.find((entry) => entry.name === group());
+    return entry?.effectiveSelectedNode || entry?.selected || ui.t("未知", "Unknown");
+  };
   const selector = () =>
     ui.client.domains
       .data("summary")!
@@ -247,7 +251,13 @@ export function Diagnostics() {
   };
   const probe = async () => {
     if (busy()) return;
-    const submittedGroup = group(), submittedUrl = url(), session = current().vpnSessionId;
+    const submittedGroup = probeRoute() === "group" ? group() : undefined,
+      submittedUrl = url(), session = current().vpnSessionId,
+      target = submittedGroup
+        ? `${submittedGroup} → ${selectedNode()}`
+        : ui.t("当前连接（遵循当前模式和分流规则）", "Current connection (current mode and rules)");
+    result.set("");
+    resultError.set("");
     const value = await ui.client.run<{ delay: number; sessionId: string }>(
       "diagnostics.probe",
       {
@@ -255,9 +265,10 @@ export function Diagnostics() {
         url: submittedUrl,
       },
     );
-    if (alive() && value && session === current().vpnSessionId) {
-      result.set(`${value.delay} ms · ${submittedGroup} · ${submittedUrl}`);
-      resultSession.set(value.sessionId);
+    if (alive() && session === current().vpnSessionId) {
+      result.set(`${value ? `${value.delay} ms · ` : ""}${target} · ${submittedUrl}`);
+      resultError.set(value ? "" : ui.client.error() || ui.t("探测失败，请重试。", "Probe failed. Please retry."));
+      resultSession.set(value?.sessionId || session || "");
       resultTime.set(new Date().toISOString());
     }
   };
@@ -299,7 +310,7 @@ export function Diagnostics() {
         )}
         value={watch().enabled}
         disabled={
-          busy() || (!watch().enabled && (!selector() || !validUrl()))
+          busy() || (!watch().enabled && (probeRoute() !== "group" || !selector() || !validUrl()))
         }
         onChange={(enabled) => void saveWatch(enabled)}
       />
@@ -310,6 +321,7 @@ export function Diagnostics() {
           label={ui.t("保存当前探测目标", "Save current target")}
           disabled={
             busy() ||
+            probeRoute() !== "group" ||
             !selector() ||
             !validUrl() ||
             (watch().group === group() && watch().url === url())
@@ -317,11 +329,11 @@ export function Diagnostics() {
           onPress={() => void saveWatch(true)}
         />
       </If>
-      <If when={!selector()}>
+      <If when={probeRoute() !== "group" || !selector()}>
         <Hint
           text={ui.t(
-            "请选择手动 Selector 分组以启用自动恢复。",
-            "Select a manual Selector group to enable recovery.",
+            "请切换到指定策略组检测，并选择手动 Selector 分组来设置自动恢复。",
+            "Choose a specific manual Selector group to configure recovery.",
           )}
         />
       </If>
@@ -473,20 +485,42 @@ export function Diagnostics() {
             <Card
               title={ui.t("目标服务探测", "Target service probe")}
               subtitle={ui.t(
-                "通过指定代理组发送 HTTPS 探测，不改变分组选择。",
-                "Probe an HTTPS target through a group without changing its selection.",
+                "默认按当前 VPN 模式和分流规则访问目标，规则可能选择代理或直连。探测不会切换节点。",
+                "Use the current VPN mode and rules, which may choose a proxy or DIRECT. Probing does not switch nodes.",
               )}
             >
               <Select
-                label={ui.t("策略组", "Proxy group")}
-                value={group()}
-                options={options()}
+                label={ui.t("检测路径", "Probe route")}
+                value={probeRoute()}
+                options={[
+                  { value: "current", label: ui.t("当前连接", "Current connection") },
+                  { value: "group", label: ui.t("指定策略组", "Specific proxy group") },
+                ]}
                 disabled={busy()}
-                onChange={(value) => {
-                  changed = true;
-                  group.set(value);
-                }}
+                onChange={(value) => probeRoute.set(value)}
               />
+              <If when={probeRoute() === "group"}>
+                <Select
+                  label={ui.t("策略组", "Proxy group")}
+                  value={group()}
+                  options={options()}
+                  disabled={busy()}
+                  onChange={(value) => {
+                    changed = true;
+                    group.set(value);
+                  }}
+                />
+                <Detail
+                  label={ui.t("当前选择", "Current selection")}
+                  value={group() ? `${group()} → ${selectedNode()}` : ui.t("请选择策略组", "Select a proxy group")}
+                />
+                <Hint
+                  text={ui.t(
+                    "仅检测该组的当前选择，不代表规则模式下的实际出口。套餐信息等占位节点通常无法连接。",
+                    "Tests only this group's selection, which may differ from rule-based routing. Subscription information placeholders usually cannot connect.",
+                  )}
+                />
+              </If>
               <Select
                 label={ui.t("预设目标", "Target preset")}
                 value={
@@ -547,7 +581,7 @@ export function Diagnostics() {
                     : ui.t("请先连接 VPN", "Connect VPN first")
                 }
                 disabled={
-                  busy() || !current().vpnRunning || !group() || !validUrl()
+                  busy() || !current().vpnRunning || (probeRoute() === "group" && !group()) || !validUrl()
                 }
                 onPress={() => void probe()}
               />
@@ -556,12 +590,16 @@ export function Diagnostics() {
                   tone={
                     resultSession() === current().vpnSessionId &&
                     current().vpnRunning
-                      ? "success"
+                      ? resultError() ? "danger" : "success"
                       : "neutral"
                   }
                   label={ui.t("最近探测", "Last probe")}
                   value={`${result()}\n${resultTime()}\n${resultSession() === current().vpnSessionId && current().vpnRunning ? ui.t("当前会话", "Current session") : ui.t("历史会话结果", "Previous session result")}`}
                 />
+              </If>
+              <If when={resultError()}>
+                <Hint danger text={ui.t("目标探测失败，请检查上方检测路径、所选节点及目标网址。", "Target probe failed. Check the route, selected node and target URL above.")} />
+                <PageError id="diagnostics-probe-error" text={resultError()} />
               </If>
             </Card>
             <If when={!layout().overview}>{recoveryCard}</If>

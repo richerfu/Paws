@@ -427,7 +427,7 @@ mod tests {
 }
 
 fields!(Probe {
-    group: String,
+    group: Option<String>,
     url: String
 });
 fields!(ConverterDraft {

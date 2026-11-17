@@ -61,6 +61,8 @@ def cases(log_dir):
         ),
         ("gateway-queue", ["trace", "ui/nsh/tests/GatewayQueue.tsx", "--wait", "120", "--tap", "id:queue-start-stop", "--tap", "id:queue-import-cancel"], ("PASS: native gateway ACK delivers synchronous start/stop and import/cancel independently of completion",), 2),
         ("check", ["check", "ui/nsh"], (), None),
+        ("diagnostics", ["test", "ui/nsh/tests/diagnostics.test.ts"],
+         ("3 tests: 3 passed, 0 failed",), None),
         ("production-entry", ["build", "ui/nsh", "-o", str(log_dir / "production-entry")], (), None),
         ("redesign", ["test", "--trace", "ui/nsh/tests/redesign.test.ts"], ("4 tests: 4 passed, 0 failed",), None),
         ("profile-editor", ["test", "ui/nsh/tests/profile-editor.test.ts"], ("6 tests: 6 passed, 0 failed",), None),
