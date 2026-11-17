@@ -394,7 +394,7 @@ export function ListRow(props: {
   const rowStyle = () => ({
     minHeight: control.row,
     paddingHorizontal: platform.desktop ? 14 : 16,
-    paddingVertical: platform.desktop ? 6 : 8,
+    paddingVertical: control.rowPadding,
     position: "relative" as const,
     flexDirection: "row" as const,
     alignItems: (props.alignTop ? "flex-start" : "center") as
@@ -1773,9 +1773,9 @@ export function Toggle(props: {
         flexDirection: "row-reverse",
         alignItems: "center",
         gap: spacing.md,
-        minHeight: platform.desktop ? 40 : 48,
+        minHeight: platform.desktop ? 40 : control.row,
         paddingHorizontal: props.insetRow ? spacing.md : 0,
-        paddingVertical: props.insetRow ? density.space(10) : 0,
+        paddingVertical: platform.desktop ? (props.insetRow ? density.space(10) : 0) : control.rowPadding,
         borderBottomWidth: props.divider ? 1 : 0,
         borderBottomColor: palette().line,
         opacity: props.disabled ? 0.45 : 1,
@@ -1854,9 +1854,9 @@ export function Check(props: {
         flexDirection: "row",
         alignItems: "center",
         gap: spacing.md,
-        minHeight: platform.desktop ? 40 : 46,
+        minHeight: platform.desktop ? 40 : control.row,
         paddingHorizontal: props.insetRow ? spacing.md : 0,
-        paddingVertical: props.insetRow ? density.space(8) : 0,
+        paddingVertical: platform.desktop ? (props.insetRow ? density.space(8) : 0) : control.rowPadding,
         borderBottomWidth: props.divider ? 1 : 0,
         borderBottomColor: palette().line,
         opacity: props.disabled ? 0.45 : 1,
@@ -2475,8 +2475,9 @@ export function SheetActionItem(props: {
         if (!props.disabled) props.onPress();
       }}
       style={{
-        minHeight: 46,
+        minHeight: platform.desktop ? 46 : control.row,
         paddingHorizontal: 12,
+        paddingVertical: platform.desktop ? 0 : control.rowPadding,
         borderRadius: 10,
         borderCurve: "continuous",
         flexDirection: "row",
@@ -2679,7 +2680,7 @@ export function Select(props: {
                   style={{
                     minHeight: control.row,
                     paddingHorizontal: spacing.md,
-                    paddingVertical: spacing.sm,
+                    paddingVertical: platform.desktop ? spacing.sm : control.rowPadding,
                     borderRadius: radius.sm,
                     borderCurve: "continuous",
                     flexDirection: "row",
@@ -2764,11 +2765,11 @@ function RadioChoice(props: {
       hoverStyle={{ backgroundColor: palette().hover }}
       activeStyle={{ backgroundColor: palette().soft }}
       style={{
-        minHeight: 48,
+        minHeight: platform.desktop ? 48 : control.row,
         flexDirection: "row",
         alignItems: "center",
         gap: spacing.md,
-        paddingVertical: density.space(10),
+        paddingVertical: platform.desktop ? density.space(10) : control.rowPadding,
         paddingHorizontal: spacing.md,
         borderRadius: props.insetRow ? 0 : radius.md,
         borderCurve: props.insetRow ? undefined : "continuous",

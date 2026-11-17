@@ -1,0 +1,16 @@
+diff --git a/crates/nsh-platform-ohos/src/app/runtime.rs b/crates/nsh-platform-ohos/src/app/runtime.rs
+--- a/crates/nsh-platform-ohos/src/app/runtime.rs
++++ b/crates/nsh-platform-ohos/src/app/runtime.rs
+@@ -902,6 +902,12 @@ impl Runtime {
+         if let Some(mounter) = &state.mounter {
+             mounter.resize(size).map_err(napi_error)?;
+         }
++        // Resize updates the native viewport, but windowSize() is driven by
++        // the script environment. Publish both, as the headless host does,
++        // so responsive views reflow without remounting their drafts.
++        if let Some(engine) = &state.engine {
++            engine.control().set_environment(state.environment);
++        }
+         Ok(())
+     }
+     pub(crate) fn set_attached(&self, attached: bool) -> napi_ohos::Result<()> {

@@ -16,7 +16,6 @@ import {
   platform,
   reduceMotion,
   safeArea,
-  keyboardFrame,
 } from "nsh";
 import { BackHandler } from "nsh/mobile";
 import {
@@ -56,7 +55,6 @@ import {
   desktopGroupTitle,
 } from "./desktop-navigation";
 import { Dashboard, DnsDiagnostics, Traffic } from "./pages/overview";
-import { FloatingVpnPowerButton } from "./floating-vpn";
 import { Profiles } from "./pages/profiles";
 import { ProfileEditor } from "./pages/profile-editor";
 import { Proxies } from "./pages/proxies";
@@ -1096,16 +1094,6 @@ export function PawsApp(props: {
             </Each>
           </BaseTabs>
         </If>
-        <FloatingVpnPowerButton
-          visible={
-            !wide() &&
-            !layout().overview &&
-            page() === "dashboard" &&
-            !!props.client.state() &&
-            overlays() === 0 &&
-            keyboardFrame().height === 0
-          }
-        />
         <NotificationViewport
           dismissLabel={ui.t("关闭通知", "Dismiss notification")}
         />

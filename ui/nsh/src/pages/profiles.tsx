@@ -192,7 +192,7 @@ export function Profiles(props: { profileId?: string } = {}) {
     if (busy() || !input().trim()) return;
     importOp.set("url");
     return performImport("profiles.importUrl", {
-      name: name().trim(),
+      name: name().trim() || undefined,
       url: input().trim(),
     });
   };
@@ -234,7 +234,7 @@ export function Profiles(props: { profileId?: string } = {}) {
     if (parsed)
       await performImport("profiles.importUrl", {
         url: parsed.url,
-        name: parsed.name || name().trim(),
+        name: parsed.name || name().trim() || undefined,
       });
     else importOp.set("");
   };
@@ -297,16 +297,18 @@ export function Profiles(props: { profileId?: string } = {}) {
     editUrl.set(profile.subscriptionUrl || "");
     initialEdit.set({ name: profile.name, url: profile.subscriptionUrl || "" });
   };
-  const row = (profile: Profile, detail = false) => <ProfileRow
+  // List retains keyed rows; keep its accessor alive instead of capturing the
+  // record from the first render (including in commands that open an editor).
+  const row = (profile: () => Profile, detail = false) => <ProfileRow
     detail={detail}
-    profile={profile} refreshing={refreshing(profile)}
-    selected={collection.selected() === profile.id}
+    profile={profile()} refreshing={refreshing(profile())}
+    selected={collection.selected() === profile().id}
     compact={layout().masterDetail}
-    onDetails={() => selectProfile(profile)}
-    onAction={(command) => { void profileAction(command, profile.id); }}
-    onEdit={() => openEdit(profile)}
-    onExport={() => { exporting.set(profile); qr.set(undefined); }}
-    onError={() => refreshError.set(profile.lastRefreshError || "")}
+    onDetails={() => selectProfile(profile())}
+    onAction={(command) => { void profileAction(command, profile().id); }}
+    onEdit={() => openEdit(profile())}
+    onExport={() => { exporting.set(profile()); qr.set(undefined); }}
+    onError={() => refreshError.set(profile().lastRefreshError || "")}
   />;
   return (
     <View style={{ flex: 1 }}>
@@ -349,7 +351,7 @@ export function Profiles(props: { profileId?: string } = {}) {
         }
         each={profiles()}
         keyExtractor={(profile) => profile.id}
-        estimatedItemSize={120}
+        estimatedItemSize={!platform.desktop && windowSize().width < 840 ? 88 : 120}
         style={{
           flex: 1,
           margin: spacing.lg,
@@ -406,7 +408,7 @@ export function Profiles(props: { profileId?: string } = {}) {
           </View>
         }
       >
-        {(profile) => row(profile())}
+        {(profile) => row(profile)}
       </List>
       </View>
       <View testID="profile-detail-panel" style={{ display: props.profileId || layout().masterDetail ? "flex" : "none", flex: 1, minWidth: 0, flexDirection: "column" }}>
@@ -417,7 +419,7 @@ export function Profiles(props: { profileId?: string } = {}) {
                 <Hint text={ui.t("当前订阅不在筛选结果中。已保留详情。", "This subscription is outside the filter. Its details are retained.")} />
               </If>
               <ListSurface>
-                {selectedProfile() ? row(selectedProfile()!, true) : undefined}
+                {selectedProfile() ? row(() => selectedProfile()!, true) : undefined}
               </ListSurface>
               <View style={{ gap: spacing.sm }}>
                 <SectionHeader title={ui.t("信息", "Details")} />
@@ -555,7 +557,9 @@ export function Profiles(props: { profileId?: string } = {}) {
           );
           return (
             <If
-              when={layout().sidebar || platform.desktop}
+              when={
+                layout().sidebar || platform.desktop || platform.idiom === "pad"
+              }
               else={
                 <BottomSheet
                   title={importTitle}
@@ -655,10 +659,6 @@ export function Profiles(props: { profileId?: string } = {}) {
         <Dialog
           width={platform.desktop ? 400 : 460}
           title={ui.t("编辑订阅", "Edit subscription")}
-          description={ui.t(
-            "修改名称或订阅地址，保存后可手动刷新。",
-            "Change the name or subscription URL. Refresh manually after saving.",
-          )}
           onClose={() => void closeEdit()}
           footer={
             <Actions>
@@ -832,11 +832,11 @@ function ProfileRow(props: {
   useOverlay(() => open() || contextual());
   let pending: { source: "menu" | "context"; action: () => void } | undefined;
   const ready = () => ui.client.domains.readyForCommand(["config", "profiles"]);
+  const phoneRow = () => !platform.desktop && windowSize().width < 840 && !props.detail;
   const height = () =>
-    Math.max(
-      84,
-      density.line(52) * Math.max(1, fontScale()) + spacing.xl,
-    );
+    phoneRow()
+      ? 64
+      : Math.max(84, density.line(52) * Math.max(1, fontScale()) + spacing.xl);
   const afterClose = (source: "menu" | "context") => {
     if (pending?.source !== source) return;
     const action = pending.action;
@@ -1088,11 +1088,11 @@ function ProfileRow(props: {
         style={{
           flex: 1,
           minHeight: height() - 1,
-          paddingHorizontal: spacing.lg,
-          paddingVertical: density.space(10),
+          paddingHorizontal: phoneRow() ? spacing.md : spacing.lg,
+          paddingVertical: phoneRow() ? 8 : density.space(10),
           flexDirection: "row",
           alignItems: "center",
-          gap: spacing.md,
+          gap: phoneRow() ? spacing.sm : spacing.md,
           ...feedbackStyle(),
         }}
       >
@@ -1107,7 +1107,7 @@ function ProfileRow(props: {
         >
           <Spinner size={20} />
         </If>
-        <View style={{ flex: 1, minWidth: 0, gap: spacing.xxs }}>
+        <View style={{ flex: 1, minWidth: 0, gap: phoneRow() ? 2 : spacing.xxs }}>
           <View
             style={{
               flexDirection: "row",
@@ -1161,7 +1161,7 @@ function ProfileRow(props: {
             </Text>
           </If>
           <If when={!!props.profile.subscriptionUserInfo?.totalBytes && !props.detail}>
-            <View style={{ paddingTop: density.space(4) }}>
+            <View style={{ paddingTop: phoneRow() ? 0 : density.space(4) }}>
               <MeterBar
                 ratio={Math.min(
                   1,

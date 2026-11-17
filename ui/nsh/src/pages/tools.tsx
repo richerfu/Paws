@@ -362,10 +362,6 @@ export function Diagnostics() {
           >
             <Card
               title={ui.t("连接状态", "Connection status")}
-              subtitle={ui.t(
-                "检测真实 VPN 会话，不以配置已载入代替网络连通。",
-                "Checks belong to the actual VPN session; loaded configuration does not prove connectivity.",
-              )}
             >
               <Detail
                 tone={
@@ -589,17 +585,6 @@ export function AdvancedDiagnostics() {
     const value = await ui.client.run<string>("diagnostics.report");
     if (alive() && value !== undefined) report.set(value);
   };
-  const qualification = async () => {
-    const file = await ui.client.run<{ name: string; content: string } | null>(
-      "platform.importFile",
-    );
-    if (alive() && file)
-      await ui.client.run(
-        "diagnostics.importQualification",
-        { content: file.content },
-        ui.t("验收证据已导入", "Qualification evidence imported"),
-      );
-  };
   return (
     <Scroll
       bounces={false}
@@ -707,20 +692,6 @@ export function AdvancedDiagnostics() {
               />
             </Actions>
           </If>
-        </Card>
-        <Card
-          title={ui.t("内核验收证据", "Engine qualification evidence")}
-          subtitle={ui.t(
-            "导入真实设备验收记录，供引擎选择策略校验。",
-            "Import actual device qualification records for engine selection checks.",
-          )}
-        >
-          <Action
-            secondary
-            label={ui.t("导入验收证据", "Import qualification evidence")}
-            disabled={busy()}
-            onPress={() => void qualification()}
-          />
         </Card>
       </Body>
     </Scroll>
@@ -927,7 +898,7 @@ export function About() {
     about = () => ui.client.state()!.about;
   const renderComponent = (
     name: string,
-    version: string,
+    version: string | undefined,
     license: string,
     index: number,
   ) => (
@@ -947,19 +918,21 @@ export function About() {
       >
         {name}
       </Text>
-      <Text
-        testID={`about-version-${index}`}
-        style={{
-          userSelect: "text",
-          minWidth: 0,
-          maxWidth: "100%",
-          fontSize: density.font(13),
-          lineHeight: density.line(20),
-          color: palette().muted,
-        }}
-      >
-        {version || ui.t("未知版本", "Unknown version")}
-      </Text>
+      <If when={version !== undefined}>
+        <Text
+          testID={`about-version-${index}`}
+          style={{
+            userSelect: "text",
+            minWidth: 0,
+            maxWidth: "100%",
+            fontSize: density.font(13),
+            lineHeight: density.line(20),
+            color: palette().muted,
+          }}
+        >
+          {version || ui.t("未知版本", "Unknown version")}
+        </Text>
+      </If>
       <View testID={`about-actions-${index}`}>
         <Actions>
           <ExternalLink
@@ -1026,17 +999,6 @@ export function About() {
               label={ui.t("应用版本", "App version")}
               value={about().appVersion}
             />
-            <Detail
-              stacked
-              label={ui.t("核心版本", "Core version")}
-              value={about().coreVersion}
-            />
-            <Detail
-              stacked
-              label={ui.t("界面运行时", "UI runtime")}
-              value={`${about().uiRuntime} ${about().uiRuntimeVersion}`}
-            />
-            <Detail label="Rust" value={about().rustVersion} />
             <Actions align="start">
               <Action
                 secondary
@@ -1062,10 +1024,6 @@ export function About() {
         <View testID="about-engine-section">
           <Card
             title={ui.t("代理内核", "Proxy engines")}
-            subtitle={ui.t(
-              "当前安装包内置的内核版本，包含 HarmonyOS 适配补丁。",
-              "Engine versions bundled with this package, including HarmonyOS adaptations.",
-            )}
           >
             {renderComponent("Mihomo", about().mihomoVersion, "GPL-3.0", 0)}
             <Separator />
@@ -1089,7 +1047,7 @@ export function About() {
           >
             {renderComponent(
               "Native Shell",
-              about().uiRuntimeVersion,
+              undefined,
               ui.t("许可证", "License"),
               6,
             )}

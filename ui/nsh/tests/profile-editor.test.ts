@@ -134,6 +134,8 @@ test("a held save blocks leaving and a large YAML document keeps its exact sourc
   await app.press("id:editor-wrap");
   await action("hold-save");
   await app.press("id:save-profile");
+  // Exercise Back once the host has actually received the held request.
+  await app.waitUntil(() => reports.some((report) => report.command === "profiles.save"));
   await app.back();
   expect(app.shows("id:profile-editor-page")).toBe(true);
   expect(app.enabled("id:validate-profile")).toBe(false);

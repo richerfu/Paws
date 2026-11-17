@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise source staging with unmodified Git trees and an offline Cargo graph."""
+"""Exercise isolated source staging and patches with an offline Cargo graph."""
 import importlib.util
 import json
 import os
@@ -98,6 +98,35 @@ class BuildSourceTests(unittest.TestCase):
         (target / 'source.rs').write_text('tampered\n')
         with self.assertRaisesRegex(ValueError, 'pinned source checkout changed'):
             module.BuildSource.checkout_at(self.source, target)
+
+    def test_patches_are_isolated_fingerprinted_and_reapplied_after_changes(self):
+        patch_dir = self.root / 'patches/nsh'
+        patch_dir.mkdir(parents=True)
+        patch_file = patch_dir / 'dialog.patch'
+        patch_file.write_text('--- a/source.rs\n+++ b/source.rs\n@@ -1 +1 @@\n-original\n+patched\n')
+        stage = module.BuildSource().prepare()
+        self.assertEqual((self.source / 'source.rs').read_text(), 'original\n')
+        self.assertEqual((stage / 'source.rs').read_text(), 'patched\n')
+        record = json.loads(stage.with_suffix('.json').read_text())
+        self.assertNotEqual(record['originalInputs']['nsh'], record['preparedInputs']['nsh'])
+        with patch.dict(os.environ, {'NSH_ROOT': str(stage)}):
+            self.assertEqual(module.BuildSource().prepare(), stage)
+            patch_file.write_text(patch_file.read_text().replace('+patched', '+updated'))
+            with self.assertRaisesRegex(ValueError, 'recipe changed'):
+                module.BuildSource()
+        updated = module.BuildSource().prepare()
+        self.assertNotEqual(updated, stage)
+        self.assertEqual((updated / 'source.rs').read_text(), 'updated\n')
+
+    def test_incompatible_patch_fails_without_changing_original_source(self):
+        patch_dir = self.root / 'patches/nsh'
+        patch_dir.mkdir(parents=True)
+        (patch_dir / 'incompatible.patch').write_text(
+            '--- a/source.rs\n+++ b/source.rs\n@@ -1 +1 @@\n-missing\n+patched\n')
+        with self.assertRaisesRegex(ValueError, 'Cannot apply NSH patch incompatible.patch'):
+            module.BuildSource().prepare()
+        self.assertEqual((self.source / 'source.rs').read_text(), 'original\n')
+        self.assertEqual(list((self.root / 'target/nsh-build-source').glob('*.json')), [])
 
     def test_ignored_actual_source_tampering_is_rejected(self):
         stage = module.BuildSource().prepare()

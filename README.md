@@ -94,10 +94,11 @@ application's capability helpers under this project's `target/ohos`. The
 current NSH host attaches through `NshSurface(UIContext)` and uses its native
 editor and dialogs without the legacy Ability patch set. Source fingerprints
 cover NSH and local binding overrides. Generated outputs stay in Paws.
-The floating VPN control uses NSH's `Overlay` and native pan binding. Its
-action guard does not disable dragging. The pinned native SDK is built from
-unchanged upstream sources; no Paws pointer, editor, dialog or frame scheduler
-patches are applied.
+The staged SDK applies the reviewed Rust system-dialog backport in
+`patches/nsh`, from `nsh-platform-harmonyos` PR #23. Alerts and action sheets
+use the window's system UIContext through N-API, with system styling and no
+additional ArkTS implementation. Patch contents and patched sources participate
+in the build fingerprints; the pinned checkout remains unchanged.
 Application capability helpers retain Ability `b6550250`, staged under
 `target/ability-checkouts` from the local Ability repository or Cargo Git object
 cache. Set `NSH_ABILITY_ROOT` when those helpers live elsewhere. Run that

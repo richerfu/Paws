@@ -70,6 +70,20 @@ mount(() => {
     }),
   );
   cleanup(host.on("paws.test.retry", () => client.domains.retry(["profiles"])));
+  cleanup(host.on("paws.test.import-profile", () => {
+    const previous = state.profiles[0];
+    state = {
+      ...state,
+      revision: state.revision + 1,
+      configRevision: state.configRevision + 1,
+      activeProfile: "imported-profile",
+      profiles: [
+        { ...previous, name: "Renamed subscription", active: false },
+        { ...previous, id: "imported-profile", name: "Imported subscription", active: true },
+      ],
+    };
+    server.change(["config", "profiles"]);
+  }));
   effect(() =>
     host.post("paws.test.readiness", {
       fresh: client.domains.fresh(["profiles"]),

@@ -2,8 +2,8 @@
 """Stage the local NSH sources without modifying the SDK checkout.
 
 The user's NSH checkout and Cargo's immutable Git cache remain untouched.
-The unmodified workspace is covered by the normal NSH source fingerprint
-and is reused only while that identity matches.
+Reviewed compatibility patches apply only to the staged workspace. Both the
+patch recipe and prepared sources are fingerprinted before reuse.
 """
 import hashlib
 import json
@@ -26,6 +26,9 @@ class BuildSource:
             raise ValueError('Select the pinned native UIContext SDK; legacy Ability SDK overlays are unsupported')
         recipe = hashlib.sha256(Path(__file__).read_bytes())
         recipe.update((ROOT / 'scripts/nsh_build_inputs.py').read_bytes())
+        self.patches = [(path, path.read_bytes()) for path in sorted((ROOT / 'patches/nsh').glob('*.patch'))]
+        for path, content in self.patches:
+            recipe.update(path.name.encode() + b'\0' + content + b'\0')
         self.recipe = recipe.hexdigest()
         # package-hap exports this exact root to its build subprocess. Passing
         # an already prepared root must verify it, never copy it again.
@@ -128,6 +131,13 @@ class BuildSource:
         copied = self.identity(self.stage)
         if copied['nsh'] != self.inputs['nsh'] or self.identity(self.source) != self.inputs:
             raise ValueError('Local NSH changed during staging; retry with a stable source tree')
+        for path, content in self.patches:
+            for arguments in (['--check'], []):
+                result = subprocess.run(['git', 'apply', *arguments, '-'], cwd=self.stage,
+                                        input=content, capture_output=True, timeout=30)
+                if result.returncode:
+                    raise ValueError(f'Cannot apply NSH patch {path.name}: '
+                                     + result.stderr.decode(errors='replace').strip())
         result = subprocess.run(['cargo', 'metadata', '--locked', '--offline', '--format-version', '1',
                                  '--filter-platform', 'aarch64-unknown-linux-ohos'],
                                 cwd=self.stage, capture_output=True, text=True, timeout=180)

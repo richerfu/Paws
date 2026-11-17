@@ -1,6 +1,14 @@
 {
   "string": [
     {
+      "name": "surface_load_failed",
+      "value": "Paws could not open. Please try again."
+    },
+    {
+      "name": "surface_retry",
+      "value": "Retry"
+    },
+    {
       "name": "module_desc",
       "value": "Paws proxy client"
     },

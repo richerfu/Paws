@@ -6001,6 +6001,55 @@ async fn refresh_all_profiles_continues_after_single_failure() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn url_import_resolves_blank_names_before_committing_the_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let core = CoreHandle::new_with_profile_root(root.path().to_owned());
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let cases = [
+        (None, "with-title", "Remote Sub"),
+        (Some(""), "with-title", "Remote Sub"),
+        (Some(" \t "), "with-title", "Remote Sub"),
+        (Some("  My subscription  "), "with-title", "My subscription"),
+        (Some(""), "fallback.yaml", "fallback.yaml"),
+        (Some(" \t "), "fallback.yaml", "fallback.yaml"),
+    ];
+    let server = tokio::spawn(async move {
+        for _ in 0..cases.len() {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+            }
+            let title = if request.starts_with(b"GET /with-title ") {
+                "profile-title: Remote%20Sub\r\n"
+            } else {
+                ""
+            };
+            let body = local_protocol_profile("direct");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/yaml\r\n{title}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    for (name, path, expected) in cases {
+        let prepared = core
+            .prepare_profile_import_from_url(
+                &format!("http://{address}/{path}"),
+                name.map(str::to_owned),
+            )
+            .await
+            .unwrap();
+        assert_eq!(prepared.name, expected, "name: {name:?}, path: {path}");
+    }
+    server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn subscription_userinfo_header_updates_profile_summary() {
     let root = std::env::temp_dir().join(format!(
         "paws-core-sub-userinfo-test-{}",

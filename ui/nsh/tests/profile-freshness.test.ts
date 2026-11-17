@@ -93,3 +93,19 @@ test("config changes and failed profile reads still block stale UI and direct co
   expect(app.enabled("id:edit-subscription-test-profile")).toBe(true);
   expect(commands).toEqual([]);
 });
+
+test("retained profile rows update names, active badges and menu actions after import", async () => {
+  const { app, readiness } = await fixture();
+  expect(app.count("text:当前")).toBe(1);
+  await app.host.send("paws.test.import-profile", null);
+  await app.waitUntil(() => readiness().ready && readiness().configRevision === 2);
+  expect(app.shows("text:Renamed subscription")).toBe(true);
+  expect(app.shows("text:Test profile")).toBe(false);
+  expect(app.count("text:当前")).toBe(1);
+  await app.press("id:profile-menu-test-profile");
+  await app.wait(250);
+  expect(app.shows("label:设为当前订阅")).toBe(true);
+  await app.press("id:edit-subscription-test-profile");
+  await app.waitFor("id:save-subscription");
+  expect(app.value("label:名称")).toBe("Renamed subscription");
+});

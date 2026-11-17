@@ -1,0 +1,12 @@
+{
+  "string": [
+    {
+      "name": "surface_load_failed",
+      "value": "Paws 未能打开，请重试。"
+    },
+    {
+      "name": "surface_retry",
+      "value": "重试"
+    }
+  ]
+}
