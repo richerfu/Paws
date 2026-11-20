@@ -41,9 +41,16 @@ export function groupMembers(groups: Pick<ProxyGroup, "name">[], group: ProxyGro
   });
   return nodes.length ? nodes : group.proxies.filter((proxy) => proxy.name === "DIRECT");
 }
+function normalizeGroupType(groupType: string): string {
+  return groupType.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+export function isManualSelector(group: Pick<ProxyGroup, "groupType">): boolean {
+  const kind = normalizeGroupType(group.groupType);
+  return kind === "selector" || kind === "select";
+}
 export function selectableGroup(group: Pick<ProxyGroup, "groupType">): boolean {
-  return ["selector", "urltest", "fallback"].includes(
-    group.groupType.toLowerCase().replace(/[^a-z0-9]/g, ""),
+  return ["select", "selector", "urltest", "fallback"].includes(
+    normalizeGroupType(group.groupType),
   );
 }
 
@@ -60,11 +67,12 @@ export function proxyGroupSummary(groups: ProxyGroup[]) {
 export function groupSelectionMode(
   group: Pick<ProxyGroup, "fixed" | "groupType">,
 ): "automatic" | "pinned" | "manual" | "policy" {
+  if (isManualSelector(group)) return "manual";
   return group.fixed === ""
     ? "automatic"
     : group.fixed
       ? "pinned"
-      : group.groupType.toLowerCase().replace(/[^a-z0-9]/g, "") === "selector"
-        ? "manual"
-        : selectableGroup(group) ? "automatic" : "policy";
+      : selectableGroup(group)
+        ? "automatic"
+        : "policy";
 }

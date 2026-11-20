@@ -137,6 +137,44 @@ func TestPawsNativeManagedGroupUsesControllerAndSessionOwner(t *testing.T) {
 	}
 }
 
+func TestPawsNativeSelectGroupReportsCanonicalSelectorTypeWithoutFixed(t *testing.T) {
+	_, _, address := newNativeManagedGroupFixture(t, "select")
+	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}
+	request := func(method, path string, body []byte) (int, []byte) {
+		t.Helper()
+		req, _ := http.NewRequest(method, "http://"+address+path, bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer synthetic-sing-owner")
+		req.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		data, _ := io.ReadAll(response.Body)
+		return response.StatusCode, data
+	}
+	status, data := request("GET", "/paws/observations/groups", nil)
+	var summaries []pawsGroupSummary
+	if status != 200 || json.Unmarshal(data, &summaries) != nil || len(summaries) != 1 {
+		t.Fatal(status, string(data))
+	}
+	if summaries[0].GroupType != "Selector" || summaries[0].Fixed != nil {
+		t.Fatalf("select group summary mismatch: %#v", summaries[0])
+	}
+	status, data = request("PUT", "/proxies/Auto", []byte(`{"name":"B"}`))
+	if status != 204 {
+		t.Fatal(status, string(data))
+	}
+	status, data = request("GET", "/paws/observations/proxy-groups/Auto", nil)
+	var group pawsProxyGroup
+	if status != 200 || json.Unmarshal(data, &group) != nil {
+		t.Fatal(status, string(data))
+	}
+	if group.GroupType != "Selector" || group.Fixed != nil || group.Selected == nil || *group.Selected != "B" {
+		t.Fatalf("select group after switch mismatch: %#v", group)
+	}
+}
+
 func TestPawsNativeGroupObservationDoesNotConsumeRoundRobinDials(t *testing.T) {
 	owner, _, address := newNativeManagedGroupFixture(t, "load-balance")
 	group := owner.groups["Auto"]
