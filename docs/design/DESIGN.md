@@ -330,10 +330,12 @@ ui/nsh/src/ui/
 1. **禁止同级堆叠与竞态打开**：所有从 `ObjectMenu` / `ContextMenu` / `BottomSheet` / `Dialog` 打开另一浮层的命令（如菜单「编辑订阅…」「删除…」「导出…」、连接 Sheet「以此域名添加规则…」、规则查询「添加针对此地址的规则」），**必须先关闭当前浮层，等待其原生 `onClose` / `afterClose` 生命周期回调，且校验 `alive() && ui.route() === owner` 后再挂载下一个浮层**。
 2. **Escape 与硬件返回键层级栈**：`overlays()` 信号记录当前活跃浮层深度。按 `Escape` 或系统返回键时，**永远只关闭最顶层可关闭浮层**（L4 `AlertDialog` → L3 子 `Dialog` → L2 `BottomSheet`/`Menu`/`Popover` → L1 内联检查器/导航栈 Pop），并将键盘焦点准确归还给触发元素。
 3. **脏草稿阻断规则**：带有表单草稿的 `Dialog` / `BottomSheet`（添加订阅、编辑订阅、添加规则）接管 `Escape`、关闭按钮与遮罩点击；若草稿为空则立即关闭，若存在未保存修改则弹出最高优先级 `AlertDialog`（`继续编辑` 保留原弹窗与输入 / `放弃修改` 依次关闭）。
-4. **Toast 跨模态可见性**：`NotificationCenter` 维护模态层栈（`useNotificationLayer()`），确保在 `Dialog` 或 `BottomSheet` 打开期间产生的报错/复制成功通知直接渲染于最顶层模态窗内（不被 scrim 压暗或遮挡），最多同时露出 3 张叠堆卡片。
-5. **PC 与宽屏禁弹底部 Sheet 规则**：只要处于桌面平台或视口宽度 `≥ 768pt`（含 Pad 竖屏/横屏、HarmonyOS 2-in-1 宽窗与 PC 全尺寸窗口）：
-   - 所有操作菜单与选择器（`ObjectMenu`、`Select`、`CompactPicker`、行右键菜单）必须就近锚定于触发按钮弹出浮层（PC 走原生 `<Menu>`，HarmonyOS 2-in-1 / Pad 宽屏走 `nsh/base` `<Popover>`），不铺全屏暗色遮罩，不落至窗口底部。
-   - 所有模态详情与表单（`BottomSheet`）在无法进入右侧主从分栏时（如 640–839pt 窄桌面窗或 768pt Pad 竖屏），自动升格为居中 `<Dialog>`（`440–480pt`）；仅 `< 768pt` 手机窄屏使用底部拉出 `<Sheet>`。
+4. **Toast 跨模态可见性与多端定位**：`NotificationCenter` 维护模态层栈（`useNotificationLayer()`），确保在 `Dialog` 或 `BottomSheet` 打开期间产生的报错/复制成功通知直接渲染于最顶层模态窗内（不被 scrim 压暗或遮挡），最多同时露出 3 张叠堆卡片。Phone 窄屏非模态通知遵循 HarmonyOS 习惯停靠底部居中（一级 Tab 页距 64pt 底栏上方 `12pt` + 底部安全区，二级页距底部安全区上方 `12pt`，绝不遮挡顶部返回钮与页头动作）；PC 及宽屏（`≥ 768pt`）非模态通知统一停靠右下角（`bottom: 16pt + safeArea.bottom`，`maxWidth: 360pt`）；模态 `Dialog` 内通知置顶居中紧贴状态栏安全区下方 `12pt`，避开弹窗底栏与软键盘。
+5. **PC 与宽屏运行时窗口与浮层规则**：
+   - HarmonyOS 宿主层按运行时 `deviceInfo.deviceType` 区分：Phone / Tablet 启用 `setWindowLayoutFullScreen(true)` 沉浸式 Edge-to-Edge 全屏并同步状态栏明暗；`2in1`（PC）保留桌面原生窗口管理并跳过仅限移动端的系统栏 API。
+   - 只要处于桌面平台或视口宽度 `≥ 768pt`（含 Pad 竖屏/横屏、HarmonyOS 2-in-1 宽窗与 PC 全尺寸窗口）：
+     - 所有操作菜单与选择器（`ObjectMenu`、`Select`、`CompactPicker`、行右键菜单）必须就近锚定于触发按钮弹出浮层（PC 走原生 `<Menu>`，HarmonyOS 2-in-1 / Pad 宽屏走 `nsh/base` `<Popover>`），不铺全屏暗色遮罩，不落至窗口底部。
+     - 所有模态详情与表单（`BottomSheet`）在无法进入右侧主从分栏时（如 640–839pt 窄桌面窗或 768pt Pad 竖屏），自动升格为居中 `<Dialog>`（`440–480pt`）；仅 `< 768pt` 手机窄屏使用底部拉出 `<Sheet>`。
 
 ### 6.2 8 条核心多级交互链全景图
 

@@ -14,11 +14,11 @@ import {
   reduceMotion,
   safeArea,
   safeAreaInsets as useSafeAreaInsets,
+  windowSize,
 } from "nsh";
 import { Icon } from "./icons";
 import { motion } from "./motion";
 import {
-  chrome,
   control,
   focusRing,
   palette,
@@ -111,6 +111,7 @@ export function useNotificationLayer(): number {
 export function NotificationViewport(props: {
   owner?: number;
   modal?: boolean;
+  bottomOffset?: number;
   dismissLabel?: string;
 }) {
   const center = Notifications();
@@ -133,9 +134,15 @@ export function NotificationViewport(props: {
       ...leaving.map((item) => ({ item, index: 0 })),
     ];
   });
-  const bottomEdge = platform.desktop && !props.modal;
+  const wide = () => platform.desktop || windowSize().width >= 768;
+  const bottomEdge = () => !props.modal;
   // Absolute children are positioned from the parent's padding box, so the
   // root safe-area padding does not inset this viewport for us.
+  // - Non-modal Phone (< 768pt): bottom-center above the tab bar / home indicator
+  //   so it never blocks the top back button or header actions and follows HarmonyOS toast conventions.
+  // - Non-modal PC / wide (>= 768pt): bottom-right corner.
+  // - Modal Dialog layer: top-center right beneath the status bar safe area (12pt),
+  //   staying clear of the centered dialog footer and soft keyboard.
   return (
     <If when={active() && entries().length > 0}>
       <View
@@ -143,16 +150,16 @@ export function NotificationViewport(props: {
         style={{
           pointerEvents: "box-none",
           position: "absolute",
-          ...(bottomEdge
-            ? { bottom: 16 + Math.max(insets().bottom, safeArea().bottom) }
-            : {
-                top:
-                  (props.modal ? 16 : chrome.header + 8) +
-                  Math.max(insets().top, safeArea().top),
-              }),
+          ...(bottomEdge()
+            ? {
+                bottom:
+                  (wide() ? 16 : (props.bottomOffset || 0) + 12) +
+                  Math.max(insets().bottom, safeArea().bottom),
+              }
+            : { top: 12 + Math.max(insets().top, safeArea().top) }),
           left: 16 + Math.max(insets().left, safeArea().left),
           right: 16 + Math.max(insets().right, safeArea().right),
-          alignItems: bottomEdge ? "flex-end" : "center",
+          alignItems: wide() && bottomEdge() ? "flex-end" : "center",
           zIndex: 10000,
         }}
       >
@@ -160,7 +167,7 @@ export function NotificationViewport(props: {
           style={{
             pointerEvents: "box-none",
             width: "100%",
-            maxWidth: bottomEdge ? 360 : 420,
+            maxWidth: wide() && bottomEdge() ? 360 : 420,
             height: center.expanded() ? entries().length * 80 : 100,
           }}
         >
@@ -170,7 +177,7 @@ export function NotificationViewport(props: {
                 center={center}
                 item={entry().item}
                 index={entry().index}
-                bottom={bottomEdge}
+                bottom={bottomEdge()}
                 dismissLabel={props.dismissLabel}
               />
             )}
@@ -190,9 +197,8 @@ function ToastCard(props: {
 }) {
   const x = createNativeValue(0),
     y = createNativeValue(0);
-  const direction = props.bottom ? -1 : 1;
   const offset = computed(
-    () => direction * props.index * (props.center.expanded() ? 80 : 14),
+    () => (props.bottom ? -1 : 1) * props.index * (props.center.expanded() ? 80 : 14),
   );
   let previousOffset = offset();
   const stackY = createNativeValue(previousOffset);

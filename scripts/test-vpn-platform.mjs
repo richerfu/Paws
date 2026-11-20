@@ -49,7 +49,7 @@ function loadArkts(relativePath, overrides = {}, cache = new Map()) {
       if (Object.hasOwn(overrides, name)) return overrides[name];
       if (name === '@kit.FormKit') return { formBindingData: { createFormBindingData(v) { return v; } }, formProvider: { async updateForm() {} } };
       if (name === '@kit.CoreFileKit') return { fileIo: { statSync() { throw new Error('missing fixture journal'); }, openSync() { throw new Error('fixture filesystem unavailable'); } } };
-      if (name === '@kit.BasicServicesKit') return { commonEventManager: {} };
+      if (name === '@kit.BasicServicesKit') return { commonEventManager: {}, deviceInfo: { deviceType: overrides.deviceType ?? 'phone' } };
       if (name.startsWith('.')) {
         return loadArkts(resolve(dirname(filename), `${name}.ets`), overrides, cache);
       }
@@ -1765,7 +1765,7 @@ test('system wakeup claims pending auto-recovery and restarts VPN without droppi
 
 
 
-function gatewayFixture({ dispatch, scan, selected = [], fileSize = 3, readError, packingError } = {}) {
+function gatewayFixture({ dispatch, scan, selected = [], fileSize = 3, readError, packingError, deviceType = 'phone' } = {}) {
   const calls = [];
   const events = [];
   const waits = [];
@@ -1827,6 +1827,7 @@ function gatewayFixture({ dispatch, scan, selected = [], fileSize = 3, readError
     cancelUiRevisionWait() { for (const item of waits) item.wait.resolve('7'); calls.push(['cancel-wait']); },
   };
   const api = loadArkts('entry/src/main/ets/components/PawsCoreGateway.ets', {
+    deviceType,
     '@kit.ArkUI': {},
     '@kit.ImageKit': { image: { createImagePacker() { return {
       async packing() { if (packingError) throw packingError; return Uint8Array.from([137,80,78,71]).buffer; },
@@ -2051,6 +2052,22 @@ test('NSH system bars follow system appearance only while the app uses system th
   assert.deepEqual(fixture.calls.filter(call => call[0] === 'color'), []);
   assert.deepEqual(bars.map(value => value.statusBarContentColor), ['#ffffffff', '#ff000000', '#ffffffff', '#ff000000']);
   assert.deepEqual(bars.map(value => value.navigationBarContentColor), ['#ffffffff', '#ff000000', '#ffffffff', '#ff000000']);
+  fixture.host.dispose();
+  fixture.gateway.dispose();
+});
+
+test('NSH 2in1 runtime skips phone-only full-screen and system-bar calls', async () => {
+  const fixture = gatewayFixture({ deviceType: '2in1' });
+  const bars = [];
+  const backgrounds = [];
+  fixture.host.attachMainWindow({
+    async setWindowBackgroundColor(color) { backgrounds.push(color); },
+    async setWindowSystemBarProperties(properties) { bars.push(properties); },
+  });
+  fixture.host.applyPreferences({ theme: 'dark', systemColorMode: 1 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(backgrounds, []);
+  assert.deepEqual(bars, []);
   fixture.host.dispose();
   fixture.gateway.dispose();
 });

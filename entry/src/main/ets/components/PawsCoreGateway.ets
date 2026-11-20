@@ -1,5 +1,6 @@
 import { ComponentContent, UIContext } from "@kit.ArkUI";
 import { ConfigurationConstant, common } from "@kit.AbilityKit";
+import { deviceInfo } from "@kit.BasicServicesKit";
 import { fileIo, picker } from "@kit.CoreFileKit";
 import { util } from "@kit.ArkTS";
 import { generateBarcode, scanBarcode, scanCore } from "@kit.ScanKit";
@@ -404,6 +405,9 @@ export class PawsHostServices {
 
   applyPreferences(preferences: UiPreferences): void {
     this.ensureActive();
+    if (deviceInfo.deviceType === "2in1") {
+      return;
+    }
     // NSH owns the app's appearance and explicit control colors. Changing the
     // Ability color mode would also rebuild ArkUI's global resource theme.
     // System pickers retain the actual system appearance.

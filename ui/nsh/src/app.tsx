@@ -1111,6 +1111,9 @@ export function PawsApp(props: {
           </BaseTabs>
         </If>
         <NotificationViewport
+          bottomOffset={
+            !wide() && depth() === 1 && !parentPage(page()) ? chrome.bottom : 0
+          }
           dismissLabel={ui.t("关闭通知", "Dismiss notification")}
         />
       </>
