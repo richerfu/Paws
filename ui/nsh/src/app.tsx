@@ -1042,7 +1042,11 @@ export function PawsApp(props: {
               minHeight: chrome.bottom,
               flexDirection: "row",
               paddingHorizontal: spacing.sm,
-              paddingVertical: spacing.xxs,
+              paddingTop: spacing.xxs,
+              paddingBottom:
+                safeArea().bottom > 0
+                  ? Math.max(8, Math.round(safeArea().bottom * 0.55))
+                  : spacing.xxs,
               gap: spacing.xxs,
               backgroundColor: palette().background,
               borderTopWidth: 1,
@@ -1061,7 +1065,7 @@ export function PawsApp(props: {
                   activeStyle={{ backgroundColor: palette().soft }}
                   style={{
                     flex: 1,
-                    minHeight: 52,
+                    minHeight: 44,
                     alignItems: "center",
                     justifyContent: "center",
                     gap: 2,
@@ -1072,9 +1076,9 @@ export function PawsApp(props: {
                 >
                   <View
                     style={{
-                      width: 48,
-                      height: 28,
-                      borderRadius: 14,
+                      width: 44,
+                      height: 22,
+                      borderRadius: 11,
                       borderCurve: "continuous",
                       alignItems: "center",
                       justifyContent: "center",
@@ -1094,8 +1098,8 @@ export function PawsApp(props: {
                   <Text
                     maxFontSizeMultiplier={1.2}
                     style={{
-                      fontSize: density.font(12),
-                      lineHeight: density.line(16),
+                      fontSize: density.font(11),
+                      lineHeight: density.line(14),
                       color:
                         group() === tab().page
                           ? palette().text
@@ -1111,20 +1115,23 @@ export function PawsApp(props: {
           </BaseTabs>
         </If>
         <NotificationViewport
-          bottomOffset={
-            !wide() && depth() === 1 && !parentPage(page()) ? chrome.bottom : 0
-          }
           dismissLabel={ui.t("关闭通知", "Dismiss notification")}
         />
       </>
     );
+    const showBottomTabs = () =>
+      !wide() && depth() === 1 && !parentPage(page());
     return (
       <View
         style={{
           flex: 1,
           backgroundColor: palette().background,
           paddingTop: "env(safe-area-inset-top)",
-          paddingBottom: "env(safe-area-inset-bottom)",
+          paddingBottom: showBottomTabs()
+            ? 0
+            : safeArea().bottom > 0
+              ? Math.max(8, Math.round(safeArea().bottom * 0.6))
+              : 0,
           paddingLeft: "env(safe-area-inset-left)",
           paddingRight: "env(safe-area-inset-right)",
         }}

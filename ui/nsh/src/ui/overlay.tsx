@@ -292,7 +292,10 @@ function TouchBottomSheet(props: {
         borderRightWidth: 1,
         borderBottomWidth: 0,
         borderColor: palette().border,
-        paddingBottom: safeArea().bottom,
+        paddingBottom:
+          safeArea().bottom > 0
+            ? Math.max(8, Math.round(safeArea().bottom * 0.55))
+            : 0,
         ...surfaceFinish("overlay"),
       }}
       footer={props.footer}
@@ -301,7 +304,7 @@ function TouchBottomSheet(props: {
           ? {
               paddingHorizontal: spacing.lg,
               paddingTop: 12,
-              paddingBottom: spacing.lg,
+              paddingBottom: safeArea().bottom > 0 ? spacing.sm : spacing.lg,
               borderTopWidth: 1,
               borderTopColor: palette().line,
             }

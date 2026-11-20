@@ -19,7 +19,6 @@ import {
 import { Icon } from "./icons";
 import { motion } from "./motion";
 import {
-  control,
   focusRing,
   palette,
   radius,
@@ -111,7 +110,6 @@ export function useNotificationLayer(): number {
 export function NotificationViewport(props: {
   owner?: number;
   modal?: boolean;
-  bottomOffset?: number;
   dismissLabel?: string;
 }) {
   const center = Notifications();
@@ -135,14 +133,14 @@ export function NotificationViewport(props: {
     ];
   });
   const wide = () => platform.desktop || windowSize().width >= 768;
-  const bottomEdge = () => !props.modal;
   // Absolute children are positioned from the parent's padding box, so the
   // root safe-area padding does not inset this viewport for us.
-  // - Non-modal Phone (< 768pt): bottom-center above the tab bar / home indicator
-  //   so it never blocks the top back button or header actions and follows HarmonyOS toast conventions.
-  // - Non-modal PC / wide (>= 768pt): bottom-right corner.
-  // - Modal Dialog layer: top-center right beneath the status bar safe area (12pt),
-  //   staying clear of the centered dialog footer and soft keyboard.
+  // - Unified top-center placement across Phone, Pad, PC, and modal Dialogs.
+  // - Right beneath the status bar safe area (4pt on Phone, 8pt on PC/wide/modal)
+  //   with zero extra header offset so it never floats too low.
+  // - On narrow non-modal Phone (< 768pt), 60pt horizontal clearance keeps the
+  //   top-left Back button (16..56pt) and top-right icon button unobstructed.
+  const sideInset = () => (wide() || props.modal ? 16 : 60);
   return (
     <If when={active() && entries().length > 0}>
       <View
@@ -150,16 +148,12 @@ export function NotificationViewport(props: {
         style={{
           pointerEvents: "box-none",
           position: "absolute",
-          ...(bottomEdge()
-            ? {
-                bottom:
-                  (wide() ? 16 : (props.bottomOffset || 0) + 12) +
-                  Math.max(insets().bottom, safeArea().bottom),
-              }
-            : { top: 12 + Math.max(insets().top, safeArea().top) }),
-          left: 16 + Math.max(insets().left, safeArea().left),
-          right: 16 + Math.max(insets().right, safeArea().right),
-          alignItems: wide() && bottomEdge() ? "flex-end" : "center",
+          top:
+            (wide() || props.modal ? 8 : 4) +
+            Math.max(insets().top, safeArea().top),
+          left: sideInset() + Math.max(insets().left, safeArea().left),
+          right: sideInset() + Math.max(insets().right, safeArea().right),
+          alignItems: "center",
           zIndex: 10000,
         }}
       >
@@ -167,8 +161,8 @@ export function NotificationViewport(props: {
           style={{
             pointerEvents: "box-none",
             width: "100%",
-            maxWidth: wide() && bottomEdge() ? 360 : 420,
-            height: center.expanded() ? entries().length * 80 : 100,
+            maxWidth: wide() ? 380 : 360,
+            height: center.expanded() ? entries().length * 72 : 88,
           }}
         >
           <Each of={entries()} key={(entry) => entry.item.id}>
@@ -177,7 +171,6 @@ export function NotificationViewport(props: {
                 center={center}
                 item={entry().item}
                 index={entry().index}
-                bottom={bottomEdge()}
                 dismissLabel={props.dismissLabel}
               />
             )}
@@ -198,7 +191,7 @@ function ToastCard(props: {
   const x = createNativeValue(0),
     y = createNativeValue(0);
   const offset = computed(
-    () => (props.bottom ? -1 : 1) * props.index * (props.center.expanded() ? 80 : 14),
+    () => (props.bottom ? -1 : 1) * props.index * (props.center.expanded() ? 72 : 12),
   );
   let previousOffset = offset();
   const stackY = createNativeValue(previousOffset);
@@ -282,11 +275,11 @@ function ToastCard(props: {
         ...(props.bottom ? { bottom: 0 } : { top: 0 }),
         left: `${props.center.expanded() ? 0 : props.index * 2.5}%`,
         width: `${props.center.expanded() ? 100 : 100 - props.index * 5}%`,
-        minHeight: 52,
-        height: front() ? undefined : 72,
-        paddingVertical: density.space(12),
+        minHeight: platform.desktop ? 36 : 44,
+        height: front() ? undefined : 60,
+        paddingVertical: density.space(platform.desktop ? 5 : 6),
         paddingLeft: density.space(12),
-        paddingRight: density.space(8),
+        paddingRight: density.space(6),
         borderWidth: 1,
         borderColor:
           props.item.tone === "danger"
@@ -307,7 +300,7 @@ function ToastCard(props: {
     >
       <If when={front()}>
         <View
-          style={{ width: 28, height: control.icon, justifyContent: "center" }}
+          style={{ width: 24, height: 32, justifyContent: "center" }}
         >
           <Icon
             name={
@@ -329,8 +322,8 @@ function ToastCard(props: {
           style={{
             numberOfLines: 2,
             flex: 1,
-            fontSize: density.font(14),
-            lineHeight: density.line(20),
+            fontSize: density.font(13),
+            lineHeight: density.line(18),
             fontWeight: "600",
             color: palette().text,
           }}
@@ -344,17 +337,18 @@ function ToastCard(props: {
           focusVisibleStyle={focusRing()}
           hoverStyle={{ backgroundColor: palette().soft }}
           activeStyle={{ backgroundColor: palette().soft }}
+          hitSlop={platform.desktop ? 0 : 6}
           onPress={() => props.center.dismiss(props.item.id)}
           style={{
-            width: control.icon,
-            height: control.icon,
+            width: platform.desktop ? 28 : 32,
+            height: platform.desktop ? 28 : 32,
             alignItems: "center",
             justifyContent: "center",
             borderRadius: density.space(6),
             borderCurve: "continuous",
           }}
         >
-          <Icon name="x" size={16} color={palette().muted} />
+          <Icon name="x" size={15} color={palette().muted} />
         </View>
       </If>
     </View>

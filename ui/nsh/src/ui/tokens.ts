@@ -195,7 +195,7 @@ export const chrome = {
   header: 52,
   /** Unified seamless desktop/wide toolbar height (matches nsh.json titleBar.height). */
   toolbar: 48,
-  bottom: 64,
+  bottom: 52,
 };
 
 const names = {
@@ -308,7 +308,10 @@ export function popupSurface(
           borderBottomLeftRadius: 0,
           borderBottomRightRadius: 0,
           borderBottomWidth: 0,
-          paddingBottom: safeArea().bottom + spacing.sm,
+          paddingBottom:
+            safeArea().bottom > 0
+              ? Math.max(spacing.md, Math.round(safeArea().bottom * 0.55) + spacing.xs)
+              : spacing.sm,
         }
       : {}),
     ...surfaceFinish("menu"),
