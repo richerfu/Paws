@@ -308,10 +308,7 @@ export function popupSurface(
           borderBottomLeftRadius: 0,
           borderBottomRightRadius: 0,
           borderBottomWidth: 0,
-          paddingBottom:
-            safeArea().bottom > 0
-              ? Math.max(spacing.md, Math.round(safeArea().bottom * 0.55) + spacing.xs)
-              : spacing.sm,
+          paddingBottom: Math.max(spacing.sm, safeArea().bottom),
         }
       : {}),
     ...surfaceFinish("menu"),

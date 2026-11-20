@@ -330,7 +330,7 @@ ui/nsh/src/ui/
 1. **禁止同级堆叠与竞态打开**：所有从 `ObjectMenu` / `ContextMenu` / `BottomSheet` / `Dialog` 打开另一浮层的命令（如菜单「编辑订阅…」「删除…」「导出…」、连接 Sheet「以此域名添加规则…」、规则查询「添加针对此地址的规则」），**必须先关闭当前浮层，等待其原生 `onClose` / `afterClose` 生命周期回调，且校验 `alive() && ui.route() === owner` 后再挂载下一个浮层**。
 2. **Escape 与硬件返回键层级栈**：`overlays()` 信号记录当前活跃浮层深度。按 `Escape` 或系统返回键时，**永远只关闭最顶层可关闭浮层**（L4 `AlertDialog` → L3 子 `Dialog` → L2 `BottomSheet`/`Menu`/`Popover` → L1 内联检查器/导航栈 Pop），并将键盘焦点准确归还给触发元素。
 3. **脏草稿阻断规则**：带有表单草稿的 `Dialog` / `BottomSheet`（添加订阅、编辑订阅、添加规则）接管 `Escape`、关闭按钮与遮罩点击；若草稿为空则立即关闭，若存在未保存修改则弹出最高优先级 `AlertDialog`（`继续编辑` 保留原弹窗与输入 / `放弃修改` 依次关闭）。
-4. **Toast 跨模态可见性与顶部居中定位**：`NotificationCenter` 维护模态层栈（`useNotificationLayer()`），确保在 `Dialog` 或 `BottomSheet` 打开期间产生的报错/复制成功通知直接渲染于最顶层模态窗内（不被 scrim 压暗或遮挡），最多同时露出 3 张叠堆卡片。Phone / Pad / PC 及模态 `Dialog` 统一采用**顶部居中**紧凑浮层：Phone 紧贴状态栏安全区下方 `4pt`（左右保留 `60pt` 净空以绝不遮挡顶部返回钮与右侧图标按钮），PC 及宽屏紧贴内容顶缘下方 `8pt`（`maxWidth: 380pt`，居中于顶栏空白区）；底部导航栏与 `TouchBottomSheet` 统一收敛底部指示条避让高度，避免底部过度留白。
+4. **Toast 跨模态可见性与纯接口安全区策略**：`NotificationCenter` 维护模态层栈（`useNotificationLayer()`），确保在 `Dialog` 或 `BottomSheet` 打开期间产生的报错/复制成功通知直接渲染于最顶层模态窗内（不被 scrim 压暗或遮挡），最多同时露出 3 张叠堆卡片。Phone / Pad / PC 及模态 `Dialog` 统一采用**顶部居中**紧凑浮层，垂直定位直接消费系统 `safeAreaInsets()` / `safeArea()`（Phone 距状态栏 `spacing.xs`，PC/宽屏/弹窗 `spacing.sm`），Phone 端水平净空由页头左右动作区的 `onLayout` 实时测量驱动，绝不硬编码像素或压挡返回/动作按钮；底部导航栏、子页与 `TouchBottomSheet` 均严格单次消费系统 `env(safe-area-inset-bottom)` / `safeAreaInsets().bottom`（无双层叠加、无硬编码缩放比例），完整兼容手势条与三键导航栏。
 5. **PC 与宽屏运行时窗口与浮层规则**：
    - HarmonyOS 宿主层按运行时 `deviceInfo.deviceType` 区分：Phone / Tablet 启用 `setWindowLayoutFullScreen(true)` 沉浸式 Edge-to-Edge 全屏并同步状态栏明暗；`2in1`（PC）保留桌面原生窗口管理并跳过仅限移动端的系统栏 API。
    - 只要处于桌面平台或视口宽度 `≥ 768pt`（含 Pad 竖屏/横屏、HarmonyOS 2-in-1 宽窗与 PC 全尺寸窗口）：

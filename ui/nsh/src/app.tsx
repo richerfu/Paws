@@ -16,6 +16,7 @@ import {
   platform,
   reduceMotion,
   safeArea,
+  safeAreaInsets,
 } from "nsh";
 import { titleBar } from "nsh/desktop";
 import { BackHandler } from "nsh/mobile";
@@ -356,6 +357,37 @@ export function PawsApp(props: {
     });
   }
   const Shell = () => {
+    const insets = safeAreaInsets();
+    const headerLeading = signal(0),
+      headerTrailing = signal(0);
+    effect(() => {
+      if (!canBack()) headerLeading.set(0);
+    });
+    const showBottomTabs = () =>
+      !wide() && depth() === 1 && !parentPage(page());
+    const toastInsets = () => {
+      const width = windowSize().width - safeArea().left - safeArea().right;
+      if (wide()) return { left: spacing.lg, right: spacing.lg };
+      const leading = canBack()
+        ? spacing.lg + (headerLeading() || control.icon) + spacing.xs
+        : spacing.lg;
+      const trailing =
+        headerTrailing() > 0
+          ? spacing.lg + headerTrailing() + spacing.xs
+          : spacing.lg;
+      const symmetric = Math.max(leading, trailing);
+      if (width - symmetric * 2 >= 220) {
+        return { left: symmetric, right: symmetric };
+      }
+      const maxCombined = Math.max(spacing.lg * 2, width - 180);
+      if (leading + trailing <= maxCombined) {
+        return { left: leading, right: trailing };
+      }
+      return {
+        left: leading,
+        right: Math.max(spacing.lg, maxCombined - leading),
+      };
+    };
     const content = (
       <>
         <If when={props.embeddedGateway !== false}>
@@ -432,6 +464,9 @@ export function PawsApp(props: {
               >
                 <If when={canBack()}>
                   <View
+                    onLayout={(e) =>
+                      headerLeading.set(Math.ceil(e.bounds.size.width))
+                    }
                     desktop={platform.desktop ? { windowDrag: false } : undefined}
                   >
                     <IconButton
@@ -484,7 +519,18 @@ export function PawsApp(props: {
                 >
                   {ui.t(...titles[page()])}
                 </Text>
-                <If when={wide() && page() === "dashboard"}>
+                <View
+                  onLayout={(e) =>
+                    headerTrailing.set(Math.ceil(e.bounds.size.width))
+                  }
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    flexShrink: 0,
+                  }}
+                >
+                  <If when={wide() && page() === "dashboard"}>
                   <Action
                     small
                     secondary
@@ -837,6 +883,7 @@ export function PawsApp(props: {
                     />
                   </If>
                 </If>
+                </View>
               </View>
             </View>
             <If when={props.client.vpnUnconfirmed()}>
@@ -1035,18 +1082,14 @@ export function PawsApp(props: {
             </If>
           </View>
         </View>
-        <If when={!wide() && depth() === 1 && !parentPage(page())}>
+        <If when={showBottomTabs()}>
           <BaseTabs
             testID="bottom-navigation"
             style={{
-              minHeight: chrome.bottom,
               flexDirection: "row",
               paddingHorizontal: spacing.sm,
-              paddingTop: spacing.xxs,
-              paddingBottom:
-                safeArea().bottom > 0
-                  ? Math.max(8, Math.round(safeArea().bottom * 0.55))
-                  : spacing.xxs,
+              paddingTop: spacing.xs,
+              paddingBottom: Math.max(spacing.xs, insets().bottom),
               gap: spacing.xxs,
               backgroundColor: palette().background,
               borderTopWidth: 1,
@@ -1115,23 +1158,19 @@ export function PawsApp(props: {
           </BaseTabs>
         </If>
         <NotificationViewport
+          insetLeft={toastInsets().left}
+          insetRight={toastInsets().right}
           dismissLabel={ui.t("关闭通知", "Dismiss notification")}
         />
       </>
     );
-    const showBottomTabs = () =>
-      !wide() && depth() === 1 && !parentPage(page());
     return (
       <View
         style={{
           flex: 1,
           backgroundColor: palette().background,
           paddingTop: "env(safe-area-inset-top)",
-          paddingBottom: showBottomTabs()
-            ? 0
-            : safeArea().bottom > 0
-              ? Math.max(8, Math.round(safeArea().bottom * 0.6))
-              : 0,
+          paddingBottom: showBottomTabs() ? 0 : "env(safe-area-inset-bottom)",
           paddingLeft: "env(safe-area-inset-left)",
           paddingRight: "env(safe-area-inset-right)",
         }}
