@@ -43,13 +43,13 @@ class StageTests(unittest.TestCase):
         dep.write_text('{}\n')
         self.write('target/ohos/arkts-deps/ability/oh-package.json5', {'name': '@ohos-rs/ability'})
         self.write('target/ohos/arkts-source-inputs.json', {'packages': [{
-            'name': '@nsh/ohos', 'stagedRoot': 'target/ohos/arkts-deps/nsh',
+            'name': '@nsh/harmonyos', 'stagedRoot': 'target/ohos/arkts-deps/nsh',
             'files': {'oh-package.json5': {'stagedSha256': stage.file_hash(dep)}}}]})
         self.hap = Path(self.temp.name) / 'normal.hap'
         self.payload = {'module.json': json.dumps({'app': {'bundleName': 'com.richerfu.paws', 'debug': True}}).encode(),
                         'resources/rawfile/paws.bundle.js': b'actual-ui-artifact-placeholder-for-file-test',
                         'resources/rawfile/geodata/fixture.dat': b'geodata'}
-        for name in ('libpaws_ui.so', 'libnsh_platform_ohos.so', 'libclash.so', 'libsingbox.so', 'libnative_ability.so'):
+        for name in ('libpaws_ui.so', 'libnsh_platform_harmonyos.so', 'libclash.so', 'libsingbox.so', 'libnative_ability.so'):
             self.payload[f'libs/arm64-v8a/{name}'] = f'not-an-ELF:{name}'.encode()
         self.pack(self.hap)
         self.manifest = {'hapBuildMode': 'debug', 'diagnosticBypass': False, 'wireCapture': False,

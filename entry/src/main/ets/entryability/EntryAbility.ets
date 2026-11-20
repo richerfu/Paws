@@ -7,7 +7,7 @@ import {
 } from "@kit.AbilityKit";
 import { i18n } from "@kit.LocalizationKit";
 import { hilog } from "@kit.PerformanceAnalysisKit";
-import { initLogging } from "@nsh/ohos";
+import { initLogging } from "@nsh/harmonyos";
 import window from "@ohos.window";
 import pawsUi from "libpaws_ui.so";
 import { describeError } from "../common/Errors";

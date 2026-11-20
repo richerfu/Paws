@@ -186,9 +186,11 @@ if [ -n "${NODE_HOME:-}" ]; then
 fi
 
 cd "$ROOT_DIR"
-# Share the prepared source root with SDK compilation, native version metadata,
+# Share the prepared source roots with SDK compilation, native version metadata,
 # HAR staging and the final provenance writer; subprocess exports do not flow up.
-NSH_ROOT=$(python3 "$ROOT_DIR/scripts/prepare-nsh-build-source.py")
+NSH_HARMONYOS_ROOT=$(python3 "$ROOT_DIR/scripts/prepare-nsh-build-source.py")
+export NSH_HARMONYOS_ROOT
+NSH_ROOT=${NSH_ROOT:-$(python3 "$ROOT_DIR/scripts/nsh_build_inputs.py" --field nshRoot)}
 export NSH_ROOT
 NATIVE_PROFILE="$NATIVE_PROFILE" "$ROOT_DIR/scripts/build-nsh-ohos.sh"
 native_build_fingerprint() {

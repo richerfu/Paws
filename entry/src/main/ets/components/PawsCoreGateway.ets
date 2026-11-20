@@ -5,7 +5,7 @@ import { util } from "@kit.ArkTS";
 import { generateBarcode, scanBarcode, scanCore } from "@kit.ScanKit";
 import { image } from "@kit.ImageKit";
 import { hilog } from "@kit.PerformanceAnalysisKit";
-import { NshNativeProperty, NshSurface } from "libnsh_platform_ohos.so";
+import { NshNativeProperty, NshSurface } from "libnsh_platform_harmonyos.so";
 import pawsUi, { UiCommandSession } from "libpaws_ui.so";
 import window from "@ohos.window";
 import { VpnPlugin } from "../plugins/VpnPlugin";

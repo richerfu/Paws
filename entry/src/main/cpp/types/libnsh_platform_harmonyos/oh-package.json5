@@ -1,0 +1,6 @@
+{
+  "name": "libnsh_platform_harmonyos.so",
+  "version": "0.1.0",
+  "description": "Native Shell for HarmonyOS: the native library's N-API exports",
+  "types": "./Index.d.ts"
+}

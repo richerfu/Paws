@@ -1,4 +1,4 @@
-import { NshSurface } from "@nsh/ohos";
+import { NshSurface } from "@nsh/harmonyos";
 import { hilog } from "@kit.PerformanceAnalysisKit";
 import BuildProfile from "BuildProfile";
 import { describeError } from "../common/Errors";
