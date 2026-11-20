@@ -10,13 +10,21 @@ import {
   untracked,
   View,
   createAnimatedValue as createNativeValue,
+  platform,
   reduceMotion,
   safeArea,
   safeAreaInsets as useSafeAreaInsets,
 } from "nsh";
 import { Icon } from "./icons";
 import { motion } from "./motion";
-import { control, focusRing, palette, radius, surfaceFinish } from "./theme";
+import {
+  chrome,
+  control,
+  focusRing,
+  palette,
+  radius,
+  surfaceFinish,
+} from "./theme";
 
 export type NotificationTone = "info" | "warning" | "danger";
 export type Notification = {
@@ -125,6 +133,7 @@ export function NotificationViewport(props: {
       ...leaving.map((item) => ({ item, index: 0 })),
     ];
   });
+  const bottomEdge = platform.desktop && !props.modal;
   // Absolute children are positioned from the parent's padding box, so the
   // root safe-area padding does not inset this viewport for us.
   return (
@@ -134,10 +143,16 @@ export function NotificationViewport(props: {
         style={{
           pointerEvents: "box-none",
           position: "absolute",
-          top: 16 + Math.max(insets().top, safeArea().top),
+          ...(bottomEdge
+            ? { bottom: 16 + Math.max(insets().bottom, safeArea().bottom) }
+            : {
+                top:
+                  (props.modal ? 16 : chrome.header + 8) +
+                  Math.max(insets().top, safeArea().top),
+              }),
           left: 16 + Math.max(insets().left, safeArea().left),
           right: 16 + Math.max(insets().right, safeArea().right),
-          alignItems: "center",
+          alignItems: bottomEdge ? "flex-end" : "center",
           zIndex: 10000,
         }}
       >
@@ -145,7 +160,7 @@ export function NotificationViewport(props: {
           style={{
             pointerEvents: "box-none",
             width: "100%",
-            maxWidth: 420,
+            maxWidth: bottomEdge ? 360 : 420,
             height: center.expanded() ? entries().length * 80 : 100,
           }}
         >
@@ -155,6 +170,7 @@ export function NotificationViewport(props: {
                 center={center}
                 item={entry().item}
                 index={entry().index}
+                bottom={bottomEdge}
                 dismissLabel={props.dismissLabel}
               />
             )}
@@ -169,12 +185,14 @@ function ToastCard(props: {
   center: NotificationCenter;
   item: Notification;
   index: number;
+  bottom?: boolean;
   dismissLabel?: string;
 }) {
   const x = createNativeValue(0),
     y = createNativeValue(0);
+  const direction = props.bottom ? -1 : 1;
   const offset = computed(
-    () => props.index * (props.center.expanded() ? 80 : 14),
+    () => direction * props.index * (props.center.expanded() ? 80 : 14),
   );
   let previousOffset = offset();
   const stackY = createNativeValue(previousOffset);
@@ -187,8 +205,9 @@ function ToastCard(props: {
     }
   });
   const enter = !reduceMotion() && Date.now() - props.item.created < 220;
+  const hiddenY = props.bottom ? 80 : -80;
   const opacity = createNativeValue(enter ? 0 : 1),
-    entrance = createNativeValue(enter ? -80 : 0);
+    entrance = createNativeValue(enter ? hiddenY : 0);
   if (enter) {
     void opacity.timing(1, { duration: 220, easing: "easeOut" });
     void entrance.timing(0, { duration: 220, easing: "easeOut" });
@@ -201,7 +220,7 @@ function ToastCard(props: {
         return;
       }
       void opacity.timing(0, { duration: 260, easing: "easeOut" });
-      void entrance.timing(-80, { duration: 260, easing: "easeOut" });
+      void entrance.timing(hiddenY, { duration: 260, easing: "easeOut" });
     }
   });
   cleanup(() => {
@@ -231,14 +250,17 @@ function ToastCard(props: {
         const stackable =
           props.center.items().filter((item) => !item.leaving).length > 1;
         const horizontal = Math.abs(dx) >= 72 && Math.abs(dx) >= Math.abs(dy);
+        const expandPull = props.bottom ? dy <= -40 : dy >= 40;
+        const collapsePull = props.bottom ? dy >= 40 : dy <= -40;
+        const dismissPull = props.bottom ? dy >= 56 : dy <= -56;
         if (
           !horizontal &&
           stackable &&
-          ((!props.center.expanded() && dy >= 40) ||
-            (props.center.expanded() && dy <= -40))
+          ((!props.center.expanded() && expandPull) ||
+            (props.center.expanded() && collapsePull))
         )
           props.center.expanded.set(!props.center.expanded());
-        else if (Math.abs(dx) >= 72 || dy <= -56)
+        else if (Math.abs(dx) >= 72 || dismissPull)
           props.center.dismiss(props.item.id);
         if (reduceMotion()) {
           x.set(0);
@@ -251,7 +273,7 @@ function ToastCard(props: {
       style={{
         pointerEvents: front() && !props.item.leaving ? "auto" : "none",
         position: "absolute",
-        top: 0,
+        ...(props.bottom ? { bottom: 0 } : { top: 0 }),
         left: `${props.center.expanded() ? 0 : props.index * 2.5}%`,
         width: `${props.center.expanded() ? 100 : 100 - props.index * 5}%`,
         minHeight: 52,
@@ -311,10 +333,9 @@ function ToastCard(props: {
         </Text>
         <View
           testID={`dismiss-toast-${props.item.id}`}
-          class="focus-visible:ring-2 focus-visible:ring-ring"
           role="button"
           accessibilityLabel={props.dismissLabel || "Dismiss notification"}
-          focusStyle={focusRing()}
+          focusVisibleStyle={focusRing()}
           hoverStyle={{ backgroundColor: palette().soft }}
           activeStyle={{ backgroundColor: palette().soft }}
           onPress={() => props.center.dismiss(props.item.id)}

@@ -9,13 +9,15 @@ import {
   Text,
   View,
 } from "nsh";
-import { Editor, type EditorRef, type EditorSearchResult } from "nsh/base";
 import {
   Action,
   Actions,
   Alert,
   askConfirmation,
   Badge,
+  Editor,
+  type EditorRef,
+  type EditorSearchResult,
   Field,
   Hint,
   IconButton,

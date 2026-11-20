@@ -1,9 +1,18 @@
-import { signal, Text, View, Scroll, windowSize, keymap, platform, fontScale } from "nsh";
+import { Text, View, Scroll, keymap, platform, fontScale } from "nsh";
+import { titleBar } from "nsh/desktop";
 import { Button, Tooltip } from "nsh/base";
 import { Icon, type IconName } from "./icons";
-import type { Page } from "./components";
-import { palette, spacing, radius, control, density, focusRing, surfaceFinish } from "./theme";
-import { feedbackStyle } from "./motion";
+import type { Page } from "./ui/context";
+import {
+  chrome,
+  palette,
+  spacing,
+  radius,
+  density,
+  focusRing,
+  surfaceFinish,
+} from "./ui/tokens";
+import { feedbackStyle } from "./ui/motion";
 
 type Destination = { page: Page; zh: string; en: string; icon: IconName; keybinding?: string };
 export const desktopPrimary: Destination[] = [
@@ -142,9 +151,9 @@ export function DesktopNavigation(props: {
           <Tooltip
             style={{
               maxWidth: 260,
-              paddingHorizontal: spacing.md,
-              paddingVertical: spacing.sm,
-              borderRadius: radius.md,
+              paddingHorizontal: spacing.sm,
+              paddingVertical: density.space(4),
+              borderRadius: radius.sm,
               borderCurve: "continuous",
               backgroundColor: palette().popover,
               borderWidth: 1,
@@ -154,7 +163,7 @@ export function DesktopNavigation(props: {
               gap: spacing.sm,
             }}
           >
-            <Text style={{ fontSize: density.font(13), color: palette().text }}>
+            <Text style={{ fontSize: density.font(12), color: palette().text }}>
               {props.t(item.destination.zh, item.destination.en)}
             </Text>
             <If when={platform.desktop && !!item.shortcut}>
@@ -162,6 +171,7 @@ export function DesktopNavigation(props: {
                 style={{
                   fontSize: density.font(11),
                   color: palette().muted,
+                  fontVariant: ["tabular-nums"],
                 }}
               >
                 {keymap.label(`mod+${item.shortcut}`)}
@@ -178,7 +188,7 @@ export function DesktopNavigation(props: {
       accessibilityLabel={props.t(item.destination.zh, item.destination.en)}
       selected={selected(item.destination.page)}
       onPress={() => props.navigate(item.destination.page)}
-      focusStyle={focusRing()}
+      focusVisibleStyle={focusRing()}
       hoverStyle={
         selected(item.destination.page)
           ? undefined
@@ -274,91 +284,127 @@ export function DesktopNavigation(props: {
         borderRightColor: palette().sidebarBorder,
       }}
     >
-      <Button
-        testID="desktop-toggle-sidebar"
-        tooltip={
-          !expanded() ? (
-            <Tooltip
+      <View
+        desktop={platform.desktop ? { windowDrag: true } : undefined}
+        style={{
+          minHeight: platform.desktop
+            ? Math.max(chrome.toolbar, titleBar().height)
+            : chrome.toolbar + 4,
+          paddingTop:
+            platform.desktop && !expanded() && titleBar().left > 0
+              ? titleBar().height
+              : 0,
+          paddingLeft:
+            platform.desktop && expanded() && titleBar().left > 0
+              ? titleBar().left + 8
+              : 8,
+          paddingRight: 8,
+          justifyContent: "center",
+        }}
+      >
+        <View desktop={platform.desktop ? { windowDrag: false } : undefined}>
+          <Button
+            testID="desktop-toggle-sidebar"
+            tooltip={
+              !expanded() ? (
+                <Tooltip
+                  style={{
+                    maxWidth: 240,
+                    paddingHorizontal: spacing.sm,
+                    paddingVertical: density.space(4),
+                    borderRadius: radius.sm,
+                    borderCurve: "continuous",
+                    backgroundColor: palette().popover,
+                    borderWidth: 1,
+                    borderColor: palette().border,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: spacing.xs,
+                  }}
+                >
+                  <Text
+                    style={{
+                      fontSize: density.font(12),
+                      color: palette().text,
+                    }}
+                  >
+                    {props.t("展开导航栏", "Expand sidebar")}
+                  </Text>
+                  <If when={platform.desktop}>
+                    <Text
+                      style={{
+                        fontSize: density.font(11),
+                        color: palette().muted,
+                        fontVariant: ["tabular-nums"],
+                      }}
+                    >
+                      {keymap.label("mod+b")}
+                    </Text>
+                  </If>
+                </Tooltip>
+              ) : undefined
+            }
+            accessibilityLabel={
+              expanded()
+                ? props.t("收起导航栏", "Collapse sidebar")
+                : props.t("展开导航栏", "Expand sidebar")
+            }
+            onPress={props.onToggle}
+            focusVisibleStyle={focusRing()}
+            hoverStyle={{ backgroundColor: palette().hover }}
+            activeStyle={{ backgroundColor: palette().soft }}
+            style={{
+              minHeight: platform.desktop ? 34 : 40,
+              paddingHorizontal: expanded() ? 8 : 0,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: expanded() ? "flex-start" : "center",
+              gap: 9,
+              borderRadius: platform.desktop ? 6 : 9,
+              borderCurve: "continuous",
+              ...feedbackStyle(),
+            }}
+          >
+            <View
               style={{
-                maxWidth: 240,
-                paddingHorizontal: spacing.md,
-                paddingVertical: spacing.sm,
-                borderRadius: radius.md,
+                width: 26,
+                height: 26,
+                borderRadius: 8,
                 borderCurve: "continuous",
-                backgroundColor: palette().popover,
                 borderWidth: 1,
-                borderColor: palette().border,
+                alignItems: "center",
+                justifyContent: "center",
+                ...surfaceFinish("accent"),
               }}
             >
               <Text
-                style={{ fontSize: density.font(13), color: palette().text }}
+                style={{
+                  fontSize: 13,
+                  lineHeight: 16,
+                  fontWeight: "700",
+                  color: palette().primaryText,
+                }}
               >
-                {props.t("展开导航栏", "Expand sidebar")}
+                P
               </Text>
-            </Tooltip>
-          ) : undefined
-        }
-        accessibilityLabel={
-          expanded()
-            ? props.t("收起导航栏", "Collapse sidebar")
-            : props.t("展开导航栏", "Expand sidebar")
-        }
-        onPress={props.onToggle}
-        focusStyle={focusRing()}
-        hoverStyle={{ backgroundColor: palette().hover }}
-        activeStyle={{ backgroundColor: palette().soft }}
-        style={{
-          minHeight: 40,
-          marginTop: 12,
-          marginBottom: 4,
-          marginHorizontal: 8,
-          paddingHorizontal: expanded() ? 10 : 0,
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: expanded() ? "flex-start" : "center",
-          gap: 9,
-          borderRadius: 9,
-          borderCurve: "continuous",
-        }}
-      >
-        <View
-          style={{
-            width: 26,
-            height: 26,
-            borderRadius: 8,
-            borderCurve: "continuous",
-            borderWidth: 1,
-            alignItems: "center",
-            justifyContent: "center",
-            ...surfaceFinish("accent"),
-          }}
-        >
-          <Text
-            style={{
-              fontSize: 13,
-              lineHeight: 16,
-              fontWeight: "700",
-              color: palette().primaryText,
-            }}
-          >
-            P
-          </Text>
+            </View>
+            <If when={expanded()}>
+              <Text
+                style={{
+                  flex: 1,
+                  color: palette().text,
+                  fontSize: 16,
+                  fontWeight: "600",
+                  letterSpacing: -0.16,
+                }}
+              >
+                Paws
+              </Text>
+              <Icon name="panel-left" size={16} color={palette().muted} />
+            </If>
+          </Button>
         </View>
-        <If when={expanded()}>
-          <Text
-            style={{
-              flex: 1,
-              color: palette().text,
-              fontSize: 16,
-              fontWeight: "600",
-              letterSpacing: -0.16,
-            }}
-          >
-            Paws
-          </Text>
-          <Icon name="panel-left" size={16} color={palette().muted} />
-        </If>
-      </Button>
+      </View>
       <Scroll
         bounces={false}
         style={{ flex: 1 }}

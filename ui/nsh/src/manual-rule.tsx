@@ -128,10 +128,6 @@ export function ManualRuleDialog(props: {
   return (
     <Dialog
       title={ui.t("添加规则", "Add rule")}
-      description={ui.t(
-        "为此域名或 IP 添加优先匹配的规则。",
-        "Add a priority rule for this domain or IP.",
-      )}
       onClose={() => void close()}
       footer={
         <If when={ui.client.domains.has(["rules", "summary"])}>

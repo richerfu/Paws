@@ -361,7 +361,7 @@ export function Resources() {
               <View
                 role="button"
                 accessibilityLabel={row().file!.name}
-                focusStyle={focusRing()}
+                focusVisibleStyle={focusRing(0)}
                 hoverStyle={{ backgroundColor: palette().hover }}
                 activeStyle={{ backgroundColor: palette().soft }}
                 onPress={() => geodata.set(row().file)}
@@ -464,10 +464,6 @@ export function Resources() {
                 title={ui.t(
                   "当前订阅没有 Provider",
                   "This subscription has no providers",
-                )}
-                text={ui.t(
-                  "分享链接订阅通常只包含节点；Provider 需由 Clash YAML 显式声明",
-                  "Link subscriptions usually contain nodes only; providers must be declared in Clash YAML.",
                 )}
               />
             </If>
@@ -594,12 +590,6 @@ export function Resources() {
               )}
             </List>
           </View>
-          <Hint
-            text={ui.t(
-              "此列表来自当前运行内核；配置规则可在资源列表中编辑。",
-              "This list comes from the running engine. Edit profile rules in the resource list.",
-            )}
-          />
         </Dialog>
       </If>
       <If when={selectedRule()}>
@@ -655,8 +645,8 @@ export function Resources() {
         <Dialog
           title={ui.t("规则查询", "Rule lookup")}
           description={ui.t(
-            "用共享规则编译器预览当前配置的域名或 IP 匹配，不代表运行内核的实际连接判定。",
-            "Preview the current profile with the shared rule compiler; this is not an observed routing decision from the running engine.",
+            "预览当前配置的规则匹配结果",
+            "Preview rule matching for the active profile",
           )}
           onClose={closeLookup}
           afterClose={() => {
@@ -1039,7 +1029,7 @@ function RuleRow(props: {
             role="button"
             accessibilityLabel={ui.t("查看完整规则", "View complete rule")}
             onPress={props.onDetails}
-            focusStyle={focusRing()}
+            focusVisibleStyle={focusRing(0)}
             hoverStyle={{ backgroundColor: palette().hover }}
             activeStyle={{ backgroundColor: palette().soft }}
             style={{
@@ -1167,7 +1157,7 @@ function ProviderCard(props: { provider: Provider; onDetails: () => void }) {
           <View
             role="button"
             onPress={props.onDetails}
-            focusStyle={focusRing()}
+            focusVisibleStyle={focusRing(0)}
             hoverStyle={{ backgroundColor: palette().hover }}
             activeStyle={{ backgroundColor: palette().soft }}
             accessibilityLabel={provider().name}

@@ -12,8 +12,10 @@ from nsh_runner import run_nsh, navigation_steps
 
 class NativeTree:
     def __init__(self):
-        self.nodes = {}
-        self.root = None
+        # Node 1 is NSH's implicit host root; desktop titlebars and modals may
+        # mount sibling subtrees alongside the app root under parent 1.
+        self.root = '1'
+        self.nodes = {'1': {'id': '1', 'kind': 'Root', 'parent': None, 'hidden': False}}
         self.clipboard = []
         self.sibling_order = {}
 
@@ -29,8 +31,6 @@ class NativeTree:
         props = re.search(r'ViewProps \{ id: (\d+),', line)
         if create:
             self.nodes[create[1]] = {'id': create[1], 'kind': create[2], 'parent': None, 'hidden': False}
-            if self.root is None:
-                self.root = create[1]
         if insert and insert[2] in self.nodes:
             self.nodes[insert[2]]['parent'] = insert[1]
             for order in self.sibling_order.values():
@@ -68,11 +68,16 @@ class NativeTree:
 
     def visible(self, node):
         seen = set()
+        in_modal = False
         while node['id'] != self.root:
             if node['hidden'] or node['id'] in seen:
                 return False
-            if 'frame' in node and (node['frame'][2] <= 0 or node['frame'][3] <= 0):
+            # Modal renders in its own native overlay window; its logical anchor
+            # wrapper inside the page may legitimately have zero layout height.
+            if not in_modal and 'frame' in node and (node['frame'][2] <= 0 or node['frame'][3] <= 0):
                 return False
+            if node['kind'] == 'Modal':
+                in_modal = True
             seen.add(node['id'])
             parent = self.nodes.get(node['parent'])
             if parent is None:

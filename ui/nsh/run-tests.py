@@ -136,6 +136,7 @@ def validate_output(name, output, markers, expected_taps):
         spec.loader.exec_module(visual)
         for kind in ("SHEET", "PROVIDER"):
             before, remaining = output.split(f"LIVE {kind} BEGIN", 1)
+            before = before.rsplit("── open(", 1)[-1]
             changes = remaining.split(f"LIVE {kind} END", 1)[0]
             tree = visual.NativeTree()
             for line in before.splitlines():

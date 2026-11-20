@@ -95,16 +95,20 @@ export function Dashboard() {
           : home().primarySelectedNode || home().latestRuleNode) ||
         ui.t("未选择", "Not selected");
   const nodeSubtitle = () => {
-    if (current().mode === "direct")
-      return ui.t("直连模式 · 不经过代理节点", "Direct mode · bypasses proxies");
-    if (current().mode === "global")
-      return ui.t("全局模式 · 所有连接使用同一节点", "Global mode");
-    const primaryGroup = home().groups.find(
-      (group) => group.name.toUpperCase() !== "GLOBAL" && group.selected,
-    );
-    return primaryGroup
-      ? `${primaryGroup.name} · ${ui.t("规则分流", "Rule routing")}`
-      : ui.t("规则分流 · 点按选择节点", "Rule routing · tap to select node");
+    if (current().mode === "direct") return ui.t("直连模式", "Direct mode");
+    if (current().mode === "global") return ui.t("全局模式", "Global mode");
+    const primaryGroup =
+      home().groups.find(
+        (group) =>
+          group.name.toLowerCase() === "proxy" &&
+          (group.effectiveSelectedNode || group.selected),
+      ) ||
+      home().groups.find(
+        (group) =>
+          group.name.toUpperCase() !== "GLOBAL" &&
+          (group.effectiveSelectedNode || group.selected),
+      );
+    return primaryGroup ? primaryGroup.name : ui.t("规则模式", "Rule mode");
   };
   const exit = () =>
     !current().vpnRunning
@@ -357,7 +361,7 @@ export function Dashboard() {
                 role="button"
                 accessibilityLabel={ui.t("代理节点", "Proxy nodes")}
                 onPress={() => ui.navigate("proxies")}
-                focusStyle={focusRing()}
+                focusVisibleStyle={focusRing(0)}
                 hoverStyle={{ backgroundColor: palette().hover }}
                 activeStyle={{ backgroundColor: palette().soft }}
                 style={{

@@ -17,6 +17,7 @@ import {
   reduceMotion,
   safeArea,
 } from "nsh";
+import { titleBar } from "nsh/desktop";
 import { BackHandler } from "nsh/mobile";
 import {
   Tab,
@@ -397,9 +398,15 @@ export function PawsApp(props: {
           </If>
           <View style={{ flex: 1, minWidth: 0 }}>
             <View
+              desktop={platform.desktop ? { windowDrag: true } : undefined}
               style={{
                 minHeight: Math.max(
-                  wide() ? chrome.toolbar : chrome.header,
+                  wide()
+                    ? Math.max(
+                        chrome.toolbar,
+                        platform.desktop ? titleBar().height : 0,
+                      )
+                    : chrome.header,
                   density.line(24) * Math.max(1, fontScale()) + spacing.md,
                 ),
                 borderBottomWidth: 1,
@@ -412,19 +419,28 @@ export function PawsApp(props: {
                 style={{
                   width: "100%",
                   maxWidth: wide() ? undefined : pageMeasure(page(), false),
-                  paddingHorizontal: wide() ? layout().inset : spacing.lg,
+                  paddingLeft:
+                    (wide() ? layout().inset : spacing.lg) +
+                    (!wide() && platform.desktop ? titleBar().left : 0),
+                  paddingRight:
+                    (wide() ? layout().inset : spacing.lg) +
+                    (platform.desktop ? titleBar().right : 0),
                   flexDirection: "row",
                   alignItems: "center",
                   gap: 8,
                 }}
               >
                 <If when={canBack()}>
-                  <IconButton
-                    id="nav-back"
-                    icon="arrow-left"
-                    label={ui.t("返回", "Back")}
-                    onPress={back}
-                  />
+                  <View
+                    desktop={platform.desktop ? { windowDrag: false } : undefined}
+                  >
+                    <IconButton
+                      id="nav-back"
+                      icon="arrow-left"
+                      label={ui.t("返回", "Back")}
+                      onPress={back}
+                    />
+                  </View>
                 </If>
                 <If when={platform.desktop && !canBack()}>
                   <View
@@ -501,7 +517,7 @@ export function PawsApp(props: {
                     <Action
                       id="add-profile"
                       small
-                      primary
+                      secondary
                       icon="plus"
                       label={ui.t("添加订阅…", "Add subscription…")}
                       onPress={() => importIntent.set(importIntent() + 1)}
@@ -770,7 +786,7 @@ export function PawsApp(props: {
                     <Action
                       id="add-rule"
                       small
-                      primary
+                      secondary
                       icon="plus"
                       label={ui.t("添加规则…", "Add rule…")}
                       disabled={
@@ -806,7 +822,7 @@ export function PawsApp(props: {
                         {
                           id: "lookup-rule",
                           icon: "search",
-                          label: ui.t("规则查询", "Rule lookup"),
+                          label: ui.t("规则查询…", "Rule lookup…"),
                           disabled: !props.client.domains.fresh(
                             pageDomains("resources"),
                           ),
@@ -1040,7 +1056,7 @@ export function PawsApp(props: {
                   selected={group() === tab().page}
                   accessibilityLabel={ui.t(tab().zh, tab().en)}
                   onPress={() => switchWorkspace(tab().page)}
-                  focusStyle={focusRing()}
+                  focusVisibleStyle={focusRing()}
                   hoverStyle={{ backgroundColor: palette().hover }}
                   activeStyle={{ backgroundColor: palette().soft }}
                   style={{

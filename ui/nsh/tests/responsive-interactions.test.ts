@@ -19,6 +19,14 @@ for (const device of [
     await app.type("id:vpn-mtu", "1");
     expect(app.value("id:vpn-mtu")).toBe("15001");
     expect(app.enabled("id:save-vpn")).toBe(true);
+    if (device.name === "Pad") {
+      // Wide touch (>= 768pt) uses anchored Popover instead of a bottom Sheet.
+      await app.press("id:vpn-engine");
+      expect(app.shows("id:select-popover")).toBe(true);
+      expect(app.shows("id:select-option-meow")).toBe(true);
+      await app.keyboard.press("escape");
+      expect(app.shows("id:select-popover")).toBe(false);
+    }
     await app.setViewport(620, 900);
     expect(app.value("id:vpn-mtu")).toBe("15001");
     expect(app.enabled("id:save-vpn")).toBe(true);

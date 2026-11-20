@@ -9,7 +9,6 @@ import {
   platform,
   Scroll,
 } from "nsh";
-import { Button } from "nsh/base";
 import {
   ActivityTableHeader,
   ActivityTableRow,
@@ -169,6 +168,8 @@ export function Activity(props: { history?: boolean }) {
       ? activeSelection()
       : undefined;
 
+  let afterSheet: Connection | undefined;
+
   // Mount once per selection. Live fields update props without replaying the sheet entrance.
   const ConnectionSheet = () => {
     const current = () => sheetSelection()!;
@@ -188,6 +189,11 @@ export function Activity(props: { history?: boolean }) {
               : ui.t("已结束", "Ended")
         } · ${ui.t("建立于", "Started")} ${formatActivityTime(current().startedAt)}`}
         onClose={clearSelection}
+        afterClose={() => {
+          const target = afterSheet;
+          afterSheet = undefined;
+          if (target) rule(target);
+        }}
       >
         <If when={!live()}>
           <Hint
@@ -215,9 +221,8 @@ export function Activity(props: { history?: boolean }) {
             icon="plus"
             label={ui.t("以此域名添加规则…", "Add rule for this host…")}
             onPress={() => {
-              const selected = current();
+              afterSheet = current();
               clearSelection();
-              rule(selected);
             }}
           />
           <If when={canClose()}>
@@ -381,31 +386,13 @@ export function Activity(props: { history?: boolean }) {
             : `${rows().length} ${ui.t("条活跃连接", "active")}`}
       </Text>
       <If when={filtered()}>
-        <Button
-          testID="activity-clear-filters"
-          accessibilityLabel={ui.t("清除筛选条件", "Clear filters")}
-          focusStyle={focusRing()}
-          hoverStyle={{ opacity: 0.8 }}
-          activeStyle={{ opacity: 0.65 }}
+        <Action
+          id="activity-clear-filters"
+          variant="link"
+          small
+          label={ui.t("清除筛选条件", "Clear filters")}
           onPress={clearFilters}
-          style={{
-            minHeight: 24,
-            paddingHorizontal: 6,
-            borderRadius: radius.sm,
-            justifyContent: "center",
-          }}
-        >
-          <Text
-            style={{
-              fontSize: typography.note,
-              lineHeight: density.line(18),
-              fontWeight: "600",
-              color: palette().accent,
-            }}
-          >
-            {ui.t("清除筛选条件", "Clear filters")}
-          </Text>
-        </Button>
+        />
       </If>
     </View>
   );
@@ -535,7 +522,7 @@ export function Activity(props: { history?: boolean }) {
                     testID={`activity-row-${mode()}-${row().id}`}
                     role="button"
                     accessibilityLabel={host()}
-                    focusStyle={focusRing()}
+                    focusVisibleStyle={focusRing(0)}
                     hoverStyle={{
                       backgroundColor: isSelected()
                         ? palette().accentFill
