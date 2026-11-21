@@ -48,8 +48,8 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
     rows: [
       {
         page: "settings",
-        zh: "网络设置",
-        en: "Network settings",
+        zh: COPY["nav-settings"][0],
+        en: COPY["nav-settings"][1],
         icon: "sliders-horizontal",
       },
       {
@@ -66,20 +66,20 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
     rows: [
       {
         page: "connections",
-        zh: "连接与请求",
-        en: "Connections & requests",
+        zh: COPY["nav-connections"][0],
+        en: COPY["nav-connections"][1],
         icon: "list-filter",
       },
       {
         page: "resources",
-        zh: "资源与规则",
-        en: "Resources & rules",
+        zh: COPY["nav-resources"][0],
+        en: COPY["nav-resources"][1],
         icon: "layers",
       },
       {
         page: "logs",
-        zh: "日志",
-        en: "Logs",
+        zh: COPY["nav-logs"][0],
+        en: COPY["nav-logs"][1],
         icon: "file-text",
       },
     ],
@@ -96,8 +96,8 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
       },
       {
         page: "backups",
-        zh: "备份与恢复",
-        en: "Backup & restore",
+        zh: COPY["backup-title"][0],
+        en: COPY["backup-title"][1],
         icon: "download",
       },
       {
@@ -108,8 +108,8 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
       },
       {
         page: "about",
-        zh: "关于",
-        en: "About",
+        zh: COPY["nav-about"][0],
+        en: COPY["nav-about"][1],
         icon: "info",
       },
     ],

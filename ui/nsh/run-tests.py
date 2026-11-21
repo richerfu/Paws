@@ -41,7 +41,7 @@ def cases(log_dir):
         "id:desktop-nav-resources", "id:rule-menu-rule-1", "id:rule-down-rule-1", "id:save-rule-order",
         "id:resources-section-resources", "id:provider-menu-proxy-Test provider", "label:资源详情…", "label:测速 >> nth=0", "id:dialog-close",
         "label:GeoIP", "id:dialog-close",
-        "id:desktop-nav-appearance", "label:深色", "label:浅色",
+        "id:desktop-nav-settings", "id:settings-section-appearance", "label:深色", "label:浅色",
         "id:desktop-nav-resources", "id:lookup-rule", "id:dialog-close", "id:add-rule", "id:dialog-close", "id:lookup-rule", "id:dialog-close",
     ]
 
@@ -190,7 +190,7 @@ def validate_output(name, output, markers, expected_taps):
         # Actual native mounts for the dark/light presses: only the selected
         # radio dot changes identity. Translated option rows must stay mounted.
         presses = re.split(r"(?m)^PAWS PRESS #\b", output)[1:]
-        for index in (12, 13):
+        for index in (13, 14):
             if presses[index].count("Create {") > 1 or presses[index].count("Delete {") > 1:
                 raise ValueError("desktop-wire: theme change recreated translated control rows")
     if name == "phone-wire":
@@ -259,7 +259,7 @@ def validate_resource_dialogs(output):
             controls.pop(deleted[1], None)
         elif PRESS.match(line):
             press += 1
-            expected = "rule-lookup-query" if press in (17, 21) else "manual-rule-value" if press == 19 else None
+            expected = "rule-lookup-query" if press in (18, 22) else "manual-rule-value" if press == 20 else None
             if expected and expected not in controls.values():
                 raise ValueError(f"desktop-wire: resource intent did not mount {expected} before press {press}")
 

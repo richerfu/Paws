@@ -676,7 +676,7 @@ export function Traffic() {
                 <ListRow
                   id="traffic-connections"
                   icon="list-filter"
-                  title={ui.t("连接与请求", "Connections & requests")}
+                  title={ui.t("连接", "Connections")}
                   subtitle={
                     ui.client.domains.data("traffic")
                       ?.connectionSummaryAvailable === false

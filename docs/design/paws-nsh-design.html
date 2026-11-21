@@ -513,9 +513,16 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
 .tier-pointer .chk{border-radius:5px}
 .tier-pointer .rad.on::after{width:6px;height:6px}
 .tier-pointer .chk svg{width:11px;height:11px}
-.tier-pointer .nav-item{height:28px;border-radius:6px;padding:0 8px;gap:9px;font-size:13px}
-.tier-pointer .nav-item.on{border-color:transparent;font-weight:500}
+.tier-pointer .nav-item{height:28px;border-radius:6px;padding:0 8px;gap:9px;font-size:13px;font-weight:400}
+.tier-pointer .nav-item.on{border-color:var(--border);font-weight:500}
 .tier-pointer .side.rail .nav-item{width:36px;height:36px;padding:0;border-radius:8px}
+.side-spacer{flex:1;min-height:8px}
+.side-pin{display:flex;flex-direction:column;gap:6px;width:100%}
+.side.rail .side-pin{align-items:center}
+.side-pin .nav-sep{width:auto;margin:0 4px}
+.side.rail .side-pin .nav-sep{width:28px;margin:0}
+.settings-tabs-bar{flex:none;width:100%;max-width:720px;margin:0 auto;padding:12px 20px 2px}
+.dev-pad-l .settings-tabs-bar{max-width:640px}
 .tier-pointer .dlg-head b{font-size:17px;line-height:23px}
 .tier-pointer .help{font-size:12px}
 .tier-pointer .fld{padding:8px 14px}
@@ -551,6 +558,7 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
 <symbol id="power" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></symbol>
 <symbol id="stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" stroke="none"/></symbol>
 <symbol id="house" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></symbol>
+<symbol id="dashboard" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></symbol>
 <symbol id="rss" viewBox="0 0 24 24"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/></symbol>
 <symbol id="branch" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M6 8.5v7"/><path d="M18 10.5c0 4-6 3-11 6"/></symbol>
 <symbol id="activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
@@ -1010,7 +1018,7 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
   function goBack() {
     if (popOverlay()) return;
     if (S.stack.length > 1) navigateTo(S.stack[S.stack.length - 2], false);
-    else if (["profile-detail","editor","proxies","proxy-group"].includes(S.page)) navigateTo("profiles", false);
+    else if (["profile-detail","editor","converter","proxies","proxy-group"].includes(S.page)) navigateTo("profiles", false);
     else if (S.page === "dns-diagnostics") navigateTo("traffic", false);
     else if (S.page === "advanced-diagnostics") navigateTo("diagnostics", false);
     else if (S.page === "privacy") navigateTo("about", false);
@@ -1020,35 +1028,34 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
   /* ---------------- 通用控件片段渲染 ---------------- */
   const latHtml = ms => ms === 0 ? `<span class="lat bad">超时</span>` : ms == null ? `<span class="lat na">—</span>` : `<span class="lat ${ms < 150 ? "good" : ms < 400 ? "mid" : "bad"}">${ms} ms</span>`;
   const lvMap = { info:["信息","info"], warn:["警告","warn"], error:["错误","err"], debug:["调试",""] };
-  const pageTitle = p => ({
-    dashboard: isWide() ? "概览" : "首页", profiles:"订阅", "profile-detail":"示例机场", proxies:"代理节点", "proxy-group":S.selectedProxyGroup,
-    traffic:"流量", "dns-diagnostics":"DNS 诊断", connections:"连接与请求", resources:"资源与规则", logs:"日志",
-    tools:"设置", settings:"网络设置", appearance:"外观", diagnostics:"连接诊断", "advanced-diagnostics":"高级诊断",
-    backups:"备份与恢复", converter:"订阅转换", about:"关于", privacy:"隐私与出口 IP", editor:"编辑配置"
-  }[p] || p);
-  const groupTitle = p => (["dashboard","profiles","profile-detail","editor","proxies","proxy-group","traffic","dns-diagnostics"].includes(p) ? "主要" : ["connections","resources","logs"].includes(p) ? "网络" : "工具与偏好");
+  const SETTINGS_SECTIONS = ["settings","appearance","backups","about"];
+  const isSettingsSec = p => SETTINGS_SECTIONS.includes(p);
+  const pageTitle = (p, wide = isWide()) => {
+    if (wide && isSettingsSec(p)) return "设置";
+    return ({
+      dashboard:"概览", profiles:"订阅", "profile-detail":"示例机场", proxies:"节点", "proxy-group":S.selectedProxyGroup,
+      traffic:"流量", "dns-diagnostics":"DNS 诊断", connections:"连接", resources:"规则", logs:"日志",
+      tools:"设置", settings:"网络", appearance:"外观", diagnostics:"诊断", "advanced-diagnostics":"高级诊断",
+      backups:"备份", converter:"订阅转换", about:"关于", privacy:"隐私与出口 IP", editor:"编辑配置"
+    }[p] || p);
+  };
+  const groupTitle = p => (["connections","resources","logs","diagnostics","advanced-diagnostics"].includes(p) ? "网络" : "");
 
   const SIDE_NAV = [
-    { g:"主要", items:[
-      { p:"dashboard", t:"概览", ic:"house", k:"⌘1" },
+    { g:"", items:[
+      { p:"dashboard", t:"概览", ic:"dashboard", k:"⌘1" },
       { p:"profiles", t:"订阅", ic:"rss", k:"⌘2" },
-      { p:"proxies", t:"代理节点", ic:"branch", k:"⌘3" },
+      { p:"proxies", t:"节点", ic:"branch", k:"⌘3" },
       { p:"traffic", t:"流量", ic:"activity", k:"⌘4" }
     ]},
     { g:"网络", items:[
-      { p:"connections", t:"连接与请求", ic:"list" },
-      { p:"resources", t:"资源与规则", ic:"layers" },
-      { p:"logs", t:"日志", ic:"file" }
-    ]},
-    { g:"工具与偏好", items:[
-      { p:"diagnostics", t:"诊断", ic:"shield" },
-      { p:"backups", t:"备份与恢复", ic:"download" },
-      { p:"converter", t:"订阅转换", ic:"refresh" },
-      { p:"settings", t:"网络设置", ic:"sliders" },
-      { p:"appearance", t:"外观", ic:"gear", k:"⌘," },
-      { p:"about", t:"关于", ic:"info" }
+      { p:"connections", t:"连接", ic:"list", k:"⌘5" },
+      { p:"resources", t:"规则", ic:"layers", k:"⌘6" },
+      { p:"logs", t:"日志", ic:"file", k:"⌘7" },
+      { p:"diagnostics", t:"诊断", ic:"shield", k:"⌘8" }
     ]}
   ];
+  const SIDE_SETTINGS = { p:"settings", t:"设置", ic:"gear", k:"⌘," };
 
   function renderHeroCard(vpn = S.vpn) {
     const cfg = {
@@ -1228,7 +1235,7 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
         </div></div>`;
       const linksCard = `<div class="grp"><div class="ghead"><span class="gt">连接与诊断</span><span class="gm">4 个活跃</span></div>
         <div class="surf">
-          <button type="button" class="lrow click" data-nav="connections" data-push="1"><span class="ic">${I("list","s")}</span><span class="tx"><b>连接与请求</b><small>总下载 1.4 GB · 请求历史 126 条</small></span><span class="tr">${I("chev","s")}</span></button>
+          <button type="button" class="lrow click" data-nav="connections" data-push="1"><span class="ic">${I("list","s")}</span><span class="tx"><b>连接</b><small>总下载 1.4 GB · 请求历史 126 条</small></span><span class="tr">${I("chev","s")}</span></button>
           ${!wide ? `<button type="button" class="lrow click" data-nav="dns-diagnostics" data-push="1"><span class="ic">${I("globe","s")}</span><span class="tx"><b>DNS 与控制器诊断</b><small>缓存命中 128 / 164</small></span><span class="tr">${I("chev","s")}</span></button>` : ""}
         </div></div>`;
       if (wide && dev !== "pc-n") return `<div class="cols2" style="grid-template-columns:1.05fr .95fr"><div class="col-pane">${chartCard}</div><div class="col-pane">${dnsBlock}${linksCard}</div></div>`;
@@ -1383,9 +1390,9 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
     /* 8. 设置中心（仅 Phone / 窄 Pad） */
     if (S.page === "tools") {
       const secs = [
-        ["偏好",[["settings","sliders","网络设置","VPN、DNS、端口"],["appearance","gear","外观","语言与主题"]]],
-        ["网络",[["connections","list","连接与请求","活动连接与请求历史"],["resources","layers","资源与规则","分流规则与外部规则集"],["logs","file","日志","实时日志与按天归档"]]],
-        ["工具",[["diagnostics","shield","连接诊断","连接状态与探测"],["backups","download","备份与恢复",""],["converter","refresh","订阅转换",""],["about","info","关于",""]]]
+        ["偏好",[["settings","sliders","网络","VPN、DNS、端口"],["appearance","sun","外观","语言与主题"]]],
+        ["网络",[["connections","list","连接","活动连接与请求历史"],["resources","layers","规则","分流规则与外部规则集"],["logs","file","日志","实时日志与按天归档"]]],
+        ["工具",[["diagnostics","shield","诊断","连接状态与探测"],["backups","download","备份",""],["converter","refresh","订阅转换",""],["about","info","关于",""]]]
       ];
       return wrapCenter(secs.map(([t,items]) => `<div class="grp"><div class="ghead"><span class="gt">${t}</span></div>
         <div class="surf">${items.map(([p,ic,lb,sub]) => `<button type="button" class="lrow click" data-nav="${p}" data-push="1"><span class="ic">${I(ic,"s")}</span><span class="tx"><b>${lb}</b>${sub?`<small>${sub}</small>`:""}</span><span class="tr">${I("chev","s")}</span></button>`).join("")}</div></div>`).join(""));
@@ -1608,8 +1615,8 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
     if (S.page === "dashboard" && isWide(dev)) return `<button class="btn sm" data-toast="已刷新状态">${I("refresh","xs")}刷新</button>`;
     if (S.page === "profiles") {
       return desk
-        ? `<button class="btn sm" data-toast="全部订阅刷新完成：2 成功，0 失败">${I("refresh","xs")}全部更新</button><button class="btn sm" data-open-import="1">${I("plus","xs")}添加订阅…</button>`
-        : `<button class="ibtn sm" data-open-import="1" aria-label="添加订阅">${I("plus","s")}</button><button class="ibtn sm" data-toast="全部订阅刷新完成" aria-label="全部更新">${I("refresh","s")}</button>`;
+        ? `<button class="btn sm" data-nav="converter" data-push="1">${I("link","xs")}转换</button><button class="btn sm" data-toast="全部订阅刷新完成：2 成功，0 失败">${I("refresh","xs")}全部更新</button><button class="btn sm" data-open-import="1">${I("plus","xs")}添加订阅…</button>`
+        : `<button class="ibtn sm" data-open-import="1" aria-label="添加订阅">${I("plus","s")}</button><button class="ibtn sm" data-nav="converter" data-push="1" aria-label="订阅转换">${I("link","s")}</button><button class="ibtn sm" data-toast="全部订阅刷新完成" aria-label="全部更新">${I("refresh","s")}</button>`;
     }
     if (S.page === "proxies" || S.page === "proxy-group") return `<button class="btn sm" data-toast="已完成全组延迟测试">${I("zap","xs")}测试延迟</button>`;
     if (S.page === "connections") return S.activityTab==="requests"
@@ -1880,37 +1887,41 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
     const desk = isDesktop(dev), wide = isWide(dev), expanded = isExpandedSide(dev);
     const frameCls = dev==="phone" ? "dev-phone" : dev==="pad-p" ? "dev-pad-p" : dev==="pad-l" ? "dev-pad-l" : dev==="pc-n" ? "dev-pc narrow tier-pointer" : "dev-pc tier-pointer";
     const unconfirmedBanner = S.vpn === "unconfirmed" ? `<div style="padding:10px 16px 0"><div class="alert warn">${I("alert","s")}<div style="flex:1"><div><b>VPN 操作尚未确认</b> · 请确认原操作，或停止并重新同步。</div><div style="display:flex;gap:8px;margin-top:8px"><button class="btn sm" data-set-vpn="connected">确认状态</button><button class="btn sm stop" data-set-vpn="disconnected">${I("stop","xs")}停止并重新同步</button></div></div></div></div>` : "";
-    const canBack = !wide && (S.stack.length > 1 || !["dashboard","profiles","traffic","tools"].includes(S.page)) || (wide && ["editor","advanced-diagnostics","privacy","dns-diagnostics"].includes(S.page));
+    const canBack = !wide && (S.stack.length > 1 || !["dashboard","profiles","traffic","tools"].includes(S.page)) || (wide && ["editor","converter","advanced-diagnostics","privacy","dns-diagnostics"].includes(S.page));
 
     if (wide) {
+      const renderSideItem = it => {
+        const on = S.page === it.p || (it.p==="profiles"&&["profile-detail","editor","converter"].includes(S.page)) || (it.p==="proxies"&&S.page==="proxy-group") || (it.p==="traffic"&&S.page==="dns-diagnostics") || (it.p==="diagnostics"&&S.page==="advanced-diagnostics") || (it.p==="settings"&&(isSettingsSec(S.page)||S.page==="privacy"));
+        return `<button type="button" role="tab" aria-selected="${on}" class="nav-item ${on?"on":""}" data-nav="${it.p}" title="${it.t}${it.k?" "+it.k:""}">
+          ${I(it.ic,"s")}${expanded?`<span class="ell">${it.t}</span>${desk&&it.k?`<span class="nav-kbd">${it.k}</span>`:""}`:""}
+        </button>`;
+      };
       const side = `<aside class="side ${expanded?"":"rail"}">
         <div class="side-top">
           <button type="button" class="brand-btn" data-toggle-side="1" title="${expanded?"收起导航栏 (⌘B)":"展开导航栏 (⌘B)"}">
-            <span class="logo-sq">P</span>${expanded?`<span style="flex:1;text-align:left">Paws</span>${I("sidebar","s")}`:""}
+            ${expanded?`<span class="logo-sq">P</span><span style="flex:1;text-align:left">Paws</span>${I("sidebar","s")}`:I("sidebar","s")}
           </button>
         </div>
-        <div class="side-scroll">${SIDE_NAV.map((sec,idx) => `<div class="nav-sec">
-          ${expanded ? `<div class="nav-sec-h">${sec.g}</div>` : (idx>0?`<div class="nav-sep"></div>`:"")}
-          ${sec.items.map(it => {
-            const on = S.page === it.p || (it.p==="profiles"&&["profile-detail","editor"].includes(S.page)) || (it.p==="proxies"&&S.page==="proxy-group") || (it.p==="diagnostics"&&S.page==="advanced-diagnostics") || (it.p==="about"&&S.page==="privacy");
-            return `<button type="button" class="nav-item ${on?"on":""}" data-nav="${it.p}" title="${it.t}${it.k?" "+it.k:""}">
-              ${I(it.ic,"s")}${expanded?`<span class="ell">${it.t}</span>${desk&&it.k?`<span class="nav-kbd">${it.k}</span>`:""}`:""}
-            </button>`;
-          }).join("")}
-        </div>`).join("")}</div>
+        <div class="side-scroll" role="tablist" aria-orientation="vertical">${SIDE_NAV.map((sec,idx) => `<div class="nav-sec">
+          ${expanded ? (sec.g?`<div class="nav-sec-h">${sec.g}</div>`:"") : (idx>0?`<div class="nav-sep"></div>`:"")}
+          ${sec.items.map(renderSideItem).join("")}
+        </div>`).join("")}<div class="side-spacer"></div><div class="side-pin"><div class="nav-sep"></div>${renderSideItem(SIDE_SETTINGS)}</div></div>
         ${expanded ? `<div class="side-foot"><span style="display:inline-flex;align-items:center;gap:6px"><span class="dot ${S.vpn==="connected"?"ok":""}" style="width:7px;height:7px;box-shadow:none"></span>mihomo · ${S.vpn==="connected"?"已连接":"未连接"}</span><span>v1.3.0</span></div>` : ""}
       </aside>`;
+      const crumb = groupTitle(S.page);
+      const settingsTabs = isSettingsSec(S.page) ? `<div class="settings-tabs-bar"><div class="seg ${desk?"":"fill"}" role="tablist">${[["settings","网络"],["appearance","外观"],["backups","备份"],["about","关于"]].map(([p,l])=>`<button type="button" class="${S.page===p?"on":""}" data-nav="${p}">${l}</button>`).join("")}</div></div>` : "";
       const winBtns = desk ? `<div class="win-ctrls" aria-label="原生窗口控制预留区"><span class="wc">${I("minus","xs")}</span><span class="wc">${I("square","xs")}</span><span class="wc close">${I("x","xs")}</span></div>` : "";
       return `<div class="dev-frame ${frameCls}">
         ${side}
         <main class="ws-main">
           <div class="ws-tool">
-            ${canBack ? `<button class="ibtn sm" data-back="1">${I("back","s")}</button>` : (desk ? `<span class="ws-crumb">${groupTitle(S.page)}${I("chev","xs")}</span>` : "")}
-            <span class="ws-title">${pageTitle(S.page)}</span>
+            ${canBack ? `<button class="ibtn sm" data-back="1">${I("back","s")}</button>` : (desk && crumb ? `<span class="ws-crumb">${crumb}${I("chev","xs")}</span>` : "")}
+            <span class="ws-title">${pageTitle(S.page, true)}</span>
             <div class="ws-acts">${renderHeaderActions(dev)}</div>
             ${winBtns}
           </div>
           ${unconfirmedBanner}
+          ${settingsTabs}
           ${renderPageContent(dev)}
         </main>
         ${renderOverlays(dev)}
@@ -1922,12 +1933,12 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
       <div class="sb"><span>9:41</span><span>${dev==="pad-p"?"Pad 竖屏 768pt · ":""}82%</span></div>
       <div class="hdr">
         ${canBack ? `<button type="button" class="back-btn" data-back="1">${I("back","s")}返回</button>` : ""}
-        <span class="t">${pageTitle(S.page)}</span>
+        <span class="t">${pageTitle(S.page, false)}</span>
         <div class="act">${renderHeaderActions(dev)}</div>
       </div>
       ${unconfirmedBanner}
       ${renderPageContent(dev)}
-      ${showTabs ? `<nav class="btabs">${[["dashboard","house","首页"],["profiles","rss","订阅"],["traffic","activity","流量"],["tools","gear","设置"]].map(([p,ic,l])=>`<button type="button" class="btab ${S.page===p?"on":""}" data-nav="${p}"><span class="ti">${I(ic)}</span>${l}</button>`).join("")}</nav>` : ""}
+      ${showTabs ? `<nav class="btabs">${[["dashboard","dashboard","概览"],["profiles","rss","订阅"],["traffic","activity","流量"],["tools","gear","设置"]].map(([p,ic,l])=>`<button type="button" class="btab ${S.page===p?"on":""}" data-nav="${p}"><span class="ti">${I(ic)}</span>${l}</button>`).join("")}</nav>` : ""}
       <span class="home-ind"></span>
       ${renderOverlays(dev)}
     </div>`;
@@ -2221,8 +2232,8 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
     if (S.viewMode !== "stage" || !isDesktop()) return;
     if (e.metaKey || e.ctrlKey) {
       const k = e.key.toLowerCase();
-      if (["1","2","3","4"].includes(k)) { e.preventDefault(); navigateTo(["dashboard","profiles","proxies","traffic"][Number(k)-1]); }
-      else if (k === ",") { e.preventDefault(); navigateTo("appearance"); }
+      if (["1","2","3","4","5","6","7","8"].includes(k)) { e.preventDefault(); navigateTo(["dashboard","profiles","proxies","traffic","connections","resources","logs","diagnostics"][Number(k)-1]); }
+      else if (k === ",") { e.preventDefault(); navigateTo("settings"); }
       else if (k === "b") { e.preventDefault(); S.sidebarExpanded = !isExpandedSide(); renderStage(); }
       else if (k === "f" && S.page === "editor") { e.preventDefault(); S.yamlFind = !S.yamlFind; renderStage(); }
       else if (k === "s" && S.page === "editor") { e.preventDefault(); S.yamlDirty = false; pushToast("配置已保存 (⌘S)"); }
@@ -2253,7 +2264,8 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
       ["A09 · 数据表去冗余列头","PC 连接表头出现通用「操作」文案，违反 NSH 上下文经济原则","行尾已有清晰图标操作，省略通用「操作」列头，保持表头清爽"],
       ["A10 · 完整 8 条多级交互链","旧稿缺少 L0→L4 级联弹窗、导出二维码二级切换、规则查询链式跳转等交互闭环","全量绘出并可交互验证 8 条多级链，严格遵守菜单先关后开、Escape 逐级退栈与焦点归还"],
       ["A11 · 强制 Motion Inventory","缺少 NSH 规范要求在写代码前落盘的逐屏动效清单与静音策略","在 DESIGN.md 与本页末完整落盘动效令牌、9 类交互动效表、reduceMotion 降级与静音声明"],
-      ["A12 · 网络设置真实字段","旧稿错写 gVisor 与虚构应用列表页，缺少引擎决策异步预览详情弹窗","严格对齐真实字段（smoltcp / lwIP、引擎决策预览详情弹窗、出境易快捷填入、局域网密钥）"]
+      ["A12 · 网络设置真实字段","旧稿错写 gVisor 与虚构应用列表页，缺少引擎决策异步预览详情弹窗","严格对齐真实字段（smoltcp / lwIP、引擎决策预览详情弹窗、出境易快捷填入、局域网密钥）"],
+      ["A13 · PC 侧栏 9 项收敛与纯净名词","原稿侧栏平铺 13 项（4 个设置项零散拆分、⌘, 错绑「外观」），含「主要」空组名与「连接与请求/资源与规则/备份与恢复」复合冗余名","收敛为 9 项（4 无标题主工作区 + 4「网络」+ 底部固定「设置 ⌘,」）；设置内顶部分段切网络/外观/备份/关于；转换入订阅顶栏；全端统一 2 字/1 词纯净名词与 Gallery 选中态"]
     ];
     document.getElementById("audit-cards").innerHTML = audits.map(([k,o,f]) => `<div class="audit-card"><span class="code-tag">${k}</span><p class="old">原偏差：${o}</p><p class="fix"><b>修正：</b>${f}</p></div>`).join("");
 
@@ -2297,9 +2309,9 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
     ].join("");
     document.getElementById("board-phone-2").innerHTML = [
       snapshot("phone",{page:"profiles",dialog:{kind:"export",id:"p1",step:"qr"}},"Phone · 导出 Dialog 二级二维码视图","从对象菜单先关闭再打开导出 Dialog，选择二维码后原位切换至白底隔离框与保存图片。"),
-      snapshot("phone",{page:"connections",activityTab:"connections",sheet:{kind:"conn-detail",payload:DATA.connections[0]}},"Phone · 连接与请求 + 详情 Sheet (L2)","单行 Segmented + CompactPicker 筛选；点按行打开底部详情 Sheet，支持直达添加规则。"),
+      snapshot("phone",{page:"connections",activityTab:"connections",sheet:{kind:"conn-detail",payload:DATA.connections[0]}},"Phone · 连接 + 详情 Sheet (L2)","单行 Segmented + CompactPicker 筛选；点按行打开底部详情 Sheet，支持直达添加规则。"),
       snapshot("phone",{page:"connections",dialog:{kind:"manual-rule",payload:DATA.connections[0],dirty:true},alert:{title:"放弃未保存的修改？",body:"当前表单包含未保存的草稿，关闭后会丢失。",cancelLabel:"继续编辑",actionLabel:"放弃修改",destructive:true}},"Phone · 添加规则 Dialog (L3) + 脏草稿 Alert (L4)","完整呈现 L3 表单弹窗叠 L4 系统离开确认框，确保用户输入不会误丢。"),
-      snapshot("phone",{page:"resources",dialog:{kind:"rule-lookup",step:"result"}},"Phone · 资源与规则 + 规则查询 Dialog","展示匹配规则、解析 IP 与「添加针对此地址的规则」（经 afterClose 链式跳转加规则）。")
+      snapshot("phone",{page:"resources",dialog:{kind:"rule-lookup",step:"result"}},"Phone · 规则 + 规则查询 Dialog","展示匹配规则、解析 IP 与「添加针对此地址的规则」（经 afterClose 链式跳转加规则）。")
     ].join("");
     document.getElementById("board-phone-3").innerHTML = [
       snapshot("phone",{page:"logs",logTab:"current",sheet:{kind:"log-detail",payload:DATA.logs[4]}},"Phone · 日志 + 单条详情 Sheet","五级 Segmented 过滤 + 暂停跟随胶囊 + 底部详情 Sheet 支持一键跳往诊断预填目标。"),
@@ -2309,7 +2321,7 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
     ].join("");
     document.getElementById("board-phone-4").innerHTML = [
       snapshot("phone",{page:"proxy-group",selectedProxyGroup:"节点选择"},"Phone · 代理节点分组详情","二级推栈页隐藏底栏；单组测速 + 复制节点；22pt 触屏单选环 + 延迟语义着色与超时提示。"),
-      snapshot("phone",{page:"traffic",vpn:"connected"},"Phone · 流量趋势与二级入口","实时双列速率 + 24 采样零基线双色柱图；下挂「连接与请求」及「DNS 与控制器诊断」入口。"),
+      snapshot("phone",{page:"traffic",vpn:"connected"},"Phone · 流量趋势与二级入口","实时双列速率 + 24 采样零基线双色柱图；下挂「连接」及「DNS 与控制器诊断」入口。"),
       snapshot("phone",{page:"tools"},"Phone · 设置中心 Hub（偏好/网络/工具）","仅 Phone / 窄 Pad 存在，将网络与工具全部汇聚为无阴影分组卡片，避免 4 项底栏臃肿。"),
       snapshot("phone",{page:"converter",convAdv:true,convGenerated:true,convStale:true},"Phone · 订阅转换（进阶 + 失效提示态）","输入变化后结果区即刻弹出警告横幅并禁用复制/短链按钮，杜绝用户误复制旧链接。")
     ].join("");
@@ -2318,7 +2330,7 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
     document.getElementById("board-pad-1").innerHTML = [
       snapshot("pad-l",{page:"dashboard",vpn:"connected",expandedHomeGroup:"节点选择"},"Pad 横屏 · 概览（64pt 触屏图标轨 + 双列 + 策略组原地展开）","42pt 触屏图标轨块，左列状态/节点/速率，右列全部策略组直接平铺并可原地展开选节点。",true),
       snapshot("pad-l",{page:"profiles",dialog:{kind:"add-sub",url:"https://example.com/sub?token=…"}},"Pad 横屏 · 订阅主从分栏 + 440pt 居中导入 Dialog","宽屏平板表单改用居中 Dialog，保留触屏档 40pt 按钮与 46pt 输入框。",true),
-      snapshot("pad-l",{page:"connections",activityTab:"requests",selectedConnId:"r1"},"Pad 横屏 · 连接与请求 · 请求历史主从分栏","左侧双分段 + 协议分段 + 状态 Picker，右侧锁定选中记录详情，已结束请求隐藏关闭按钮。",true)
+      snapshot("pad-l",{page:"connections",activityTab:"requests",selectedConnId:"r1"},"Pad 横屏 · 连接 · 请求历史主从分栏","左侧双分段 + 协议分段 + 状态 Picker，右侧锁定选中记录详情，已结束请求隐藏关闭按钮。",true)
     ].join("");
     document.getElementById("board-pad-2").innerHTML = [
       snapshot("pad-l",{page:"logs",logTab:"current",selectedLogId:"l5"},"Pad 横屏 · 日志流 + 右侧常驻详情检查器","左侧日志流保留暂停跟随胶囊，右侧直接展示完整原文与「在诊断中探测目标」。",true),
@@ -2328,7 +2340,7 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
     document.getElementById("board-pad-3").innerHTML = [
       snapshot("pad-l",{page:"proxies",selectedProxyGroup:"自动选择"},"Pad 横屏 · 代理节点主从分栏（自动组固定节点态）","左侧策略组列表 340pt，右侧 48pt 触屏单选行与「已固定（点按恢复自动）」语义说明。",true),
       snapshot("pad-l",{page:"traffic",vpn:"connected"},"Pad 横屏 · 流量趋势 + 内联 DNS / 控制器诊断双列","宽屏无需推二级页，右侧直接内联 DNS 状态、Fake-IP 清理入口与控制器堆内存信息。",true),
-      snapshot("pad-l",{page:"settings",setMtu:"1500",setDirtyVpn:true},"Pad 横屏 · 网络设置（640pt 居中 + 分区独立保存）","VPN 基础、网络端口与控制器分区各自保留单一局部 Primary 保存按钮，避免多 Primary 冲突。",true)
+      snapshot("pad-l",{page:"settings",setMtu:"1500",setDirtyVpn:true},"Pad 横屏 · 统一设置（顶部分段 网络/外观/备份/关于 + 640pt 居中）","底部固定「设置」入口统一承接网络、外观、备份与关于 4 个分区，VPN 基础与端口分区各自独立保存。",true)
     ].join("");
 
     /* 6. PC 全景画板（无缝通顶侧栏 + 48pt 统一标题工具栏 + 指针档 + 840pt 窄窗回退，3 排共 9 屏） */
@@ -2338,7 +2350,7 @@ textarea.inp{height:84px;padding:10px 14px;resize:none;line-height:1.45}
       snapshot("pc",{page:"connections",activityTab:"connections",selectedConnId:"c1",inspectorOpen:true,dialog:{kind:"manual-rule",payload:DATA.connections[0]}},"PC 桌面 · DataTable + 330pt 可关闭检查器 + 添加规则 Dialog","单行工具筛选条（30/24pt 分段 + 32pt 搜索 + 24pt Picker 严格齐平），去冗余「操作」列头，居中弹窗添加规则。",true)
     ].join("");
     document.getElementById("board-pc-2").innerHTML = [
-      snapshot("pc",{page:"resources",resTab:"resources",dialog:{kind:"provider",id:"airport-nodes"}},"PC 桌面 · 资源与规则 + Provider 成员测速 Dialog","宽屏顶部双分段隔离配置规则与 Provider/GeoData；弹窗内支持逐成员独立测速。",true),
+      snapshot("pc",{page:"resources",resTab:"resources",dialog:{kind:"provider",id:"airport-nodes"}},"PC 桌面 · 规则 + Provider 成员测速 Dialog","宽屏顶部双分段隔离配置规则与 Provider/GeoData；弹窗内支持逐成员独立测速。",true),
       snapshot("pc",{page:"editor",yamlFind:true,yamlDirty:true},"PC 桌面 · 全工作区 YAML 编辑器（⌘S / ⌘F / ⌘⇧R）","占据侧栏右侧完整工作区，内联查找栏、高亮命中行与状态栏一目了然。",true),
       snapshot("pc-n",{page:"connections",activityTab:"connections",inspectorOpen:false},"PC 窄窗 · 840pt 自动收起为 64pt 指针图标轨与折叠列表格","窗口收窄保留 36pt 图标轨块（含快捷键 Tooltip）、单条桌面标题工具栏与折叠次要列，绝不退回手机底栏。",true)
     ].join("");

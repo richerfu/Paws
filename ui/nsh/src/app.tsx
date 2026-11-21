@@ -42,6 +42,7 @@ import {
   palette,
   radius,
   spacing,
+  Tabs,
   translator,
   type AppContext,
   type Page,
@@ -53,8 +54,10 @@ import { feedbackStyle } from "./motion";
 import { chrome, focusRing } from "./theme";
 import {
   DesktopNavigation,
-  desktopPrimary,
+  desktopShortcuts,
   desktopGroupTitle,
+  isSettingsSection,
+  type SettingsSection,
 } from "./desktop-navigation";
 import { Dashboard, DnsDiagnostics, Traffic } from "./pages/overview";
 import { Profiles } from "./pages/profiles";
@@ -90,30 +93,30 @@ import { ActivityDetail } from "./pages/activity";
 import { ObjectMenu } from "./object-menu";
 
 const primary: { page: Page; zh: string; en: string; icon: IconName }[] = [
-  { page: "dashboard", zh: "首页", en: "Home", icon: "house" },
+  { page: "dashboard", zh: "概览", en: "Overview", icon: "layout-dashboard" },
   { page: "profiles", zh: "订阅", en: "Subscriptions", icon: "rss" },
   { page: "traffic", zh: "流量", en: "Traffic", icon: "activity" },
   { page: "tools", zh: "设置", en: "Settings", icon: "settings" },
 ];
 const titles: Record<Page, [string, string]> = {
-  dashboard: ["首页", "Home"],
+  dashboard: ["概览", "Overview"],
   profiles: ["订阅", "Subscriptions"],
   "profile-detail": ["订阅详情", "Subscription details"],
-  proxies: ["代理节点", "Proxy nodes"],
+  proxies: ["节点", "Proxies"],
   "proxy-group": ["分组节点", "Group members"],
   traffic: ["流量", "Traffic"],
   "dns-diagnostics": ["DNS 诊断", "DNS diagnostics"],
   tools: ["设置", "Settings"],
-  settings: ["网络设置", "Network settings"],
+  settings: ["网络", "Network"],
   appearance: [...COPY["page-tr-001"]],
-  connections: ["连接与请求", "Connections & requests"],
-  requests: ["连接与请求", "Connections & requests"],
+  connections: ["连接", "Connections"],
+  requests: ["连接", "Connections"],
   "activity-detail": ["连接详情", "Connection details"],
-  resources: ["资源与规则", "Resources & rules"],
+  resources: ["规则", "Rules"],
   logs: ["日志", "Logs"],
   diagnostics: [...COPY["diagnostics-title"]],
   "advanced-diagnostics": ["高级诊断", "Advanced diagnostics"],
-  backups: ["备份与恢复", "Backup & restore"],
+  backups: [...COPY["backup-title"]],
   converter: [...COPY["page-tr-002"]],
   about: ["关于", "About"],
   privacy: [...COPY["page-tr-003"]],
@@ -137,7 +140,8 @@ export function pageMeasure(page: Page, wide: boolean): number {
     return 1120;
   if (["traffic", "converter", "diagnostics"].includes(page)) return 1120;
   if (page === "dns-diagnostics") return platform.desktop ? 720 : 640;
-  if (page === "backups") return platform.desktop ? 1120 : 640;
+  if (["settings", "appearance", "backups", "about"].includes(page))
+    return platform.desktop ? 720 : 640;
   if (["requests", "connections", "resources", "logs"].includes(page))
     return 1180;
   return platform.desktop ? 720 : 640;
@@ -208,6 +212,15 @@ export function PawsApp(props: {
     if (workspaces.root === next) return;
     requestNavigation(() => {
     nav.setRoutes(workspaces.switch(next, () => ({ name: next })));
+    });
+  };
+  const switchSettingsSection = (next: SettingsSection) => {
+    if (page() === next) return;
+    requestNavigation(() => {
+      if (workspaces.depth > 1)
+        nav.setRoutes(workspaces.replace({ name: next }));
+      else
+        nav.setRoutes(workspaces.switch(next, () => ({ name: next })));
     });
   };
   const navigate = (next: Page, query?: string) =>
@@ -336,13 +349,10 @@ export function PawsApp(props: {
     stopHardwareBack();
   });
   if (platform.desktop) {
-    for (let index = 0; index < desktopPrimary.length; index++)
+    for (const shortcut of desktopShortcuts)
       cleanup(
-        keymap.bind(`mod+${index + 1}`, () =>
-          switchWorkspace(desktopPrimary[index].page),
-        ),
+        keymap.bind(shortcut.key, () => switchWorkspace(shortcut.page)),
       );
-    cleanup(keymap.bind("mod+,", () => switchWorkspace("appearance")));
     cleanup(
       keymap.bind("mod+b", () => sidebarExpanded.set(!layout().expanded)),
     );
@@ -477,7 +487,7 @@ export function PawsApp(props: {
                     />
                   </View>
                 </If>
-                <If when={platform.desktop && !canBack()}>
+                <If when={platform.desktop && !canBack() && !!desktopGroupTitle(page())}>
                   <View
                     style={{
                       flexDirection: "row",
@@ -493,7 +503,7 @@ export function PawsApp(props: {
                         color: palette().muted,
                       }}
                     >
-                      {ui.t(...desktopGroupTitle(page()))}
+                      {desktopGroupTitle(page()) ? ui.t(...desktopGroupTitle(page())!) : ""}
                     </Text>
                     <Icon
                       name="chevron-right"
@@ -517,7 +527,9 @@ export function PawsApp(props: {
                       : -0.2,
                   }}
                 >
-                  {ui.t(...titles[page()])}
+                  {wide() && isSettingsSection(page())
+                    ? ui.t("设置", "Settings")
+                    : ui.t(...titles[page()])}
                 </Text>
                 <View
                   onLayout={(e) =>
@@ -544,6 +556,14 @@ export function PawsApp(props: {
                 </If>
                 <If when={page() === "profiles"}>
                   <If when={platform.desktop}>
+                    <Action
+                      id="open-converter"
+                      small
+                      secondary
+                      icon="link"
+                      label={ui.t("转换", "Convert")}
+                      onPress={() => navigate("converter")}
+                    />
                     <Action
                       id="refresh-profiles"
                       small
@@ -591,6 +611,12 @@ export function PawsApp(props: {
                               "profiles",
                             ]),
                           run: () => void refreshProfiles(),
+                        },
+                        {
+                          id: "open-converter",
+                          icon: "link",
+                          label: ui.t("订阅转换", "Converter"),
+                          run: () => navigate("converter"),
                         },
                       ]}
                       row={(trigger) => trigger}
@@ -965,6 +991,34 @@ export function PawsApp(props: {
               </View>
             </If>
             <If when={props.client.state()}>
+              <If when={wide() && isSettingsSection(page())}>
+                <View
+                  testID="settings-section-bar"
+                  style={{
+                    width: "100%",
+                    maxWidth: pageMeasure("settings", true),
+                    alignSelf: "center",
+                    paddingHorizontal: layout().inset,
+                    paddingTop: spacing.md,
+                    paddingBottom: spacing.xs,
+                  }}
+                >
+                  <Tabs
+                    idPrefix="settings-section"
+                    inline={platform.desktop}
+                    value={page()}
+                    options={[
+                      { value: "settings", label: ui.t("网络", "Network") },
+                      { value: "appearance", label: ui.t("外观", "Appearance") },
+                      { value: "backups", label: ui.t("备份", "Backups") },
+                      { value: "about", label: ui.t("关于", "About") },
+                    ]}
+                    onChange={(next) =>
+                      switchSettingsSection(next as SettingsSection)
+                    }
+                  />
+                </View>
+              </If>
               <NavStack state={nav} style={{ flex: 1 }}>
                 {(current) => {
                   const content = (
