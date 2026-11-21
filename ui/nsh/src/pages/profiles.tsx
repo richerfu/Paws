@@ -1,5 +1,6 @@
 import { density, typography } from "../theme";
 import {
+  batch,
   cleanup,
   computed,
   effect,
@@ -100,8 +101,10 @@ export function Profiles(props: { profileId?: string } = {}) {
     intent = undefined;
     if (current !== undefined)
       void ui.client.run("profiles.cancelImport", { intentId: current });
-    busy.set(false);
-    importOp.set("");
+    batch(() => {
+      busy.set(false);
+      importOp.set("");
+    });
   };
   const importGuard = useDraftGuard(() => open() && !!(name() || input()), () => { name.set(""); input.set(""); });
   const closeImport = async () => {
@@ -166,25 +169,31 @@ export function Profiles(props: { profileId?: string } = {}) {
   ) => {
     const token = ui.client.nextImportIntent();
     intent = token;
-    busy.set(true);
-    ui.client.error.set("");
+    batch(() => {
+      busy.set(true);
+      ui.client.error.set("");
+    });
     try {
       await ui.client.send(command, { intentId: token, ...payload });
       if (alive() && intent === token) {
-        open.set(false);
-        name.set("");
-        input.set("");
-        ui.client.notice.set(
-          ui.t("订阅已导入并启用", "Subscription imported and activated"),
-        );
+        batch(() => {
+          open.set(false);
+          name.set("");
+          input.set("");
+          ui.client.notice.set(
+            ui.t("订阅已导入并启用", "Subscription imported and activated"),
+          );
+        });
       }
     } catch (error) {
       if (alive() && intent === token) ui.client.error.set(String(error));
     } finally {
       if (alive() && intent === token) {
         intent = undefined;
-        busy.set(false);
-        importOp.set("");
+        batch(() => {
+          busy.set(false);
+          importOp.set("");
+        });
       }
     }
   };
@@ -198,29 +207,40 @@ export function Profiles(props: { profileId?: string } = {}) {
   };
   const pick = async () => {
     const generation = dialogGeneration;
-    busy.set(true);
-    importOp.set("file");
+    batch(() => {
+      busy.set(true);
+      importOp.set("file");
+    });
     const value = await ui.client.run<{ name: string; content: string } | null>(
       "platform.importFile",
     );
     if (!alive() || !open() || generation !== dialogGeneration) return;
-    busy.set(false);
-    if (value)
+    if (value) {
+      busy.set(false);
       await performImport("profiles.importContent", {
         name: value.name,
         content: value.content,
       });
-    else importOp.set("");
+    } else {
+      batch(() => {
+        busy.set(false);
+        importOp.set("");
+      });
+    }
   };
   const scan = async () => {
     const generation = dialogGeneration;
-    busy.set(true);
-    importOp.set("scan");
+    batch(() => {
+      busy.set(true);
+      importOp.set("scan");
+    });
     const value = await ui.client.run<string | null>("platform.scan");
     if (!alive() || !open() || generation !== dialogGeneration) return;
     if (!value) {
-      busy.set(false);
-      importOp.set("");
+      batch(() => {
+        busy.set(false);
+        importOp.set("");
+      });
       return;
     }
     const parsed = await ui.client.run<{ url: string; name?: string }>(
@@ -289,13 +309,18 @@ export function Profiles(props: { profileId?: string } = {}) {
     if (alive() && exporting() === target && image) qr.set(image);
   };
   const openEdit = (profile: Profile) => {
-    editing.set({
-      id: profile.id,
-      revision: ui.client.state()!.configRevision,
+    batch(() => {
+      editing.set({
+        id: profile.id,
+        revision: ui.client.state()!.configRevision,
+      });
+      editName.set(profile.name);
+      editUrl.set(profile.subscriptionUrl || "");
+      initialEdit.set({
+        name: profile.name,
+        url: profile.subscriptionUrl || "",
+      });
     });
-    editName.set(profile.name);
-    editUrl.set(profile.subscriptionUrl || "");
-    initialEdit.set({ name: profile.name, url: profile.subscriptionUrl || "" });
   };
   // List retains keyed rows; keep its accessor alive instead of capturing the
   // record from the first render (including in commands that open an editor).
@@ -307,7 +332,12 @@ export function Profiles(props: { profileId?: string } = {}) {
     onDetails={() => selectProfile(profile())}
     onAction={(command) => { void profileAction(command, profile().id); }}
     onEdit={() => openEdit(profile())}
-    onExport={() => { exporting.set(profile()); qr.set(undefined); }}
+    onExport={() =>
+      batch(() => {
+        exporting.set(profile());
+        qr.set(undefined);
+      })
+    }
     onError={() => refreshError.set(profile().lastRefreshError || "")}
   />;
   return (
@@ -415,73 +445,77 @@ export function Profiles(props: { profileId?: string } = {}) {
         <Scroll bounces={false} style={{ flex: 1 }}>
           <Body>
             <If when={selectedProfile()} else={<Empty icon="rss" text={collection.selected() ? ui.t("此订阅已移除。返回列表选择其他订阅。", "This subscription was removed. Return to the list.") : ui.t("选择订阅查看详情", "Select a subscription to view details")} />}>
-              <If when={selectedProfile() && !profiles().some((profile) => profile.id === collection.selected())}>
-                <Hint text={ui.t("当前订阅不在筛选结果中。已保留详情。", "This subscription is outside the filter. Its details are retained.")} />
-              </If>
-              <ListSurface>
-                {selectedProfile() ? row(() => selectedProfile()!, true) : undefined}
-              </ListSurface>
-              <View style={{ gap: spacing.sm }}>
-                <SectionHeader title={ui.t("信息", "Details")} />
-                <ListSurface>
-                  <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: 1, borderBottomColor: palette().line }}>
-                    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: spacing.sm }}>
-                      <View style={{ flex: 1, minWidth: 0 }}>
-                        <Detail stacked label={ui.t("来源", "Source")} value={selectedProfile()?.subscriptionUrl || selectedProfile()?.source || ""} />
-                      </View>
-                      <IconButton
-                        id="profile-copy-source"
-                        icon="copy"
-                        label={ui.t("复制完整来源", "Copy source")}
-                        onPress={() => copyText(ui, selectedProfile()?.subscriptionUrl || selectedProfile()?.source || "", ui.t("来源已复制", "Source copied"))}
-                      />
-                    </View>
-                  </View>
-                  <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: selectedProfile()?.subscriptionUserInfo ? 1 : 0, borderBottomColor: palette().line }}>
-                    <Detail label={ui.t("更新时间", "Updated")} value={timestamp(selectedProfile()?.lastRefreshAt || selectedProfile()?.updatedAt)} />
-                  </View>
-                  <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: selectedProfile()?.subscriptionUserInfo ? 1 : 0, borderBottomColor: palette().line }}>
-                    <Detail label={ui.t("本地备份", "Local backup")} value={selectedProfile()?.hasBackup ? ui.t("有上次备份", "Previous backup available") : ui.t("无备份", "No backup")} />
-                  </View>
-                  <If when={selectedProfile()?.subscriptionUserInfo}>
-                    <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), gap: spacing.sm }}>
-                      <Detail
-                        label={ui.t("已用流量", "Usage")}
-                        value={
-                          selectedProfile()?.subscriptionUserInfo?.totalBytes
-                            ? `${bytes((selectedProfile()?.subscriptionUserInfo?.uploadBytes || 0) + (selectedProfile()?.subscriptionUserInfo?.downloadBytes || 0))} / ${bytes(selectedProfile()!.subscriptionUserInfo!.totalBytes!)}`
-                            : bytes((selectedProfile()?.subscriptionUserInfo?.uploadBytes || 0) + (selectedProfile()?.subscriptionUserInfo?.downloadBytes || 0))
-                        }
-                      />
-                      <If when={!!selectedProfile()?.subscriptionUserInfo?.totalBytes}>
-                        <MeterBar
-                          ratio={Math.min(
-                            1,
-                            ((selectedProfile()?.subscriptionUserInfo?.uploadBytes || 0) +
-                              (selectedProfile()?.subscriptionUserInfo?.downloadBytes || 0)) /
-                              (selectedProfile()?.subscriptionUserInfo?.totalBytes || 1),
-                          )}
-                        />
-                      </If>
-                    </View>
+              {(selected) => (
+                <>
+                  <If when={!profiles().some((profile) => profile.id === collection.selected())}>
+                    <Hint text={ui.t("当前订阅不在筛选结果中。已保留详情。", "This subscription is outside the filter. Its details are retained.")} />
                   </If>
-                </ListSurface>
-              </View>
-              <If when={selectedProfile()?.lastRefreshError}>
-                <PageError id="profile-detail-error" text={selectedProfile()?.lastRefreshError || ""} />
-              </If>
-              <Actions align="start">
-                <If when={selectedProfile() && !selectedProfile()!.active}>
-                  <Action id="profile-activate" primary label={ui.t("启用此订阅", "Use this subscription")} disabled={ui.client.pending() > 0 || !ui.client.domains.readyForCommand(["config", "profiles"])} onPress={() => void profileAction("profiles.activate", collection.selected())} />
-                </If>
-                <If when={selectedProfile()?.subscriptionUrl && selectedProfile()?.active}>
-                  <Action primary icon="refresh-cw" label={selectedProfile()?.lastRefreshError ? ui.t("重试更新", "Retry update") : ui.t("更新订阅", "Update subscription")} loading={!!selectedProfile() && refreshing(selectedProfile()!)} disabled={ui.client.pending() > 0} onPress={() => void profileAction("profiles.refresh", collection.selected())} />
-                </If>
-                <If when={selectedProfile()?.active}>
-                  <Action id="profile-proxies" label={ui.t("查看代理节点", "View proxy nodes")} onPress={() => ui.navigate("proxies")} />
-                </If>
-                <Action id="profile-edit-detail" label={ui.t("编辑订阅…", "Edit subscription…")} onPress={() => { if (selectedProfile()) openEdit(selectedProfile()!); }} />
-              </Actions>
+                  <ListSurface>
+                    {row(selected, true)}
+                  </ListSurface>
+                  <View style={{ gap: spacing.sm }}>
+                    <SectionHeader title={ui.t("信息", "Details")} />
+                    <ListSurface>
+                      <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: 1, borderBottomColor: palette().line }}>
+                        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: spacing.sm }}>
+                          <View style={{ flex: 1, minWidth: 0 }}>
+                            <Detail stacked label={ui.t("来源", "Source")} value={selected().subscriptionUrl || selected().source || ""} />
+                          </View>
+                          <IconButton
+                            id="profile-copy-source"
+                            icon="copy"
+                            label={ui.t("复制完整来源", "Copy source")}
+                            onPress={() => copyText(ui, selected().subscriptionUrl || selected().source || "", ui.t("来源已复制", "Source copied"))}
+                          />
+                        </View>
+                      </View>
+                      <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: selected().subscriptionUserInfo ? 1 : 0, borderBottomColor: palette().line }}>
+                        <Detail label={ui.t("更新时间", "Updated")} value={timestamp(selected().lastRefreshAt || selected().updatedAt)} />
+                      </View>
+                      <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: selected().subscriptionUserInfo ? 1 : 0, borderBottomColor: palette().line }}>
+                        <Detail label={ui.t("本地备份", "Local backup")} value={selected().hasBackup ? ui.t("有上次备份", "Previous backup available") : ui.t("无备份", "No backup")} />
+                      </View>
+                      <If when={selected().subscriptionUserInfo}>
+                        <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), gap: spacing.sm }}>
+                          <Detail
+                            label={ui.t("已用流量", "Usage")}
+                            value={
+                              selected().subscriptionUserInfo?.totalBytes
+                                ? `${bytes((selected().subscriptionUserInfo?.uploadBytes || 0) + (selected().subscriptionUserInfo?.downloadBytes || 0))} / ${bytes(selected().subscriptionUserInfo!.totalBytes!)}`
+                                : bytes((selected().subscriptionUserInfo?.uploadBytes || 0) + (selected().subscriptionUserInfo?.downloadBytes || 0))
+                            }
+                          />
+                          <If when={!!selected().subscriptionUserInfo?.totalBytes}>
+                            <MeterBar
+                              ratio={Math.min(
+                                1,
+                                ((selected().subscriptionUserInfo?.uploadBytes || 0) +
+                                  (selected().subscriptionUserInfo?.downloadBytes || 0)) /
+                                  (selected().subscriptionUserInfo?.totalBytes || 1),
+                              )}
+                            />
+                          </If>
+                        </View>
+                      </If>
+                    </ListSurface>
+                  </View>
+                  <If when={selected().lastRefreshError}>
+                    <PageError id="profile-detail-error" text={selected().lastRefreshError || ""} />
+                  </If>
+                  <Actions align="start">
+                    <If when={!selected().active}>
+                      <Action id="profile-activate" primary label={ui.t("启用此订阅", "Use this subscription")} disabled={ui.client.pending() > 0 || !ui.client.domains.readyForCommand(["config", "profiles"])} onPress={() => void profileAction("profiles.activate", collection.selected())} />
+                    </If>
+                    <If when={selected().subscriptionUrl && selected().active}>
+                      <Action primary icon="refresh-cw" label={selected().lastRefreshError ? ui.t("重试更新", "Retry update") : ui.t("更新订阅", "Update subscription")} loading={refreshing(selected())} disabled={ui.client.pending() > 0} onPress={() => void profileAction("profiles.refresh", collection.selected())} />
+                    </If>
+                    <If when={selected().active}>
+                      <Action id="profile-proxies" label={ui.t("查看代理节点", "View proxy nodes")} onPress={() => ui.navigate("proxies")} />
+                    </If>
+                    <Action id="profile-edit-detail" label={ui.t("编辑订阅…", "Edit subscription…")} onPress={() => openEdit(selected())} />
+                  </Actions>
+                </>
+              )}
             </If>
           </Body>
         </Scroll>
@@ -521,20 +555,24 @@ export function Profiles(props: { profileId?: string } = {}) {
                   keyboardType="url"
                   label={ui.t("订阅地址", "Subscription URL")}
                   value={input()}
-                  onChange={(text) => {
-                    input.set(text);
-                    ui.client.error.set("");
-                  }}
+                  onChange={(text) =>
+                    batch(() => {
+                      input.set(text);
+                      ui.client.error.set("");
+                    })
+                  }
                   placeholder="https://example.com/sub?token=…"
                   disabled={busy()}
                 />
                 <Field
                   label={ui.t("名称（可选）", "Name (optional)")}
                   value={name()}
-                  onChange={(text) => {
-                    name.set(text);
-                    ui.client.error.set("");
-                  }}
+                  onChange={(text) =>
+                    batch(() => {
+                      name.set(text);
+                      ui.client.error.set("");
+                    })
+                  }
                   placeholder={ui.t(
                     "留空时自动使用配置名称",
                     "Leave blank to use profile name",
@@ -703,10 +741,12 @@ export function Profiles(props: { profileId?: string } = {}) {
           width={platform.desktop ? 400 : 460}
           title={ui.t("导出配置", "Export profile")}
           description={exporting()!.name}
-          onClose={() => {
-            exporting.set(undefined);
-            qr.set(undefined);
-          }}
+          onClose={() =>
+            batch(() => {
+              exporting.set(undefined);
+              qr.set(undefined);
+            })
+          }
         >
           <If
             when={!qr()}

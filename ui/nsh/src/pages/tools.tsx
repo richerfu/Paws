@@ -1,5 +1,5 @@
 import { density, surfaceFinish, typography } from "../theme";
-import { platform, Scroll, signal, Text, View } from "nsh";
+import { batch, platform, Scroll, signal, Text, View } from "nsh";
 import {
   Action,
   Actions,
@@ -186,11 +186,13 @@ export function Diagnostics() {
   const loadWatch = async () => {
     const value = await ui.client.run<Watch>("diagnostics.watchGet");
     if (alive() && value) {
-      watch.set(value);
-      if (!changed) {
-        if (value.group) group.set(value.group);
-        if (value.url) url.set(value.url);
-      }
+      batch(() => {
+        watch.set(value);
+        if (!changed) {
+          if (value.group) group.set(value.group);
+          if (value.url) url.set(value.url);
+        }
+      });
     }
   };
   const loadHealth = async (notify = false) => {
@@ -234,8 +236,10 @@ export function Diagnostics() {
       target = submittedGroup
         ? `${submittedGroup} → ${selectedNode()}`
         : ui.t("当前连接（遵循当前模式和分流规则）", "Current connection (current mode and rules)");
-    result.set("");
-    resultError.set("");
+    batch(() => {
+      result.set("");
+      resultError.set("");
+    });
     const value = await ui.client.run<{ delay: number; sessionId: string }>(
       "diagnostics.probe",
       {
@@ -244,10 +248,12 @@ export function Diagnostics() {
       },
     );
     if (alive() && session === current().vpnSessionId) {
-      result.set(`${value ? `${value.delay} ms · ` : ""}${target} · ${submittedUrl}`);
-      resultError.set(value ? "" : ui.client.error() || ui.t("探测失败，请重试。", "Probe failed. Please retry."));
-      resultSession.set(value?.sessionId || session || "");
-      resultTime.set(new Date().toISOString());
+      batch(() => {
+        result.set(`${value ? `${value.delay} ms · ` : ""}${target} · ${submittedUrl}`);
+        resultError.set(value ? "" : ui.client.error() || ui.t("探测失败，请重试。", "Probe failed. Please retry."));
+        resultSession.set(value?.sessionId || session || "");
+        resultTime.set(new Date().toISOString());
+      });
     }
   };
   const checkTone = (state: string) =>
@@ -272,7 +278,7 @@ export function Diagnostics() {
     health()?.engine === current().activeEngine
       ? health()
       : null;
-  const recoveryCard = (
+  const renderRecoveryCard = () => (
     <Card title={ui.t("自动恢复", "Automatic recovery")}>
       <Toggle
         label={ui.t("启用自动恢复", "Enable recovery")}
@@ -444,7 +450,7 @@ export function Diagnostics() {
                 />
               </If>
             </Card>
-            <If when={layout().overview}>{recoveryCard}</If>
+            <If when={layout().overview}>{renderRecoveryCard()}</If>
           </View>
           <View
             style={{
@@ -568,7 +574,7 @@ export function Diagnostics() {
                 <PageError id="diagnostics-probe-error" text={resultError()} />
               </If>
             </Card>
-            <If when={!layout().overview}>{recoveryCard}</If>
+            <If when={!layout().overview}>{renderRecoveryCard()}</If>
           </View>
         </View>
       </Body>

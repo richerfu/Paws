@@ -1,5 +1,6 @@
 import { density, typography } from "../theme";
 import {
+  batch,
   computed,
   signal,
   Text,
@@ -132,11 +133,12 @@ export function Activity(props: { history?: boolean }) {
     network() !== "all" ||
     (!!props.history && status() !== "all");
 
-  const clearFilters = () => {
-    query.set("");
-    network.set("all");
-    status.set("all");
-  };
+  const clearFilters = () =>
+    batch(() => {
+      query.set("");
+      network.set("all");
+      status.set("all");
+    });
 
   const splitPad = () => !platform.desktop && layout().masterDetail;
 
@@ -262,16 +264,20 @@ export function Activity(props: { history?: boolean }) {
     if (platform.desktop && layout().masterDetail && !selectedId()) {
       animateDisclosure();
     }
-    selectedId.set(row.id);
-    captured.set(row);
+    batch(() => {
+      selectedId.set(row.id);
+      captured.set(row);
+    });
   };
 
   const clearSelection = () => {
     if (platform.desktop && layout().masterDetail && selectedId()) {
       animateDisclosure();
     }
-    selectedId.set("");
-    captured.set(undefined);
+    batch(() => {
+      selectedId.set("");
+      captured.set(undefined);
+    });
   };
 
   const showDetails = (row: Connection) => {

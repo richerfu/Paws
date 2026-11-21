@@ -1,5 +1,6 @@
 import { density, typography } from "../theme";
 import {
+  batch,
   computed,
   effect,
   fontScale,
@@ -143,16 +144,20 @@ export function Logs() {
   };
 
   const toEnd = () => {
-    pausedScroll.set(false);
-    atEnd.set(true);
-    seen.set(latest());
+    batch(() => {
+      pausedScroll.set(false);
+      atEnd.set(true);
+      seen.set(latest());
+    });
     list?.scrollToEnd({ animated: !reduceMotion() });
   };
 
   const apply = (data: LogRecording | undefined) => {
     if (alive() && data) {
-      recording.set(data);
-      ui.logRecording.set(data.enabled);
+      batch(() => {
+        recording.set(data);
+        ui.logRecording.set(data.enabled);
+      });
     }
   };
   const load = async () =>
@@ -228,10 +233,11 @@ export function Logs() {
     `${levelLabel(row.level)}  ·  ${timestamp(row.timestamp)}`;
 
   const filtered = () => !!query() || level() !== "all";
-  const clearFilters = () => {
-    query.set("");
-    level.set("all");
-  };
+  const clearFilters = () =>
+    batch(() => {
+      query.set("");
+      level.set("all");
+    });
 
   const splitPad = () => !platform.desktop && layout().masterDetail;
   const activeLog = () =>
@@ -455,13 +461,15 @@ export function Logs() {
         onScroll={(event) => {
           const bottom =
             event.contentSize.height - event.offset.y - event.size.height <= 24;
-          atEnd.set(bottom);
-          if (bottom) {
-            pausedScroll.set(false);
-            seen.set(latest());
-          } else {
-            pausedScroll.set(true);
-          }
+          batch(() => {
+            atEnd.set(bottom);
+            if (bottom) {
+              pausedScroll.set(false);
+              seen.set(latest());
+            } else {
+              pausedScroll.set(true);
+            }
+          });
         }}
         bounces={false}
         keyboardDismissMode="on-drag"

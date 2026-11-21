@@ -28,3 +28,27 @@ export function workspaceLayout(
     masterDetail, collection, collectionMin, detailMin, overview,
     connection, tableDetails: usable >= 800 * textScale };
 }
+
+export type WorkspaceLayout = ReturnType<typeof workspaceLayout>;
+
+export function workspaceLayoutEquals(
+  previous: WorkspaceLayout,
+  next: WorkspaceLayout,
+): boolean {
+  return (
+    previous.sidebar === next.sidebar &&
+    previous.expanded === next.expanded &&
+    previous.sidebarWidth === next.sidebarWidth &&
+    previous.inset === next.inset &&
+    previous.gap === next.gap &&
+    previous.content === next.content &&
+    previous.usable === next.usable &&
+    previous.masterDetail === next.masterDetail &&
+    previous.collection === next.collection &&
+    previous.collectionMin === next.collectionMin &&
+    previous.detailMin === next.detailMin &&
+    previous.overview === next.overview &&
+    previous.connection === next.connection &&
+    previous.tableDetails === next.tableDetails
+  );
+}

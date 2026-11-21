@@ -150,7 +150,7 @@ export function ListRow(props: {
   children?: JSX.Element;
 }) {
   const interactive = () => !!props.onPress;
-  const content = (
+  const renderContent = () => (
     <>
       <If when={props.divider}>
         <View
@@ -272,7 +272,7 @@ export function ListRow(props: {
       when={interactive()}
       else={
         <View testID={props.id} style={rowStyle()}>
-          {content}
+          {renderContent()}
         </View>
       }
     >
@@ -297,7 +297,7 @@ export function ListRow(props: {
         }
         style={rowStyle()}
       >
-        {content}
+        {renderContent()}
       </View>
     </If>
   );

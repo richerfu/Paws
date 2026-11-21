@@ -13,7 +13,7 @@ import { AlertDialog } from "nsh/base";
 import type { CoreClient } from "../client";
 import type { DomainInput } from "../model";
 import { isChinese } from "../locale";
-import { workspaceLayout } from "../layout";
+import { workspaceLayout, type WorkspaceLayout } from "../layout";
 
 export type Page =
   | "dashboard"
@@ -60,7 +60,7 @@ export type AppContext = {
     guard: () => boolean | Promise<boolean>,
     owner?: unknown,
   ) => () => void;
-  layout?: () => ReturnType<typeof workspaceLayout>;
+  layout?: () => WorkspaceLayout;
   viewState?: Map<string, unknown>;
   overlays?: Signal<number>;
   t: (zh: string, en: string) => string;
@@ -68,6 +68,9 @@ export type AppContext = {
 
 export const App = context<AppContext | undefined>(undefined);
 export const RouteOwner = context<unknown>(undefined);
+export const RouteLayout = context<(() => WorkspaceLayout) | undefined>(
+  undefined,
+);
 
 export function useApp(): AppContext {
   const value = App();
@@ -75,7 +78,9 @@ export function useApp(): AppContext {
   return value;
 }
 
-export function useLayout() {
+export function useLayout(): () => WorkspaceLayout {
+  const scoped = RouteLayout();
+  if (scoped) return scoped;
   const ui = useApp();
   return () =>
     ui.layout?.() ||

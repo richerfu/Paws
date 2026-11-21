@@ -1,6 +1,8 @@
 import { density, typography } from "../theme";
 import {
+  cleanup,
   computed,
+  effect,
   fontScale,
   signal,
   Text,
@@ -37,9 +39,15 @@ import { focusRing, statusColors, surfaceFinish } from "../theme";
 import { PageError } from "../page-error";
 import { animateDisclosure, feedbackStyle } from "../motion";
 import type { IconName } from "../icons";
-import type { ProxyGroup, Proxy, ProxyGroupHeader } from "../model";
+import type {
+  CoreRequest,
+  ProxyGroup,
+  Proxy,
+  ProxyGroupHeader,
+} from "../model";
 import {
   groupMembers,
+  isManualSelector,
   selectableGroup,
   selectedMember,
   groupSelectionMode,
@@ -47,6 +55,66 @@ import {
 
 type Group = ProxyGroup | ProxyGroupHeader;
 type Row = { key: string; group: Group; proxy?: Proxy; loading?: boolean };
+
+function pendingGroupSelection(
+  requests: CoreRequest[],
+  group: string,
+): CoreRequest | undefined {
+  return requests.find(
+    (request) =>
+      (request.command === "proxies.select" ||
+        request.command === "proxies.unfix") &&
+      request.payload.group === group,
+  );
+}
+
+function optimisticSelected(
+  serverSelected: string | null | undefined,
+  pending: CoreRequest | undefined,
+): string | undefined {
+  if (
+    pending?.command === "proxies.select" &&
+    typeof pending.payload.name === "string"
+  )
+    return pending.payload.name;
+  return serverSelected || undefined;
+}
+
+function optimisticFixed(
+  group: Group,
+  pending: CoreRequest | undefined,
+): string | null | undefined {
+  if (!pending) return group.fixed;
+  if (pending.command === "proxies.unfix") return "";
+  if (
+    pending.command === "proxies.select" &&
+    !isManualSelector(group) &&
+    typeof pending.payload.name === "string"
+  )
+    return pending.payload.name;
+  return group.fixed;
+}
+
+function effectiveGroupState(
+  group: Group,
+  pending: CoreRequest | undefined,
+): Pick<Group, "fixed" | "groupType"> {
+  const fixed = optimisticFixed(group, pending);
+  return fixed === group.fixed
+    ? group
+    : { groupType: group.groupType, fixed: fixed ?? undefined };
+}
+
+function isSelectionTarget(
+  pending: CoreRequest | undefined,
+  group: Group,
+  proxyName: string,
+): boolean {
+  if (!pending) return false;
+  return pending.command === "proxies.unfix"
+    ? group.fixed === proxyName
+    : pending.payload.name === proxyName;
+}
 
 function compareProxyGroups(a: Group, b: Group, mode: string): number {
   const aGlobal = a.name.toUpperCase() === "GLOBAL";
@@ -78,31 +146,50 @@ function SelectionMark(props: {
   nestedGroup: boolean;
   busy: boolean;
 }) {
+  const showSpinner = signal(false);
+  effect(() => {
+    if (!props.busy) {
+      showSpinner.set(false);
+      return;
+    }
+    const timer = setTimeout(() => showSpinner.set(true), 180);
+    cleanup(() => clearTimeout(timer));
+  });
   return (
-    <If
-      when={props.busy}
-      else={
-        <If
-          when={props.selectable && !props.nestedGroup}
-          else={
-            <Icon
-              name={props.nestedGroup ? "layers" : "network"}
-              size={platform.desktop ? 15 : 17}
-              color={props.selected ? palette().accent : palette().muted}
-            />
-          }
-        >
-          <RadioMark selected={props.selected} />
-        </If>
-      }
+    <View
+      style={{
+        width: control.box,
+        height: control.box,
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+      }}
     >
-      <Spinner size={platform.desktop ? 15 : 17} color={palette().accent} />
-    </If>
+      <If
+        when={showSpinner()}
+        else={
+          <If
+            when={props.selectable && !props.nestedGroup}
+            else={
+              <Icon
+                name={props.nestedGroup ? "layers" : "network"}
+                size={platform.desktop ? 15 : 17}
+                color={props.selected ? palette().accent : palette().muted}
+              />
+            }
+          >
+            <RadioMark selected={props.selected} />
+          </If>
+        }
+      >
+        <Spinner size={platform.desktop ? 15 : 17} color={palette().accent} />
+      </If>
+    </View>
   );
 }
 
 function groupModeLabel(
-  group: Group,
+  group: Pick<Group, "fixed" | "groupType">,
   t: (zh: string, en: string) => string,
 ): string {
   const mode = groupSelectionMode(group);
@@ -179,13 +266,10 @@ export function SummaryPolicyGroups() {
     return value ? groupMembers(allGroups(), value) : [];
   };
   const selection = (group: string) =>
-    ui.client
-      .pendingRequests()
-      .find(
-        (request) =>
-          ["proxies.select", "proxies.unfix"].includes(request.command) &&
-          request.payload.group === group,
-      );
+    pendingGroupSelection(ui.client.pendingRequests(), group);
+  const selectingAny = () =>
+    ui.client.isPending("proxies.select") ||
+    ui.client.isPending("proxies.unfix");
   const openSelection = computed(() =>
     expanded() ? selection(expanded()) : undefined,
   );
@@ -204,11 +288,15 @@ export function SummaryPolicyGroups() {
       group.name === expanded()
         ? !!name && openMemberSet().has(name)
         : !!name && members(group).some((proxy) => proxy.name === name);
-    return hasMember
+    const serverSelected = hasMember
       ? name
       : ("effectiveSelectedNode" in group && group.effectiveSelectedNode) ||
           group.selected ||
           undefined;
+    return optimisticSelected(
+      serverSelected,
+      group.name === expanded() ? openSelection() : selection(group.name),
+    );
   };
   const select = async (group: Group, proxy: Proxy) => {
     if (
@@ -283,9 +371,12 @@ export function SummaryPolicyGroups() {
                       color: palette().muted,
                     }}
                   >
-                    {groupModeLabel(group(), ui.t)} ·{" "}
-                    {group().effectiveSelectedNode ||
-                      group().selected ||
+                    {groupModeLabel(
+                      effectiveGroupState(group(), selection(group().name)),
+                      ui.t,
+                    )}{" "}
+                    ·{" "}
+                    {selected(group()) ||
                       ui.t("未选择节点", "No node selected")}
                   </Text>
                 </View>
@@ -360,21 +451,28 @@ export function SummaryPolicyGroups() {
                         group().name === expanded()
                           ? openSelection()
                           : selection(group().name);
+                      const pinned = () =>
+                        optimisticFixed(group(), pendingReq()) === proxy().name;
                       const rowDisabled = () =>
-                        !!pendingReq() ||
                         !selectableGroup(group()) ||
-                        !(group().name === expanded()
+                        !ui.client.domains.has(["config", interest(group())]) ||
+                        !!ui.client.domains.error([
+                          "config",
+                          interest(group()),
+                        ]) ||
+                        (!(group().name === expanded()
                           ? openFresh()
                           : ui.client.domains.fresh([
                               "config",
                               interest(group()),
-                            ]));
+                            ])) &&
+                          !selectingAny());
                       return (
                         <View
                           testID={`summary-select-proxy-${proxy().name}`}
                           role="button"
                           accessibilityLabel={
-                            group().fixed === proxy().name
+                            pinned()
                               ? ui.t("恢复自动选择", "Use automatic selection")
                               : proxy().name
                           }
@@ -386,14 +484,18 @@ export function SummaryPolicyGroups() {
                           onPress={() => void select(group(), proxy())}
                           focusVisibleStyle={focusRing(0)}
                           hoverStyle={
-                            rowDisabled()
+                            active() || rowDisabled()
                               ? undefined
                               : { backgroundColor: palette().hover }
                           }
                           activeStyle={
                             rowDisabled()
                               ? undefined
-                              : { backgroundColor: palette().soft }
+                              : {
+                                  backgroundColor: active()
+                                    ? palette().accentFill
+                                    : palette().soft,
+                                }
                           }
                           style={{
                             minHeight: Math.max(
@@ -423,11 +525,11 @@ export function SummaryPolicyGroups() {
                             selected={active()}
                             selectable={selectableGroup(group())}
                             nestedGroup={nested()}
-                            busy={
-                              !!pendingReq() &&
-                              (pendingReq()!.payload.name === proxy().name ||
-                                group().fixed === proxy().name)
-                            }
+                            busy={isSelectionTarget(
+                              pendingReq(),
+                              group(),
+                              proxy().name,
+                            )}
                           />
                           <View style={{ flex: 1, minWidth: 0 }}>
                             <Text
@@ -452,7 +554,7 @@ export function SummaryPolicyGroups() {
                               {nested()
                                 ? ui.t("策略分组", "Policy group")
                                 : proxy().proxyType.toUpperCase()}
-                              {group().fixed === proxy().name
+                              {pinned()
                                 ? ui.t(" · 已固定", " · Pinned")
                                 : active()
                                   ? ui.t(" · 当前", " · Current")
@@ -499,7 +601,6 @@ export function ProxyGroupList(props: {
 }) {
   const ui = useApp(),
     expanded = signal("");
-  const feedback = signal<Record<string, string>>({});
   const alive = useLifetime();
   const groups = (): Group[] =>
     props.summary
@@ -600,15 +701,12 @@ export function ProxyGroupList(props: {
       });
   });
   const selection = (group: string) =>
-    ui.client
-      .pendingRequests()
-      .find(
-        (request) =>
-          ["proxies.select", "proxies.unfix"].includes(request.command) &&
-          request.payload.group === group,
-      );
-  const selected = (group: Group) =>
-    selectedByGroup().has(group.name)
+    pendingGroupSelection(ui.client.pendingRequests(), group);
+  const selectingAny = () =>
+    ui.client.isPending("proxies.select") ||
+    ui.client.isPending("proxies.unfix");
+  const selected = (group: Group) => {
+    const serverSelected = selectedByGroup().has(group.name)
       ? selectedByGroup().get(group.name)
       : (() => {
           const value = roster(group),
@@ -617,9 +715,14 @@ export function ProxyGroupList(props: {
             ? name
             : undefined;
         })();
+    return optimisticSelected(serverSelected, selection(group.name));
+  };
   const headerSelected = (group: Group) =>
     "effectiveSelectedNode" in group
-      ? group.effectiveSelectedNode || group.selected
+      ? optimisticSelected(
+          group.effectiveSelectedNode || group.selected,
+          selection(group.name),
+        )
       : selected(group);
   const select = async (row: Row) => {
     if (
@@ -629,32 +732,22 @@ export function ProxyGroupList(props: {
     )
       return;
     const pinned = row.group.fixed === row.proxy?.name;
-    feedback.set({
-      ...feedback(),
-      [row.group.name]: ui.t("正在提交选择", "Applying selection"),
-    });
-    const result = await ui.client.run(
+    await ui.client.run(
       pinned ? "proxies.unfix" : "proxies.select",
       pinned
         ? { group: row.group.name }
         : { group: row.group.name, name: row.proxy!.name },
     );
     if (!alive()) return;
-    feedback.set({
-      ...feedback(),
-      [row.group.name]:
-        result === undefined
-          ? ui.client.error() ||
-            ui.t(
-              "选择失败，保留先前节点。",
-              "Selection failed; the previous node is retained.",
-            )
-          : ui.client.warning() || ui.t("选择已生效", "Selection applied"),
-    });
   };
   const disabled = (group: Group) =>
-    !!selection(group.name) || !selectableGroup(group) || !fresh(group);
+    !selectableGroup(group) ||
+    !ui.client.domains.has(["config", interest(group)]) ||
+    !!ui.client.domains.error(["config", interest(group)]) ||
+    (!fresh(group) && !selectingAny());
   const isSelected = (row: Row) => selected(row.group) === row.proxy?.name;
+  const isPinned = (row: Row) =>
+    optimisticFixed(row.group, selection(row.group.name)) === row.proxy?.name;
   const isGroup = (proxy: Proxy) => groupNameSet().has(proxy.name);
   const isOpen = (group: Group) =>
     props.groupKey === group.name || !!props.query || expanded() === group.name;
@@ -668,6 +761,7 @@ export function ProxyGroupList(props: {
       48,
       density.line(36) * Math.max(1, fontScale()) + spacing.sm,
     );
+  const hasHeader = computed(() => platform.desktop && !!props.groupKey);
   return (
     <List
       testID={props.summary ? "summary-groups-list" : "proxy-groups-list"}
@@ -690,67 +784,50 @@ export function ProxyGroupList(props: {
       }}
       contentStyle={{ paddingBottom: density.space(4) }}
       header={
-        props.section ||
-        (platform.desktop && !!props.groupKey) ||
-        (props.groupKey && feedback()[props.groupKey]) ? (
-          <View>
-            <If when={platform.desktop && !!props.groupKey}>
-              <View
-                style={{
-                  minHeight: 30,
-                  paddingHorizontal: spacing.md,
-                  borderBottomWidth: 1,
-                  borderBottomColor: palette().line,
-                  backgroundColor: palette().soft,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: spacing.md,
-                }}
-              >
-                <Text
-                  style={{
-                    flex: 1,
-                    fontSize: density.font(11),
-                    fontWeight: "600",
-                    color: palette().muted,
-                  }}
-                >
-                  {ui.t("节点", "Node")}
-                </Text>
-                <Text
-                  style={{
-                    width: 96,
-                    fontSize: density.font(11),
-                    fontWeight: "600",
-                    color: palette().muted,
-                  }}
-                >
-                  {ui.t("协议", "Protocol")}
-                </Text>
-                <Text
-                  style={{
-                    width: 88,
-                    textAlign: "right",
-                    fontSize: density.font(11),
-                    fontWeight: "600",
-                    color: palette().muted,
-                  }}
-                >
-                  {ui.t("延迟", "Latency")}
-                </Text>
-              </View>
-            </If>
-            <If when={props.groupKey && feedback()[props.groupKey]}>
-              <View
-                style={{
-                  padding: density.space(10),
-                  borderBottomWidth: 1,
-                  borderBottomColor: palette().line,
-                }}
-              >
-                <Hint text={feedback()[props.groupKey!]} />
-              </View>
-            </If>
+        hasHeader() ? (
+          <View
+            style={{
+              minHeight: 30,
+              paddingHorizontal: spacing.md,
+              borderBottomWidth: 1,
+              borderBottomColor: palette().line,
+              backgroundColor: palette().soft,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: spacing.md,
+            }}
+          >
+            <Text
+              style={{
+                flex: 1,
+                fontSize: density.font(11),
+                fontWeight: "600",
+                color: palette().muted,
+              }}
+            >
+              {ui.t("节点", "Node")}
+            </Text>
+            <Text
+              style={{
+                width: 96,
+                fontSize: density.font(11),
+                fontWeight: "600",
+                color: palette().muted,
+              }}
+            >
+              {ui.t("协议", "Protocol")}
+            </Text>
+            <Text
+              style={{
+                width: 88,
+                textAlign: "right",
+                fontSize: density.font(11),
+                fontWeight: "600",
+                color: palette().muted,
+              }}
+            >
+              {ui.t("延迟", "Latency")}
+            </Text>
           </View>
         ) : undefined
       }
@@ -776,7 +853,7 @@ export function ProxyGroupList(props: {
                   testID={`${props.summary ? "summary-" : ""}select-proxy-${item().proxy!.name}`}
                   role="button"
                   accessibilityLabel={
-                    item().group.fixed === item().proxy!.name
+                    isPinned(item())
                       ? ui.t("恢复自动选择", "Use automatic selection")
                       : item().proxy!.name
                   }
@@ -787,12 +864,20 @@ export function ProxyGroupList(props: {
                   disabled={disabled(item().group)}
                   onPress={() => void select(item())}
                   focusVisibleStyle={focusRing(0)}
-                  hoverStyle={{ backgroundColor: palette().hover }}
-                  activeStyle={{
-                    backgroundColor: isSelected(item())
-                      ? palette().accentFill
-                      : palette().soft,
-                  }}
+                  hoverStyle={
+                    isSelected(item()) || disabled(item().group)
+                      ? undefined
+                      : { backgroundColor: palette().hover }
+                  }
+                  activeStyle={
+                    disabled(item().group)
+                      ? undefined
+                      : {
+                          backgroundColor: isSelected(item())
+                            ? palette().accentFill
+                            : palette().soft,
+                        }
+                  }
                   style={{
                     height: nodeHeight(),
                     paddingLeft: props.groupKey
@@ -814,12 +899,11 @@ export function ProxyGroupList(props: {
                     selected={isSelected(item())}
                     selectable={selectableGroup(item().group)}
                     nestedGroup={isGroup(item().proxy!)}
-                    busy={
-                      !!selection(item().group.name) &&
-                      (selection(item().group.name)!.payload.name ===
-                        item().proxy!.name ||
-                        item().group.fixed === item().proxy!.name)
-                    }
+                    busy={isSelectionTarget(
+                      selection(item().group.name),
+                      item().group,
+                      item().proxy!.name,
+                    )}
                   />
                   <View style={{ flex: 1, minWidth: 0, gap: density.space(2) }}>
                     <Text
@@ -845,7 +929,7 @@ export function ProxyGroupList(props: {
                         {isGroup(item().proxy!)
                           ? ui.t("策略分组", "Policy group")
                           : item().proxy!.proxyType.toUpperCase()}
-                        {item().group.fixed === item().proxy!.name
+                        {isPinned(item())
                           ? ui.t(" · 已固定", " · Pinned")
                           : isSelected(item())
                             ? ui.t(" · 当前", " · Current")
@@ -866,7 +950,7 @@ export function ProxyGroupList(props: {
                       {isGroup(item().proxy!)
                         ? ui.t("策略分组", "Policy group")
                         : item().proxy!.proxyType.toUpperCase()}
-                      {item().group.fixed === item().proxy!.name
+                      {isPinned(item())
                         ? ui.t(" · 固定", " · Pin")
                         : ""}
                     </Text>
@@ -897,22 +981,20 @@ export function ProxyGroupList(props: {
                           ? ui.t("未测试", "Not tested")
                           : `${item().proxy!.delayMs} ms`}
                     </Text>
-                    <If
-                      when={
-                        item().group.fixed === item().proxy!.name ||
-                        !selectableGroup(item().group)
-                      }
-                    >
+                    <If when={!isManualSelector(item().group)}>
                       <Text
                         style={{
+                          height: density.line(14),
                           fontSize: density.font(11),
                           lineHeight: density.line(14),
                           color: palette().muted,
                         }}
                       >
-                        {item().group.fixed === item().proxy!.name
+                        {isPinned(item())
                           ? ui.t("恢复自动", "Restore auto")
-                          : ui.t("自动", "Auto")}
+                          : !selectableGroup(item().group)
+                            ? ui.t("自动", "Auto")
+                            : ""}
                       </Text>
                     </If>
                   </View>
@@ -996,9 +1078,13 @@ export function ProxyGroupList(props: {
                       color: palette().muted,
                     }}
                   >
-                    {selection(item().group.name)
-                      ? ui.t("提交中", "Applying")
-                      : groupModeLabel(item().group, ui.t)}
+                    {groupModeLabel(
+                      effectiveGroupState(
+                        item().group,
+                        selection(item().group.name),
+                      ),
+                      ui.t,
+                    )}
                   </Text>
                   <Text
                     style={{
@@ -1283,8 +1369,24 @@ export function Proxies(props: { groupKey?: string } = {}) {
                       numberOfLines: 1,
                     }}
                   >
-                    {groupModeLabel(group(), ui.t)} ·{" "}
-                    {selectedMember(group()) || ui.t("未选择", "Not selected")}
+                    {groupModeLabel(
+                      effectiveGroupState(
+                        group(),
+                        pendingGroupSelection(
+                          ui.client.pendingRequests(),
+                          group().name,
+                        ),
+                      ),
+                      ui.t,
+                    )}{" "}
+                    ·{" "}
+                    {optimisticSelected(
+                      selectedMember(group()),
+                      pendingGroupSelection(
+                        ui.client.pendingRequests(),
+                        group().name,
+                      ),
+                    ) || ui.t("未选择", "Not selected")}
                   </Text>
                 </View>
                 <Text
@@ -1334,7 +1436,16 @@ export function Proxies(props: { groupKey?: string } = {}) {
             }
           >
             <SectionHeader
-              title={`${selectedGroup()!.name} · ${groupModeLabel(selectedGroup()!, ui.t)}`}
+              title={`${selectedGroup()!.name} · ${groupModeLabel(
+                effectiveGroupState(
+                  selectedGroup()!,
+                  pendingGroupSelection(
+                    ui.client.pendingRequests(),
+                    selectedGroup()!.name,
+                  ),
+                ),
+                ui.t,
+              )}`}
               meta={`${groupMembers(groups(), selectedGroup()!).length} ${ui.t("个节点", "nodes")}`}
             />
             <Actions align="start">
@@ -1342,7 +1453,13 @@ export function Proxies(props: { groupKey?: string } = {}) {
                 small
                 icon="zap"
                 loading={!!testingGroup()}
-                disabled={!ui.client.domains.fresh(["proxies"])}
+                disabled={
+                  !ui.client.domains.has(["proxies"]) ||
+                  !!ui.client.domains.error(["proxies"]) ||
+                  (!ui.client.domains.fresh(["proxies"]) &&
+                    !ui.client.isPending("proxies.select") &&
+                    !ui.client.isPending("proxies.unfix"))
+                }
                 label={ui.t("测速当前分组", "Test group")}
                 onPress={() => void testSelectedGroup()}
               />

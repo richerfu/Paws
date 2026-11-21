@@ -1,4 +1,4 @@
-import { cleanup, Scroll, signal, View } from "nsh";
+import { batch, cleanup, Scroll, signal, View } from "nsh";
 import {
   Action,
   Actions,
@@ -86,9 +86,11 @@ export function Converter() {
         );
         return;
       }
-      longUrl.set(url);
-      generatedFrom.set(submitted);
-      shortUrl.set("");
+      batch(() => {
+        longUrl.set(url);
+        generatedFrom.set(submitted);
+        shortUrl.set("");
+      });
       await state.save();
       if (alive())
         copy(
@@ -113,8 +115,10 @@ export function Converter() {
       const previous = draft();
       await state.parse(parseUrl());
       if (alive() && draft() !== previous) {
-        longUrl.set("");
-        shortUrl.set("");
+        batch(() => {
+          longUrl.set("");
+          shortUrl.set("");
+        });
         await state.save();
       }
     });

@@ -151,23 +151,27 @@ export function Settings() {
       if (decision === "reload") reset();
     });
   });
-  const changeVpn = (value: Partial<VpnOptions>) => {
-    vpn.set({ ...vpn(), ...value });
-    mark("vpn");
-  };
-  const changePorts = (value: Partial<NetworkPorts>) => {
-    ports.set({ ...ports(), ...value });
-    mark("network");
-  };
-  const changeController = (value: Partial<ControllerAccess>) => {
-    controller.set({ ...controller(), ...value });
-    mark("network");
-  };
+  const changeVpn = (value: Partial<VpnOptions>) =>
+    batch(() => {
+      vpn.set({ ...vpn(), ...value });
+      mark("vpn");
+    });
+  const changePorts = (value: Partial<NetworkPorts>) =>
+    batch(() => {
+      ports.set({ ...ports(), ...value });
+      mark("network");
+    });
+  const changeController = (value: Partial<ControllerAccess>) =>
+    batch(() => {
+      controller.set({ ...controller(), ...value });
+      mark("network");
+    });
   const enginePreview = signal(""),
     previewReasons = signal(""),
     previewBusy = signal(false),
     previewFailed = signal(false);
   let previewGeneration = 0;
+  let settledPreviewKey = "";
   effect(() => {
     if (ui.route() !== route) {
       previewGeneration++;
@@ -177,9 +181,11 @@ export function Settings() {
     const engine = vpn().engine,
       revision = current().configRevision,
       active = current().activeProfile;
-    const generation = ++previewGeneration;
+    const key = `${engine}\0${revision}\0${active || ""}`;
     untracked(() => {
       if (!active) {
+        settledPreviewKey = "";
+        previewGeneration++;
         batch(() => {
           previewBusy.set(false);
           enginePreview.set("");
@@ -188,6 +194,11 @@ export function Settings() {
         });
         return;
       }
+      if (settledPreviewKey === key && !previewFailed()) {
+        previewBusy.set(false);
+        return;
+      }
+      const generation = ++previewGeneration;
       previewBusy.set(true);
       void ui.client
         .send<{ selected: string; reasons?: string[] }>("engines.decision", {
@@ -200,12 +211,14 @@ export function Settings() {
             vpn().engine === engine &&
             current().activeProfile === active &&
             current().configRevision === revision
-          )
+          ) {
+            settledPreviewKey = key;
             batch(() => {
               enginePreview.set(value.selected);
               previewFailed.set(false);
               previewReasons.set(value.reasons?.join("\n") || "");
             });
+          }
         })
         .catch((error) => {
           if (
@@ -214,12 +227,14 @@ export function Settings() {
             vpn().engine === engine &&
             current().activeProfile === active &&
             current().configRevision === revision
-          )
+          ) {
+            settledPreviewKey = "";
             batch(() => {
               enginePreview.set("");
               previewFailed.set(true);
               previewReasons.set(String(error));
             });
+          }
         })
         .finally(() => {
           if (alive() && generation === previewGeneration)
@@ -298,14 +313,16 @@ export function Settings() {
         result !== undefined &&
         ui.client.domains.fresh(["config"])
       ) {
-        if (edits[section].unchangedSince(ticket))
-          dirty.update((previous) => {
-            const next = new Set(previous);
-            next.delete(section);
-            return next;
-          });
-        baseline.set(current().configRevision);
-        conflict.set(false);
+        batch(() => {
+          if (edits[section].unchangedSince(ticket))
+            dirty.update((previous) => {
+              const next = new Set(previous);
+              next.delete(section);
+              return next;
+            });
+          baseline.set(current().configRevision);
+          conflict.set(false);
+        });
       }
     } catch (error) {
       ui.client.error.set(

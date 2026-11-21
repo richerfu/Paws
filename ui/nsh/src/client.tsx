@@ -157,50 +157,58 @@ export class CoreClient {
     this.acceptReceived(value.id);
     clearTimeout(pending.timer);
     this.waiting.delete(value.id);
-    if (value.id === this.vpnRequestId) this.vpnOperation.set(undefined);
-    if (value.id === this.vpnUnconfirmed()?.requestId) {
-      this.vpnUnconfirmed.set(undefined);
-      if (pending.expired) {
-        if (!value.ok)
-          this.error.set(value.error || "The VPN operation failed");
-        else this.error.set("");
-      }
-    }
-    const confirmation = value.data as VpnConfirmation | undefined;
-    if (
-      pending.request.command === "vpn.confirm" &&
+    const hasBarrier =
       value.ok &&
-      confirmation &&
-      confirmation.requestId === this.vpnUnconfirmed()?.requestId
-    ) {
+      !value.stateRefreshError &&
+      !!value.barrier &&
+      !pending.request.command.startsWith("state.");
+    if (hasBarrier) this.settling.add(pending);
+    batch(() => {
+      if (value.id === this.vpnRequestId) this.vpnOperation.set(undefined);
+      if (value.id === this.vpnUnconfirmed()?.requestId) {
+        this.vpnUnconfirmed.set(undefined);
+        if (pending.expired) {
+          if (!value.ok)
+            this.error.set(value.error || "The VPN operation failed");
+          else this.error.set("");
+        }
+      }
+      const confirmation = value.data as VpnConfirmation | undefined;
       if (
-        confirmation.status === "succeeded" ||
-        confirmation.status === "failed"
-      )
-        this.acceptResult({
-          id: confirmation.requestId,
-          ok: confirmation.status === "succeeded",
-          data: null,
-          error: confirmation.error,
-        });
-      else if (confirmation.status === "unavailable")
+        pending.request.command === "vpn.confirm" &&
+        value.ok &&
+        confirmation &&
+        confirmation.requestId === this.vpnUnconfirmed()?.requestId
+      ) {
+        if (
+          confirmation.status === "succeeded" ||
+          confirmation.status === "failed"
+        )
+          this.acceptResult({
+            id: confirmation.requestId,
+            ok: confirmation.status === "succeeded",
+            data: null,
+            error: confirmation.error,
+          });
+        else if (confirmation.status === "unavailable")
+          this.error.set(
+            confirmation.error ||
+              "The original operation receipt is unavailable. Stop and resynchronize.",
+          );
+      }
+      const recovered =
+        pending.request.command !== "vpn.recover" ||
+        (confirmation?.status === "succeeded" &&
+          confirmation.requestId === pending.request.payload.requestId);
+      if (value.id === this.vpnRequestId && value.ok && recovered)
+        this.vpnUnconfirmed.set(undefined);
+      if (pending.request.command === "vpn.recover" && value.ok && !recovered)
         this.error.set(
-          confirmation.error ||
-            "The original operation receipt is unavailable. Stop and resynchronize.",
+          confirmation?.error ||
+            "The stop operation is unconfirmed. Confirm it or retry recovery.",
         );
-    }
-    const recovered =
-      pending.request.command !== "vpn.recover" ||
-      (confirmation?.status === "succeeded" &&
-        confirmation.requestId === pending.request.payload.requestId);
-    if (value.id === this.vpnRequestId && value.ok && recovered)
-      this.vpnUnconfirmed.set(undefined);
-    if (pending.request.command === "vpn.recover" && value.ok && !recovered)
-      this.error.set(
-        confirmation?.error ||
-          "The stop operation is unconfirmed. Confirm it or retry recovery.",
-      );
-    this.updatePending();
+      this.updatePending();
+    });
     if (value.ok && value.stateRefreshError) {
       this.domains.retry();
       pending.resolve({
@@ -208,15 +216,9 @@ export class CoreClient {
         stateRefreshError: new CommittedStateError(value.stateRefreshError)
           .message,
       });
-    } else if (
-      value.ok &&
-      value.barrier &&
-      !pending.request.command.startsWith("state.")
-    ) {
-      this.settling.add(pending);
-      this.updatePending();
+    } else if (hasBarrier) {
       void this.domains
-        .waitFor(value.barrier)
+        .waitFor(value.barrier!)
         .then(
           () => {
             if (!this.disposed) pending.resolve({ data: value.data });
@@ -326,11 +328,13 @@ export class CoreClient {
           const pending = this.waiting.get(id);
           if (!pending) return;
           pending.expired = true;
-          if (pending.action && id === this.vpnRequestId) {
-            this.vpnOperation.set(undefined);
-            this.vpnUnconfirmed.set({ requestId: id, action: pending.action });
-          }
-          this.updatePending();
+          batch(() => {
+            if (pending.action && id === this.vpnRequestId) {
+              this.vpnOperation.set(undefined);
+              this.vpnUnconfirmed.set({ requestId: id, action: pending.action });
+            }
+            this.updatePending();
+          });
           reject(
             new Error(
               pending.action
@@ -364,13 +368,20 @@ export class CoreClient {
           !value.expired && !value.request.command.startsWith("state."),
       )
       .map((value) => value.request);
-    this.pendingRequests.set(requests);
-    // A decision preview has its own page-local lifetime/loading state. It
-    // remains tracked and receives its receipt without blocking real edits.
-    this.pending.set(
-      requests.filter((request) => request.command !== "engines.decision")
-        .length,
-    );
+    const nextCount = requests.filter(
+      (request) =>
+        request.command !== "engines.decision" &&
+        request.command !== "proxies.select" &&
+        request.command !== "proxies.unfix",
+    ).length;
+    batch(() => {
+      const previous = this.pendingRequests();
+      const sameRequests =
+        previous.length === requests.length &&
+        previous.every((item, index) => item === requests[index]);
+      if (!sameRequests) this.pendingRequests.set(requests);
+      this.pending.set(nextCount);
+    });
   }
 
   /** Native fact: this request entered an actual platform VPN effect. */
@@ -386,16 +397,18 @@ export class CoreClient {
     pending.action = value.action;
     if (value.requestId < this.vpnRequestId) return;
     this.vpnRequestId = value.requestId;
-    if (pending.expired) {
-      this.vpnOperation.set(undefined);
-      this.vpnUnconfirmed.set({
-        requestId: value.requestId,
-        action: value.action,
-      });
-    } else {
-      this.vpnUnconfirmed.set(undefined);
-      this.vpnOperation.set(value.action);
-    }
+    batch(() => {
+      if (pending.expired) {
+        this.vpnOperation.set(undefined);
+        this.vpnUnconfirmed.set({
+          requestId: value.requestId,
+          action: value.action,
+        });
+      } else {
+        this.vpnUnconfirmed.set(undefined);
+        this.vpnOperation.set(value.action);
+      }
+    });
   }
 
   /** Receipt ACK means the host observed the prop; operation completion is independent. */

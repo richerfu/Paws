@@ -23,7 +23,6 @@ import { BackHandler } from "nsh/mobile";
 import {
   Tab,
   Tabs as BaseTabs,
-  createNavStack,
   NavPage,
   NavStack,
 } from "nsh/base";
@@ -48,6 +47,7 @@ import {
   type Page,
   useLifetime,
   useApp,
+  RouteLayout,
   RouteOwner,
 } from "./components";
 import { feedbackStyle } from "./motion";
@@ -87,7 +87,7 @@ import { pageDomains } from "./page-data";
 import { PageError } from "./page-error";
 import { isChinese } from "./locale";
 import type { DomainInput } from "./model";
-import { workspaceLayout } from "./layout";
+import { workspaceLayout, workspaceLayoutEquals } from "./layout";
 import { Workspaces } from "./workspaces";
 import { ActivityDetail } from "./pages/activity";
 import { ObjectMenu } from "./object-menu";
@@ -168,10 +168,19 @@ export function PawsApp(props: {
   cleanup(() => notifications.dispose());
   type Route = { name: Page; query?: string };
   const workspaces = new Workspaces<Route>("dashboard", { name: "dashboard" });
-  const nav = createNavStack<Route>(workspaces.routes());
   const sidebarExpanded = signal<boolean | undefined>();
-  const layout = () => workspaceLayout(windowSize().width - safeArea().left - safeArea().right,
-    platform.desktop, sidebarExpanded(), fontScale(), pageMeasure(page(), platform.desktop || windowSize().width >= 840));
+  // Shell-level layout never depends on the active page's max-width, so route
+  // switches cannot trigger layout invalidations across retained pages.
+  const layout = computed(
+    () =>
+      workspaceLayout(
+        windowSize().width - safeArea().left - safeArea().right,
+        platform.desktop,
+        sidebarExpanded(),
+        fontScale(),
+      ),
+    { equals: workspaceLayoutEquals },
+  );
   const overlays = signal(0);
   const alive = useLifetime(),
     importIntent = signal(0),
@@ -184,7 +193,7 @@ export function PawsApp(props: {
     resourceSequence = 0;
   const logRecording = signal(false),
     logRecordingIntent = signal(0);
-  const route = () => nav.routes()[nav.routes().length - 1],
+  const route = () => workspaces.route(),
     page = () => route().name;
   const requestNavigation = (action: () => void) => {
     if (overlays() > 0) return;
@@ -211,30 +220,28 @@ export function PawsApp(props: {
   const switchWorkspace = (next: Page) => {
     if (workspaces.root === next) return;
     requestNavigation(() => {
-    nav.setRoutes(workspaces.switch(next, () => ({ name: next })));
+      workspaces.switch(next, () => ({ name: next }));
     });
   };
   const switchSettingsSection = (next: SettingsSection) => {
     if (page() === next) return;
     requestNavigation(() => {
-      if (workspaces.depth > 1)
-        nav.setRoutes(workspaces.replace({ name: next }));
-      else
-        nav.setRoutes(workspaces.switch(next, () => ({ name: next })));
+      if (workspaces.depth() > 1) workspaces.replace({ name: next });
+      else workspaces.switch(next, () => ({ name: next }));
     });
   };
   const navigate = (next: Page, query?: string) =>
     requestNavigation(() => {
       if (primary.some((item) => item.page === next) && !query)
-        nav.setRoutes(workspaces.switch(next, () => ({ name: next })));
-      else nav.setRoutes(workspaces.push({ name: next, query }));
+        workspaces.switch(next, () => ({ name: next }));
+      else workspaces.push({ name: next, query });
     });
   const back = () =>
     requestNavigation(() => {
-      if (workspaces.depth > 1) nav.setRoutes(workspaces.back());
+      if (workspaces.depth() > 1) workspaces.back();
       else {
         const parent = parentPage(page());
-        if (parent) nav.setRoutes(workspaces.switch(parent, () => ({ name: parent })));
+        if (parent) workspaces.switch(parent, () => ({ name: parent }));
       }
     });
   const t = translator(props.client);
@@ -300,12 +307,8 @@ export function PawsApp(props: {
     switchActivity: (mode) => {
       if (mode === page()) return;
       requestNavigation(() => {
-        if (workspaces.depth > 1)
-          nav.setRoutes(workspaces.replace({ name: mode }));
-        else
-          nav.setRoutes(
-            workspaces.switch(mode, () => ({ name: mode })),
-          );
+        if (workspaces.depth() > 1) workspaces.replace({ name: mode });
+        else workspaces.switch(mode, () => ({ name: mode }));
       });
     },
     layout,
@@ -322,7 +325,7 @@ export function PawsApp(props: {
     },
   };
   const wide = () => layout().sidebar;
-  const depth = () => { route(); return workspaces.depth; };
+  const depth = () => workspaces.depth();
   const canBack = () =>
     depth() > 1 || (!wide() && !!parentPage(page()));
   const group = () =>
@@ -460,7 +463,7 @@ export function PawsApp(props: {
               <View
                 style={{
                   width: "100%",
-                  maxWidth: wide() ? undefined : pageMeasure(page(), false),
+                  maxWidth: wide() ? undefined : 640,
                   paddingLeft:
                     (wide() ? layout().inset : spacing.lg) +
                     (!wide() && platform.desktop ? titleBar().left : 0),
@@ -474,9 +477,10 @@ export function PawsApp(props: {
               >
                 <If when={canBack()}>
                   <View
-                    onLayout={(e) =>
-                      headerLeading.set(Math.ceil(e.bounds.size.width))
-                    }
+                    onLayout={(e) => {
+                      if (!wide())
+                        headerLeading.set(Math.ceil(e.bounds.size.width));
+                    }}
                     desktop={platform.desktop ? { windowDrag: false } : undefined}
                   >
                     <IconButton
@@ -532,9 +536,10 @@ export function PawsApp(props: {
                     : ui.t(...titles[page()])}
                 </Text>
                 <View
-                  onLayout={(e) =>
-                    headerTrailing.set(Math.ceil(e.bounds.size.width))
-                  }
+                  onLayout={(e) => {
+                    if (!wide())
+                      headerTrailing.set(Math.ceil(e.bounds.size.width));
+                  }}
                   style={{
                     flexDirection: "row",
                     alignItems: "center",
@@ -632,10 +637,18 @@ export function PawsApp(props: {
                     loading={proxyDelayLoading()}
                     disabled={
                       proxyDelayLoading() ||
-                      !props.client.domains.fresh(["proxies"])
+                      !props.client.domains.has(["proxies"]) ||
+                      !!props.client.domains.error(["proxies"]) ||
+                      (!props.client.domains.fresh(["proxies"]) &&
+                        !props.client.isPending("proxies.select") &&
+                        !props.client.isPending("proxies.unfix"))
                     }
                     onPress={() => {
-                      if (proxyDelayLoading()) return;
+                      if (
+                        proxyDelayLoading() ||
+                        !props.client.domains.fresh(["proxies"])
+                      )
+                        return;
                       proxyDelayLoading.set(true);
                       void (async () => {
                         try {
@@ -1019,120 +1032,201 @@ export function PawsApp(props: {
                   />
                 </View>
               </If>
-              <NavStack state={nav} style={{ flex: 1 }}>
-                {(current) => {
-                  const content = (
-                    <View
-                      style={{ flex: 1, backgroundColor: palette().background }}
-                    >
+              <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
+                <Each of={workspaces.entries()} key={(entry) => entry.key}>
+                  {(entry) => {
+                    const active = () => workspaces.active() === entry().key;
+                    return (
                       <View
+                        accessibilityElementsHidden={!active()}
                         style={{
-                          flex: 1,
-                          width: "100%",
-                          maxWidth:
-                            current.name === "editor"
-                              ? undefined
-                              : pageMeasure(current.name, wide()),
-                          alignSelf: "center",
+                          position: "absolute",
+                          top: 0,
+                          right: 0,
+                          bottom: 0,
+                          left: 0,
+                          visibility: active() ? "visible" : "hidden",
+                          pointerEvents: active() ? "auto" : "none",
                         }}
                       >
-                        <RouteOwner.Provider value={current}>
-                          <PageData domains={pageDomains(current.name)}>
-                            <If when={current.name === "dashboard"}>
-                              <Dashboard />
-                            </If>
-                            <If when={current.name === "profiles"}>
-                              <Profiles />
-                            </If>
-                            <If when={current.name === "profile-detail"}>
-                              <Profiles profileId={current.query} />
-                            </If>
-                            <If when={current.name === "editor"}>
-                              <ProfileEditor profileId={current.query || ""} />
-                            </If>
-                            <If when={current.name === "proxies"}>
-                              <Proxies />
-                            </If>
-                            <If when={current.name === "proxy-group"}>
-                              <Proxies groupKey={current.query} />
-                            </If>
-                            <If when={current.name === "traffic"}>
-                              <Traffic />
-                            </If>
-                            <If when={current.name === "dns-diagnostics"}>
-                              <DnsDiagnostics />
-                            </If>
-                            <If when={current.name === "connections"}>
-                              <Activity />
-                            </If>
-                            <If when={current.name === "requests"}>
-                              <Activity history />
-                            </If>
-                            <If when={current.name === "activity-detail"}>
-                              <ActivityDetail identity={current.query || ""} />
-                            </If>
-                            <If when={current.name === "resources"}>
-                              <Resources />
-                            </If>
-                            <If when={current.name === "tools"}>
-                              <Tools />
-                            </If>
-                            <If when={current.name === "settings"}>
-                              <Settings />
-                            </If>
-                            <If when={current.name === "appearance"}>
-                              <Appearance />
-                            </If>
-                            <If when={current.name === "logs"}>
-                              <Logs />
-                            </If>
-                            <If when={current.name === "diagnostics"}>
-                              <Diagnostics />
-                            </If>
-                            <If when={current.name === "advanced-diagnostics"}>
-                              <AdvancedDiagnostics />
-                            </If>
-                            <If when={current.name === "backups"}>
-                              <Backups />
-                            </If>
-                            <If when={current.name === "about"}>
-                              <About />
-                            </If>
-                            <If when={current.name === "privacy"}>
-                              <Privacy />
-                            </If>
-                            <If when={current.name === "converter"}>
-                              <Converter />
-                            </If>
-                          </PageData>
-                        </RouteOwner.Provider>
+                        <NavStack state={entry().nav} style={{ flex: 1 }}>
+                          {(current, index) => {
+                            const routeLayout = computed(
+                              () =>
+                                workspaceLayout(
+                                  windowSize().width -
+                                    safeArea().left -
+                                    safeArea().right,
+                                  platform.desktop,
+                                  sidebarExpanded(),
+                                  fontScale(),
+                                  pageMeasure(
+                                    current.name,
+                                    platform.desktop ||
+                                      windowSize().width >= 840,
+                                  ),
+                                ),
+                              { equals: workspaceLayoutEquals },
+                            );
+                            const content = (
+                              <View
+                                style={{
+                                  flex: 1,
+                                  backgroundColor: palette().background,
+                                }}
+                              >
+                                <View
+                                  style={{
+                                    flex: 1,
+                                    width: "100%",
+                                    maxWidth:
+                                      current.name === "editor"
+                                        ? undefined
+                                        : pageMeasure(current.name, wide()),
+                                    alignSelf: "center",
+                                  }}
+                                >
+                                  <RouteLayout.Provider value={routeLayout}>
+                                    <RouteOwner.Provider value={current}>
+                                      <PageData
+                                        domains={pageDomains(current.name)}
+                                      >
+                                        <If when={current.name === "dashboard"}>
+                                          <Dashboard />
+                                        </If>
+                                        <If when={current.name === "profiles"}>
+                                          <Profiles />
+                                        </If>
+                                        <If
+                                          when={
+                                            current.name === "profile-detail"
+                                          }
+                                        >
+                                          <Profiles profileId={current.query} />
+                                        </If>
+                                        <If when={current.name === "editor"}>
+                                          <ProfileEditor
+                                            profileId={current.query || ""}
+                                          />
+                                        </If>
+                                        <If when={current.name === "proxies"}>
+                                          <Proxies />
+                                        </If>
+                                        <If
+                                          when={current.name === "proxy-group"}
+                                        >
+                                          <Proxies groupKey={current.query} />
+                                        </If>
+                                        <If when={current.name === "traffic"}>
+                                          <Traffic />
+                                        </If>
+                                        <If
+                                          when={
+                                            current.name === "dns-diagnostics"
+                                          }
+                                        >
+                                          <DnsDiagnostics />
+                                        </If>
+                                        <If
+                                          when={current.name === "connections"}
+                                        >
+                                          <Activity />
+                                        </If>
+                                        <If when={current.name === "requests"}>
+                                          <Activity history />
+                                        </If>
+                                        <If
+                                          when={
+                                            current.name === "activity-detail"
+                                          }
+                                        >
+                                          <ActivityDetail
+                                            identity={current.query || ""}
+                                          />
+                                        </If>
+                                        <If when={current.name === "resources"}>
+                                          <Resources />
+                                        </If>
+                                        <If when={current.name === "tools"}>
+                                          <Tools />
+                                        </If>
+                                        <If when={current.name === "settings"}>
+                                          <Settings />
+                                        </If>
+                                        <If
+                                          when={current.name === "appearance"}
+                                        >
+                                          <Appearance />
+                                        </If>
+                                        <If when={current.name === "logs"}>
+                                          <Logs />
+                                        </If>
+                                        <If
+                                          when={current.name === "diagnostics"}
+                                        >
+                                          <Diagnostics />
+                                        </If>
+                                        <If
+                                          when={
+                                            current.name ===
+                                            "advanced-diagnostics"
+                                          }
+                                        >
+                                          <AdvancedDiagnostics />
+                                        </If>
+                                        <If when={current.name === "backups"}>
+                                          <Backups />
+                                        </If>
+                                        <If when={current.name === "about"}>
+                                          <About />
+                                        </If>
+                                        <If when={current.name === "privacy"}>
+                                          <Privacy />
+                                        </If>
+                                        <If when={current.name === "converter"}>
+                                          <Converter />
+                                        </If>
+                                      </PageData>
+                                    </RouteOwner.Provider>
+                                  </RouteLayout.Provider>
+                                </View>
+                              </View>
+                            );
+                            return (
+                              <NavPage
+                                style={{
+                                  backgroundColor: palette().background,
+                                }}
+                                headerVisible={false}
+                                animation={
+                                  reduceMotion() ||
+                                  platform.desktop ||
+                                  index() === 0
+                                    ? "none"
+                                    : "default"
+                                }
+                                title={ui.t(...titles[current.name])}
+                                popOnBack={false}
+                                onBackPress={() => {
+                                  if (
+                                    active() &&
+                                    current === route() &&
+                                    overlays() === 0 &&
+                                    canBack()
+                                  )
+                                    back();
+                                }}
+                              >
+                                {content}
+                              </NavPage>
+                            );
+                          }}
+                        </NavStack>
                       </View>
-                    </View>
-                  );
-                  return (
-                    <NavPage
-                      style={{ backgroundColor: palette().background }}
-                      headerVisible={false}
-                      animation={
-                        reduceMotion()
-                          ? "none"
-                          : platform.desktop
-                            ? "fade"
-                            : parentPage(current.name)
-                              ? "default"
-                              : "fade"
-                      }
-                      title={ui.t(...titles[current.name])}
-                      popOnBack={false}
-                      onBackPress={() => {
-                        if (current === route() && overlays() === 0 && canBack()) back();
-                      }}
-                    >
-                      {content}
-                    </NavPage>
-                  );
-                }}
-              </NavStack>
+                    );
+                  }}
+                </Each>
+              </View>
             </If>
           </View>
         </View>
@@ -1243,8 +1337,23 @@ export function PawsApp(props: {
 }
 
 function PageData(props: { domains: DomainInput[]; children?: JSX.Element }) {
-  const ui = useApp(), owner = RouteOwner() || ui.route();
-  const error = () => ui.route() === owner ? ui.client.domains.error(props.domains) : "";
+  const ui = useApp(),
+    owner = RouteOwner() || ui.route();
+  const error = () =>
+    ui.route() === owner ? ui.client.domains.error(props.domains) : "";
+  // Avoid flashing a 1-frame loading spinner while fast local domain queries
+  // settle on first entry to a page.
+  const showLoading = signal(false);
+  effect(() => {
+    if (ui.client.domains.has(props.domains) || error()) {
+      showLoading.set(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      showLoading.set(true);
+    }, 120);
+    cleanup(() => clearTimeout(timer));
+  });
   return (
     <>
       <If
@@ -1258,7 +1367,9 @@ function PageData(props: { domains: DomainInput[]; children?: JSX.Element }) {
               gap: density.space(12),
             }}
           >
-            <If when={!error()}><Loading text={ui.t("正在读取页面数据…", "Loading page data…")} /></If>
+            <If when={!error() && showLoading()}>
+              <Loading text={ui.t("正在读取页面数据…", "Loading page data…")} />
+            </If>
             <If when={error()}>
               <PageError text={error()} />
             </If>

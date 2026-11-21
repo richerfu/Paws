@@ -244,39 +244,46 @@ export function DesktopNavigation(props: {
           selected(item.destination.page) ? palette().text : palette().muted
         }
       />
-      <If when={expanded()}>
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <Text
-            style={{
-              color: selected(item.destination.page)
-                ? palette().text
-                : palette().muted,
-              fontSize: density.font(platform.desktop ? 13 : 14),
-              lineHeight: density.line(platform.desktop ? 18 : 20),
-              numberOfLines: 1,
-              fontWeight: selected(item.destination.page)
-                ? platform.desktop
-                  ? "500"
-                  : "600"
-                : platform.desktop
-                  ? "400"
-                  : "500",
-            }}
-          >
-            {props.t(item.destination.zh, item.destination.en)}
-          </Text>
-        </View>
-        <If when={platform.desktop}>
-          <Text
-            style={{
-              color: palette().faint,
-              fontSize: 11,
-              fontVariant: ["tabular-nums"],
-            }}
-          >
-            {keymap.label(item.destination.keybinding)}
-          </Text>
-        </If>
+      <View
+        accessibilityElementsHidden={!expanded()}
+        style={{
+          display: expanded() ? "flex" : "none",
+          flex: 1,
+          minWidth: 0,
+        }}
+      >
+        <Text
+          style={{
+            color: selected(item.destination.page)
+              ? palette().text
+              : palette().muted,
+            fontSize: density.font(platform.desktop ? 13 : 14),
+            lineHeight: density.line(platform.desktop ? 18 : 20),
+            numberOfLines: 1,
+            fontWeight: selected(item.destination.page)
+              ? platform.desktop
+                ? "500"
+                : "600"
+              : platform.desktop
+                ? "400"
+                : "500",
+          }}
+        >
+          {props.t(item.destination.zh, item.destination.en)}
+        </Text>
+      </View>
+      <If when={platform.desktop}>
+        <Text
+          accessibilityElementsHidden={!expanded()}
+          style={{
+            display: expanded() ? "flex" : "none",
+            color: palette().faint,
+            fontSize: 11,
+            fontVariant: ["tabular-nums"],
+          }}
+        >
+          {keymap.label(item.destination.keybinding)}
+        </Text>
       </If>
     </Tab>
   );
@@ -372,53 +379,50 @@ export function DesktopNavigation(props: {
               ...feedbackStyle(),
             }}
           >
-            <If
-              when={expanded()}
-              else={
-                <Icon
-                  name="panel-left"
-                  size={18}
-                  strokeWidth={1.85}
-                  color={palette().muted}
-                />
-              }
+            <View
+              accessibilityElementsHidden={!expanded()}
+              style={{
+                display: expanded() ? "flex" : "none",
+                width: 26,
+                height: 26,
+                borderRadius: 8,
+                borderCurve: "continuous",
+                borderWidth: 1,
+                alignItems: "center",
+                justifyContent: "center",
+                ...surfaceFinish("accent"),
+              }}
             >
-              <View
-                style={{
-                  width: 26,
-                  height: 26,
-                  borderRadius: 8,
-                  borderCurve: "continuous",
-                  borderWidth: 1,
-                  alignItems: "center",
-                  justifyContent: "center",
-                  ...surfaceFinish("accent"),
-                }}
-              >
-                <Text
-                  style={{
-                    fontSize: 13,
-                    lineHeight: 16,
-                    fontWeight: "700",
-                    color: palette().primaryText,
-                  }}
-                >
-                  P
-                </Text>
-              </View>
               <Text
                 style={{
-                  flex: 1,
-                  color: palette().text,
-                  fontSize: 16,
-                  fontWeight: "600",
-                  letterSpacing: -0.16,
+                  fontSize: 13,
+                  lineHeight: 16,
+                  fontWeight: "700",
+                  color: palette().primaryText,
                 }}
               >
-                Paws
+                P
               </Text>
-              <Icon name="panel-left" size={16} color={palette().muted} />
-            </If>
+            </View>
+            <Text
+              accessibilityElementsHidden={!expanded()}
+              style={{
+                display: expanded() ? "flex" : "none",
+                flex: 1,
+                color: palette().text,
+                fontSize: 16,
+                fontWeight: "600",
+                letterSpacing: -0.16,
+              }}
+            >
+              Paws
+            </Text>
+            <Icon
+              name="panel-left"
+              size={expanded() ? 16 : 18}
+              strokeWidth={expanded() ? 2 : 1.85}
+              color={palette().muted}
+            />
           </Button>
         </View>
       </View>
@@ -445,34 +449,32 @@ export function DesktopNavigation(props: {
             </Each>
           </View>
           <View style={{ gap: 2 }}>
-            <If
-              when={expanded()}
-              else={
-                <View
-                  style={{
-                    height: 1,
-                    marginHorizontal: 8,
-                    marginVertical: 2,
-                    backgroundColor: palette().sidebarBorder,
-                  }}
-                />
-              }
+            <View
+              accessibilityElementsHidden={expanded()}
+              style={{
+                display: expanded() ? "none" : "flex",
+                height: 1,
+                marginHorizontal: 8,
+                marginVertical: 2,
+                backgroundColor: palette().sidebarBorder,
+              }}
+            />
+            <Text
+              role="header"
+              accessibilityElementsHidden={!expanded()}
+              style={{
+                display: expanded() ? "flex" : "none",
+                paddingLeft: 9,
+                paddingTop: 4,
+                paddingBottom: 3,
+                fontSize: 12,
+                lineHeight: 16,
+                fontWeight: "600",
+                color: palette().muted,
+              }}
             >
-              <Text
-                role="header"
-                style={{
-                  paddingLeft: 9,
-                  paddingTop: 4,
-                  paddingBottom: 3,
-                  fontSize: 12,
-                  lineHeight: 16,
-                  fontWeight: "600",
-                  color: palette().muted,
-                }}
-              >
-                {props.t("网络", "Network")}
-              </Text>
-            </If>
+              {props.t("网络", "Network")}
+            </Text>
             <Each of={desktopNetwork}>
               {(destination) => <Item destination={destination()} />}
             </Each>
@@ -490,71 +492,76 @@ export function DesktopNavigation(props: {
           </View>
         </BaseTabs>
       </Scroll>
-      <If when={expanded() && (props.statusLabel || props.version)}>
+      <View
+        accessibilityElementsHidden={
+          !(expanded() && (props.statusLabel || props.version))
+        }
+        style={{
+          display:
+            expanded() && (props.statusLabel || props.version)
+              ? "flex"
+              : "none",
+          paddingHorizontal: 14,
+          paddingVertical: 10,
+          borderTopWidth: 1,
+          borderTopColor: palette().sidebarBorder,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+        }}
+      >
         <View
           style={{
-            paddingHorizontal: 14,
-            paddingVertical: 10,
-            borderTopWidth: 1,
-            borderTopColor: palette().sidebarBorder,
+            flex: 1,
+            minWidth: 0,
             flexDirection: "row",
             alignItems: "center",
-            justifyContent: "space-between",
-            gap: 8,
+            gap: 6,
           }}
         >
           <View
             style={{
-              flex: 1,
+              width: 7,
+              height: 7,
+              borderRadius: radius.full,
+              backgroundColor: props.connected
+                ? palette().success
+                : palette().faint,
+            }}
+          />
+          <Text
+            style={{
+              flexShrink: 1,
               minWidth: 0,
-              flexDirection: "row",
-              alignItems: "center",
-              gap: 6,
+              numberOfLines: 1,
+              fontSize: 12,
+              lineHeight: 16,
+              color: palette().muted,
             }}
           >
-            <View
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: radius.full,
-                backgroundColor: props.connected
-                  ? palette().success
-                  : palette().faint,
-              }}
-            />
-            <Text
-              style={{
-                flexShrink: 1,
-                minWidth: 0,
-                numberOfLines: 1,
-                fontSize: 12,
-                lineHeight: 16,
-                color: palette().muted,
-              }}
-            >
-              {props.statusLabel || ""}
-            </Text>
-          </View>
-          <If when={props.version}>
-            <Text
-              style={{
-                flexShrink: 1,
-                minWidth: 0,
-                maxWidth: 88,
-                numberOfLines: 1,
-                fontSize: 12,
-                lineHeight: 16,
-                color: palette().muted,
-                fontVariant: ["tabular-nums"],
-              }}
-            >
-              {props.version.startsWith("v")
-                ? props.version
-                : `v${props.version}`}
-            </Text>
-          </If>
+            {props.statusLabel || ""}
+          </Text>
         </View>
-      </If>
+        <If when={props.version}>
+          <Text
+            style={{
+              flexShrink: 1,
+              minWidth: 0,
+              maxWidth: 88,
+              numberOfLines: 1,
+              fontSize: 12,
+              lineHeight: 16,
+              color: palette().muted,
+              fontVariant: ["tabular-nums"],
+            }}
+          >
+            {props.version.startsWith("v")
+              ? props.version
+              : `v${props.version}`}
+          </Text>
+        </If>
+      </View>
     </View>
   );
 }

@@ -1,4 +1,5 @@
 import {
+  batch,
   effect,
   fontScale,
   platform,
@@ -243,8 +244,10 @@ export function SearchField(props: {
         if (!composing()) props.onChange(next);
       }}
       onCompositionChange={(event) => {
-        composing.set(event.composing);
-        draft.set(event.text);
+        batch(() => {
+          composing.set(event.composing);
+          draft.set(event.text);
+        });
         if (!event.composing) props.onChange(event.text);
       }}
       onSubmit={props.onSubmit}

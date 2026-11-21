@@ -1,4 +1,5 @@
 import {
+  batch,
   platform,
   Scroll,
   signal,
@@ -108,10 +109,11 @@ export function ObjectMenu(props: {
     contextOpen = signal(false);
   useOverlay(() => open() || contextOpen());
   let pending: { source: "menu" | "context"; run: () => void } | undefined;
-  const close = () => {
-    open.set(false);
-    contextOpen.set(false);
-  };
+  const close = () =>
+    batch(() => {
+      open.set(false);
+      contextOpen.set(false);
+    });
   const closed = (source: "menu" | "context") => {
     if (pending?.source !== source) return;
     const command = pending.run;
