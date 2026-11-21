@@ -47,12 +47,12 @@ import {
   useLayout,
   useViewState,
   useDraftGuard,
-  useOverlay,
   RouteOwner,
+  ObjectMenu,
+  type ObjectCommand,
 } from "../components";
-import { ContextMenu, Menu, MenuItem, MenuSeparator } from "nsh/base";
 import { feedbackStyle } from "../motion";
-import { focusRing, popupSurface, surfaceFinish } from "../theme";
+import { focusRing, surfaceFinish } from "../theme";
 import { bytes, timestamp } from "../locale";
 
 import { matchesProfile } from "../query";
@@ -496,7 +496,7 @@ export function Profiles(props: { profileId?: string } = {}) {
                   id="import-local-file"
                   icon="file-up"
                   title={ui.t("从本地导入", "Local file")}
-                  subtitle={ui.t("选择 YAML 配置文件", "Pick a YAML profile")}
+                  subtitle={ui.t("YAML 配置", "YAML file")}
                   loading={importOp() === "file"}
                   disabled={busy()}
                   onPress={() => void pick()}
@@ -505,7 +505,7 @@ export function Profiles(props: { profileId?: string } = {}) {
                   id="import-scan-qr"
                   icon="scan-qr-code"
                   title={ui.t("扫码导入", "Scan QR")}
-                  subtitle={ui.t("扫描订阅二维码", "Scan subscription QR")}
+                  subtitle={ui.t("订阅二维码", "Subscription QR")}
                   loading={importOp() === "scan"}
                   disabled={busy()}
                   onPress={() => void scan()}
@@ -551,10 +551,6 @@ export function Profiles(props: { profileId?: string } = {}) {
             </View>
           );
           const importTitle = ui.t("添加订阅", "Add subscription");
-          const importSubtitle = ui.t(
-            "从本地文件、二维码直接导入，或填写订阅地址",
-            "Import from a local file or QR code, or paste a subscription URL",
-          );
           return (
             <If
               when={
@@ -563,7 +559,6 @@ export function Profiles(props: { profileId?: string } = {}) {
               else={
                 <BottomSheet
                   title={importTitle}
-                  subtitle={importSubtitle}
                   onClose={closeImport}
                   footer={
                     <View style={{ flexDirection: "row", gap: 8 }}>
@@ -593,7 +588,6 @@ export function Profiles(props: { profileId?: string } = {}) {
               <Dialog
                 width={440}
                 title={importTitle}
-                subtitle={importSubtitle}
                 onClose={closeImport}
                 footer={
                   <Actions>
@@ -718,19 +712,6 @@ export function Profiles(props: { profileId?: string } = {}) {
             when={!qr()}
             else={
               <View style={{ gap: density.space(16), alignItems: "center" }}>
-                <Hint
-                  text={
-                    exporting()!.subscriptionUrl
-                      ? ui.t(
-                          "扫描此二维码导入订阅地址",
-                          "Scan to import the subscription URL",
-                        )
-                      : ui.t(
-                          "扫描此二维码导入配置内容",
-                          "Scan to import the profile",
-                        )
-                  }
-                />
                 <View
                   style={{
                     padding: 12,
@@ -824,30 +805,14 @@ function ProfileRow(props: {
   compact?: boolean;
   detail?: boolean;
 }) {
-  const ui = useApp(),
-    alive = useLifetime(),
-    route = RouteOwner() || ui.route();
-  const open = signal(false),
-    contextual = signal(false);
-  useOverlay(() => open() || contextual());
-  let pending: { source: "menu" | "context"; action: () => void } | undefined;
+  const ui = useApp();
   const ready = () => ui.client.domains.readyForCommand(["config", "profiles"]);
-  const phoneRow = () => !platform.desktop && windowSize().width < 840 && !props.detail;
+  const phoneRow = () =>
+    !platform.desktop && windowSize().width < 840 && !props.detail;
   const height = () =>
     phoneRow()
       ? 64
       : Math.max(84, density.line(52) * Math.max(1, fontScale()) + spacing.xl);
-  const afterClose = (source: "menu" | "context") => {
-    if (pending?.source !== source) return;
-    const action = pending.action;
-    pending = undefined;
-    if (alive() && ui.route() === route) action();
-  };
-  const choose = (source: "menu" | "context", action: () => void) => {
-    pending = { source, action };
-    open.set(false);
-    contextual.set(false);
-  };
   const updated = () =>
     props.refreshing
       ? ui.t("正在更新", "Updating")
@@ -860,412 +825,302 @@ function ProfileRow(props: {
     props.profile.subscriptionUserInfo?.totalBytes
       ? `${bytes((props.profile.subscriptionUserInfo.uploadBytes || 0) + (props.profile.subscriptionUserInfo.downloadBytes || 0))} / ${bytes(props.profile.subscriptionUserInfo.totalBytes)}`
       : "";
-  const Command = (item: {
-    source: "menu" | "context";
-    label: string;
-    icon: Parameters<typeof Icon>[0]["name"];
-    id?: string;
-    danger?: boolean;
-    disabled?: boolean;
-    action: () => void;
-  }) => (
-    <MenuItem
-      testID={item.id}
-      accessibilityLabel={item.label}
-      disabled={!ready() || !!item.disabled}
-      onSelect={() => choose(item.source, item.action)}
-      focusStyle={focusRing()}
-      hoverStyle={{ backgroundColor: palette().soft }}
-      activeStyle={{ backgroundColor: palette().soft }}
-      style={{
-        minHeight: control.row,
-        paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
-        borderRadius: radius.sm,
-        borderCurve: "continuous",
-        flexDirection: "row",
-        alignItems: "center",
-        gap: spacing.md,
-        opacity: !ready() || item.disabled ? 0.4 : 1,
-        ...feedbackStyle(),
-      }}
-    >
-      <Icon
-        name={item.icon}
-        size={18}
-        color={item.danger ? palette().danger : palette().muted}
-      />
-      <Text
-        style={{
-          flex: 1,
-          minWidth: 0,
-          fontSize: density.font(14),
-          lineHeight: density.line(20),
-          color: item.danger ? palette().danger : palette().text,
-        }}
-      >
-        {item.label}
-      </Text>
-    </MenuItem>
-  );
-  const Commands = (value: { source: "menu" | "context" }) => (
-    <View>
-      <If when={!(platform.desktop && value.source === "context")}>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            paddingLeft: spacing.md,
-            gap: spacing.sm,
-          }}
-        >
-          <Text
-            role="header"
-            accessibilityLabel={props.profile.name}
-            style={{
-              flex: 1,
-              minWidth: 0,
-              numberOfLines: 2,
-              fontSize: density.font(13),
-              lineHeight: density.line(20),
-              fontWeight: "500",
-              color: palette().muted,
-            }}
-          >
-            {props.profile.name}
-          </Text>
-          <IconButton
-            id="profile-menu-close"
-            icon="x"
-            tooltip={false}
-            label={ui.t("关闭菜单", "Close menu")}
-            onPress={() => {
-              open.set(false);
-              contextual.set(false);
-            }}
-          />
-        </View>
-      </If>
-      <If when={props.profile.lastRefreshError}>
-        <Command
-          source={value.source}
-          id="profile-refresh-error"
-          icon="triangle-alert"
-          label={ui.t("更新错误…", "Update error…")}
-          action={props.onError}
-        />
-        <MenuSeparator
-          style={{
-            height: 1,
-            marginVertical: spacing.xxs,
-            backgroundColor: palette().line,
-          }}
-        />
-      </If>
-      <If when={!props.profile.active}>
-        <Command
-          source={value.source}
-          icon="circle-check"
-          label={ui.t("设为当前订阅", "Use this subscription")}
-          action={() => props.onAction("profiles.activate")}
-        />
-      </If>
-      <If when={props.profile.subscriptionUrl}>
-        <Command
-          source={value.source}
-          id={`edit-subscription-${props.detail ? "detail-" : ""}${props.profile.id}`}
-          icon="file-pen-line"
-          label={ui.t("编辑订阅…", "Edit subscription…")}
-          action={props.onEdit}
-        />
-      </If>
-      <Command
-        source={value.source}
-        id={`edit-yaml-${props.detail ? "detail-" : ""}${props.profile.id}`}
-        icon="file-pen-line"
-        label={ui.t("编辑 YAML…", "Edit YAML…")}
-        action={() => ui.editProfile(props.profile.id)}
-      />
-      <Command
-        source={value.source}
-        id={`profile-export-${props.detail ? "detail-" : ""}${props.profile.id}`}
-        icon="download"
-        label={ui.t("导出…", "Export…")}
-        action={props.onExport}
-      />
-      <If when={props.profile.subscriptionUrl}>
-        <Command
-          source={value.source}
-          id={`refresh-profile-${props.detail ? "detail-" : ""}${props.profile.id}`}
-          icon="refresh-cw"
-          label={ui.t("更新订阅", "Update subscription")}
-          disabled={ui.client.pending() > 0 || props.refreshing}
-          action={() => props.onAction("profiles.refresh")}
-        />
-      </If>
-      <If when={props.profile.hasBackup}>
-        <Command
-          source={value.source}
-          icon="history"
-          label={ui.t("恢复上次备份…", "Restore previous backup…")}
-          action={() => {
-            void confirm(
-              ui,
-              ui.t(
-                `恢复“${props.profile.name}”的备份？`,
-                `Restore “${props.profile.name}”?`,
-              ),
-              () => props.onAction("profiles.restore"),
-              {
-                actionLabel: ui.t("恢复并覆盖", "Restore and replace"),
-                description: ui.t(
-                  `仅替换“${props.profile.name}”。${props.profile.active ? "这是当前订阅，可能重新连接 VPN。" : "不影响当前连接。"}`,
-                  `Replace only “${props.profile.name}”. ${props.profile.active ? "This is the active subscription; VPN may reconnect." : "The active connection is unaffected."}`,
-                ),
-              },
-            );
-          }}
-        />
-      </If>
-      <MenuSeparator
-        style={{
-          height: 1,
-          marginVertical: spacing.xxs,
-          backgroundColor: palette().line,
-        }}
-      />
-      <Command
-        source={value.source}
-        icon="trash-2"
-        danger
-        label={ui.t("删除…", "Delete…")}
-        action={() => {
+  const idPrefix = () => (props.detail ? "detail-" : "");
+  const commands = (): ObjectCommand[] => {
+    const items: ObjectCommand[] = [];
+    const locked = !ready();
+    if (props.profile.lastRefreshError) {
+      items.push({
+        id: "profile-refresh-error",
+        icon: "triangle-alert",
+        label: ui.t("更新错误…", "Update error…"),
+        disabled: locked,
+        separatorAfter: true,
+        run: props.onError,
+      });
+    }
+    if (!props.profile.active) {
+      items.push({
+        icon: "circle-check",
+        label: ui.t("设为当前订阅", "Use this subscription"),
+        disabled: locked,
+        run: () => props.onAction("profiles.activate"),
+      });
+    }
+    if (props.profile.subscriptionUrl) {
+      items.push({
+        id: `edit-subscription-${idPrefix()}${props.profile.id}`,
+        icon: "file-pen-line",
+        label: ui.t("编辑订阅…", "Edit subscription…"),
+        disabled: locked,
+        run: props.onEdit,
+      });
+    }
+    items.push(
+      {
+        id: `edit-yaml-${idPrefix()}${props.profile.id}`,
+        icon: "file-pen-line",
+        label: ui.t("编辑 YAML…", "Edit YAML…"),
+        disabled: locked,
+        run: () => ui.editProfile(props.profile.id),
+      },
+      {
+        id: `profile-export-${idPrefix()}${props.profile.id}`,
+        icon: "download",
+        label: ui.t("导出…", "Export…"),
+        disabled: locked,
+        run: props.onExport,
+      },
+    );
+    if (props.profile.subscriptionUrl) {
+      items.push({
+        id: `refresh-profile-${idPrefix()}${props.profile.id}`,
+        icon: "refresh-cw",
+        label: ui.t("更新订阅", "Update subscription"),
+        disabled: locked || ui.client.pending() > 0 || props.refreshing,
+        run: () => props.onAction("profiles.refresh"),
+      });
+    }
+    if (props.profile.hasBackup) {
+      items.push({
+        icon: "history",
+        label: ui.t("恢复上次备份…", "Restore previous backup…"),
+        disabled: locked,
+        run: () => {
           void confirm(
             ui,
             ui.t(
-              `删除“${props.profile.name}”？`,
-              `Delete “${props.profile.name}”?`,
+              `恢复“${props.profile.name}”的备份？`,
+              `Restore “${props.profile.name}”?`,
             ),
-            () => props.onAction("profiles.delete"),
-            { actionLabel: ui.t("删除订阅", "Delete subscription"), description: props.profile.active ? ui.t("删除当前订阅会影响正在使用它的连接；不会删除其他订阅。", "Deleting the active subscription affects its connection. Other subscriptions are kept.") : ui.t("仅删除此订阅及其本地副本，其他订阅保持不变。", "Delete only this subscription and its local copies. Other subscriptions are kept.") },
+            () => props.onAction("profiles.restore"),
+            {
+              actionLabel: ui.t("恢复并覆盖", "Restore and replace"),
+              description: ui.t(
+                `仅替换“${props.profile.name}”。${props.profile.active ? "这是当前订阅，可能重新连接 VPN。" : "不影响当前连接。"}`,
+                `Replace only “${props.profile.name}”. ${props.profile.active ? "This is the active subscription; VPN may reconnect." : "The active connection is unaffected."}`,
+              ),
+            },
           );
-        }}
-      />
-    </View>
-  );
-  const trigger = (
-    <View
-      style={{
-        minHeight: height(),
-        flexDirection: "row",
-        alignItems: "center",
-        borderBottomWidth: props.detail ? 0 : 1,
-        borderBottomColor: palette().line,
-        backgroundColor:
-          props.selected && props.compact && !props.detail
-            ? palette().accentFill
-            : contextual()
-              ? palette().soft
-              : palette().panel,
-      }}
-    >
-      <View
-        testID={`open-profile-${props.detail ? "detail-" : ""}${props.profile.id}`}
-        role="button"
-        accessibilityLabel={props.profile.name}
-        accessibilityState={{
-          selected: !!props.selected,
-        }}
-        focusStyle={focusRing()}
-        hoverStyle={{
-          backgroundColor:
-            props.selected && props.compact && !props.detail
-              ? palette().accentFill
-              : palette().hover,
-        }}
-        activeStyle={{ backgroundColor: palette().soft }}
-        onPress={props.onDetails}
-        style={{
-          flex: 1,
-          minHeight: height() - 1,
-          paddingHorizontal: phoneRow() ? spacing.md : spacing.lg,
-          paddingVertical: phoneRow() ? 8 : density.space(10),
-          flexDirection: "row",
-          alignItems: "center",
-          gap: phoneRow() ? spacing.sm : spacing.md,
-          ...feedbackStyle(),
-        }}
-      >
-        <If
-          when={props.refreshing}
-          else={
-            <IconTile
-              icon={props.profile.active ? "circle-check" : "rss"}
-              color={props.profile.active ? palette().accent : palette().muted}
-            />
-          }
+        },
+      });
+    }
+    items.push({
+      icon: "trash-2",
+      danger: true,
+      label: ui.t("删除…", "Delete…"),
+      disabled: locked,
+      run: () => {
+        void confirm(
+          ui,
+          ui.t(
+            `删除“${props.profile.name}”？`,
+            `Delete “${props.profile.name}”?`,
+          ),
+          () => props.onAction("profiles.delete"),
+          {
+            actionLabel: ui.t("删除订阅", "Delete subscription"),
+            description: props.profile.active
+              ? ui.t(
+                  "删除当前订阅会影响正在使用它的连接；不会删除其他订阅。",
+                  "Deleting the active subscription affects its connection. Other subscriptions are kept.",
+                )
+              : ui.t(
+                  "仅删除此订阅及其本地副本，其他订阅保持不变。",
+                  "Delete only this subscription and its local copies. Other subscriptions are kept.",
+                ),
+          },
+        );
+      },
+    });
+    return items;
+  };
+  return (
+    <ObjectMenu
+      id={`profile-menu-${idPrefix()}${props.profile.id}`}
+      closeId="profile-menu-close"
+      title={props.profile.name}
+      subtitle={props.profile.lastRefreshError ? ui.t("更新失败", "Update failed") : undefined}
+      triggerLabel={ui.t("订阅操作", "Subscription actions")}
+      triggerIcon="ellipsis-vertical"
+      triggerStyle={{ marginRight: spacing.sm }}
+      commands={commands()}
+      row={(menu, state) => (
+        <View
+          style={{
+            minHeight: height(),
+            flexDirection: "row",
+            alignItems: "center",
+            borderBottomWidth: props.detail ? 0 : 1,
+            borderBottomColor: palette().line,
+            backgroundColor:
+              props.selected && props.compact && !props.detail
+                ? palette().accentFill
+                : state?.contextOpen()
+                  ? palette().soft
+                  : palette().panel,
+          }}
         >
-          <Spinner size={20} />
-        </If>
-        <View style={{ flex: 1, minWidth: 0, gap: phoneRow() ? 2 : spacing.xxs }}>
           <View
+            testID={`open-profile-${idPrefix()}${props.profile.id}`}
+            role="button"
+            accessibilityLabel={props.profile.name}
+            accessibilityState={{
+              selected: !!props.selected,
+            }}
+            focusVisibleStyle={focusRing(0)}
+            hoverStyle={{
+              backgroundColor:
+                props.selected && props.compact && !props.detail
+                  ? palette().accentFill
+                  : palette().hover,
+            }}
+            activeStyle={{ backgroundColor: palette().soft }}
+            onPress={props.onDetails}
             style={{
+              flex: 1,
+              minHeight: height() - 1,
+              paddingHorizontal: phoneRow() ? spacing.md : spacing.lg,
+              paddingVertical: phoneRow() ? 8 : density.space(10),
               flexDirection: "row",
-              gap: spacing.sm,
               alignItems: "center",
+              gap: phoneRow() ? spacing.sm : spacing.md,
+              ...feedbackStyle(),
             }}
           >
-            <Text
-              style={{
-                flex: 1,
-                minWidth: 0,
-                numberOfLines: 1,
-                fontSize: typography.sm,
-                lineHeight: density.line(20),
-                fontWeight: "600",
-                color: palette().text,
-              }}
+            <If
+              when={props.refreshing}
+              else={
+                <IconTile
+                  icon={props.profile.active ? "circle-check" : "rss"}
+                  color={
+                    props.profile.active ? palette().accent : palette().muted
+                  }
+                />
+              }
             >
-              {props.profile.name}
-            </Text>
-            <If when={props.profile.active}>
-              <Badge tone="brand" label={ui.t("当前", "Current")} />
+              <Spinner size={20} />
+            </If>
+            <View
+              style={{ flex: 1, minWidth: 0, gap: phoneRow() ? 2 : spacing.xxs }}
+            >
+              <View
+                style={{
+                  flexDirection: "row",
+                  gap: spacing.sm,
+                  alignItems: "center",
+                }}
+              >
+                <Text
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    numberOfLines: 1,
+                    fontSize: typography.sm,
+                    lineHeight: density.line(20),
+                    fontWeight: "600",
+                    color: palette().text,
+                  }}
+                >
+                  {props.profile.name}
+                </Text>
+                <If when={props.profile.active}>
+                  <Badge tone="brand" label={ui.t("当前", "Current")} />
+                </If>
+              </View>
+              <If when={!(props.compact || windowSize().width < 840)}>
+                <Text
+                  style={{
+                    numberOfLines: 1,
+                    textOverflow: "ellipsis-middle",
+                    fontSize: typography.note,
+                    lineHeight: density.line(platform.desktop ? 16 : 18),
+                    color: palette().muted,
+                  }}
+                >
+                  {props.profile.subscriptionUrl || props.profile.source}
+                </Text>
+              </If>
+              <If when={props.compact || windowSize().width < 840}>
+                <Text
+                  style={{
+                    numberOfLines: 1,
+                    fontSize: typography.note,
+                    lineHeight: density.line(platform.desktop ? 16 : 18),
+                    fontVariant: ["tabular-nums"],
+                    color: props.profile.lastRefreshError
+                      ? palette().danger
+                      : palette().muted,
+                  }}
+                >
+                  {updated()}
+                </Text>
+              </If>
+              <If
+                when={
+                  !!props.profile.subscriptionUserInfo?.totalBytes &&
+                  !props.detail
+                }
+              >
+                <View style={{ paddingTop: phoneRow() ? 0 : density.space(4) }}>
+                  <MeterBar
+                    ratio={Math.min(
+                      1,
+                      ((props.profile.subscriptionUserInfo?.uploadBytes || 0) +
+                        (props.profile.subscriptionUserInfo?.downloadBytes ||
+                          0)) /
+                        (props.profile.subscriptionUserInfo?.totalBytes || 1),
+                    )}
+                  />
+                </View>
+              </If>
+              <If when={(props.compact || windowSize().width < 840) && !!usage()}>
+                <Text
+                  style={{
+                    numberOfLines: 1,
+                    fontSize: typography.note,
+                    lineHeight: density.line(platform.desktop ? 16 : 18),
+                    fontVariant: ["tabular-nums"],
+                    color: palette().muted,
+                  }}
+                >
+                  {usage()}
+                </Text>
+              </If>
+            </View>
+            <If when={!props.compact && windowSize().width >= 840}>
+              <View
+                style={{ width: 160, gap: spacing.xxs, alignItems: "flex-end" }}
+              >
+                <Text
+                  style={{
+                    fontSize: density.font(12),
+                    lineHeight: density.line(18),
+                    fontVariant: ["tabular-nums"],
+                    color: props.profile.lastRefreshError
+                      ? palette().danger
+                      : palette().muted,
+                  }}
+                >
+                  {updated()}
+                </Text>
+                <Text
+                  style={{
+                    fontSize: density.font(12),
+                    lineHeight: density.line(18),
+                    color: palette().muted,
+                    fontVariant: ["tabular-nums"],
+                  }}
+                >
+                  {usage()}
+                </Text>
+              </View>
             </If>
           </View>
-          <If when={!(props.compact || windowSize().width < 840)}>
-            <Text
-              style={{
-                numberOfLines: 1,
-                textOverflow: "ellipsis-middle",
-                fontSize: typography.note,
-                lineHeight: density.line(platform.desktop ? 16 : 18),
-                color: palette().muted,
-              }}
-            >
-              {props.profile.subscriptionUrl || props.profile.source}
-            </Text>
-          </If>
-          <If when={props.compact || windowSize().width < 840}>
-            <Text
-              style={{
-                numberOfLines: 1,
-                fontSize: typography.note,
-                lineHeight: density.line(platform.desktop ? 16 : 18),
-                fontVariant: ["tabular-nums"],
-                color: props.profile.lastRefreshError
-                  ? palette().danger
-                  : palette().muted,
-              }}
-            >
-              {updated()}
-            </Text>
-          </If>
-          <If when={!!props.profile.subscriptionUserInfo?.totalBytes && !props.detail}>
-            <View style={{ paddingTop: phoneRow() ? 0 : density.space(4) }}>
-              <MeterBar
-                ratio={Math.min(
-                  1,
-                  ((props.profile.subscriptionUserInfo?.uploadBytes || 0) +
-                    (props.profile.subscriptionUserInfo?.downloadBytes || 0)) /
-                    (props.profile.subscriptionUserInfo?.totalBytes || 1),
-                )}
-              />
-            </View>
-          </If>
-          <If when={(props.compact || windowSize().width < 840) && !!usage()}>
-            <Text
-              style={{
-                numberOfLines: 1,
-                fontSize: typography.note,
-                lineHeight: density.line(platform.desktop ? 16 : 18),
-                fontVariant: ["tabular-nums"],
-                color: palette().muted,
-              }}
-            >
-              {usage()}
-            </Text>
-          </If>
+          {menu}
         </View>
-        <If when={!props.compact && windowSize().width >= 840}>
-          <View
-            style={{ width: 160, gap: spacing.xxs, alignItems: "flex-end" }}
-          >
-            <Text
-              style={{
-                fontSize: density.font(12),
-                lineHeight: density.line(18),
-                fontVariant: ["tabular-nums"],
-                color: props.profile.lastRefreshError
-                  ? palette().danger
-                  : palette().muted,
-              }}
-            >
-              {updated()}
-            </Text>
-            <Text
-              style={{
-                fontSize: density.font(12),
-                lineHeight: density.line(18),
-                color: palette().muted,
-                fontVariant: ["tabular-nums"],
-              }}
-            >
-              {usage()}
-            </Text>
-          </View>
-        </If>
-      </View>
-      <Menu
-        open={open()}
-        onOpenChange={(event) => open.set(event.open)}
-        onClose={() => afterClose("menu")}
-        popupStyle={popupSurface()}
-        align="end"
-        offset={4}
-        margin={8}
-        popupStartingStyle={{ opacity: 0, transform: [{ translateY: -4 }] }}
-        popupEndingStyle={{ opacity: 0 }}
-        backdropStyle={{ backgroundColor: palette().scrim }}
-        trigger={
-          <View
-            testID={`profile-menu-${props.detail ? "detail-" : ""}${props.profile.id}`}
-            role="button"
-            hitSlop={control.hitSlop(control.icon)}
-            accessibilityLabel={ui.t("订阅操作", "Subscription actions")}
-            accessibilityState={{ expanded: open() }}
-            focusStyle={focusRing()}
-            hoverStyle={{ backgroundColor: palette().soft }}
-            activeStyle={{ backgroundColor: palette().soft }}
-            style={{
-              width: control.icon,
-              height: control.icon,
-              marginRight: spacing.sm,
-              borderRadius: radius.md,
-              borderCurve: "continuous",
-              alignItems: "center",
-              justifyContent: "center",
-              backgroundColor: open() ? palette().soft : "transparent",
-            }}
-          >
-            <Icon name="ellipsis-vertical" size={18} color={palette().muted} />
-          </View>
-        }
-      >
-        <Commands source="menu" />
-      </Menu>
-    </View>
-  );
-  return (
-    <ContextMenu
-      open={contextual()}
-      onOpenChange={(event) => contextual.set(event.open)}
-      onClose={() => afterClose("context")}
-      popupStyle={popupSurface()}
-      backdropStyle={{ backgroundColor: palette().scrim }}
-      trigger={trigger}
-    >
-      <Commands source="context" />
-    </ContextMenu>
+      )}
+    />
   );
 }
 
@@ -1291,7 +1146,7 @@ function ExportChoice(props: {
         onPress={() => {
           if (!disabled()) props.onPress();
         }}
-        focusStyle={focusRing()}
+        focusVisibleStyle={focusRing(0)}
         hoverStyle={disabled() ? undefined : { backgroundColor: palette().soft }}
         activeStyle={
           disabled() ? undefined : { backgroundColor: palette().soft }

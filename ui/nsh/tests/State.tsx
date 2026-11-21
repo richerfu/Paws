@@ -13,6 +13,8 @@ import {
   groupMembers,
   proxyGroupSummary,
   groupSelectionMode,
+  isManualSelector,
+  selectableGroup,
 } from "../src/proxy-groups";
 import { rulePreview } from "../src/manual-rule";
 import { parentPage } from "../src/app";
@@ -163,6 +165,14 @@ mount(() => {
   assert(
     groupSelectionMode({ ...initial.proxyGroups[0], fixed: undefined, groupType: "Selector" }) ===
       "manual" &&
+      groupSelectionMode({ ...initial.proxyGroups[0], fixed: undefined, groupType: "select" }) ===
+        "manual" &&
+      isManualSelector({ groupType: "select" }) &&
+      isManualSelector({ groupType: "Selector" }) &&
+      selectableGroup({ groupType: "select" }) &&
+      selectableGroup({ groupType: "url-test" }) &&
+      selectableGroup({ groupType: "fallback" }) &&
+      !selectableGroup({ groupType: "load-balance" }) &&
       groupSelectionMode({
         ...initial.proxyGroups[0],
         fixed: undefined,

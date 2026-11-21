@@ -6,16 +6,9 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@nsh/ohos": "file:../target/ohos/arkts-deps/nsh",
+    "@nsh/harmonyos": "file:../target/ohos/arkts-deps/nsh",
     "@ohos-rs/ability": "file:../target/ohos/arkts-deps/ability",
-    "@ohos-rs/ability-plugin-files": "file:../target/ohos/arkts-deps/files",
-    "@ohos-rs/ability-plugin-url": "file:../target/ohos/arkts-deps/url",
     "libpaws_ui.so": "file:./src/main/cpp/types/libpaws_ui",
-    "@ohos-rs/ability-plugin-resource": "file:../target/ohos/arkts-deps/resource",
-    "@ohos-rs/ability-plugin-clipboard": "file:../target/ohos/arkts-deps/clipboard",
-    "@ohos-rs/ability-plugin-window": "file:../target/ohos/arkts-deps/window",
-    "@ohos-rs/ability-plugin-accessibility": "file:../target/ohos/arkts-deps/accessibility",
-    "@ohos-rs/ability-plugin-webview": "file:../target/ohos/arkts-deps/webview",
-    "libnsh_platform_ohos.so": "file:./src/main/cpp/types/libnsh_platform_ohos"
+    "libnsh_platform_harmonyos.so": "file:./src/main/cpp/types/libnsh_platform_harmonyos"
   }
 }

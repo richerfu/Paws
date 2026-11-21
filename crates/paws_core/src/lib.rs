@@ -30,6 +30,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::Layer;
 
 mod app_http;
+mod connection_probe;
 mod controller;
 mod diagnostics;
 mod engine;
@@ -64,6 +65,7 @@ pub use runtime_domain::{RuntimeDomain, RuntimeDomainKey, RuntimeDomainProjectio
 #[cfg(test)]
 use test_projection::RuntimeSnapshot;
 mod subscription;
+pub use subscription::ProfileRefreshOutcome;
 mod telemetry;
 mod webdav;
 
@@ -1803,7 +1805,10 @@ impl CoreHandle {
         })
     }
 
-    pub async fn refresh_profile(&self, profile_id: &str) -> Result<(), PawsError> {
+    pub async fn refresh_profile(
+        &self,
+        profile_id: &str,
+    ) -> Result<ProfileRefreshOutcome, PawsError> {
         let (subscription_url, expected_config_revision) = {
             let state = self.lock_state()?;
             (
@@ -1842,13 +1847,22 @@ impl CoreHandle {
         profile_id: &str,
         url: &str,
         expected_config_revision: u64,
-    ) -> Result<(), PawsError> {
+    ) -> Result<ProfileRefreshOutcome, PawsError> {
         let prepared = self.prepare_profile_refresh_from_url(url).await?;
         let _reload_guard = self.config_reload_lock.lock().await;
-        let (checkpoint, active) = {
+        let (checkpoint, active, previous_config) = {
             let mut state = self.lock_state()?;
             Self::ensure_config_revision_locked(&state, expected_config_revision)?;
             let checkpoint = state.profiles.checkpoint_profile(profile_id)?;
+            let active = state.profiles.active_profile() == Some(profile_id);
+            let previous_config = if active && state.engine_loaded {
+                Some(ProfileRefreshConfiguration::capture(
+                    &state.profiles,
+                    profile_id,
+                )?)
+            } else {
+                None
+            };
             state
                 .profiles
                 .replace_profile_content_with_subscription_metadata(
@@ -1857,36 +1871,55 @@ impl CoreHandle {
                     prepared.subscription_user_info,
                     prepared.subscription_metadata,
                 )?;
-            (
-                checkpoint,
-                state.profiles.active_profile() == Some(profile_id),
-            )
+            (checkpoint, active, previous_config)
         };
+        let mut outcome = ProfileRefreshOutcome::default();
         if active {
-            if let Err(primary) = self.reload_config_inner(profile_id).await {
-                let (error, rollback_succeeded) = self
-                    .rollback_profile_after_failure(profile_id, checkpoint, primary)
-                    .await;
-                if !rollback_succeeded {
-                    let mut state = self.lock_state()?;
-                    self.publish_config_and_resource_change_locked(&mut state);
+            let result = async {
+                let changed = {
+                    let state = self.lock_state()?;
+                    previous_config.as_ref()
+                        != Some(&ProfileRefreshConfiguration::capture(
+                            &state.profiles,
+                            profile_id,
+                        )?)
+                };
+                // Release the old YAML tree before constructing a new engine
+                // configuration for large subscriptions.
+                drop(previous_config);
+                if changed {
+                    self.reload_config_inner(profile_id).await?;
                 }
-                return Err(error);
+                Ok::<_, PawsError>(changed)
+            }
+            .await;
+            match result {
+                Ok(changed) => outcome.active_config_changed = changed,
+                Err(primary) => {
+                    let (error, rollback_succeeded) = self
+                        .rollback_profile_after_failure(profile_id, checkpoint, primary)
+                        .await;
+                    if !rollback_succeeded {
+                        let mut state = self.lock_state()?;
+                        self.publish_config_and_resource_change_locked(&mut state);
+                    }
+                    return Err(error);
+                }
             }
         }
         let mut state = self.lock_state()?;
         state
             .logs
             .push(info_log(format!("profile refreshed: {profile_id}")));
-        if active {
+        if outcome.active_config_changed {
             self.publish_config_and_resource_change_locked(&mut state);
         } else {
             self.publish_runtime_change_locked(&mut state, true, false);
         }
-        Ok(())
+        Ok(outcome)
     }
 
-    pub async fn refresh_all_profiles(&self) -> Result<(), PawsError> {
+    pub async fn refresh_all_profiles(&self) -> Result<ProfileRefreshOutcome, PawsError> {
         let profiles: Vec<ProfileSummary> = {
             let state = self.lock_state()?;
             state
@@ -1901,16 +1934,20 @@ impl CoreHandle {
             state
                 .logs
                 .push(info_log("profile refresh skipped: no subscriptions"));
-            return Ok(());
+            return Ok(ProfileRefreshOutcome::default());
         }
 
+        let mut outcome = ProfileRefreshOutcome::default();
         let total = profiles.len();
         let mut succeeded = 0usize;
         let mut failed = 0usize;
         let mut last_error = None;
         for profile in profiles {
             match self.refresh_profile(&profile.id).await {
-                Ok(()) => succeeded += 1,
+                Ok(refreshed) => {
+                    succeeded += 1;
+                    outcome.active_config_changed |= refreshed.active_config_changed;
+                }
                 Err(error) => {
                     failed += 1;
                     last_error = Some(error.to_string());
@@ -1933,10 +1970,10 @@ impl CoreHandle {
                 last_error.unwrap_or_else(|| "unknown error".to_owned())
             )));
         }
-        Ok(())
+        Ok(outcome)
     }
 
-    pub async fn refresh_due_profiles(&self) -> Result<(), PawsError> {
+    pub async fn refresh_due_profiles(&self) -> Result<ProfileRefreshOutcome, PawsError> {
         let profiles = {
             let state = self.lock_state()?;
             state.profiles.due_subscription_summaries()
@@ -1946,16 +1983,20 @@ impl CoreHandle {
             state.logs.push(info_log(
                 "profile due refresh skipped: no due subscriptions",
             ));
-            return Ok(());
+            return Ok(ProfileRefreshOutcome::default());
         }
 
+        let mut outcome = ProfileRefreshOutcome::default();
         let total = profiles.len();
         let mut succeeded = 0usize;
         let mut failed = 0usize;
         let mut last_error = None;
         for profile in profiles {
             match self.refresh_profile(&profile.id).await {
-                Ok(()) => succeeded += 1,
+                Ok(refreshed) => {
+                    succeeded += 1;
+                    outcome.active_config_changed |= refreshed.active_config_changed;
+                }
                 Err(error) => {
                     failed += 1;
                     last_error = Some(error.to_string());
@@ -1978,7 +2019,7 @@ impl CoreHandle {
                 last_error.unwrap_or_else(|| "unknown error".to_owned())
             )));
         }
-        Ok(())
+        Ok(outcome)
     }
 
     pub async fn activate_profile(&self, profile_id: &str) -> Result<(), PawsError> {

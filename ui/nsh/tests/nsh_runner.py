@@ -21,6 +21,10 @@ def navigation_steps(page, width):
         return ['desktop-nav-connections', 'activity-view-requests']
     if page == 'advanced-diagnostics':
         return ['desktop-nav-diagnostics', 'diagnostics-advanced']
+    if page in ('appearance', 'backups', 'about'):
+        return ['desktop-nav-settings', f'settings-section-{page}']
+    if page == 'converter':
+        return ['nav-profiles', 'open-converter']
     return [f'desktop-nav-{page}']
 
 

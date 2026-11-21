@@ -14,7 +14,6 @@ import {
   type ListRef,
   reduceMotion,
 } from "nsh";
-import { Button } from "nsh/base";
 import {
   Action,
   Actions,
@@ -432,31 +431,13 @@ export function Logs() {
         </Text>
       </If>
       <If when={!history() && filtered()}>
-        <Button
-          testID="logs-clear-filters"
-          accessibilityLabel={ui.t("清除筛选", "Clear filters")}
-          focusStyle={focusRing()}
-          hoverStyle={{ opacity: 0.8 }}
-          activeStyle={{ opacity: 0.65 }}
+        <Action
+          id="logs-clear-filters"
+          variant="link"
+          small
+          label={ui.t("清除筛选", "Clear filters")}
           onPress={clearFilters}
-          style={{
-            minHeight: 24,
-            paddingHorizontal: 6,
-            borderRadius: radius.sm,
-            justifyContent: "center",
-          }}
-        >
-          <Text
-            style={{
-              fontSize: typography.note,
-              lineHeight: density.line(18),
-              fontWeight: "600",
-              color: palette().accent,
-            }}
-          >
-            {ui.t("清除筛选", "Clear filters")}
-          </Text>
-        </Button>
+        />
       </If>
     </View>
   );
@@ -545,7 +526,7 @@ export function Logs() {
               testID={`log-${row().timestamp}`}
               role="button"
               accessibilityLabel={meta(row())}
-              focusStyle={focusRing()}
+              focusVisibleStyle={focusRing(0)}
               hoverStyle={{
                 backgroundColor: isSelected()
                   ? palette().accentFill
@@ -621,8 +602,9 @@ export function Logs() {
             pointerEvents: "box-none",
           }}
         >
-          <Button
+          <View
             testID="logs-to-bottom"
+            role="button"
             accessibilityLabel={
               unseenCount() > 0
                 ? ui.t(
@@ -633,7 +615,7 @@ export function Logs() {
             }
             onPressDown={pillPress.down}
             onPressUp={pillPress.up}
-            focusStyle={focusRing()}
+            focusVisibleStyle={focusRing()}
             hoverStyle={surfaceFinish("hover")}
             activeStyle={surfaceFinish("pressed")}
             onPress={toEnd}
@@ -670,7 +652,7 @@ export function Logs() {
                   )
                 : ui.t("已暂停跟随 · 回到底部", "Paused · Go to bottom")}
             </Text>
-          </Button>
+          </View>
         </View>
       </If>
     </View>

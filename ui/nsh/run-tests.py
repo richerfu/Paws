@@ -41,7 +41,7 @@ def cases(log_dir):
         "id:desktop-nav-resources", "id:rule-menu-rule-1", "id:rule-down-rule-1", "id:save-rule-order",
         "id:resources-section-resources", "id:provider-menu-proxy-Test provider", "label:资源详情…", "label:测速 >> nth=0", "id:dialog-close",
         "label:GeoIP", "id:dialog-close",
-        "id:desktop-nav-appearance", "label:深色", "label:浅色",
+        "id:desktop-nav-settings", "id:settings-section-appearance", "label:深色", "label:浅色",
         "id:desktop-nav-resources", "id:lookup-rule", "id:dialog-close", "id:add-rule", "id:dialog-close", "id:lookup-rule", "id:dialog-close",
     ]
 
@@ -61,6 +61,8 @@ def cases(log_dir):
         ),
         ("gateway-queue", ["trace", "ui/nsh/tests/GatewayQueue.tsx", "--wait", "120", "--tap", "id:queue-start-stop", "--tap", "id:queue-import-cancel"], ("PASS: native gateway ACK delivers synchronous start/stop and import/cancel independently of completion",), 2),
         ("check", ["check", "ui/nsh"], (), None),
+        ("diagnostics", ["test", "ui/nsh/tests/diagnostics.test.ts"],
+         ("3 tests: 3 passed, 0 failed",), None),
         ("production-entry", ["build", "ui/nsh", "-o", str(log_dir / "production-entry")], (), None),
         ("redesign", ["test", "--trace", "ui/nsh/tests/redesign.test.ts"], ("4 tests: 4 passed, 0 failed",), None),
         ("profile-editor", ["test", "ui/nsh/tests/profile-editor.test.ts"], ("6 tests: 6 passed, 0 failed",), None),
@@ -134,6 +136,7 @@ def validate_output(name, output, markers, expected_taps):
         spec.loader.exec_module(visual)
         for kind in ("SHEET", "PROVIDER"):
             before, remaining = output.split(f"LIVE {kind} BEGIN", 1)
+            before = before.rsplit("── open(", 1)[-1]
             changes = remaining.split(f"LIVE {kind} END", 1)[0]
             tree = visual.NativeTree()
             for line in before.splitlines():
@@ -187,7 +190,7 @@ def validate_output(name, output, markers, expected_taps):
         # Actual native mounts for the dark/light presses: only the selected
         # radio dot changes identity. Translated option rows must stay mounted.
         presses = re.split(r"(?m)^PAWS PRESS #\b", output)[1:]
-        for index in (12, 13):
+        for index in (13, 14):
             if presses[index].count("Create {") > 1 or presses[index].count("Delete {") > 1:
                 raise ValueError("desktop-wire: theme change recreated translated control rows")
     if name == "phone-wire":
@@ -256,7 +259,7 @@ def validate_resource_dialogs(output):
             controls.pop(deleted[1], None)
         elif PRESS.match(line):
             press += 1
-            expected = "rule-lookup-query" if press in (17, 21) else "manual-rule-value" if press == 19 else None
+            expected = "rule-lookup-query" if press in (18, 22) else "manual-rule-value" if press == 20 else None
             if expected and expected not in controls.values():
                 raise ValueError(f"desktop-wire: resource intent did not mount {expected} before press {press}")
 

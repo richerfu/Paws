@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Stage the local NSH sources without modifying the SDK checkout.
+"""Stage the local NSH / HarmonyOS backend sources without modifying sibling checkouts.
 
-The user's NSH checkout and Cargo's immutable Git cache remain untouched.
-Reviewed compatibility patches apply only to the staged workspace. Both the
-patch recipe and prepared sources are fingerprinted before reuse.
+The user's NSH and nsh-platform-harmonyos checkouts and Cargo's immutable Git
+cache remain untouched. Reviewed compatibility patches apply only to the staged
+workspace. Both the patch recipe and prepared sources are fingerprinted before reuse.
 """
 import hashlib
 import json
@@ -13,7 +13,13 @@ import shutil
 import stat
 import subprocess
 
-from nsh_build_inputs import ROOT, default_ability_root, default_nsh_root, resolve_inputs
+from nsh_build_inputs import (
+    ROOT,
+    default_ability_root,
+    default_harmonyos_root,
+    default_nsh_root,
+    resolve_inputs,
+)
 
 
 class BuildSource:
@@ -21,7 +27,14 @@ class BuildSource:
         if not os.environ.get('NSH_ROOT'):
             self.checkout()
         self.inputs = resolve_inputs()
-        self.source = Path(self.inputs['nshRoot'])
+        if 'harmonyosRoot' in self.inputs:
+            self.env_var = 'NSH_HARMONYOS_ROOT'
+            self.input_key = 'harmonyos'
+            self.source = Path(self.inputs['harmonyosRoot'])
+        else:
+            self.env_var = 'NSH_ROOT'
+            self.input_key = 'nsh'
+            self.source = Path(self.inputs['nshRoot'])
         if self.inputs.get('hostModel') != 'native-ui-context':
             raise ValueError('Select the pinned native UIContext SDK; legacy Ability SDK overlays are unsupported')
         recipe = hashlib.sha256(Path(__file__).read_bytes())
@@ -50,8 +63,10 @@ class BuildSource:
 
     @classmethod
     def checkout(cls):
-        """Copy Git objects from the sibling repository, never its worktree."""
+        """Copy Git objects from sibling repositories, never their worktrees."""
         cls.checkout_at(ROOT.parent / 'nsh', default_nsh_root())
+        if not os.environ.get('NSH_HARMONYOS_ROOT') and (ROOT / 'scripts/nsh-harmonyos-revision').is_file():
+            cls.checkout_at(ROOT.parent / 'nsh-platform-harmonyos', default_harmonyos_root())
         if not os.environ.get('NSH_ABILITY_ROOT'):
             target = default_ability_root()
             source = ROOT.parent / 'openharmony-ability'
@@ -89,15 +104,15 @@ class BuildSource:
             raise ValueError(f'The pinned source checkout changed: {target}')
 
     def identity(self, path):
-        previous = os.environ.get('NSH_ROOT')
-        os.environ['NSH_ROOT'] = str(path)
+        previous = os.environ.get(self.env_var)
+        os.environ[self.env_var] = str(path)
         try:
             return resolve_inputs()
         finally:
             if previous is None:
-                os.environ.pop('NSH_ROOT', None)
+                os.environ.pop(self.env_var, None)
             else:
-                os.environ['NSH_ROOT'] = previous
+                os.environ[self.env_var] = previous
 
     def prepare(self):
         if self.record.exists():
@@ -129,7 +144,7 @@ class BuildSource:
             subprocess.run(['git', '-C', str(self.stage), 'config', '--local', key, value],
                            check=True, timeout=30)
         copied = self.identity(self.stage)
-        if copied['nsh'] != self.inputs['nsh'] or self.identity(self.source) != self.inputs:
+        if copied[self.input_key] != self.inputs[self.input_key] or self.identity(self.source) != self.inputs:
             raise ValueError('Local NSH changed during staging; retry with a stable source tree')
         for path, content in self.patches:
             for arguments in (['--check'], []):

@@ -19,6 +19,14 @@ for (const device of [
     await app.type("id:vpn-mtu", "1");
     expect(app.value("id:vpn-mtu")).toBe("15001");
     expect(app.enabled("id:save-vpn")).toBe(true);
+    if (device.name === "Pad") {
+      // Wide touch (>= 768pt) uses anchored Popover instead of a bottom Sheet.
+      await app.press("id:vpn-engine");
+      expect(app.shows("id:select-popover")).toBe(true);
+      expect(app.shows("id:select-option-meow")).toBe(true);
+      await app.keyboard.press("escape");
+      expect(app.shows("id:select-popover")).toBe(false);
+    }
     await app.setViewport(620, 900);
     expect(app.value("id:vpn-mtu")).toBe("15001");
     expect(app.enabled("id:save-vpn")).toBe(true);
@@ -46,7 +54,12 @@ test("desktop commands, context menus and drafts survive window resizing", async
   expect(app.shows("id:bottom-navigation")).toBe(false);
   expect(app.shows("id:nav-tools")).toBe(false);
   expect(app.shows("id:desktop-nav-requests")).toBe(false);
+  expect(app.shows("id:desktop-nav-appearance")).toBe(false);
+  expect(app.shows("id:desktop-nav-backups")).toBe(false);
+  expect(app.shows("id:desktop-nav-about")).toBe(false);
+  expect(app.shows("id:desktop-nav-converter")).toBe(false);
   await app.keyboard.press("mod+2");
+  await app.waitFor("id:open-converter");
   await app.waitFor("id:profile-menu-test-profile");
   await app.rightClick("id:open-profile-test-profile");
   await app.waitFor("id:edit-subscription-test-profile");
@@ -81,6 +94,12 @@ test("desktop commands, context menus and drafts survive window resizing", async
   await app.waitFor("id:desktop-proxy-workspace");
   await app.press("id:desktop-group-Proxy");
   await app.waitFor("id:select-proxy-Test node");
+  await app.keyboard.press("mod+5");
+  await app.waitFor("id:activity-table-header");
+  await app.keyboard.press("mod+,");
+  await app.waitFor("id:settings-section-bar");
+  await app.press("id:settings-section-appearance");
+  await app.waitFor("label:深色");
   await app.press("id:desktop-nav-connections");
   await app.waitFor("id:activity-table-header");
   await app.setViewport(620, 760);

@@ -1,11 +1,12 @@
 import { ComponentContent, UIContext } from "@kit.ArkUI";
 import { ConfigurationConstant, common } from "@kit.AbilityKit";
+import { deviceInfo } from "@kit.BasicServicesKit";
 import { fileIo, picker } from "@kit.CoreFileKit";
 import { util } from "@kit.ArkTS";
 import { generateBarcode, scanBarcode, scanCore } from "@kit.ScanKit";
 import { image } from "@kit.ImageKit";
 import { hilog } from "@kit.PerformanceAnalysisKit";
-import { NshNativeProperty, NshSurface } from "libnsh_platform_ohos.so";
+import { NshNativeProperty, NshSurface } from "libnsh_platform_harmonyos.so";
 import pawsUi, { UiCommandSession } from "libpaws_ui.so";
 import window from "@ohos.window";
 import { VpnPlugin } from "../plugins/VpnPlugin";
@@ -404,6 +405,9 @@ export class PawsHostServices {
 
   applyPreferences(preferences: UiPreferences): void {
     this.ensureActive();
+    if (deviceInfo.deviceType === "2in1") {
+      return;
+    }
     // NSH owns the app's appearance and explicit control colors. Changing the
     // Ability color mode would also rebuild ArkUI's global resource theme.
     // System pickers retain the actual system appearance.

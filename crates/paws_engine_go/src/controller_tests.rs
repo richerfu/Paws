@@ -1,5 +1,6 @@
 use super::*;
 use paws_engine::{EngineControllerEndpoint, EngineManagement};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn server(
@@ -167,5 +168,86 @@ fn controller_credentials_are_injected_into_the_actual_backend_configuration() {
         assert_eq!(first_endpoint.secret.as_deref(), Some("attempt-a"));
         assert_eq!(second_endpoint.secret.as_deref(), Some("attempt-b"));
         assert!(!format!("{first_endpoint:?}").contains("attempt-a"));
+    }
+}
+
+#[tokio::test]
+async fn proxy_probes_distinguish_target_failure_from_stopped_session_and_keep_secrets_private() {
+    for (engine, status, body, expected) in [
+        (
+            VpnEngine::Mihomo,
+            503,
+            r#"{"message":"An error occurred in the delay test"}"#,
+            "selected proxy could not complete",
+        ),
+        (
+            VpnEngine::Mihomo,
+            503,
+            "engine session stopped\n",
+            "engine session is unavailable",
+        ),
+        (
+            VpnEngine::SingBox,
+            503,
+            "engine session stopped\n",
+            "engine session is unavailable",
+        ),
+        (
+            VpnEngine::SingBox,
+            502,
+            "dial failed: https://private:secret@example.com",
+            "selected proxy failed to reach",
+        ),
+        (
+            VpnEngine::Mihomo,
+            504,
+            "request timeout",
+            "target URL test timed out",
+        ),
+        (
+            VpnEngine::Mihomo,
+            503,
+            "unknown private:secret",
+            "controller could not perform",
+        ),
+        (VpnEngine::Mihomo, 200, r#"{"delay":123}"#, ""),
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = EngineControllerEndpoint {
+            address: listener.local_addr().unwrap(),
+            secret: Some("owner-token".into()),
+        };
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 4096];
+            let size = stream.read(&mut bytes).await.unwrap();
+            let request = String::from_utf8_lossy(&bytes[..size]);
+            assert!(request.starts_with("GET /proxies/GLOBAL/delay?"));
+            assert!(request.contains("timeout=8000"));
+            assert!(request
+                .to_lowercase()
+                .contains("authorization: bearer owner-token"));
+            stream.write_all(format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        });
+        let result = ControllerClient::new(engine, endpoint)
+            .unwrap()
+            .proxy_delay(
+                "GLOBAL",
+                "https://www.gstatic.com/generate_204",
+                Duration::from_secs(8),
+            )
+            .await;
+        if status == 200 {
+            assert_eq!(result.unwrap(), 123);
+        } else {
+            let message = result.unwrap_err().to_string();
+            assert!(message.contains(expected), "{message}");
+            assert!(message.contains(&format!("HTTP {status}")), "{message}");
+            assert!(
+                !message.contains("secret") && !message.contains("owner-token"),
+                "{message}"
+            );
+        }
+        server.await.unwrap();
     }
 }

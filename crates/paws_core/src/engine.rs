@@ -227,10 +227,20 @@ impl CoreHandle {
             .iter_mut()
             .find(|group| group.name == group_name)
         {
-            group.selected = observed.selected;
-            group.fixed = observed.fixed;
+            group.selected = observed.selected.clone();
+            group.fixed = observed.fixed.clone();
             for item in &mut group.proxies {
                 item.selected = group.selected.as_deref() == Some(item.name.as_str());
+            }
+        }
+        if state.engine_observation.attempt == attempt
+            && &state.engine_observation.endpoint == endpoint
+        {
+            if let Some(groups) = state.engine_observation.groups.as_mut() {
+                if let Some(group) = groups.iter_mut().find(|group| group.name == group_name) {
+                    group.selected = observed.selected;
+                    group.fixed = observed.fixed;
+                }
             }
         }
         let mode = state.mode;
@@ -2197,6 +2207,24 @@ mod tests {
             .unwrap();
         let selected = core.snapshot().unwrap();
         assert_eq!(selected.proxy_groups[0].selected.as_deref(), Some("failed"));
+        let summary_projection = core
+            .query_runtime_domain(crate::runtime_domain::RuntimeDomainKey {
+                domain: crate::runtime_domain::RuntimeDomain::Summary,
+                group_key: None,
+            })
+            .unwrap();
+        let summary_value = serde_json::to_value(summary_projection).unwrap();
+        let summary = &summary_value["data"];
+        assert_eq!(summary["primarySelectedNode"].as_str(), Some("failed"));
+        assert_eq!(
+            summary["groups"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["name"].as_str() == Some("group"))
+                .and_then(|entry| entry["selected"].as_str()),
+            Some("failed")
+        );
         assert!(core
             .select_proxy_via_controller("group", "bad-node")
             .await

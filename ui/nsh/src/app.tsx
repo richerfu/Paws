@@ -16,7 +16,9 @@ import {
   platform,
   reduceMotion,
   safeArea,
+  safeAreaInsets,
 } from "nsh";
+import { titleBar } from "nsh/desktop";
 import { BackHandler } from "nsh/mobile";
 import {
   Tab,
@@ -40,6 +42,7 @@ import {
   palette,
   radius,
   spacing,
+  Tabs,
   translator,
   type AppContext,
   type Page,
@@ -51,8 +54,10 @@ import { feedbackStyle } from "./motion";
 import { chrome, focusRing } from "./theme";
 import {
   DesktopNavigation,
-  desktopPrimary,
+  desktopShortcuts,
   desktopGroupTitle,
+  isSettingsSection,
+  type SettingsSection,
 } from "./desktop-navigation";
 import { Dashboard, DnsDiagnostics, Traffic } from "./pages/overview";
 import { Profiles } from "./pages/profiles";
@@ -88,30 +93,30 @@ import { ActivityDetail } from "./pages/activity";
 import { ObjectMenu } from "./object-menu";
 
 const primary: { page: Page; zh: string; en: string; icon: IconName }[] = [
-  { page: "dashboard", zh: "首页", en: "Home", icon: "house" },
+  { page: "dashboard", zh: "概览", en: "Overview", icon: "layout-dashboard" },
   { page: "profiles", zh: "订阅", en: "Subscriptions", icon: "rss" },
   { page: "traffic", zh: "流量", en: "Traffic", icon: "activity" },
   { page: "tools", zh: "设置", en: "Settings", icon: "settings" },
 ];
 const titles: Record<Page, [string, string]> = {
-  dashboard: ["首页", "Home"],
+  dashboard: ["概览", "Overview"],
   profiles: ["订阅", "Subscriptions"],
   "profile-detail": ["订阅详情", "Subscription details"],
-  proxies: ["代理节点", "Proxy nodes"],
+  proxies: ["节点", "Proxies"],
   "proxy-group": ["分组节点", "Group members"],
   traffic: ["流量", "Traffic"],
   "dns-diagnostics": ["DNS 诊断", "DNS diagnostics"],
   tools: ["设置", "Settings"],
-  settings: ["网络设置", "Network settings"],
+  settings: ["网络", "Network"],
   appearance: [...COPY["page-tr-001"]],
-  connections: ["连接与请求", "Connections & requests"],
-  requests: ["连接与请求", "Connections & requests"],
+  connections: ["连接", "Connections"],
+  requests: ["连接", "Connections"],
   "activity-detail": ["连接详情", "Connection details"],
-  resources: ["资源与规则", "Resources & rules"],
+  resources: ["规则", "Rules"],
   logs: ["日志", "Logs"],
   diagnostics: [...COPY["diagnostics-title"]],
   "advanced-diagnostics": ["高级诊断", "Advanced diagnostics"],
-  backups: ["备份与恢复", "Backup & restore"],
+  backups: [...COPY["backup-title"]],
   converter: [...COPY["page-tr-002"]],
   about: ["关于", "About"],
   privacy: [...COPY["page-tr-003"]],
@@ -135,7 +140,8 @@ export function pageMeasure(page: Page, wide: boolean): number {
     return 1120;
   if (["traffic", "converter", "diagnostics"].includes(page)) return 1120;
   if (page === "dns-diagnostics") return platform.desktop ? 720 : 640;
-  if (page === "backups") return platform.desktop ? 1120 : 640;
+  if (["settings", "appearance", "backups", "about"].includes(page))
+    return platform.desktop ? 720 : 640;
   if (["requests", "connections", "resources", "logs"].includes(page))
     return 1180;
   return platform.desktop ? 720 : 640;
@@ -206,6 +212,15 @@ export function PawsApp(props: {
     if (workspaces.root === next) return;
     requestNavigation(() => {
     nav.setRoutes(workspaces.switch(next, () => ({ name: next })));
+    });
+  };
+  const switchSettingsSection = (next: SettingsSection) => {
+    if (page() === next) return;
+    requestNavigation(() => {
+      if (workspaces.depth > 1)
+        nav.setRoutes(workspaces.replace({ name: next }));
+      else
+        nav.setRoutes(workspaces.switch(next, () => ({ name: next })));
     });
   };
   const navigate = (next: Page, query?: string) =>
@@ -334,13 +349,10 @@ export function PawsApp(props: {
     stopHardwareBack();
   });
   if (platform.desktop) {
-    for (let index = 0; index < desktopPrimary.length; index++)
+    for (const shortcut of desktopShortcuts)
       cleanup(
-        keymap.bind(`mod+${index + 1}`, () =>
-          switchWorkspace(desktopPrimary[index].page),
-        ),
+        keymap.bind(shortcut.key, () => switchWorkspace(shortcut.page)),
       );
-    cleanup(keymap.bind("mod+,", () => switchWorkspace("appearance")));
     cleanup(
       keymap.bind("mod+b", () => sidebarExpanded.set(!layout().expanded)),
     );
@@ -355,6 +367,37 @@ export function PawsApp(props: {
     });
   }
   const Shell = () => {
+    const insets = safeAreaInsets();
+    const headerLeading = signal(0),
+      headerTrailing = signal(0);
+    effect(() => {
+      if (!canBack()) headerLeading.set(0);
+    });
+    const showBottomTabs = () =>
+      !wide() && depth() === 1 && !parentPage(page());
+    const toastInsets = () => {
+      const width = windowSize().width - safeArea().left - safeArea().right;
+      if (wide()) return { left: spacing.lg, right: spacing.lg };
+      const leading = canBack()
+        ? spacing.lg + (headerLeading() || control.icon) + spacing.xs
+        : spacing.lg;
+      const trailing =
+        headerTrailing() > 0
+          ? spacing.lg + headerTrailing() + spacing.xs
+          : spacing.lg;
+      const symmetric = Math.max(leading, trailing);
+      if (width - symmetric * 2 >= 220) {
+        return { left: symmetric, right: symmetric };
+      }
+      const maxCombined = Math.max(spacing.lg * 2, width - 180);
+      if (leading + trailing <= maxCombined) {
+        return { left: leading, right: trailing };
+      }
+      return {
+        left: leading,
+        right: Math.max(spacing.lg, maxCombined - leading),
+      };
+    };
     const content = (
       <>
         <If when={props.embeddedGateway !== false}>
@@ -397,9 +440,15 @@ export function PawsApp(props: {
           </If>
           <View style={{ flex: 1, minWidth: 0 }}>
             <View
+              desktop={platform.desktop ? { windowDrag: true } : undefined}
               style={{
                 minHeight: Math.max(
-                  wide() ? chrome.toolbar : chrome.header,
+                  wide()
+                    ? Math.max(
+                        chrome.toolbar,
+                        platform.desktop ? titleBar().height : 0,
+                      )
+                    : chrome.header,
                   density.line(24) * Math.max(1, fontScale()) + spacing.md,
                 ),
                 borderBottomWidth: 1,
@@ -412,21 +461,33 @@ export function PawsApp(props: {
                 style={{
                   width: "100%",
                   maxWidth: wide() ? undefined : pageMeasure(page(), false),
-                  paddingHorizontal: wide() ? layout().inset : spacing.lg,
+                  paddingLeft:
+                    (wide() ? layout().inset : spacing.lg) +
+                    (!wide() && platform.desktop ? titleBar().left : 0),
+                  paddingRight:
+                    (wide() ? layout().inset : spacing.lg) +
+                    (platform.desktop ? titleBar().right : 0),
                   flexDirection: "row",
                   alignItems: "center",
                   gap: 8,
                 }}
               >
                 <If when={canBack()}>
-                  <IconButton
-                    id="nav-back"
-                    icon="arrow-left"
-                    label={ui.t("返回", "Back")}
-                    onPress={back}
-                  />
+                  <View
+                    onLayout={(e) =>
+                      headerLeading.set(Math.ceil(e.bounds.size.width))
+                    }
+                    desktop={platform.desktop ? { windowDrag: false } : undefined}
+                  >
+                    <IconButton
+                      id="nav-back"
+                      icon="arrow-left"
+                      label={ui.t("返回", "Back")}
+                      onPress={back}
+                    />
+                  </View>
                 </If>
-                <If when={platform.desktop && !canBack()}>
+                <If when={platform.desktop && !canBack() && !!desktopGroupTitle(page())}>
                   <View
                     style={{
                       flexDirection: "row",
@@ -442,7 +503,7 @@ export function PawsApp(props: {
                         color: palette().muted,
                       }}
                     >
-                      {ui.t(...desktopGroupTitle(page()))}
+                      {desktopGroupTitle(page()) ? ui.t(...desktopGroupTitle(page())!) : ""}
                     </Text>
                     <Icon
                       name="chevron-right"
@@ -466,9 +527,22 @@ export function PawsApp(props: {
                       : -0.2,
                   }}
                 >
-                  {ui.t(...titles[page()])}
+                  {wide() && isSettingsSection(page())
+                    ? ui.t("设置", "Settings")
+                    : ui.t(...titles[page()])}
                 </Text>
-                <If when={wide() && page() === "dashboard"}>
+                <View
+                  onLayout={(e) =>
+                    headerTrailing.set(Math.ceil(e.bounds.size.width))
+                  }
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    flexShrink: 0,
+                  }}
+                >
+                  <If when={wide() && page() === "dashboard"}>
                   <Action
                     small
                     secondary
@@ -482,6 +556,14 @@ export function PawsApp(props: {
                 </If>
                 <If when={page() === "profiles"}>
                   <If when={platform.desktop}>
+                    <Action
+                      id="open-converter"
+                      small
+                      secondary
+                      icon="link"
+                      label={ui.t("转换", "Convert")}
+                      onPress={() => navigate("converter")}
+                    />
                     <Action
                       id="refresh-profiles"
                       small
@@ -501,7 +583,7 @@ export function PawsApp(props: {
                     <Action
                       id="add-profile"
                       small
-                      primary
+                      secondary
                       icon="plus"
                       label={ui.t("添加订阅…", "Add subscription…")}
                       onPress={() => importIntent.set(importIntent() + 1)}
@@ -529,6 +611,12 @@ export function PawsApp(props: {
                               "profiles",
                             ]),
                           run: () => void refreshProfiles(),
+                        },
+                        {
+                          id: "open-converter",
+                          icon: "link",
+                          label: ui.t("订阅转换", "Converter"),
+                          run: () => navigate("converter"),
                         },
                       ]}
                       row={(trigger) => trigger}
@@ -770,7 +858,7 @@ export function PawsApp(props: {
                     <Action
                       id="add-rule"
                       small
-                      primary
+                      secondary
                       icon="plus"
                       label={ui.t("添加规则…", "Add rule…")}
                       disabled={
@@ -806,7 +894,7 @@ export function PawsApp(props: {
                         {
                           id: "lookup-rule",
                           icon: "search",
-                          label: ui.t("规则查询", "Rule lookup"),
+                          label: ui.t("规则查询…", "Rule lookup…"),
                           disabled: !props.client.domains.fresh(
                             pageDomains("resources"),
                           ),
@@ -821,6 +909,7 @@ export function PawsApp(props: {
                     />
                   </If>
                 </If>
+                </View>
               </View>
             </View>
             <If when={props.client.vpnUnconfirmed()}>
@@ -902,6 +991,34 @@ export function PawsApp(props: {
               </View>
             </If>
             <If when={props.client.state()}>
+              <If when={wide() && isSettingsSection(page())}>
+                <View
+                  testID="settings-section-bar"
+                  style={{
+                    width: "100%",
+                    maxWidth: pageMeasure("settings", true),
+                    alignSelf: "center",
+                    paddingHorizontal: layout().inset,
+                    paddingTop: spacing.md,
+                    paddingBottom: spacing.xs,
+                  }}
+                >
+                  <Tabs
+                    idPrefix="settings-section"
+                    inline={platform.desktop}
+                    value={page()}
+                    options={[
+                      { value: "settings", label: ui.t("网络", "Network") },
+                      { value: "appearance", label: ui.t("外观", "Appearance") },
+                      { value: "backups", label: ui.t("备份", "Backups") },
+                      { value: "about", label: ui.t("关于", "About") },
+                    ]}
+                    onChange={(next) =>
+                      switchSettingsSection(next as SettingsSection)
+                    }
+                  />
+                </View>
+              </If>
               <NavStack state={nav} style={{ flex: 1 }}>
                 {(current) => {
                   const content = (
@@ -1019,14 +1136,14 @@ export function PawsApp(props: {
             </If>
           </View>
         </View>
-        <If when={!wide() && depth() === 1 && !parentPage(page())}>
+        <If when={showBottomTabs()}>
           <BaseTabs
             testID="bottom-navigation"
             style={{
-              minHeight: chrome.bottom,
               flexDirection: "row",
               paddingHorizontal: spacing.sm,
-              paddingVertical: spacing.xxs,
+              paddingTop: spacing.xs,
+              paddingBottom: Math.max(spacing.xs, insets().bottom),
               gap: spacing.xxs,
               backgroundColor: palette().background,
               borderTopWidth: 1,
@@ -1040,12 +1157,12 @@ export function PawsApp(props: {
                   selected={group() === tab().page}
                   accessibilityLabel={ui.t(tab().zh, tab().en)}
                   onPress={() => switchWorkspace(tab().page)}
-                  focusStyle={focusRing()}
+                  focusVisibleStyle={focusRing()}
                   hoverStyle={{ backgroundColor: palette().hover }}
                   activeStyle={{ backgroundColor: palette().soft }}
                   style={{
                     flex: 1,
-                    minHeight: 52,
+                    minHeight: 44,
                     alignItems: "center",
                     justifyContent: "center",
                     gap: 2,
@@ -1056,9 +1173,9 @@ export function PawsApp(props: {
                 >
                   <View
                     style={{
-                      width: 48,
-                      height: 28,
-                      borderRadius: 14,
+                      width: 44,
+                      height: 22,
+                      borderRadius: 11,
                       borderCurve: "continuous",
                       alignItems: "center",
                       justifyContent: "center",
@@ -1078,8 +1195,8 @@ export function PawsApp(props: {
                   <Text
                     maxFontSizeMultiplier={1.2}
                     style={{
-                      fontSize: density.font(12),
-                      lineHeight: density.line(16),
+                      fontSize: density.font(11),
+                      lineHeight: density.line(14),
                       color:
                         group() === tab().page
                           ? palette().text
@@ -1095,6 +1212,8 @@ export function PawsApp(props: {
           </BaseTabs>
         </If>
         <NotificationViewport
+          insetLeft={toastInsets().left}
+          insetRight={toastInsets().right}
           dismissLabel={ui.t("关闭通知", "Dismiss notification")}
         />
       </>
@@ -1105,7 +1224,7 @@ export function PawsApp(props: {
           flex: 1,
           backgroundColor: palette().background,
           paddingTop: "env(safe-area-inset-top)",
-          paddingBottom: "env(safe-area-inset-bottom)",
+          paddingBottom: showBottomTabs() ? 0 : "env(safe-area-inset-bottom)",
           paddingLeft: "env(safe-area-inset-left)",
           paddingRight: "env(safe-area-inset-right)",
         }}

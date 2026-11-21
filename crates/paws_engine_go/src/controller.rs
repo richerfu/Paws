@@ -145,6 +145,46 @@ impl ControllerClient {
             message: message.into(),
         }
     }
+    async fn proxy_delay_error(&self, mut response: reqwest::Response) -> EngineError {
+        let status = response.status().as_u16();
+        // Native error bodies can contain URLs or credentials. Read a bounded
+        // prefix only to classify known failures, never echo arbitrary bodies.
+        let mut bytes = Vec::new();
+        while bytes.len() < 1024 {
+            let Ok(Some(chunk)) = response.chunk().await else {
+                break;
+            };
+            bytes.extend_from_slice(&chunk[..chunk.len().min(1024 - bytes.len())]);
+        }
+        let body = String::from_utf8_lossy(&bytes);
+        let message = if body.trim() == "engine session stopped"
+            || body.trim() == "engine session unavailable"
+        {
+            "engine session is unavailable; reconnect or run the probe again"
+        } else if status == 503
+            && serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("message")
+                        .and_then(|message| message.as_str())
+                        .map(str::to_owned)
+                })
+                .as_deref()
+                == Some("An error occurred in the delay test")
+        {
+            "selected proxy could not complete the target URL test; check its current node and the target"
+        } else {
+            match status {
+                401 | 403 => "controller rejected probe authorization",
+                404 => "proxy group or probe endpoint is no longer available",
+                504 => "target URL test timed out; check the selected node and target",
+                502 if self.engine == VpnEngine::SingBox => "selected proxy failed to reach the target; check its current node, DNS and TLS connectivity",
+                _ => "controller could not perform the proxy URL test",
+            }
+        };
+        self.error("proxy delay", format!("{message} (HTTP {status})"))
+    }
     fn request(
         &self,
         method: reqwest::Method,
@@ -661,10 +701,7 @@ impl EngineManagement for ControllerClient {
             .await
             .map_err(|_| self.error("proxy delay", "controller request failed"))?;
         if !response.status().is_success() {
-            return Err(self.error(
-                "proxy delay",
-                format!("controller HTTP {}", response.status().as_u16()),
-            ));
+            return Err(self.proxy_delay_error(response).await);
         }
         let value: serde_json::Value = response
             .json()

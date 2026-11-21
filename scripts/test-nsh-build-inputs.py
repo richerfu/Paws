@@ -157,6 +157,31 @@ class SourceIdentityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify_source_identity(before, after)
 
+    def test_harmonyos_backend_repo_is_fingerprinted_independently(self):
+        hm = self.nsh.parent / 'harmonyos'
+        hm.mkdir()
+        self.git(hm, 'init', '-q')
+        self.git(hm, 'config', 'user.name', 'Build test')
+        self.git(hm, 'config', 'user.email', 'build@example.invalid')
+        self.git(hm, 'config', 'commit.gpgsign', 'false')
+        self.git(hm, 'config', 'core.hooksPath', '/dev/null')
+        (hm / 'Cargo.toml').write_text('[workspace]\n')
+        (hm / 'crates/nsh-platform-harmonyos/src').mkdir(parents=True)
+        (hm / 'crates/nsh-platform-harmonyos/src/lib.rs').write_text('pub fn init() {}\n')
+        self.git(hm, 'add', '.')
+        self.git(hm, 'commit', '-qm', 'initial harmonyos')
+        (self.nsh / 'Cargo.toml').write_text('[workspace]\n')
+        with patch.dict(os.environ, {'NSH_HARMONYOS_ROOT': str(hm)}):
+            before = resolve_inputs()
+            self.assertEqual(before['hostModel'], 'native-ui-context')
+            self.assertEqual(before['harmonyosRoot'], str(hm.resolve()))
+            self.assertEqual(before['harmonyos']['sdkSourceFileCount'], 1)
+            (hm / 'crates/nsh-platform-harmonyos/src/lib.rs').write_text('pub fn init() { let _ = 1; }\n')
+            after = resolve_inputs()
+            self.assertNotEqual(before['harmonyos']['worktreeSha256'], after['harmonyos']['worktreeSha256'])
+            with self.assertRaisesRegex(ValueError, 'worktree content changed'):
+                verify_source_identity(before, after)
+
 
 if __name__ == '__main__':
     unittest.main()

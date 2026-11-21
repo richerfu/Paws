@@ -49,7 +49,7 @@ function loadArkts(relativePath, overrides = {}, cache = new Map()) {
       if (Object.hasOwn(overrides, name)) return overrides[name];
       if (name === '@kit.FormKit') return { formBindingData: { createFormBindingData(v) { return v; } }, formProvider: { async updateForm() {} } };
       if (name === '@kit.CoreFileKit') return { fileIo: { statSync() { throw new Error('missing fixture journal'); }, openSync() { throw new Error('fixture filesystem unavailable'); } } };
-      if (name === '@kit.BasicServicesKit') return { commonEventManager: {} };
+      if (name === '@kit.BasicServicesKit') return { commonEventManager: {}, deviceInfo: { deviceType: overrides.deviceType ?? 'phone' } };
       if (name.startsWith('.')) {
         return loadArkts(resolve(dirname(filename), `${name}.ets`), overrides, cache);
       }
@@ -64,29 +64,46 @@ function configModule() {
   return loadArkts('entry/src/main/ets/vpnability/VpnConfig.ets', { '@kit.AbilityKit': {} });
 }
 
-test('URL capability forwards About links through the actual packaged plugin', async () => {
-  const { UrlPlugin } = loadArkts('entry/oh_modules/@ohos-rs/ability-plugin-url/src/main/ets/UrlPlugin.ets', {
-    '@ohos-rs/ability': { AsyncPluginBase: class {} },
-    '@kit.AbilityKit': {},
-  });
-  const plugin = new UrlPlugin();
-  assert.equal(plugin.id, 'ohos.url');
+test('URL capability forwards About links through the actual host gateway', async () => {
   const opened = [];
-  const context = { abilityContext: { async openLink(url) { opened.push(url); } }, isActive: () => true };
+  const context = { async openLink(url) { opened.push(url); } };
+  const { PawsHostServices } = loadArkts('entry/src/main/ets/components/PawsCoreGateway.ets', {
+    '@kit.ArkUI': {},
+    '@kit.AbilityKit': { ConfigurationConstant: { ColorMode: { COLOR_MODE_DARK: 0 } } },
+    '@kit.CoreFileKit': {},
+    '@kit.ArkTS': {},
+    '@kit.ScanKit': {},
+    '@kit.ImageKit': {},
+    '@kit.PerformanceAnalysisKit': { hilog: { info() {}, warn() {}, error() {} } },
+    'libnsh_platform_harmonyos.so': {},
+    'libpaws_ui.so': { default: {}, UiCommandSession: class {} },
+    '@ohos.window': { default: {} },
+    '../plugins/VpnPlugin': { VpnPlugin: class { attachHost() {} detachHost() {} } },
+    '../plugins/ExportPlugin': { ExportPlugin: class {} },
+    '../common/Errors': loadArkts('entry/src/main/ets/common/Errors.ets', { globals: { Error } }),
+    './PawsGatewayNode': { createGatewayNode() { return {}; } },
+  });
+  const host = new PawsHostServices(context);
   const { ABOUT_LINKS } = loadArkts('ui/nsh/src/about.ts');
   const links = ABOUT_LINKS.map(item => item.url);
   assert.equal(links.length, 10, 'exercise every production source, license and attribution link');
   assert.ok(links.some(url => url.includes('chen08209/Clash.Meta')));
   assert.ok(links.some(url => url.includes('SagerNet/sing-box')));
-  for (const url of links) {
-    const result = await plugin.invokeAsync('open-url', { typeName: 'ohos.url.OpenRequest', value: { url } }, context);
-    assert.equal(result.typeName, 'ohos.url.OpenResponse');
-    assert.equal(result.value.accepted, true);
+  for (let i = 0; i < links.length; i++) {
+    const url = links[i];
+    const result = await host.dispatch({ id: i + 1, command: 'platform.openUrl', payload: { url } }, {});
+    assert.equal(result.ok, true);
     assert.equal(opened.at(-1), url);
   }
-  await assert.rejects(plugin.invokeAsync('open-url', { typeName: 'ohos.url.OpenRequest', value: { url: 'not-a-url' } }, context), /absolute URL/);
-  context.abilityContext.openLink = async () => { throw new Error('browser unavailable'); };
-  await assert.rejects(plugin.invokeAsync('open-url', { typeName: 'ohos.url.OpenRequest', value: { url: 'https://example.com' } }, context), /browser unavailable/);
+  await assert.rejects(
+    host.dispatch({ id: 99, command: 'platform.openUrl', payload: { url: 'not-a-url' } }, {}),
+    /absolute HTTP or HTTPS URL/,
+  );
+  context.openLink = async () => { throw new Error('browser unavailable'); };
+  await assert.rejects(
+    host.dispatch({ id: 100, command: 'platform.openUrl', payload: { url: 'https://example.com' } }, {}),
+    /browser unavailable/,
+  );
 });
 
 test('default application VPN options survive the ArkTS configuration boundary', () => {
@@ -282,7 +299,7 @@ function entryAbilityFixture(applicationDebug, physicalLookup = async () => ({ne
       },
       '@kit.LocalizationKit': { i18n: { System: { getSystemLanguage() { return 'en-US'; } } } },
       '@kit.PerformanceAnalysisKit': { hilog: { info() {}, error() {}, warn() {} } },
-      '@nsh/ohos': { initLogging() {} },
+      '@nsh/harmonyos': { initLogging() {} },
       '../components/PawsCoreGateway': {
         installPawsHost() {
           const vpn = new InstalledVpnPlugin();
@@ -1748,7 +1765,7 @@ test('system wakeup claims pending auto-recovery and restarts VPN without droppi
 
 
 
-function gatewayFixture({ dispatch, scan, selected = [], fileSize = 3, readError, packingError } = {}) {
+function gatewayFixture({ dispatch, scan, selected = [], fileSize = 3, readError, packingError, deviceType = 'phone' } = {}) {
   const calls = [];
   const events = [];
   const waits = [];
@@ -1810,6 +1827,7 @@ function gatewayFixture({ dispatch, scan, selected = [], fileSize = 3, readError
     cancelUiRevisionWait() { for (const item of waits) item.wait.resolve('7'); calls.push(['cancel-wait']); },
   };
   const api = loadArkts('entry/src/main/ets/components/PawsCoreGateway.ets', {
+    deviceType,
     '@kit.ArkUI': {},
     '@kit.ImageKit': { image: { createImagePacker() { return {
       async packing() { if (packingError) throw packingError; return Uint8Array.from([137,80,78,71]).buffer; },
@@ -2034,6 +2052,22 @@ test('NSH system bars follow system appearance only while the app uses system th
   assert.deepEqual(fixture.calls.filter(call => call[0] === 'color'), []);
   assert.deepEqual(bars.map(value => value.statusBarContentColor), ['#ffffffff', '#ff000000', '#ffffffff', '#ff000000']);
   assert.deepEqual(bars.map(value => value.navigationBarContentColor), ['#ffffffff', '#ff000000', '#ffffffff', '#ff000000']);
+  fixture.host.dispose();
+  fixture.gateway.dispose();
+});
+
+test('NSH 2in1 runtime skips phone-only full-screen and system-bar calls', async () => {
+  const fixture = gatewayFixture({ deviceType: '2in1' });
+  const bars = [];
+  const backgrounds = [];
+  fixture.host.attachMainWindow({
+    async setWindowBackgroundColor(color) { backgrounds.push(color); },
+    async setWindowSystemBarProperties(properties) { bars.push(properties); },
+  });
+  fixture.host.applyPreferences({ theme: 'dark', systemColorMode: 1 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(backgrounds, []);
+  assert.deepEqual(bars, []);
   fixture.host.dispose();
   fixture.gateway.dispose();
 });

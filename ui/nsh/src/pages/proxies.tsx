@@ -18,6 +18,7 @@ import {
   IconTile,
   ListSurface,
   palette,
+  RadioMark,
   radius,
   SearchField,
   SectionHeader,
@@ -34,7 +35,7 @@ import {
 import { includes } from "../locale";
 import { focusRing, statusColors, surfaceFinish } from "../theme";
 import { PageError } from "../page-error";
-import { animateDisclosure, feedbackStyle, follow } from "../motion";
+import { animateDisclosure, feedbackStyle } from "../motion";
 import type { IconName } from "../icons";
 import type { ProxyGroup, Proxy, ProxyGroupHeader } from "../model";
 import {
@@ -46,6 +47,16 @@ import {
 
 type Group = ProxyGroup | ProxyGroupHeader;
 type Row = { key: string; group: Group; proxy?: Proxy; loading?: boolean };
+
+function compareProxyGroups(a: Group, b: Group, mode: string): number {
+  const aGlobal = a.name.toUpperCase() === "GLOBAL";
+  const bGlobal = b.name.toUpperCase() === "GLOBAL";
+  if (aGlobal !== bGlobal) {
+    if (mode === "global") return aGlobal ? -1 : 1;
+    return aGlobal ? 1 : -1;
+  }
+  return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+}
 
 function groupIcon(group: Group): IconName {
   const upper = group.name.toUpperCase();
@@ -67,9 +78,6 @@ function SelectionMark(props: {
   nestedGroup: boolean;
   busy: boolean;
 }) {
-  const ring = () => 22;
-  const dot = () => 8;
-  const dotScale = follow(() => (props.selected ? 1 : 0));
   return (
     <If
       when={props.busy}
@@ -79,45 +87,16 @@ function SelectionMark(props: {
           else={
             <Icon
               name={props.nestedGroup ? "layers" : "network"}
-              size={17}
+              size={platform.desktop ? 15 : 17}
               color={props.selected ? palette().accent : palette().muted}
             />
           }
         >
-          <View
-            style={{
-              width: ring(),
-              height: ring(),
-              borderRadius: ring() / 2,
-              borderWidth: 1,
-              borderColor: props.selected
-                ? surfaceFinish("accent").borderColor
-                : palette().fieldBorder,
-              boxShadow: props.selected
-                ? surfaceFinish("accent").boxShadow
-                : undefined,
-              backgroundColor: props.selected
-                ? palette().brandFill
-                : palette().field,
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <View
-              style={{
-                width: dot(),
-                height: dot(),
-                borderRadius: dot() / 2,
-                backgroundColor: palette().primaryText,
-                opacity: dotScale,
-                transform: [{ scale: dotScale }],
-              }}
-            />
-          </View>
+          <RadioMark selected={props.selected} />
         </If>
       }
     >
-      <Spinner size={17} color={palette().accent} />
+      <Spinner size={platform.desktop ? 15 : 17} color={palette().accent} />
     </If>
   );
 }
@@ -160,18 +139,13 @@ export function SummaryPolicyGroups() {
   useDomainInterests(() =>
     expanded() ? [{ domain: "proxies", groupKey: expanded() }] : [],
   );
-  const allGroups = computed(() =>
-    ui.client.domains
+  const allGroups = computed(() => {
+    const mode = ui.client.state()!.mode;
+    return ui.client.domains
       .data("summary")!
       .groups.slice()
-      .sort((a, b) =>
-        a.name.toUpperCase() === "GLOBAL"
-          ? -1
-          : b.name.toUpperCase() === "GLOBAL"
-            ? 1
-            : a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
-      ),
-  );
+      .sort((a, b) => compareProxyGroups(a, b, mode));
+  });
   const groupNameSet = computed(
     () => new Set(allGroups().map((group) => group.name)),
   );
@@ -217,7 +191,10 @@ export function SummaryPolicyGroups() {
   );
   const openFresh = computed(() =>
     expanded()
-      ? ui.client.domains.fresh([{ domain: "proxies", groupKey: expanded() }])
+      ? ui.client.domains.fresh([
+          "config",
+          { domain: "proxies", groupKey: expanded() },
+        ])
       : false,
   );
   const selected = (group: Group) => {
@@ -237,7 +214,7 @@ export function SummaryPolicyGroups() {
     if (
       selection(group.name) ||
       !selectableGroup(group) ||
-      !ui.client.domains.fresh([interest(group)])
+      !ui.client.domains.fresh(["config", interest(group)])
     )
       return;
     const pinned = group.fixed === proxy.name;
@@ -263,7 +240,7 @@ export function SummaryPolicyGroups() {
                   animateDisclosure();
                   expanded.set(isOpen() ? "" : group().name);
                 }}
-                focusStyle={focusRing()}
+                focusVisibleStyle={focusRing(0)}
                 hoverStyle={{ backgroundColor: palette().hover }}
                 activeStyle={{ backgroundColor: palette().soft }}
                 style={{
@@ -388,7 +365,10 @@ export function SummaryPolicyGroups() {
                         !selectableGroup(group()) ||
                         !(group().name === expanded()
                           ? openFresh()
-                          : ui.client.domains.fresh([interest(group())]));
+                          : ui.client.domains.fresh([
+                              "config",
+                              interest(group()),
+                            ]));
                       return (
                         <View
                           testID={`summary-select-proxy-${proxy().name}`}
@@ -404,7 +384,7 @@ export function SummaryPolicyGroups() {
                           }}
                           disabled={rowDisabled()}
                           onPress={() => void select(group(), proxy())}
-                          focusStyle={focusRing()}
+                          focusVisibleStyle={focusRing(0)}
                           hoverStyle={
                             rowDisabled()
                               ? undefined
@@ -570,23 +550,19 @@ export function ProxyGroupList(props: {
   });
   const memberCount = (group: Group) =>
     "memberCount" in group ? group.memberCount : members(group).length;
-  const fresh = (group: Group) => ui.client.domains.fresh([interest(group)]);
+  const fresh = (group: Group) =>
+    ui.client.domains.fresh(["config", interest(group)]);
   useDomainInterests(() =>
     props.summary && expanded()
       ? [{ domain: "proxies", groupKey: expanded() }]
       : [],
   );
-  const rows = computed<Row[]>(() =>
-    groups()
+  const rows = computed<Row[]>(() => {
+    const mode = ui.client.state()!.mode;
+    return groups()
       .slice()
       .filter((group) => !props.groupKey || group.name === props.groupKey)
-      .sort((a, b) =>
-        a.name.toUpperCase() === "GLOBAL"
-          ? -1
-          : b.name.toUpperCase() === "GLOBAL"
-            ? 1
-            : a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
-      )
+      .sort((a, b) => compareProxyGroups(a, b, mode))
       .flatMap((group) => {
         const query = props.query || "";
         const filtered = members(group).filter((proxy) =>
@@ -621,8 +597,8 @@ export function ProxyGroupList(props: {
               });
         }
         return result;
-      }),
-  );
+      });
+  });
   const selection = (group: string) =>
     ui.client
       .pendingRequests()
@@ -810,7 +786,7 @@ export function ProxyGroupList(props: {
                   }}
                   disabled={disabled(item().group)}
                   onPress={() => void select(item())}
-                  focusStyle={focusRing()}
+                  focusVisibleStyle={focusRing(0)}
                   hoverStyle={{ backgroundColor: palette().hover }}
                   activeStyle={{
                     backgroundColor: isSelected(item())
@@ -958,7 +934,7 @@ export function ProxyGroupList(props: {
                       expanded() === item().group.name ? "" : item().group.name,
                     );
                 }}
-                focusStyle={focusRing()}
+                focusVisibleStyle={focusRing(0)}
                 hoverStyle={{ backgroundColor: palette().hover }}
                 activeStyle={{ backgroundColor: palette().soft }}
                 style={{
@@ -1099,7 +1075,12 @@ export function Proxies(props: { groupKey?: string } = {}) {
   const query = saved.query,
     activeGroup = saved.active,
     testingGroup = signal("");
-  const groups = () => ui.client.state()!.proxyGroups;
+  const groups = computed(() => {
+    const state = ui.client.state()!;
+    return state.proxyGroups
+      .slice()
+      .sort((a, b) => compareProxyGroups(a, b, state.mode));
+  });
   // An explicit selection that disappears is never silently replaced.
   const selectedGroup = computed(() =>
     activeGroup()
@@ -1227,7 +1208,7 @@ export function Proxies(props: { groupKey?: string } = {}) {
                 accessibilityLabel={group().name}
                 accessibilityState={{ selected: active() }}
                 onPress={() => choose(group())}
-                focusStyle={focusRing()}
+                focusVisibleStyle={focusRing(0)}
                 hoverStyle={
                   layout().masterDetail && active()
                     ? undefined
@@ -1377,19 +1358,14 @@ export function Proxies(props: { groupKey?: string } = {}) {
                 }
               />
             </Actions>
-            <Hint
-              text={
-                testingGroup()
-                  ? ui.t(
-                      "正在测速，保留上次结果。",
-                      "Testing; previous results remain visible.",
-                    )
-                  : ui.t(
-                      "延迟为上次结果，测量时间未知；可重新测速。",
-                      "Latency is a previous result with no timestamp. Test again to update.",
-                    )
-              }
-            />
+            <If when={!!testingGroup()}>
+              <Hint
+                text={ui.t(
+                  "正在测速，保留上次结果。",
+                  "Testing; previous results remain visible.",
+                )}
+              />
+            </If>
             <If
               when={
                 !!query() &&

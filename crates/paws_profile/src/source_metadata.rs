@@ -392,6 +392,17 @@ impl ProfileStore {
     }
 }
 
+fn canonical_group_type(kind: &str) -> &str {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "select" | "selector" => "Selector",
+        "url-test" | "urltest" => "URLTest",
+        "fallback" => "Fallback",
+        "load-balance" | "loadbalance" => "LoadBalance",
+        "relay" => "Relay",
+        _ => kind,
+    }
+}
+
 fn group(
     name: &str,
     kind: &str,
@@ -402,7 +413,7 @@ fn group(
 ) -> ProxyGroup {
     ProxyGroup {
         name: name.into(),
-        group_type: kind.into(),
+        group_type: canonical_group_type(kind).into(),
         proxies: members
             .into_iter()
             .map(|name| ProxyItem {
@@ -436,6 +447,16 @@ mod tests {
             .source_metadata(yaml, &BTreeMap::from([("Manual".into(), "any".into())]))
             .unwrap();
         assert_eq!(result.proxy_groups[0].name, "Manual");
+        assert_eq!(result.proxy_groups[0].group_type, "Selector");
+        assert_eq!(result.proxy_groups[1].group_type, "URLTest");
+        assert_eq!(
+            result
+                .proxy_groups
+                .iter()
+                .find(|group| group.name == "GLOBAL")
+                .map(|group| group.group_type.as_str()),
+            Some("Selector")
+        );
         assert_eq!(
             result.proxy_groups[0]
                 .proxies
