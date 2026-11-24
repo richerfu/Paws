@@ -39,7 +39,9 @@ export function groupMembers(groups: Pick<ProxyGroup, "name">[], group: ProxyGro
       kind !== "reject-drop"
     );
   });
-  return nodes.length ? nodes : group.proxies.filter((proxy) => proxy.name === "DIRECT");
+  return nodes.length
+    ? nodes
+    : group.proxies.filter((proxy) => proxy.name.toUpperCase() === "DIRECT");
 }
 function normalizeGroupType(groupType: string): string {
   return groupType.toLowerCase().replace(/[^a-z0-9]/g, "");

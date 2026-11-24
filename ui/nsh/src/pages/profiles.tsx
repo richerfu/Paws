@@ -12,7 +12,6 @@ import {
   Image,
   windowSize,
   List,
-  fontScale,
   platform,
 } from "nsh";
 import {
@@ -31,7 +30,6 @@ import {
   Hint,
   Icon,
   IconButton,
-  IconTile,
   ListSurface,
   MeterBar,
   OrRule,
@@ -322,6 +320,20 @@ export function Profiles(props: { profileId?: string } = {}) {
       });
     });
   };
+  const listInset = () =>
+    layout().masterDetail
+      ? layout().inset
+      : windowSize().width >= 840
+        ? spacing.xxl
+        : spacing.lg;
+  const engineMeta = () =>
+    ui.client.state()?.vpnOptions.engine === "auto"
+      ? ui.t("自动选择", "Auto")
+      : ui.client.state()?.vpnOptions.engine === "mihomo"
+        ? "Mihomo"
+        : ui.client.state()?.vpnOptions.engine === "meow"
+          ? "Meow"
+          : "sing-box";
   // List retains keyed rows; keep its accessor alive instead of capturing the
   // record from the first render (including in commands that open an editor).
   const row = (profile: () => Profile, detail = false) => <ProfileRow
@@ -351,8 +363,8 @@ export function Profiles(props: { profileId?: string } = {}) {
       }}>
       <View
         style={{
-          paddingHorizontal:
-            windowSize().width >= 840 ? spacing.xxl : spacing.lg,
+          paddingLeft: listInset(),
+          paddingRight: layout().masterDetail ? 0 : listInset(),
           paddingTop: spacing.lg,
           paddingBottom: spacing.md,
         }}
@@ -381,61 +393,93 @@ export function Profiles(props: { profileId?: string } = {}) {
         }
         each={profiles()}
         keyExtractor={(profile) => profile.id}
-        estimatedItemSize={!platform.desktop && windowSize().width < 840 ? 88 : 120}
-        style={{
-          flex: 1,
-          margin: spacing.lg,
-          marginTop: 0,
-          borderWidth: 1,
-          borderColor: palette().border,
-          borderRadius: radius.xl,
-          borderCurve: "continuous",
-          backgroundColor: palette().panel,
-          overflow: "hidden",
-          ...surfaceFinish("card"),
+        estimatedItemSize={!platform.desktop && windowSize().width < 840 ? 104 : 124}
+        style={{ flex: 1 }}
+        contentStyle={{
+          paddingLeft: listInset(),
+          paddingRight: layout().masterDetail ? 0 : listInset(),
+          paddingBottom: spacing.section,
         }}
-        contentStyle={{ padding: 0 }}
-        empty={
-          <View
-            style={{
-              padding: spacing.lg,
-              gap: density.space(16),
-              alignItems: "center",
-            }}
-          >
-            <View style={{ width: "100%" }}>
-              <Empty
-                icon={query() ? "search" : "rss"}
-                title={
-                  query()
-                    ? ui.t("没有匹配的配置", "No matching profiles")
-                    : ui.t("暂无配置", "No profiles")
-                }
-                text={
-                  query()
-                    ? ui.t(
-                        "尝试其他名称或订阅地址",
-                        "Try another name or subscription URL",
-                      )
-                    : ui.t(
-                        "添加订阅以获取代理节点与规则",
-                        "Add a subscription to get proxy nodes and rules",
-                      )
-                }
-              />
-            </View>
-            <If when={!query()}>
-              <Action
-                primary
-                icon="plus"
-                label={ui.t("添加订阅", "Add subscription")}
+        footer={
+          !layout().masterDetail && !query() && profiles().length > 0 ? (
+            <View
+              testID="profiles-quick-actions"
+              style={{
+                paddingTop: spacing.xs,
+                gap: spacing.md,
+              }}
+            >
+              <FeatureActionCard
+                id="profiles-quick-import"
+                icon="scan-qr-code"
+                title={ui.t("扫码或粘贴链接导入", "Scan QR or paste subscription URL")}
+                subtitle={ui.t(
+                  "支持订阅地址、YAML 文件与二维码",
+                  "Subscription URL, YAML file or QR code",
+                )}
                 onPress={() => open.set(true)}
               />
-            </If>
-            <If when={!!query()}>
-              <Action label={ui.t("清除搜索", "Clear search")} onPress={() => query.set("")} />
-            </If>
-          </View>
+              <If when={!!ui.client.state()?.activeProfile}>
+                <FeatureActionCard
+                  id="profiles-quick-yaml"
+                  icon="file-pen-line"
+                  title={ui.t("编辑当前配置 YAML", "Edit active profile YAML")}
+                  subtitle={ui.t(
+                    "语法高亮、查找替换与保存前校验",
+                    "Syntax highlight, search and validation",
+                  )}
+                  onPress={() => {
+                    const active = ui.client.state()?.activeProfile;
+                    if (active) ui.editProfile(active);
+                  }}
+                />
+              </If>
+            </View>
+          ) : undefined
+        }
+        empty={
+          <ListSurface style={{ ...surfaceFinish("card") }}>
+            <View
+              style={{
+                padding: spacing.lg,
+                gap: density.space(16),
+                alignItems: "center",
+              }}
+            >
+              <View style={{ width: "100%" }}>
+                <Empty
+                  icon={query() ? "search" : "rss"}
+                  title={
+                    query()
+                      ? ui.t("没有匹配的配置", "No matching profiles")
+                      : ui.t("暂无配置", "No profiles")
+                  }
+                  text={
+                    query()
+                      ? ui.t(
+                          "尝试其他名称或订阅地址",
+                          "Try another name or subscription URL",
+                        )
+                      : ui.t(
+                          "添加订阅以获取代理节点与规则",
+                          "Add a subscription to get proxy nodes and rules",
+                        )
+                  }
+                />
+              </View>
+              <If when={!query()}>
+                <Action
+                  primary
+                  icon="plus"
+                  label={ui.t("添加订阅", "Add subscription")}
+                  onPress={() => open.set(true)}
+                />
+              </If>
+              <If when={!!query()}>
+                <Action label={ui.t("清除搜索", "Clear search")} onPress={() => query.set("")} />
+              </If>
+            </View>
+          </ListSurface>
         }
       >
         {(profile) => row(profile)}
@@ -450,13 +494,11 @@ export function Profiles(props: { profileId?: string } = {}) {
                   <If when={!profiles().some((profile) => profile.id === collection.selected())}>
                     <Hint text={ui.t("当前订阅不在筛选结果中。已保留详情。", "This subscription is outside the filter. Its details are retained.")} />
                   </If>
-                  <ListSurface>
-                    {row(selected, true)}
-                  </ListSurface>
+                  {row(selected, true)}
                   <View style={{ gap: spacing.sm }}>
                     <SectionHeader title={ui.t("信息", "Details")} />
-                    <ListSurface>
-                      <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: 1, borderBottomColor: palette().line }}>
+                    <ListSurface style={{ ...surfaceFinish("card") }}>
+                      <View style={{ paddingHorizontal: spacing.lg, paddingVertical: density.space(12), borderBottomWidth: 1, borderBottomColor: palette().line }}>
                         <View style={{ flexDirection: "row", alignItems: "flex-start", gap: spacing.sm }}>
                           <View style={{ flex: 1, minWidth: 0 }}>
                             <Detail stacked label={ui.t("来源", "Source")} value={selected().subscriptionUrl || selected().source || ""} />
@@ -469,14 +511,22 @@ export function Profiles(props: { profileId?: string } = {}) {
                           />
                         </View>
                       </View>
-                      <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: selected().subscriptionUserInfo ? 1 : 0, borderBottomColor: palette().line }}>
+                      <View style={{ paddingHorizontal: spacing.lg, paddingVertical: density.space(12), borderBottomWidth: 1, borderBottomColor: palette().line }}>
                         <Detail label={ui.t("更新时间", "Updated")} value={timestamp(selected().lastRefreshAt || selected().updatedAt)} />
                       </View>
-                      <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), borderBottomWidth: selected().subscriptionUserInfo ? 1 : 0, borderBottomColor: palette().line }}>
+                      <View style={{ paddingHorizontal: spacing.lg, paddingVertical: density.space(12), borderBottomWidth: selected().subscriptionUserInfo ? 1 : 0, borderBottomColor: palette().line }}>
                         <Detail label={ui.t("本地备份", "Local backup")} value={selected().hasBackup ? ui.t("有上次备份", "Previous backup available") : ui.t("无备份", "No backup")} />
                       </View>
+                      <If when={!!selected().subscriptionUserInfo?.expireAt}>
+                        <View style={{ paddingHorizontal: spacing.lg, paddingVertical: density.space(12), borderBottomWidth: 1, borderBottomColor: palette().line }}>
+                          <Detail
+                            label={ui.t("到期时间", "Expires")}
+                            value={formatExpiry(selected().subscriptionUserInfo!.expireAt!, ui.t)}
+                          />
+                        </View>
+                      </If>
                       <If when={selected().subscriptionUserInfo}>
-                        <View style={{ paddingHorizontal: spacing.md, paddingVertical: density.space(10), gap: spacing.sm }}>
+                        <View style={{ paddingHorizontal: spacing.lg, paddingVertical: density.space(12), gap: spacing.xs }}>
                           <Detail
                             label={ui.t("已用流量", "Usage")}
                             value={
@@ -502,18 +552,114 @@ export function Profiles(props: { profileId?: string } = {}) {
                   <If when={selected().lastRefreshError}>
                     <PageError id="profile-detail-error" text={selected().lastRefreshError || ""} />
                   </If>
-                  <Actions align="start">
-                    <If when={!selected().active}>
-                      <Action id="profile-activate" primary label={ui.t("启用此订阅", "Use this subscription")} disabled={ui.client.pending() > 0 || !ui.client.domains.readyForCommand(["config", "profiles"])} onPress={() => void profileAction("profiles.activate", collection.selected())} />
-                    </If>
-                    <If when={selected().subscriptionUrl && selected().active}>
-                      <Action primary icon="refresh-cw" label={selected().lastRefreshError ? ui.t("重试更新", "Retry update") : ui.t("更新订阅", "Update subscription")} loading={refreshing(selected())} disabled={ui.client.pending() > 0} onPress={() => void profileAction("profiles.refresh", collection.selected())} />
-                    </If>
-                    <If when={selected().active}>
-                      <Action id="profile-proxies" label={ui.t("查看代理节点", "View proxy nodes")} onPress={() => ui.navigate("proxies")} />
-                    </If>
-                    <Action id="profile-edit-detail" label={ui.t("编辑订阅…", "Edit subscription…")} onPress={() => openEdit(selected())} />
-                  </Actions>
+                  <If
+                    when={layout().masterDetail}
+                    else={
+                      <View style={{ gap: spacing.md }}>
+                        <If when={!selected().active}>
+                          <Action
+                            id="profile-activate"
+                            primary
+                            fullWidth
+                            icon="circle-check"
+                            label={ui.t("启用此订阅", "Use this subscription")}
+                            disabled={ui.client.pending() > 0 || !ui.client.domains.readyForCommand(["config", "profiles"])}
+                            onPress={() => void profileAction("profiles.activate", collection.selected())}
+                          />
+                        </If>
+                        <If when={selected().subscriptionUrl && selected().active}>
+                          <Action
+                            primary
+                            fullWidth
+                            icon="refresh-cw"
+                            label={selected().lastRefreshError ? ui.t("重试更新", "Retry update") : ui.t("更新订阅", "Update subscription")}
+                            loading={refreshing(selected())}
+                            disabled={ui.client.pending() > 0}
+                            onPress={() => void profileAction("profiles.refresh", collection.selected())}
+                          />
+                        </If>
+                        <If when={selected().active}>
+                          <FeatureActionCard
+                            id="profile-proxies"
+                            icon="git-branch"
+                            title={ui.t("查看代理节点", "View proxy nodes")}
+                            subtitle={ui.t("切换策略组节点与测试延迟", "Switch policy group nodes and test latency")}
+                            onPress={() => ui.navigate("proxies")}
+                          />
+                        </If>
+                        <FeatureActionCard
+                          id="profile-edit-detail"
+                          icon="link"
+                          title={ui.t("编辑订阅…", "Edit subscription…")}
+                          subtitle={ui.t("修改订阅名称与更新地址", "Edit profile name and subscription URL")}
+                          onPress={() => openEdit(selected())}
+                        />
+                        <FeatureActionCard
+                          id="profile-edit-yaml-detail"
+                          icon="file-pen-line"
+                          title={ui.t("编辑 YAML", "Edit YAML")}
+                          subtitle={ui.t("语法高亮、查找替换与保存前校验", "Syntax highlight, search and validation")}
+                          disabled={!ui.client.domains.readyForCommand(["config", "profiles"])}
+                          onPress={() => ui.editProfile(selected().id)}
+                        />
+                        <FeatureActionCard
+                          id="profile-export-detail"
+                          icon="download"
+                          title={ui.t("导出…", "Export…")}
+                          subtitle={ui.t("导出 YAML 配置文件或生成二维码", "Export YAML file or generate QR code")}
+                          disabled={!ui.client.domains.readyForCommand(["config", "profiles"])}
+                          onPress={() =>
+                            batch(() => {
+                              exporting.set(selected());
+                              qr.set(undefined);
+                            })
+                          }
+                        />
+                      </View>
+                    }
+                  >
+                    <Actions align="start">
+                      <If when={!selected().active}>
+                        <Action id="profile-activate" primary label={ui.t("启用此订阅", "Use this subscription")} disabled={ui.client.pending() > 0 || !ui.client.domains.readyForCommand(["config", "profiles"])} onPress={() => void profileAction("profiles.activate", collection.selected())} />
+                      </If>
+                      <If when={selected().subscriptionUrl && selected().active}>
+                        <Action primary icon="refresh-cw" label={selected().lastRefreshError ? ui.t("重试更新", "Retry update") : ui.t("更新订阅", "Update subscription")} loading={refreshing(selected())} disabled={ui.client.pending() > 0} onPress={() => void profileAction("profiles.refresh", collection.selected())} />
+                      </If>
+                      <If when={selected().active}>
+                        <Action id="profile-proxies" label={ui.t("查看代理节点", "View proxy nodes")} onPress={() => ui.navigate("proxies")} />
+                      </If>
+                      <Action id="profile-edit-detail" label={ui.t("编辑订阅…", "Edit subscription…")} onPress={() => openEdit(selected())} />
+                      <Action id="profile-edit-yaml-detail" icon="file-pen-line" label={ui.t("编辑 YAML", "Edit YAML")} disabled={!ui.client.domains.readyForCommand(["config", "profiles"])} onPress={() => ui.editProfile(selected().id)} />
+                      <Action
+                        id="profile-export-detail"
+                        icon="download"
+                        label={ui.t("导出…", "Export…")}
+                        disabled={!ui.client.domains.readyForCommand(["config", "profiles"])}
+                        onPress={() =>
+                          batch(() => {
+                            exporting.set(selected());
+                            qr.set(undefined);
+                          })
+                        }
+                      />
+                    </Actions>
+                  </If>
+                  <View style={{ gap: spacing.sm }}>
+                    <SectionHeader
+                      title={ui.t("运行内核", "Engine")}
+                      meta={engineMeta()}
+                    />
+                    <FeatureActionCard
+                      id="profile-engine-settings"
+                      icon="sliders-horizontal"
+                      title={ui.t("三内核自由切换", "Multi-engine runtime")}
+                      subtitle={ui.t(
+                        "支持 Mihomo、sing-box 与 Meow，点击前往网络设置调整",
+                        "Supports Mihomo, sing-box and Meow; open Network settings to configure",
+                      )}
+                      onPress={() => ui.navigate("settings")}
+                    />
+                  </View>
                 </>
               )}
             </If>
@@ -832,6 +978,124 @@ type ProfileAction =
   | "profiles.restore"
   | "profiles.delete";
 
+function remainingDaysLabel(
+  expireAt: string | undefined,
+  t: (zh: string, en: string) => string,
+): string {
+  if (!expireAt) return "";
+  const numeric = Number(expireAt);
+  const ms = Number.isFinite(numeric)
+    ? numeric > 1e14
+      ? numeric / 1e3
+      : numeric > 1e11
+        ? numeric
+        : numeric * 1000
+    : Date.parse(expireAt);
+  if (!Number.isFinite(ms)) return "";
+  const diffDays = Math.ceil((ms - Date.now()) / 86_400_000);
+  if (diffDays <= 0) return t("已过期", "Expired");
+  return t(`剩余 ${diffDays} 天`, `${diffDays}d left`);
+}
+
+function formatExpiry(
+  expireAt: string,
+  t: (zh: string, en: string) => string,
+): string {
+  const full = timestamp(expireAt);
+  const dateOnly = full.length >= 10 ? full.slice(0, 10) : full;
+  const remaining = remainingDaysLabel(expireAt, t);
+  return remaining ? `${dateOnly} · ${remaining}` : dateOnly;
+}
+
+function FeatureActionCard(props: {
+  id?: string;
+  icon: Parameters<typeof Icon>[0]["name"];
+  title: string;
+  subtitle: string;
+  onPress: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <View
+      testID={props.id}
+      role="button"
+      accessibilityLabel={props.title}
+      accessibilityState={{ disabled: !!props.disabled }}
+      disabled={props.disabled}
+      focusVisibleStyle={focusRing()}
+      hoverStyle={
+        props.disabled ? undefined : { backgroundColor: palette().hover }
+      }
+      activeStyle={
+        props.disabled ? undefined : { backgroundColor: palette().soft }
+      }
+      onPress={() => {
+        if (!props.disabled) props.onPress();
+      }}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: spacing.md,
+        paddingHorizontal: spacing.lg,
+        paddingVertical: density.space(14),
+        borderRadius: radius.xl,
+        borderCurve: "continuous",
+        borderWidth: 1,
+        borderColor: palette().border,
+        backgroundColor: palette().panel,
+        opacity: props.disabled ? 0.45 : 1,
+        ...surfaceFinish("card"),
+        ...feedbackStyle(),
+      }}
+    >
+      <View
+        style={{
+          width: platform.desktop ? 36 : 44,
+          height: platform.desktop ? 36 : 44,
+          borderRadius: radius.lg,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: palette().line,
+          backgroundColor: palette().inset,
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+        }}
+      >
+        <Icon
+          name={props.icon}
+          size={platform.desktop ? 18 : 22}
+          color={palette().text}
+        />
+      </View>
+      <View style={{ flex: 1, minWidth: 0, gap: density.space(2) }}>
+        <Text
+          style={{
+            numberOfLines: 1,
+            fontSize: typography.sm,
+            lineHeight: density.line(20),
+            fontWeight: "600",
+            color: palette().text,
+          }}
+        >
+          {props.title}
+        </Text>
+        <Text
+          style={{
+            numberOfLines: 2,
+            fontSize: typography.note,
+            lineHeight: density.line(18),
+            color: palette().muted,
+          }}
+        >
+          {props.subtitle}
+        </Text>
+      </View>
+      <Icon name="chevron-right" size={16} color={palette().faint} />
+    </View>
+  );
+}
+
 /** One object and the same commands for a visible menu, right click, and a held finger. */
 function ProfileRow(props: {
   profile: Profile;
@@ -847,20 +1111,23 @@ function ProfileRow(props: {
 }) {
   const ui = useApp();
   const ready = () => ui.client.domains.readyForCommand(["config", "profiles"]);
-  const phoneRow = () =>
-    !platform.desktop && windowSize().width < 840 && !props.detail;
-  const height = () =>
-    phoneRow()
-      ? 64
-      : Math.max(84, density.line(52) * Math.max(1, fontScale()) + spacing.xl);
-  const updated = () =>
-    props.refreshing
+  const highlighted = () =>
+    !props.detail && (props.compact ? !!props.selected : props.profile.active);
+  const updated = () => {
+    const base = props.refreshing
       ? ui.t("正在更新", "Updating")
       : props.profile.lastRefreshError
         ? ui.t("更新失败", "Update failed")
         : props.profile.lastRefreshAt || props.profile.updatedAt
           ? timestamp(props.profile.lastRefreshAt || props.profile.updatedAt)
           : ui.t("尚未更新", "Not updated");
+    if (props.refreshing || props.profile.lastRefreshError) return base;
+    const remain = remainingDaysLabel(
+      props.profile.subscriptionUserInfo?.expireAt,
+      ui.t,
+    );
+    return remain ? `${base} · ${remain}` : base;
+  };
   const usage = () =>
     props.profile.subscriptionUserInfo?.totalBytes
       ? `${bytes((props.profile.subscriptionUserInfo.uploadBytes || 0) + (props.profile.subscriptionUserInfo.downloadBytes || 0))} / ${bytes(props.profile.subscriptionUserInfo.totalBytes)}`
@@ -975,188 +1242,184 @@ function ProfileRow(props: {
     });
     return items;
   };
+  const iconBoxSize = () => (platform.desktop ? 32 : 38);
+  const bodyContent = () => (
+    <>
+      <View
+        style={{
+          width: iconBoxSize(),
+          height: iconBoxSize(),
+          borderRadius: radius.lg,
+          borderCurve: "continuous",
+          borderWidth: 1,
+          borderColor: palette().line,
+          backgroundColor: highlighted() ? palette().panel : palette().inset,
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+          alignSelf: "flex-start",
+          marginTop: density.space(2),
+        }}
+      >
+        <If
+          when={props.refreshing}
+          else={
+            <Icon
+              name={props.profile.active ? "check" : "rss"}
+              size={platform.desktop ? 16 : 18}
+              color={props.profile.active ? palette().accent : palette().muted}
+            />
+          }
+        >
+          <Spinner size={18} />
+        </If>
+      </View>
+      <View style={{ flex: 1, minWidth: 0, gap: density.space(4) }}>
+        <View
+          style={{
+            flexDirection: "row",
+            gap: spacing.sm,
+            alignItems: "center",
+            minWidth: 0,
+          }}
+        >
+          <Text
+            style={{
+              flexShrink: 1,
+              minWidth: 0,
+              numberOfLines: 1,
+              fontSize: typography.sm,
+              lineHeight: density.line(20),
+              fontWeight: "600",
+              color: palette().text,
+            }}
+          >
+            {props.profile.name}
+          </Text>
+          <If when={props.profile.active}>
+            <Badge tone="brand" label={ui.t("当前", "Current")} />
+          </If>
+        </View>
+        <Text
+          style={{
+            numberOfLines: 1,
+            fontSize: typography.note,
+            lineHeight: density.line(platform.desktop ? 16 : 18),
+            fontVariant: ["tabular-nums"],
+            color: props.profile.lastRefreshError
+              ? palette().danger
+              : palette().muted,
+          }}
+        >
+          {updated()}
+        </Text>
+        <If
+          when={
+            !!props.profile.subscriptionUserInfo?.totalBytes && !props.detail
+          }
+        >
+          <MeterBar
+            ratio={Math.min(
+              1,
+              ((props.profile.subscriptionUserInfo?.uploadBytes || 0) +
+                (props.profile.subscriptionUserInfo?.downloadBytes || 0)) /
+                (props.profile.subscriptionUserInfo?.totalBytes || 1),
+            )}
+          />
+          <Text
+            style={{
+              numberOfLines: 1,
+              fontSize: typography.note,
+              lineHeight: density.line(platform.desktop ? 16 : 18),
+              fontVariant: ["tabular-nums"],
+              color: palette().muted,
+            }}
+          >
+            {usage()}
+          </Text>
+        </If>
+      </View>
+    </>
+  );
   return (
     <ObjectMenu
       id={`profile-menu-${idPrefix()}${props.profile.id}`}
       closeId="profile-menu-close"
       title={props.profile.name}
-      subtitle={props.profile.lastRefreshError ? ui.t("更新失败", "Update failed") : undefined}
+      subtitle={
+        props.profile.lastRefreshError
+          ? ui.t("更新失败", "Update failed")
+          : undefined
+      }
       triggerLabel={ui.t("订阅操作", "Subscription actions")}
-      triggerIcon="ellipsis-vertical"
+      triggerIcon="ellipsis"
       triggerStyle={{ marginRight: spacing.sm }}
       commands={commands()}
       row={(menu, state) => (
         <View
           style={{
-            minHeight: height(),
+            marginBottom: props.detail ? 0 : spacing.md,
             flexDirection: "row",
             alignItems: "center",
-            borderBottomWidth: props.detail ? 0 : 1,
-            borderBottomColor: palette().line,
-            backgroundColor:
-              props.selected && props.compact && !props.detail
-                ? palette().accentFill
-                : state?.contextOpen()
-                  ? palette().soft
-                  : palette().panel,
+            borderRadius: radius.xl,
+            borderCurve: "continuous",
+            borderWidth: 1,
+            borderColor: palette().border,
+            overflow: "hidden",
+            backgroundColor: highlighted()
+              ? palette().accentFill
+              : state?.contextOpen()
+                ? palette().soft
+                : palette().panel,
+            ...surfaceFinish("card"),
           }}
         >
-          <View
-            testID={`open-profile-${idPrefix()}${props.profile.id}`}
-            role="button"
-            accessibilityLabel={props.profile.name}
-            accessibilityState={{
-              selected: !!props.selected,
-            }}
-            focusVisibleStyle={focusRing(0)}
-            hoverStyle={{
-              backgroundColor:
-                props.selected && props.compact && !props.detail
-                  ? palette().accentFill
-                  : palette().hover,
-            }}
-            activeStyle={{ backgroundColor: palette().soft }}
-            onPress={props.onDetails}
-            style={{
-              flex: 1,
-              minHeight: height() - 1,
-              paddingHorizontal: phoneRow() ? spacing.md : spacing.lg,
-              paddingVertical: phoneRow() ? 8 : density.space(10),
-              flexDirection: "row",
-              alignItems: "center",
-              gap: phoneRow() ? spacing.sm : spacing.md,
-              ...feedbackStyle(),
-            }}
-          >
-            <If
-              when={props.refreshing}
-              else={
-                <IconTile
-                  icon={props.profile.active ? "circle-check" : "rss"}
-                  color={
-                    props.profile.active ? palette().accent : palette().muted
-                  }
-                />
-              }
-            >
-              <Spinner size={20} />
-            </If>
-            <View
-              style={{ flex: 1, minWidth: 0, gap: phoneRow() ? 2 : spacing.xxs }}
-            >
+          <If
+            when={!props.detail}
+            else={
               <View
+                testID={`open-profile-${idPrefix()}${props.profile.id}`}
                 style={{
+                  flex: 1,
+                  paddingHorizontal: spacing.lg,
+                  paddingVertical: density.space(14),
                   flexDirection: "row",
-                  gap: spacing.sm,
                   alignItems: "center",
+                  gap: spacing.md,
                 }}
               >
-                <Text
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    numberOfLines: 1,
-                    fontSize: typography.sm,
-                    lineHeight: density.line(20),
-                    fontWeight: "600",
-                    color: palette().text,
-                  }}
-                >
-                  {props.profile.name}
-                </Text>
-                <If when={props.profile.active}>
-                  <Badge tone="brand" label={ui.t("当前", "Current")} />
-                </If>
+                {bodyContent()}
               </View>
-              <If when={!(props.compact || windowSize().width < 840)}>
-                <Text
-                  style={{
-                    numberOfLines: 1,
-                    textOverflow: "ellipsis-middle",
-                    fontSize: typography.note,
-                    lineHeight: density.line(platform.desktop ? 16 : 18),
-                    color: palette().muted,
-                  }}
-                >
-                  {props.profile.subscriptionUrl || props.profile.source}
-                </Text>
-              </If>
-              <If when={props.compact || windowSize().width < 840}>
-                <Text
-                  style={{
-                    numberOfLines: 1,
-                    fontSize: typography.note,
-                    lineHeight: density.line(platform.desktop ? 16 : 18),
-                    fontVariant: ["tabular-nums"],
-                    color: props.profile.lastRefreshError
-                      ? palette().danger
-                      : palette().muted,
-                  }}
-                >
-                  {updated()}
-                </Text>
-              </If>
-              <If
-                when={
-                  !!props.profile.subscriptionUserInfo?.totalBytes &&
-                  !props.detail
-                }
-              >
-                <View style={{ paddingTop: phoneRow() ? 0 : density.space(4) }}>
-                  <MeterBar
-                    ratio={Math.min(
-                      1,
-                      ((props.profile.subscriptionUserInfo?.uploadBytes || 0) +
-                        (props.profile.subscriptionUserInfo?.downloadBytes ||
-                          0)) /
-                        (props.profile.subscriptionUserInfo?.totalBytes || 1),
-                    )}
-                  />
-                </View>
-              </If>
-              <If when={(props.compact || windowSize().width < 840) && !!usage()}>
-                <Text
-                  style={{
-                    numberOfLines: 1,
-                    fontSize: typography.note,
-                    lineHeight: density.line(platform.desktop ? 16 : 18),
-                    fontVariant: ["tabular-nums"],
-                    color: palette().muted,
-                  }}
-                >
-                  {usage()}
-                </Text>
-              </If>
+            }
+          >
+            <View
+              testID={`open-profile-${idPrefix()}${props.profile.id}`}
+              role="button"
+              accessibilityLabel={props.profile.name}
+              accessibilityState={{
+                selected: !!props.selected,
+              }}
+              focusVisibleStyle={focusRing(0)}
+              hoverStyle={{
+                backgroundColor: highlighted()
+                  ? palette().accentFill
+                  : palette().hover,
+              }}
+              activeStyle={{ backgroundColor: palette().soft }}
+              onPress={props.onDetails}
+              style={{
+                flex: 1,
+                paddingHorizontal: spacing.lg,
+                paddingVertical: density.space(14),
+                flexDirection: "row",
+                alignItems: "center",
+                gap: spacing.md,
+                ...feedbackStyle(),
+              }}
+            >
+              {bodyContent()}
             </View>
-            <If when={!props.compact && windowSize().width >= 840}>
-              <View
-                style={{ width: 160, gap: spacing.xxs, alignItems: "flex-end" }}
-              >
-                <Text
-                  style={{
-                    fontSize: density.font(12),
-                    lineHeight: density.line(18),
-                    fontVariant: ["tabular-nums"],
-                    color: props.profile.lastRefreshError
-                      ? palette().danger
-                      : palette().muted,
-                  }}
-                >
-                  {updated()}
-                </Text>
-                <Text
-                  style={{
-                    fontSize: density.font(12),
-                    lineHeight: density.line(18),
-                    color: palette().muted,
-                    fontVariant: ["tabular-nums"],
-                  }}
-                >
-                  {usage()}
-                </Text>
-              </View>
-            </If>
-          </View>
+          </If>
           {menu}
         </View>
       )}

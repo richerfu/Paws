@@ -314,7 +314,16 @@ export function SummaryPolicyGroups() {
   };
   return (
     <ListSurface id="summary-groups-list">
-      <Each of={allGroups()} key={(group) => group.name}>
+      {/* Slot-qualify GLOBAL so mode switching creates a fresh top/bottom row instead
+          of reparenting a scroll-culled HarmonyOS node (whose native opacity stayed 0). */}
+      <Each
+        of={allGroups()}
+        key={(group) =>
+          group.name.toUpperCase() === "GLOBAL"
+            ? `${ui.client.state()!.mode === "global" ? "top" : "bottom"}:${group.name}`
+            : group.name
+        }
+      >
         {(group, index) => {
           const isOpen = () => expanded() === group().name;
           return (
@@ -1359,7 +1368,9 @@ export function Proxies(props: { groupKey?: string } = {}) {
                       numberOfLines: 1,
                     }}
                   >
-                    {group().name}
+                    {group().name.toUpperCase() === "GLOBAL"
+                      ? ui.t("全局节点", "Global nodes")
+                      : group().name}
                   </Text>
                   <Text
                     style={{

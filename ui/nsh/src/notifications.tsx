@@ -111,8 +111,6 @@ export function useNotificationLayer(): number {
 export function NotificationViewport(props: {
   owner?: number;
   modal?: boolean;
-  insetLeft?: number;
-  insetRight?: number;
   dismissLabel?: string;
 }) {
   const center = Notifications();
@@ -136,15 +134,8 @@ export function NotificationViewport(props: {
     ];
   });
   const wide = () => platform.desktop || windowSize().width >= 768;
-  // Absolute children are positioned from the parent's padding box, so the
-  // root safe-area padding does not inset this viewport for us.
-  // - Unified top-center placement driven by system safeAreaInsets()/safeArea().
-  // - Horizontal insets come from the host header's live onLayout clearance so
-  //   active back/action buttons are never occluded without hardcoded widths.
-  const leftInset = () =>
-    wide() || props.modal ? spacing.lg : (props.insetLeft ?? spacing.lg);
-  const rightInset = () =>
-    wide() || props.modal ? spacing.lg : (props.insetRight ?? spacing.lg);
+  // Uniform full-width top-center toast placement directly below the system
+  // safe-area avoid region across every page and modal (aligned with H-OpenConnect).
   return (
     <If when={active() && entries().length > 0}>
       <View
@@ -155,8 +146,8 @@ export function NotificationViewport(props: {
           top:
             (wide() || props.modal ? spacing.sm : spacing.xs) +
             Math.max(insets().top, safeArea().top),
-          left: leftInset() + Math.max(insets().left, safeArea().left),
-          right: rightInset() + Math.max(insets().right, safeArea().right),
+          left: spacing.lg + Math.max(insets().left, safeArea().left),
+          right: spacing.lg + Math.max(insets().right, safeArea().right),
           alignItems: "center",
           zIndex: 10000,
         }}

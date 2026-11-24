@@ -32,7 +32,6 @@ import {
   Actions,
   Badge,
   Loading,
-  control,
   Alert,
   confirm,
   Icon,
@@ -361,36 +360,8 @@ export function PawsApp(props: {
   }
   const Shell = () => {
     const insets = safeAreaInsets();
-    const headerLeading = signal(0),
-      headerTrailing = signal(0);
-    effect(() => {
-      if (!canBack()) headerLeading.set(0);
-    });
     const showBottomTabs = () =>
       !wide() && depth() === 1 && !parentPage(page());
-    const toastInsets = () => {
-      const width = windowSize().width - safeArea().left - safeArea().right;
-      if (wide()) return { left: spacing.lg, right: spacing.lg };
-      const leading = canBack()
-        ? spacing.lg + (headerLeading() || control.icon) + spacing.xs
-        : spacing.lg;
-      const trailing =
-        headerTrailing() > 0
-          ? spacing.lg + headerTrailing() + spacing.xs
-          : spacing.lg;
-      const symmetric = Math.max(leading, trailing);
-      if (width - symmetric * 2 >= 220) {
-        return { left: symmetric, right: symmetric };
-      }
-      const maxCombined = Math.max(spacing.lg * 2, width - 180);
-      if (leading + trailing <= maxCombined) {
-        return { left: leading, right: trailing };
-      }
-      return {
-        left: leading,
-        right: Math.max(spacing.lg, maxCombined - leading),
-      };
-    };
     const content = (
       <>
         <If when={props.embeddedGateway !== false}>
@@ -467,10 +438,6 @@ export function PawsApp(props: {
               >
                 <If when={canBack()}>
                   <View
-                    onLayout={(e) => {
-                      if (!wide())
-                        headerLeading.set(Math.ceil(e.bounds.size.width));
-                    }}
                     desktop={platform.desktop ? { windowDrag: false } : undefined}
                   >
                     <IconButton
@@ -523,13 +490,13 @@ export function PawsApp(props: {
                 >
                   {wide() && isSettingsSection(page())
                     ? ui.t("设置", "Settings")
-                    : ui.t(...titles[page()])}
+                    : page() === "proxy-group" && ui.query()
+                      ? ui.query().toUpperCase() === "GLOBAL"
+                        ? ui.t("全局节点", "Global nodes")
+                        : ui.query()
+                      : ui.t(...titles[page()])}
                 </Text>
                 <View
-                  onLayout={(e) => {
-                    if (!wide())
-                      headerTrailing.set(Math.ceil(e.bounds.size.width));
-                  }}
                   style={{
                     flexDirection: "row",
                     alignItems: "center",
@@ -1299,8 +1266,6 @@ export function PawsApp(props: {
           </BaseTabs>
         </If>
         <NotificationViewport
-          insetLeft={toastInsets().left}
-          insetRight={toastInsets().right}
           dismissLabel={ui.t("关闭通知", "Dismiss notification")}
         />
       </>

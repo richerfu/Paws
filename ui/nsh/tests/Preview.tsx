@@ -92,6 +92,7 @@ mount(() => {
         ...state,
         revision: state.revision + 1,
         vpnRunning: running,
+        vpnConnectedAt: running ? Date.now() - 12_000 : null,
         running,
         networkProtected: running,
         vpnLifecycle: running ? "connected" : "stopped",

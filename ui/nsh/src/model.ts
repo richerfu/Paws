@@ -115,6 +115,7 @@ export type UiState = {
   revision: number;
   configRevision: number;
   vpnSessionId?: string | null;
+  vpnConnectedAt?: number | null;
   vpnLifecycle:
     | "stopped"
     | "engine-loaded"
@@ -208,7 +209,9 @@ export type HomeSummary = {
   nodeCount: number;
   groupCount: number;
   primarySelectedNode: string | null;
+  primarySelectedDelayMs?: number | null;
   globalSelectedNode: string | null;
+  globalSelectedDelayMs?: number | null;
   latestRuleNode: string | null;
   groups: ProxyGroupHeader[];
 };
@@ -233,6 +236,7 @@ export type DomainData = {
   status: Pick<
     UiState,
     | "vpnSessionId"
+    | "vpnConnectedAt"
     | "vpnLifecycle"
     | "engineLoaded"
     | "activeEngine"

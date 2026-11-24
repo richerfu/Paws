@@ -34,6 +34,7 @@ export function fixtureDomain(state: UiState, interest: DomainInterest): DomainD
     case "status":
       return {
         vpnSessionId: state.vpnSessionId,
+        vpnConnectedAt: state.vpnConnectedAt ?? null,
         vpnLifecycle: state.vpnLifecycle,
         engineLoaded: state.engineLoaded,
         activeEngine: state.activeEngine,
@@ -47,6 +48,16 @@ export function fixtureDomain(state: UiState, interest: DomainInterest): DomainD
       };
     case "summary": {
       const counts = proxyGroupSummary(state.proxyGroups);
+      const primaryLeaf = primarySelectedGroupLeaf(state.proxyGroups) || null;
+      const globalLeaf = effectiveGroupLeaf(state.proxyGroups, "GLOBAL") || null;
+      const leafDelay = (name: string | null) => {
+        if (!name) return null;
+        for (const group of state.proxyGroups) {
+          const hit = group.proxies.find((proxy) => proxy.name === name);
+          if (hit?.delayMs && hit.delayMs > 0) return hit.delayMs;
+        }
+        return null;
+      };
       return {
         appVersion: state.about.appVersion,
         profileCount: state.profiles.length,
@@ -55,8 +66,10 @@ export function fixtureDomain(state: UiState, interest: DomainInterest): DomainD
         globalNodeCount: counts.global,
         nodeCount: counts.members,
         groupCount: counts.groups,
-        primarySelectedNode: primarySelectedGroupLeaf(state.proxyGroups) || null,
-        globalSelectedNode: effectiveGroupLeaf(state.proxyGroups, "GLOBAL") || null,
+        primarySelectedNode: primaryLeaf,
+        primarySelectedDelayMs: leafDelay(primaryLeaf),
+        globalSelectedNode: globalLeaf,
+        globalSelectedDelayMs: leafDelay(globalLeaf),
         latestRuleNode: null,
         groups: state.proxyGroups.map((group) => ({
           name: group.name,

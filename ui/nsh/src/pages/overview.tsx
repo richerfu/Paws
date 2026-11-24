@@ -1,7 +1,10 @@
 import { density, typography } from "../theme";
 import {
+  cleanup,
   computed,
+  effect,
   Scroll,
+  signal,
   Text,
   View,
   platform,
@@ -38,7 +41,29 @@ import { connectionState } from "../connection-state";
 import { PageError } from "../page-error";
 import { SummaryPolicyGroups } from "./proxies";
 import { feedbackStyle } from "../motion";
-import { focusRing, surfaceFinish } from "../theme";
+import { focusRing, statusColors, surfaceFinish } from "../theme";
+
+function engineDisplayName(engine?: string | null): string {
+  if (!engine) return "";
+  if (engine === "mihomo") return "Mihomo";
+  if (engine === "singbox" || engine === "sing-box") return "sing-box";
+  if (engine === "meow") return "Meow";
+  return engine;
+}
+
+function formatConnectionDuration(elapsedMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(elapsedMs / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return [hours, minutes, seconds]
+    .map((part) => String(part).padStart(2, "0"))
+    .join(":");
+}
+
+function delayStatusTone(delayMs: number): "success" | "warning" | "danger" {
+  return delayMs < 150 ? "success" : delayMs < 400 ? "warning" : "danger";
+}
 
 export function Dashboard() {
   const ui = useApp(),
@@ -52,6 +77,30 @@ export function Dashboard() {
     groups: home().groupCount,
   });
   const state = () => connectionState(current(), ui.client.vpnOperation());
+  const now = signal(Date.now());
+  effect(() => {
+    const connectedAt = current().vpnConnectedAt;
+    if (ui.page() !== "dashboard" || state() !== "protected" || !connectedAt)
+      return;
+    now.set(Date.now());
+    const timer = setInterval(() => now.set(Date.now()), 1000);
+    cleanup(() => clearInterval(timer));
+  });
+  const connectionDuration = () => {
+    const connectedAt = current().vpnConnectedAt;
+    if (state() !== "protected" || !connectedAt) return "";
+    return formatConnectionDuration(now() - connectedAt);
+  };
+  const activeEngineBadge = () =>
+    state() === "protected" ? engineDisplayName(current().activeEngine) : "";
+  const nodeDelayMs = () => {
+    if (current().mode === "direct") return null;
+    const ms =
+      current().mode === "global"
+        ? home().globalSelectedDelayMs
+        : home().primarySelectedDelayMs;
+    return typeof ms === "number" && ms > 0 ? ms : null;
+  };
   const dotColor = () =>
     state() === "protected"
       ? palette().success
@@ -249,15 +298,28 @@ export function Dashboard() {
                     fontSize: density.font(13),
                     lineHeight: density.line(18),
                     color: palette().muted,
+                    fontVariant: ["tabular-nums"],
                   }}
                 >
-                  {home().activeProfileName ||
-                    ui.t(
-                      "连接前请选择配置",
-                      "Choose a profile before connecting",
-                    )}
+                  {(() => {
+                    const name =
+                      home().activeProfileName ||
+                      ui.t(
+                        "连接前请选择配置",
+                        "Choose a profile before connecting",
+                      );
+                    const duration = connectionDuration();
+                    return duration ? `${name} · ${duration}` : name;
+                  })()}
                 </Text>
               </View>
+              <If when={!!activeEngineBadge()}>
+                <Badge
+                  id="home-engine-badge"
+                  tone="brand"
+                  label={activeEngineBadge()}
+                />
+              </If>
             </View>
             <Tabs
               idPrefix="mode"
@@ -411,6 +473,20 @@ export function Dashboard() {
                     {nodeSubtitle()}
                   </Text>
                 </View>
+                <If when={nodeDelayMs() !== null}>
+                  <Text
+                    testID="home-node-delay"
+                    style={{
+                      fontSize: density.font(13),
+                      lineHeight: density.line(18),
+                      fontWeight: "600",
+                      fontVariant: ["tabular-nums"],
+                      color: statusColors(delayStatusTone(nodeDelayMs()!)).text,
+                    }}
+                  >
+                    {nodeDelayMs()} ms
+                  </Text>
+                </If>
                 <Icon name="chevron-right" size={16} color={palette().faint} />
               </View>
               <ListRow
@@ -942,7 +1018,7 @@ function DnsSections() {
                     }
                   />
                 </TrafficRow>
-                <TrafficRow last>
+                <TrafficRow>
                   <Detail
                     label={ui.t("内存上限", "Memory limit")}
                     value={
@@ -954,6 +1030,14 @@ function DnsSections() {
                               current().controllerDiagnostics.memoryLimitBytes,
                             )
                           : ui.t("未提供", "Not provided")
+                    }
+                  />
+                </TrafficRow>
+                <TrafficRow last>
+                  <Detail
+                    label={ui.t("当前内核", "Active engine")}
+                    value={
+                      engineDisplayName(current().activeEngine) || "—"
                     }
                   />
                 </TrafficRow>
