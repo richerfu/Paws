@@ -396,6 +396,9 @@ pub(super) fn platform_vpn_state(state: &CoreState) -> PlatformVpnState {
             .platform_app_http_proxy
             .clone()
             .filter(|_| state.platform_vpn_running),
+        connected_at_ms: state
+            .platform_vpn_connected_at_ms
+            .filter(|_| state.platform_vpn_running),
         updated_at: state.platform_vpn_state_updated_at,
     }
 }
@@ -405,6 +408,10 @@ pub(super) fn now_unix_nanos() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0)
+}
+
+pub(super) fn now_unix_millis() -> u64 {
+    (now_unix_nanos() / 1_000_000) as u64
 }
 
 pub(super) fn current_global_proxy(state: &CoreState) -> Option<String> {

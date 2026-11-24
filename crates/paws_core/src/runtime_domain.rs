@@ -138,6 +138,7 @@ enum RuntimeDomainData {
 #[serde(rename_all = "camelCase")]
 struct StatusData {
     vpn_session_id: Option<String>,
+    vpn_connected_at: Option<u64>,
     vpn_lifecycle: VpnLifecycle,
     engine_loaded: bool,
     active_engine: Option<VpnEngine>,
@@ -160,7 +161,9 @@ struct SummaryData {
     node_count: usize,
     group_count: usize,
     primary_selected_node: Option<String>,
+    primary_selected_delay_ms: Option<u32>,
     global_selected_node: Option<String>,
+    global_selected_delay_ms: Option<u32>,
     latest_rule_node: Option<String>,
     groups: Vec<GroupHeader>,
 }
@@ -228,8 +231,10 @@ impl CoreHandle {
             },
             RuntimeDomain::Status => {
                 let native = self.vpn.is_running();
+                let running = native || state.platform_vpn_running;
                 RuntimeDomainData::Status(StatusData {
                     vpn_session_id: platform_vpn_session_id(state),
+                    vpn_connected_at: state.platform_vpn_connected_at_ms.filter(|_| running),
                     vpn_lifecycle: vpn_lifecycle(
                         state.engine_loaded,
                         state.platform_vpn_starting,
@@ -420,6 +425,15 @@ fn effective_leaf(groups: &[ProxyGroup], root: &str) -> Option<String> {
     None
 }
 
+fn effective_leaf_delay(groups: &[ProxyGroup], leaf_name: Option<&str>) -> Option<u32> {
+    let target = leaf_name?;
+    groups.iter().flat_map(|g| g.proxies.iter()).find_map(|p| {
+        (p.name == target)
+            .then(|| p.delay_ms.filter(|&ms| ms > 0))
+            .flatten()
+    })
+}
+
 fn visible_members(groups: &[ProxyGroup], group: &ProxyGroup) -> usize {
     if !group.name.eq_ignore_ascii_case("GLOBAL") {
         return group.proxies.len();
@@ -481,7 +495,9 @@ fn summary(state: &CoreState) -> SummaryData {
             .filter(|g| !g.name.eq_ignore_ascii_case("GLOBAL"))
             .count(),
         primary_selected_node: primary.and_then(|g| effective_leaf(groups, &g.name)),
+        primary_selected_delay_ms: None,
         global_selected_node: global.and_then(|g| effective_leaf(groups, &g.name)),
+        global_selected_delay_ms: None,
         latest_rule_node: state
             .connections
             .iter()
@@ -521,6 +537,18 @@ fn summary(state: &CoreState) -> SummaryData {
                 }
                 None
             };
+            let leaf_delay = |root: &str| {
+                let mut name = root;
+                for _ in 0..=groups.len() {
+                    let group = groups.iter().find(|group| group.name == name)?;
+                    let next = group.selected.as_deref()?;
+                    if !groups.iter().any(|candidate| candidate.name == next) {
+                        return group.selected_delay_ms.filter(|&ms| ms > 0);
+                    }
+                    name = next;
+                }
+                None
+            };
             let primary = groups
                 .iter()
                 .find(|group| group.name.eq_ignore_ascii_case("proxy"))
@@ -529,11 +557,13 @@ fn summary(state: &CoreState) -> SummaryData {
                         !group.name.eq_ignore_ascii_case("GLOBAL") && group.selected.is_some()
                     })
                 });
-            summary.primary_selected_node = primary.and_then(|group| leaf(&group.name));
-            summary.global_selected_node = groups
+            let global = groups
                 .iter()
-                .find(|group| group.name.eq_ignore_ascii_case("GLOBAL"))
-                .and_then(|group| leaf(&group.name));
+                .find(|group| group.name.eq_ignore_ascii_case("GLOBAL"));
+            summary.primary_selected_node = primary.and_then(|group| leaf(&group.name));
+            summary.primary_selected_delay_ms = primary.and_then(|group| leaf_delay(&group.name));
+            summary.global_selected_node = global.and_then(|group| leaf(&group.name));
+            summary.global_selected_delay_ms = global.and_then(|group| leaf_delay(&group.name));
             summary.group_count = groups
                 .iter()
                 .filter(|group| !group.name.eq_ignore_ascii_case("GLOBAL"))
@@ -565,6 +595,15 @@ fn summary(state: &CoreState) -> SummaryData {
             .as_ref()
             .and_then(|summary| summary.latest_rule_node.clone());
     }
+    summary.primary_selected_delay_ms = summary.primary_selected_delay_ms.or_else(|| {
+        effective_leaf_delay(
+            &state.proxy_groups,
+            summary.primary_selected_node.as_deref(),
+        )
+    });
+    summary.global_selected_delay_ms = summary.global_selected_delay_ms.or_else(|| {
+        effective_leaf_delay(&state.proxy_groups, summary.global_selected_node.as_deref())
+    });
     summary
 }
 
@@ -725,5 +764,72 @@ mod tests {
         );
         let summary = read(&core, RuntimeDomain::Summary, None);
         assert_eq!(summary["data"]["latestRuleNode"], "node-a");
+    }
+
+    #[test]
+    fn status_exposes_connected_at_and_summary_resolves_selected_leaf_delays() {
+        let core = core();
+        {
+            let mut state = core.lock_state().unwrap();
+            state.proxy_groups = vec![
+                group(
+                    "GLOBAL",
+                    "Proxy",
+                    &[("Proxy", "Selector"), ("node-a", "ss")],
+                ),
+                ProxyGroup {
+                    name: "Proxy".into(),
+                    group_type: "Selector".into(),
+                    selected: Some("node-a".into()),
+                    fixed: None,
+                    proxies: vec![paws_model::ProxyItem {
+                        name: "node-a".into(),
+                        proxy_type: "ss".into(),
+                        delay_ms: Some(42),
+                        selected: true,
+                    }],
+                },
+            ];
+            state.platform_vpn_running = false;
+            state.platform_vpn_connected_at_ms = Some(1_700_000_000_000);
+        }
+        let stopped_status = read(&core, RuntimeDomain::Status, None);
+        assert!(stopped_status["data"]["vpnConnectedAt"].is_null());
+        let cached_summary = read(&core, RuntimeDomain::Summary, None);
+        assert_eq!(cached_summary["data"]["primarySelectedDelayMs"], 42);
+        assert_eq!(cached_summary["data"]["globalSelectedDelayMs"], 42);
+
+        {
+            let mut state = core.lock_state().unwrap();
+            state.platform_vpn_running = true;
+            state.platform_start_attempt_id = "attempt-live".into();
+            state.engine_observation.attempt = "attempt-live".into();
+            state.engine_observation.endpoint = state.platform_controller_endpoint.clone();
+            state.engine_observation.groups = Some(vec![
+                paws_engine::EngineGroupSummary {
+                    name: "GLOBAL".into(),
+                    group_type: "Selector".into(),
+                    selected: Some("Proxy".into()),
+                    fixed: None,
+                    member_count: 1,
+                    selected_delay_ms: None,
+                },
+                paws_engine::EngineGroupSummary {
+                    name: "Proxy".into(),
+                    group_type: "Selector".into(),
+                    selected: Some("node-live".into()),
+                    fixed: None,
+                    member_count: 1,
+                    selected_delay_ms: Some(38),
+                },
+            ]);
+        }
+        let live_status = read(&core, RuntimeDomain::Status, None);
+        assert_eq!(live_status["data"]["vpnConnectedAt"], 1_700_000_000_000u64);
+        let live_summary = read(&core, RuntimeDomain::Summary, None);
+        assert_eq!(live_summary["data"]["primarySelectedNode"], "node-live");
+        assert_eq!(live_summary["data"]["primarySelectedDelayMs"], 38);
+        assert_eq!(live_summary["data"]["globalSelectedNode"], "node-live");
+        assert_eq!(live_summary["data"]["globalSelectedDelayMs"], 38);
     }
 }

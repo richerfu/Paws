@@ -165,6 +165,7 @@ struct PlatformVpnState {
     engine: Option<VpnEngine>,
     app_http_proxy: Option<AppHttpProxyEndpoint>,
     controller_endpoint: Option<paws_engine::EngineControllerEndpoint>,
+    connected_at_ms: Option<u64>,
     updated_at: u128,
 }
 
@@ -228,6 +229,7 @@ struct CoreState {
     engine_loaded: bool,
     platform_vpn_starting: bool,
     platform_vpn_running: bool,
+    platform_vpn_connected_at_ms: Option<u64>,
     platform_vpn_engine: Option<VpnEngine>,
     platform_vpn_intent_epoch: u64,
     platform_os_stop_epoch: u64,
@@ -484,6 +486,7 @@ impl Default for CoreState {
             engine_loaded: false,
             platform_vpn_starting: false,
             platform_vpn_running: false,
+            platform_vpn_connected_at_ms: None,
             platform_vpn_engine: None,
             platform_vpn_intent_epoch: 0,
             platform_os_stop_epoch: 0,
@@ -865,6 +868,7 @@ impl CoreHandle {
                 engine_loaded: false,
                 platform_vpn_starting: false,
                 platform_vpn_running: false,
+                platform_vpn_connected_at_ms: None,
                 platform_vpn_engine: None,
                 platform_vpn_intent_epoch: 0,
                 platform_os_stop_epoch: 0,
@@ -3323,6 +3327,7 @@ impl CoreHandle {
         state.platform_vpn_cleanup_complete = false;
         state.platform_vpn_starting = true;
         state.platform_vpn_running = false;
+        state.platform_vpn_connected_at_ms = None;
         state.platform_vpn_engine = None;
         state.platform_network_protected = false;
         state.platform_network_protect_error = None;
@@ -6696,6 +6701,13 @@ impl CoreHandle {
     }
 
     fn persist_platform_vpn_state_locked(&self, state: &mut CoreState) -> Result<(), PawsError> {
+        if state.platform_vpn_running {
+            state
+                .platform_vpn_connected_at_ms
+                .get_or_insert_with(now_unix_millis);
+        } else {
+            state.platform_vpn_connected_at_ms = None;
+        }
         // SystemTime can have coarser resolution than nanoseconds on device.
         // Starting and running may otherwise receive the same timestamp, and
         // the receiver would permanently discard the terminal state because
@@ -6900,6 +6912,7 @@ impl CoreHandle {
             state.platform_extension_owner_pid = remote.extension_owner_pid;
             state.platform_extension_owner_start_time = remote.extension_owner_start_time;
             state.platform_vpn_cleanup_complete = remote.cleanup_complete;
+            state.platform_vpn_connected_at_ms = None;
             attempt_matches = true;
         }
 
@@ -6997,6 +7010,14 @@ impl CoreHandle {
             state.platform_network_protected = remote.network_protected;
             state.platform_network_protect_error = remote.network_protect_error;
             state.platform_vpn_engine = remote.engine.filter(|_| remote.running);
+            state.platform_vpn_connected_at_ms = if state.platform_vpn_running {
+                remote
+                    .connected_at_ms
+                    .or(state.platform_vpn_connected_at_ms)
+                    .or_else(|| Some(now_unix_millis()))
+            } else {
+                None
+            };
             state.platform_controller_endpoint =
                 remote.controller_endpoint.filter(|_| remote.running);
             state.platform_app_http_proxy = if remote.running {

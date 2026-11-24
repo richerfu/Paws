@@ -2344,6 +2344,7 @@ async fn watchdog_orphan_cleanup_requires_confirmed_stop_and_dead_exact_owner() 
                 engine: None,
                 app_http_proxy: None,
                 controller_endpoint: None,
+                connected_at_ms: None,
                 updated_at: 7,
             }),
         );
@@ -2879,6 +2880,7 @@ fn older_platform_frame_does_not_refresh_remote_liveness() {
             engine: None,
             app_http_proxy: None,
             controller_endpoint: None,
+            connected_at_ms: None,
             updated_at: 19,
         }),
     );
@@ -2950,6 +2952,7 @@ fn live_platform_frame_cannot_ack_connection_cleanup() {
             engine: None,
             app_http_proxy: None,
             controller_endpoint: None,
+            connected_at_ms: None,
             updated_at: 1,
         }),
     );
@@ -3011,6 +3014,7 @@ fn terminal_platform_attempt_cannot_be_revived_by_a_late_running_frame() {
                 engine: None,
                 app_http_proxy: None,
                 controller_endpoint: None,
+                connected_at_ms: None,
                 updated_at: 1,
             }),
         );
