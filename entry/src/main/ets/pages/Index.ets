@@ -1,8 +1,25 @@
 import { NshSurface } from "@nsh/harmonyos";
 import { hilog } from "@kit.PerformanceAnalysisKit";
 import BuildProfile from "BuildProfile";
+import pawsUi from "libpaws_ui.so";
 import { describeError } from "../common/Errors";
-import { PawsCoreGateway, pawsHost } from "../components/PawsCoreGateway";
+import {
+  PawsCoreGateway,
+  PawsHostServices,
+  pawsHost,
+  UiPreferences,
+} from "../components/PawsCoreGateway";
+
+const INITIAL_DOMAINS: string[] = ["config", "status", "summary", "traffic"];
+
+interface DomainQueryParam {
+  domain: string;
+}
+
+interface ColdStartParams {
+  preferences: UiPreferences;
+  initialDomains: Object[];
+}
 
 @Entry
 @Component
@@ -14,6 +31,7 @@ struct Index {
 
   aboutToAppear(): void {
     const host = pawsHost();
+    this.seedInitialParams(host);
     this.surface.registerComponent(
       "paws.core",
       (handle: number) => {
@@ -26,6 +44,35 @@ struct Index {
       this.reportError(message, !this.contentMounted || !this.surface.isRunning);
     });
     void this.loadBundle();
+  }
+
+  private seedInitialParams(host: PawsHostServices): void {
+    try {
+      try {
+        pawsUi.syncPlatformChanges();
+      } catch (_) {}
+      const preferences = JSON.parse(pawsUi.queryUiPreferences()) as UiPreferences;
+      host.applyPreferences(preferences);
+      const initialDomains: Object[] = [];
+      for (const domain of INITIAL_DOMAINS) {
+        const query: DomainQueryParam = { domain };
+        initialDomains.push(
+          JSON.parse(pawsUi.queryLocalRuntimeDomain(JSON.stringify(query))) as Object,
+        );
+      }
+      const params: ColdStartParams = {
+        preferences,
+        initialDomains,
+      };
+      this.surface.setParams(params);
+    } catch (error) {
+      hilog.warn(
+        0x0000,
+        "PawsNsh",
+        "cold-start initial params skipped %{public}s",
+        describeError(error),
+      );
+    }
   }
 
   private reportError(message: string, loadFailed: boolean): void {

@@ -59,7 +59,7 @@ interface PlatformPayload {
   text?: string;
   pngBase64?: string;
 }
-interface UiPreferences {
+export interface UiPreferences {
   language: string;
   theme: string;
   advanced: boolean;

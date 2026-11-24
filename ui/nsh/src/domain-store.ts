@@ -116,6 +116,10 @@ const booleans = new Set([
   "controllerRunning",
 ]);
 const counts = new Set(["profileCount", "globalNodeCount", "nodeCount", "groupCount"]);
+const optionalNullableNumbers: Partial<Record<DomainName, string[]>> = {
+  status: ["vpnConnectedAt"],
+  summary: ["primarySelectedDelayMs", "globalSelectedDelayMs"],
+};
 
 function deepEqual(previous: unknown, next: unknown): boolean {
   if (Object.is(previous, next)) return true;
@@ -180,6 +184,16 @@ function validateData(domain: DomainName, data: unknown): void {
     if (!present || !valid)
       throw new Error(`Invalid ${domain} query: ${present ? "invalid" : "missing"} ${key}`);
   }
+  for (const key of optionalNullableNumbers[domain] || []) {
+    if (!Object.prototype.hasOwnProperty.call(object, key)) continue;
+    const value = object[key];
+    if (
+      value !== undefined &&
+      value !== null &&
+      (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+    )
+      throw new Error(`Invalid ${domain} query: invalid ${key}`);
+  }
 }
 
 /** A receipt can be committed even when its subsequent view query fails. */
@@ -190,6 +204,11 @@ export class CommittedStateError extends Error {
     );
   }
 }
+
+export type InitialDomainProjection<D extends DomainName = DomainName> = Omit<
+  DomainQueryResult<D>,
+  "generation"
+>;
 
 /** One active interest set; events invalidate keys and never carry domain data. */
 export class DomainStore {
@@ -227,6 +246,42 @@ export class DomainStore {
       this.connected = true;
       this.schedule();
     }
+  }
+  /** Seeds cold-start projections from host launch params before Frame 1 mounts.
+   * Leaves version and appliedGeneration unset so live gateway subscribe/query
+   * still reconciles and fences imperative mutations until confirmed. */
+  seed(projections: readonly InitialDomainProjection[]): void {
+    if (this.disposed || !Array.isArray(projections) || !projections.length) return;
+    batch(() => {
+      for (const value of projections) {
+        if (
+          !value ||
+          typeof value !== "object" ||
+          !(value.domain in fields) ||
+          (value.groupKey !== undefined && typeof value.groupKey !== "string") ||
+          !revision(value.revision) ||
+          !revision(value.configRevision)
+        )
+          continue;
+        try {
+          validateData(value.domain, value.data);
+        } catch {
+          continue;
+        }
+        const entry = this.entry({
+          domain: value.domain,
+          ...(value.groupKey !== undefined ? { groupKey: value.groupKey } : {}),
+        });
+        if (entry.data() || entry.version() >= 0) continue;
+        this.apply(entry, { ...value, generation: 0 });
+        if (value.observation !== undefined) entry.observation.set(value.observation);
+        entry.phase.set("ready");
+        this.latestRevision.set(Math.max(this.latestRevision(), value.revision));
+        if (value.domain === "config") {
+          this.configRevision.set(Math.max(this.configRevision(), value.configRevision));
+        }
+      }
+    });
   }
   setPage(inputs: DomainInput[]): void {
     this.page = inputs.map(normalize);

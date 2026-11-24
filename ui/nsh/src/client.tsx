@@ -1,4 +1,4 @@
-import { batch, cleanup, signal, type Signal, nativeComponent } from "nsh";
+import { batch, cleanup, host, signal, type Signal, nativeComponent } from "nsh";
 import type {
   CoreRequest,
   CoreResult,
@@ -8,8 +8,53 @@ import type {
   Preferences,
   VpnConfirmation,
 } from "./model";
-import { CommittedStateError, DomainStore } from "./domain-store";
+import {
+  CommittedStateError,
+  DomainStore,
+  type InitialDomainProjection,
+} from "./domain-store";
 import { commandDomains } from "./command-data";
+
+const DEFAULT_PREFERENCES: Preferences = {
+  language: "system",
+  theme: "system",
+  advanced: false,
+  systemLocale: "zh-CN",
+};
+
+function readInitialPreferences(): Preferences {
+  const raw = host?.params?.preferences;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ...DEFAULT_PREFERENCES };
+  }
+  const object = raw as Record<string, unknown>;
+  const language =
+    object.language === "system" ||
+    object.language === "zh_cn" ||
+    object.language === "en"
+      ? object.language
+      : DEFAULT_PREFERENCES.language;
+  const theme =
+    object.theme === "system" ||
+    object.theme === "light" ||
+    object.theme === "dark"
+      ? object.theme
+      : DEFAULT_PREFERENCES.theme;
+  const advanced =
+    typeof object.advanced === "boolean"
+      ? object.advanced
+      : DEFAULT_PREFERENCES.advanced;
+  const systemLocale =
+    typeof object.systemLocale === "string" && object.systemLocale.length > 0
+      ? object.systemLocale
+      : DEFAULT_PREFERENCES.systemLocale;
+  return { language, theme, advanced, systemLocale };
+}
+
+function readInitialDomains(): readonly InitialDomainProjection[] {
+  const raw = host?.params?.initialDomains;
+  return Array.isArray(raw) ? (raw as InitialDomainProjection[]) : [];
+}
 
 const Gateway = nativeComponent<
   { request?: CoreRequest },
@@ -41,21 +86,13 @@ export class CoreClient {
   private readonly view = {} as UiState;
   readonly state = (): UiState | undefined =>
     this.domains.has(["config", "status"]) ? this.view : undefined;
-  readonly preferences = signal<Preferences>(
-    {
-      language: "system",
-      theme: "system",
-      advanced: false,
-      systemLocale: "zh-CN",
-    },
-    {
-      equals: (previous, next) =>
-        previous.language === next.language &&
-        previous.theme === next.theme &&
-        previous.advanced === next.advanced &&
-        previous.systemLocale === next.systemLocale,
-    },
-  );
+  readonly preferences = signal<Preferences>(readInitialPreferences(), {
+    equals: (previous, next) =>
+      previous.language === next.language &&
+      previous.theme === next.theme &&
+      previous.advanced === next.advanced &&
+      previous.systemLocale === next.systemLocale,
+  });
   readonly request: Signal<CoreRequest | undefined> = signal<CoreRequest>();
   readonly pending = signal(0);
   readonly pendingRequests = signal<CoreRequest[]>([]);
@@ -92,6 +129,7 @@ export class CoreClient {
       (message) => this.error.set(message),
       stateTimeoutMs,
     );
+    this.domains.seed(readInitialDomains());
     const fields: { [D in keyof DomainData]?: (keyof UiState)[] } = {
       config: [
         "activeProfile",
@@ -102,6 +140,7 @@ export class CoreClient {
       ],
       status: [
         "vpnSessionId",
+        "vpnConnectedAt",
         "vpnLifecycle",
         "engineLoaded",
         "activeEngine",
