@@ -80,3 +80,38 @@ test("Escape respects an import draft and workspace shortcuts yield to the modal
   await app.press("id:add-profile");
   expect(app.value("id:profile-input")).toBe("");
 });
+
+test("native Back closes overlays, pops subpages, and yields to system at root workspaces", async () => {
+  const app = await open("./Preview.tsx", {
+    platform: "android",
+    width: 390,
+    height: 844,
+    locale: "zh-CN",
+  });
+  await app.waitFor("id:home-connection-action");
+  await expect(app.back()).rejects.toMatchObject({ code: "ERR_NSH_TEST_NO_BACK" });
+
+  await app.press("id:all-proxies");
+  await app.waitFor("id:group-Proxy");
+  await app.back();
+  await app.waitFor("id:home-connection-action");
+  await expect(app.back()).rejects.toMatchObject({ code: "ERR_NSH_TEST_NO_BACK" });
+
+  await app.press("id:nav-profiles");
+  await app.waitFor("id:add-profile");
+  await app.press("id:add-profile");
+  await app.waitFor("id:profile-input");
+  await app.back();
+  await app.wait(250);
+  expect(app.shows("id:profile-input")).toBe(false);
+  await expect(app.back()).rejects.toMatchObject({ code: "ERR_NSH_TEST_NO_BACK" });
+
+  await app.setViewport(1024, 768);
+  await app.press("id:desktop-nav-settings");
+  await app.waitFor("id:save-vpn");
+  await expect(app.back()).rejects.toMatchObject({ code: "ERR_NSH_TEST_NO_BACK" });
+  await app.setViewport(390, 844);
+  await app.back();
+  await app.waitFor("id:tool-settings");
+  await expect(app.back()).rejects.toMatchObject({ code: "ERR_NSH_TEST_NO_BACK" });
+});

@@ -19,7 +19,6 @@ import {
   safeAreaInsets,
 } from "nsh";
 import { titleBar } from "nsh/desktop";
-import { BackHandler } from "nsh/mobile";
 import {
   Tab,
   Tabs as BaseTabs,
@@ -341,15 +340,6 @@ export function PawsApp(props: {
   });
   effect(() => {
     setColorScheme(theme());
-  });
-  const stopHardwareBack = BackHandler.on("press", () => {
-    if (overlays() > 0) return false;
-    if (!canBack()) return false;
-    back();
-    return true;
-  });
-  cleanup(() => {
-    stopHardwareBack();
   });
   if (platform.desktop) {
     for (const shortcut of desktopShortcuts)
@@ -1192,6 +1182,9 @@ export function PawsApp(props: {
                                 </View>
                               </View>
                             );
+                            const screenCanBack = () =>
+                              index() > 0 ||
+                              (active() && !wide() && !!parentPage(current.name));
                             return (
                               <NavPage
                                 style={{
@@ -1206,7 +1199,7 @@ export function PawsApp(props: {
                                     : "default"
                                 }
                                 title={ui.t(...titles[current.name])}
-                                popOnBack={false}
+                                popOnBack={!screenCanBack()}
                                 onBackPress={() => {
                                   if (
                                     active() &&

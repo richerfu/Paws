@@ -64,7 +64,7 @@ def cases(log_dir):
         ("diagnostics", ["test", "ui/nsh/tests/diagnostics.test.ts"],
          ("3 tests: 3 passed, 0 failed",), None),
         ("production-entry", ["build", "ui/nsh", "-o", str(log_dir / "production-entry")], (), None),
-        ("redesign", ["test", "--trace", "ui/nsh/tests/redesign.test.ts"], ("4 tests: 4 passed, 0 failed",), None),
+        ("redesign", ["test", "--trace", "ui/nsh/tests/redesign.test.ts"], ("5 tests: 5 passed, 0 failed",), None),
         ("profile-editor", ["test", "ui/nsh/tests/profile-editor.test.ts"], ("6 tests: 6 passed, 0 failed",), None),
         ("responsive-interactions", ["test", "ui/nsh/tests/responsive-interactions.test.ts"], ("5 tests: 5 passed, 0 failed",), None),
         ("live-refresh", ["test", "--trace", "ui/nsh/tests/live-refresh.test.ts"], ("3 tests: 3 passed, 0 failed",), None),
