@@ -123,7 +123,7 @@ function compareProxyGroups(a: Group, b: Group, mode: string): number {
     if (mode === "global") return aGlobal ? -1 : 1;
     return aGlobal ? 1 : -1;
   }
-  return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+  return 0;
 }
 
 function groupIcon(group: Group): IconName {

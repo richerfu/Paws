@@ -4,6 +4,7 @@ import { domainKey } from "../src/domain-store";
 import {
   effectiveGroupLeaf,
   groupMembers,
+  primarySelectedGroup,
   primarySelectedGroupLeaf,
   proxyGroupSummary,
   selectedMember,
@@ -48,6 +49,7 @@ export function fixtureDomain(state: UiState, interest: DomainInterest): DomainD
       };
     case "summary": {
       const counts = proxyGroupSummary(state.proxyGroups);
+      const primaryGroup = primarySelectedGroup(state.proxyGroups);
       const primaryLeaf = primarySelectedGroupLeaf(state.proxyGroups) || null;
       const globalLeaf = effectiveGroupLeaf(state.proxyGroups, "GLOBAL") || null;
       const leafDelay = (name: string | null) => {
@@ -66,6 +68,7 @@ export function fixtureDomain(state: UiState, interest: DomainInterest): DomainD
         globalNodeCount: counts.global,
         nodeCount: counts.members,
         groupCount: counts.groups,
+        primarySelectedGroup: primaryGroup?.name || null,
         primarySelectedNode: primaryLeaf,
         primarySelectedDelayMs: leafDelay(primaryLeaf),
         globalSelectedNode: globalLeaf,

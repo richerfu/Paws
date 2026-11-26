@@ -66,6 +66,28 @@ impl CoreHandle {
         let editable = state.profiles.rules_for_profile(&preview.profile_id);
         state.runtime_rules =
             runtime_rule_summaries(&preview.profile_id, &preview.metadata.rule_lines, &editable);
+        let updated_at = state
+            .profiles
+            .profile(&preview.profile_id)
+            .ok()
+            .and_then(|profile| profile.updated_at.clone());
+        let mut route_hints = paws_profile::extract_yaml_route_hints(
+            &preview.profile_id,
+            updated_at,
+            &preview.runtime_yaml,
+        );
+        if let Some(hints) = route_hints.as_mut() {
+            if let Some(target) = paws_profile::parse_match_rule_target(
+                state
+                    .runtime_rules
+                    .iter()
+                    .filter(|rule| rule.enabled)
+                    .map(|rule| rule.line.as_str()),
+            ) {
+                hints.match_target = Some(target);
+            }
+        }
+        state.route_hints = route_hints;
         state.proxy_groups = preview.metadata.proxy_groups;
         state.providers = preview.metadata.providers;
         state.engine_observation = Default::default();

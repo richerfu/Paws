@@ -733,7 +733,8 @@ impl CoreHandle {
         let mut issues = Vec::new();
         match sample {
             Sample::None => {}
-            Sample::Summary(groups, connections) => {
+            Sample::Summary(mut groups, connections) => {
+                runtime_metadata::order_group_summaries_for_state(&mut state, &mut groups);
                 let changed = state.engine_observation.groups.as_ref() != Some(&groups);
                 state.engine_observation.groups = Some(groups);
                 apply_connection_summary(&mut state, connections, &mut issues);
@@ -741,8 +742,9 @@ impl CoreHandle {
                     self.publish_resource_change_locked(&mut state);
                 }
             }
-            Sample::Proxies(groups) => {
+            Sample::Proxies(mut groups) => {
                 if key.group_key.is_none() {
+                    runtime_metadata::order_proxy_groups_for_state(&mut state, &mut groups);
                     state.proxy_groups = groups;
                 } else {
                     for group in groups {
@@ -756,6 +758,9 @@ impl CoreHandle {
                             state.proxy_groups.push(group);
                         }
                     }
+                    let mut reordered = std::mem::take(&mut state.proxy_groups);
+                    runtime_metadata::order_proxy_groups_for_state(&mut state, &mut reordered);
+                    state.proxy_groups = reordered;
                 }
                 state.engine_resources_authoritative = true;
             }

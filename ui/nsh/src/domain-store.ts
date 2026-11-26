@@ -120,6 +120,9 @@ const optionalNullableNumbers: Partial<Record<DomainName, string[]>> = {
   status: ["vpnConnectedAt"],
   summary: ["primarySelectedDelayMs", "globalSelectedDelayMs"],
 };
+const optionalNullableStrings: Partial<Record<DomainName, string[]>> = {
+  summary: ["primarySelectedGroup"],
+};
 
 function deepEqual(previous: unknown, next: unknown): boolean {
   if (Object.is(previous, next)) return true;
@@ -192,6 +195,12 @@ function validateData(domain: DomainName, data: unknown): void {
       value !== null &&
       (typeof value !== "number" || !Number.isFinite(value) || value < 0)
     )
+      throw new Error(`Invalid ${domain} query: invalid ${key}`);
+  }
+  for (const key of optionalNullableStrings[domain] || []) {
+    if (!Object.prototype.hasOwnProperty.call(object, key)) continue;
+    const value = object[key];
+    if (value !== undefined && value !== null && typeof value !== "string")
       throw new Error(`Invalid ${domain} query: invalid ${key}`);
   }
 }

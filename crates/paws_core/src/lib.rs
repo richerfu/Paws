@@ -268,6 +268,7 @@ struct CoreState {
     runtime_ui_cache_writes_enabled: bool,
     mode: RuntimeMode,
     profiles: ProfileStore,
+    route_hints: Option<paws_profile::ProfileRouteHints>,
     tunnel: Option<Tunnel>,
     meow_runtime_ready: bool,
     sniffer_config: SnifferConfig,
@@ -419,6 +420,7 @@ fn sample_runtime_resources(state: &mut CoreState) -> bool {
         // every second.
         let mut refreshed = proxy_groups_from_tunnel(&tunnel);
         preserve_proxy_group_member_order(&state.proxy_groups, &mut refreshed);
+        runtime_metadata::order_proxy_groups_for_state(state, &mut refreshed);
         state.proxy_groups = refreshed;
     }
     if let Some(runtime) = state.meow_runtime.as_ref() {
@@ -454,9 +456,17 @@ fn active_profile_settings(
 impl Default for CoreState {
     fn default() -> Self {
         let profiles = ProfileStore::open_default_or_unavailable();
-        let proxy_groups = load_runtime_ui_cache(&profiles)
+        let route_hints = profiles.active_route_hints();
+        let mut proxy_groups = load_runtime_ui_cache(&profiles)
             .map(|cache| cache.proxy_groups)
             .unwrap_or_default();
+        if let Some(hints) = route_hints.as_ref() {
+            runtime_metadata::order_groups_by_declared_names(
+                &hints.declared_groups,
+                &mut proxy_groups,
+                |group| &group.name,
+            );
+        }
         let mut logs = RecordedLogBuffer::new(profiles.root());
         let geodata = profiles.geodata_files();
         let (vpn_options, controller_access, network_ports) = active_profile_settings(&profiles)
@@ -521,6 +531,7 @@ impl Default for CoreState {
             runtime_ui_cache_writes_enabled: true,
             mode: RuntimeMode::Rule,
             profiles,
+            route_hints,
             tunnel: None,
             meow_runtime_ready: false,
             sniffer_config: SnifferConfig::default(),
@@ -835,9 +846,17 @@ impl CoreHandle {
         let log_root = profiles.root().to_path_buf();
         log_recording::set_recording_enabled(&log_root, true)
             .expect("enable log recording for core tests");
-        let proxy_groups = load_runtime_ui_cache(&profiles)
+        let route_hints = profiles.active_route_hints();
+        let mut proxy_groups = load_runtime_ui_cache(&profiles)
             .map(|cache| cache.proxy_groups)
             .unwrap_or_default();
+        if let Some(hints) = route_hints.as_ref() {
+            runtime_metadata::order_groups_by_declared_names(
+                &hints.declared_groups,
+                &mut proxy_groups,
+                |group| &group.name,
+            );
+        }
         let geodata = profiles.geodata_files();
         let mut logs = RecordedLogBuffer::new(log_root);
         let (vpn_options, controller_access, network_ports) = active_profile_settings(&profiles)
@@ -903,6 +922,7 @@ impl CoreHandle {
                 runtime_ui_cache_writes_enabled: true,
                 mode: RuntimeMode::Rule,
                 profiles,
+                route_hints,
                 tunnel: None,
                 meow_runtime_ready: false,
                 sniffer_config: SnifferConfig::default(),
@@ -2106,6 +2126,7 @@ impl CoreHandle {
             if was_active && next_active.is_none() {
                 state.tunnel = None;
                 state.meow_runtime = None;
+                state.route_hints = None;
                 state.proxy_groups.clear();
                 state.providers.clear();
                 state.runtime_rules.clear();
@@ -4872,6 +4893,25 @@ impl CoreHandle {
             .profiles
             .write_runtime_yaml(profile_id, &runtime_yaml)?;
         state.profiles.set_active(profile_id)?;
+        let updated_at = state
+            .profiles
+            .profile(profile_id)
+            .ok()
+            .and_then(|profile| profile.updated_at.clone());
+        let mut route_hints =
+            paws_profile::extract_yaml_route_hints(profile_id, updated_at, &runtime_yaml);
+        if let Some(hints) = route_hints.as_mut() {
+            if let Some(target) = paws_profile::parse_match_rule_target(
+                runtime_rules
+                    .iter()
+                    .filter(|rule| rule.enabled)
+                    .map(|rule| rule.line.as_str()),
+            ) {
+                hints.match_target = Some(target);
+            }
+        }
+        state.route_hints = route_hints;
+        runtime_metadata::order_proxy_groups_for_state(&mut state, &mut proxy_groups);
         state.meow_runtime = Some(meow_runtime);
         if !state.platform_vpn_running {
             state.controller_diagnostics = ControllerDiagnostics::default();

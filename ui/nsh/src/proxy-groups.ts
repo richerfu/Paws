@@ -19,11 +19,35 @@ export function effectiveGroupLeaf(groups: ProxyGroup[], root: string): string |
   }
   return undefined;
 }
-export function primarySelectedGroupLeaf(groups: ProxyGroup[]): string | undefined {
+function isAdblockGroupName(name: string): boolean {
+  const lower = name.toLowerCase();
+  return (
+    lower.includes("adblock") ||
+    lower.includes("reject") ||
+    lower.includes("hijack") ||
+    name.includes("广告") ||
+    name.includes("拦截")
+  );
+}
+export function primarySelectedGroup<
+  T extends Pick<ProxyGroup, "name" | "groupType" | "selected"> &
+    Partial<Pick<ProxyGroup, "proxies"> & { effectiveSelectedNode: string | null }>,
+>(groups: T[]): T | undefined {
+  const hasSelection = (group: T) =>
+    Boolean(group.effectiveSelectedNode || selectedMember(group));
   const visible = groups.filter((group) => group.name.toUpperCase() !== "GLOBAL");
-  const primary =
-    visible.find((group) => group.name.toLowerCase() === "proxy" && selectedMember(group)) ||
-    visible.find((group) => selectedMember(group));
+  return (
+    visible.find((group) => group.name.toLowerCase() === "proxy" && hasSelection(group)) ||
+    visible.find(
+      (group) =>
+        isManualSelector(group) && !isAdblockGroupName(group.name) && hasSelection(group),
+    ) ||
+    visible.find((group) => isManualSelector(group) && hasSelection(group)) ||
+    visible.find(hasSelection)
+  );
+}
+export function primarySelectedGroupLeaf(groups: ProxyGroup[]): string | undefined {
+  const primary = primarySelectedGroup(groups);
   return primary ? effectiveGroupLeaf(groups, primary.name) : undefined;
 }
 export function groupMembers(groups: Pick<ProxyGroup, "name">[], group: ProxyGroup) {

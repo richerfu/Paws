@@ -160,6 +160,7 @@ struct SummaryData {
     global_node_count: usize,
     node_count: usize,
     group_count: usize,
+    primary_selected_group: Option<String>,
     primary_selected_node: Option<String>,
     primary_selected_delay_ms: Option<u32>,
     global_selected_node: Option<String>,
@@ -459,20 +460,101 @@ fn visible_members(groups: &[ProxyGroup], group: &ProxyGroup) -> usize {
     }
 }
 
-fn summary(state: &CoreState) -> SummaryData {
-    let groups = &state.proxy_groups;
-    let primary = groups
+fn is_manual_selector_type(group_type: &str) -> bool {
+    let normalized: String = group_type
+        .bytes()
+        .filter(u8::is_ascii_alphanumeric)
+        .map(|b| char::from(b.to_ascii_lowercase()))
+        .collect();
+    matches!(normalized.as_str(), "select" | "selector")
+}
+
+fn active_match_rule_target(state: &CoreState) -> Option<String> {
+    if state.platform_vpn_running
+        && state.engine_observation.attempt == state.platform_start_attempt_id
+        && state.engine_observation.endpoint == state.platform_controller_endpoint
+    {
+        if let Some(rules) = state.engine_observation.runtime_rules.as_ref() {
+            for rule in rules {
+                let kind = rule.rule_type.trim();
+                if kind.eq_ignore_ascii_case("MATCH") || kind.eq_ignore_ascii_case("FINAL") {
+                    let target = rule.target.trim();
+                    if !target.is_empty() {
+                        return Some(target.to_owned());
+                    }
+                }
+            }
+        }
+    }
+    if let Some(target) = paws_profile::parse_match_rule_target(
+        state
+            .runtime_rules
+            .iter()
+            .filter(|rule| rule.enabled)
+            .map(|rule| rule.line.as_str()),
+    ) {
+        return Some(target);
+    }
+    state
+        .route_hints
+        .as_ref()
+        .filter(|hints| Some(hints.profile_id.as_str()) == state.profiles.active_profile())
+        .and_then(|hints| hints.match_target.clone())
+}
+
+fn is_adblock_group_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("adblock")
+        || lower.contains("reject")
+        || lower.contains("hijack")
+        || name.contains("广告")
+        || name.contains("拦截")
+}
+
+fn select_primary_group<'a, T>(
+    groups: &'a [T],
+    match_target: Option<&str>,
+    name_of: impl Fn(&T) -> &str,
+    type_of: impl Fn(&T) -> &str,
+    has_selected: impl Fn(&T) -> bool,
+) -> Option<&'a T> {
+    let eligible =
+        |group: &&T| !name_of(group).eq_ignore_ascii_case("GLOBAL") && has_selected(group);
+    groups
         .iter()
-        .find(|g| {
-            !g.name.eq_ignore_ascii_case("GLOBAL")
-                && g.name.eq_ignore_ascii_case("proxy")
-                && selected(g).is_some()
+        .filter(eligible)
+        .find(|group| name_of(group).eq_ignore_ascii_case("proxy"))
+        .or_else(|| {
+            groups.iter().filter(eligible).find(|group| {
+                is_manual_selector_type(type_of(group)) && !is_adblock_group_name(name_of(group))
+            })
         })
         .or_else(|| {
             groups
                 .iter()
-                .find(|g| !g.name.eq_ignore_ascii_case("GLOBAL") && selected(g).is_some())
-        });
+                .filter(eligible)
+                .find(|group| is_manual_selector_type(type_of(group)))
+        })
+        .or_else(|| {
+            let target = match_target.filter(|target| !target.eq_ignore_ascii_case("GLOBAL"))?;
+            groups
+                .iter()
+                .filter(eligible)
+                .find(|group| name_of(group) == target)
+        })
+        .or_else(|| groups.iter().find(eligible))
+}
+
+fn summary(state: &CoreState) -> SummaryData {
+    let groups = &state.proxy_groups;
+    let match_target = active_match_rule_target(state);
+    let primary = select_primary_group(
+        groups,
+        match_target.as_deref(),
+        |g| &g.name,
+        |g| &g.group_type,
+        |g| selected(g).is_some(),
+    );
     let global = groups
         .iter()
         .find(|g| g.name.eq_ignore_ascii_case("GLOBAL"));
@@ -494,6 +576,7 @@ fn summary(state: &CoreState) -> SummaryData {
             .iter()
             .filter(|g| !g.name.eq_ignore_ascii_case("GLOBAL"))
             .count(),
+        primary_selected_group: primary.map(|g| g.name.clone()),
         primary_selected_node: primary.and_then(|g| effective_leaf(groups, &g.name)),
         primary_selected_delay_ms: None,
         global_selected_node: global.and_then(|g| effective_leaf(groups, &g.name)),
@@ -549,17 +632,17 @@ fn summary(state: &CoreState) -> SummaryData {
                 }
                 None
             };
-            let primary = groups
-                .iter()
-                .find(|group| group.name.eq_ignore_ascii_case("proxy"))
-                .or_else(|| {
-                    groups.iter().find(|group| {
-                        !group.name.eq_ignore_ascii_case("GLOBAL") && group.selected.is_some()
-                    })
-                });
+            let primary = select_primary_group(
+                groups,
+                match_target.as_deref(),
+                |group| &group.name,
+                |group| &group.group_type,
+                |group| group.selected.as_deref().is_some_and(|s| !s.is_empty()),
+            );
             let global = groups
                 .iter()
                 .find(|group| group.name.eq_ignore_ascii_case("GLOBAL"));
+            summary.primary_selected_group = primary.map(|group| group.name.clone());
             summary.primary_selected_node = primary.and_then(|group| leaf(&group.name));
             summary.primary_selected_delay_ms = primary.and_then(|group| leaf_delay(&group.name));
             summary.global_selected_node = global.and_then(|group| leaf(&group.name));
@@ -827,9 +910,116 @@ mod tests {
         let live_status = read(&core, RuntimeDomain::Status, None);
         assert_eq!(live_status["data"]["vpnConnectedAt"], 1_700_000_000_000u64);
         let live_summary = read(&core, RuntimeDomain::Summary, None);
+        assert_eq!(live_summary["data"]["primarySelectedGroup"], "Proxy");
         assert_eq!(live_summary["data"]["primarySelectedNode"], "node-live");
         assert_eq!(live_summary["data"]["primarySelectedDelayMs"], 38);
         assert_eq!(live_summary["data"]["globalSelectedNode"], "node-live");
         assert_eq!(live_summary["data"]["globalSelectedDelayMs"], 38);
+    }
+
+    #[test]
+    fn summary_and_observation_preserve_declared_group_order_and_resolve_primary_selector_group() {
+        let core = core();
+        let yaml = "\
+proxies:
+  - {name: '🇯🇵日本东京02', type: ss, server: 1.1.1.1, port: 443, cipher: aes-128-gcm, password: p}
+  - {name: '🇺🇸美国洛杉矶01', type: ss, server: 1.1.1.2, port: 443, cipher: aes-128-gcm, password: p}
+proxy-groups:
+  - {name: '🚀 节点选择', type: select, proxies: ['♻️自动选择', '🇯🇵日本节点', '🇺🇸美国节点']}
+  - {name: '♻️自动选择', type: url-test, proxies: ['🇯🇵日本东京02', '🇺🇸美国洛杉矶01']}
+  - {name: '🇯🇵日本节点', type: url-test, proxies: ['🇯🇵日本东京02']}
+  - {name: '🇺🇸美国节点', type: url-test, proxies: ['🇺🇸美国洛杉矶01']}
+  - {name: '🐟漏网之鱼', type: select, proxies: ['🚀 节点选择', '♻️自动选择', 'DIRECT']}
+rules:
+  - MATCH,🐟漏网之鱼
+";
+        {
+            let mut state = core.lock_state().unwrap();
+            let profile_id = state
+                .profiles
+                .import_profile_content("赔钱机场", "test", yaml, None)
+                .unwrap();
+            state.profiles.set_active(&profile_id).unwrap();
+
+            // Simulate backend observation arriving in alphabetical/Unicode order
+            // where ♻️自动选择 (U+267B), 🐟漏网之鱼 (U+1F41F), and 🇯🇵/🇺🇸 flags sort before 🚀 节点选择 (U+1F680).
+            let mut observed = vec![
+                paws_engine::EngineGroupSummary {
+                    name: "GLOBAL".into(),
+                    group_type: "Selector".into(),
+                    selected: Some("DIRECT".into()),
+                    fixed: None,
+                    member_count: 2,
+                    selected_delay_ms: None,
+                },
+                paws_engine::EngineGroupSummary {
+                    name: "♻️自动选择".into(),
+                    group_type: "URLTest".into(),
+                    selected: Some("🇯🇵日本东京02".into()),
+                    fixed: None,
+                    member_count: 2,
+                    selected_delay_ms: Some(129),
+                },
+                paws_engine::EngineGroupSummary {
+                    name: "🇯🇵日本节点".into(),
+                    group_type: "URLTest".into(),
+                    selected: Some("🇯🇵日本东京02".into()),
+                    fixed: None,
+                    member_count: 1,
+                    selected_delay_ms: Some(129),
+                },
+                paws_engine::EngineGroupSummary {
+                    name: "🇺🇸美国节点".into(),
+                    group_type: "URLTest".into(),
+                    selected: Some("🇺🇸美国洛杉矶01".into()),
+                    fixed: Some("🇺🇸美国洛杉矶01".into()),
+                    member_count: 1,
+                    selected_delay_ms: Some(186),
+                },
+                paws_engine::EngineGroupSummary {
+                    name: "🐟漏网之鱼".into(),
+                    group_type: "Selector".into(),
+                    selected: Some("♻️自动选择".into()),
+                    fixed: None,
+                    member_count: 3,
+                    selected_delay_ms: None,
+                },
+                paws_engine::EngineGroupSummary {
+                    name: "🚀 节点选择".into(),
+                    group_type: "Selector".into(),
+                    selected: Some("🇺🇸美国节点".into()),
+                    fixed: None,
+                    member_count: 3,
+                    selected_delay_ms: None,
+                },
+            ];
+            runtime_metadata::order_group_summaries_for_state(&mut state, &mut observed);
+            state.platform_vpn_running = true;
+            state.platform_start_attempt_id = "attempt-us".into();
+            state.engine_observation.attempt = "attempt-us".into();
+            state.engine_observation.endpoint = state.platform_controller_endpoint.clone();
+            state.engine_observation.groups = Some(observed);
+        }
+        let summary = read(&core, RuntimeDomain::Summary, None);
+        assert_eq!(summary["data"]["primarySelectedGroup"], "🚀 节点选择");
+        assert_eq!(summary["data"]["primarySelectedNode"], "🇺🇸美国洛杉矶01");
+        assert_eq!(summary["data"]["primarySelectedDelayMs"], 186);
+        let group_names: Vec<&str> = summary["data"]["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|group| group["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            group_names,
+            vec![
+                "🚀 节点选择",
+                "♻️自动选择",
+                "🇯🇵日本节点",
+                "🇺🇸美国节点",
+                "🐟漏网之鱼",
+                "GLOBAL"
+            ]
+        );
     }
 }

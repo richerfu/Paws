@@ -29,7 +29,10 @@ mod subscription;
 pub use rules::parse_imported_rule_lines;
 use rules::*;
 pub use runtime_config::*;
-pub use source_metadata::{validate_profile_source_shape, ProfileSourceMetadata};
+pub use source_metadata::{
+    extract_yaml_route_hints, parse_match_rule_target, validate_profile_source_shape,
+    ProfileRouteHints, ProfileSourceMetadata,
+};
 pub use subscription::*;
 
 const STORE_VERSION: u32 = 1;

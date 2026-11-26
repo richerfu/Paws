@@ -208,6 +208,7 @@ export type HomeSummary = {
   globalNodeCount: number;
   nodeCount: number;
   groupCount: number;
+  primarySelectedGroup?: string | null;
   primarySelectedNode: string | null;
   primarySelectedDelayMs?: number | null;
   globalSelectedNode: string | null;

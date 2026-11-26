@@ -39,6 +39,7 @@ import {
 import { bytes } from "../locale";
 import { connectionState } from "../connection-state";
 import { PageError } from "../page-error";
+import { primarySelectedGroup } from "../proxy-groups";
 import { SummaryPolicyGroups } from "./proxies";
 import { feedbackStyle } from "../motion";
 import { focusRing, statusColors, surfaceFinish } from "../theme";
@@ -146,17 +147,9 @@ export function Dashboard() {
   const nodeSubtitle = () => {
     if (current().mode === "direct") return ui.t("直连模式", "Direct mode");
     if (current().mode === "global") return ui.t("全局模式", "Global mode");
-    const primaryGroup =
-      home().groups.find(
-        (group) =>
-          group.name.toLowerCase() === "proxy" &&
-          (group.effectiveSelectedNode || group.selected),
-      ) ||
-      home().groups.find(
-        (group) =>
-          group.name.toUpperCase() !== "GLOBAL" &&
-          (group.effectiveSelectedNode || group.selected),
-      );
+    const explicit = home().primarySelectedGroup;
+    if (explicit) return explicit;
+    const primaryGroup = primarySelectedGroup(home().groups);
     return primaryGroup ? primaryGroup.name : ui.t("规则模式", "Rule mode");
   };
   const exit = () =>

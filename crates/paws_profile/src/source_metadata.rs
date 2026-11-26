@@ -15,6 +15,75 @@ pub struct ProfileSourceMetadata {
     pub unverified_providers: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProfileRouteHints {
+    pub profile_id: String,
+    pub updated_at: Option<String>,
+    pub declared_groups: Vec<String>,
+    pub match_target: Option<String>,
+}
+
+pub fn parse_match_rule_target<'a>(
+    rule_lines: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    for raw in rule_lines {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.split(',');
+        let Some(kind) = parts.next().map(str::trim) else {
+            continue;
+        };
+        if kind.eq_ignore_ascii_case("MATCH") || kind.eq_ignore_ascii_case("FINAL") {
+            if let Some(target) = parts.next().map(str::trim).filter(|s| !s.is_empty()) {
+                return Some(target.to_owned());
+            }
+        }
+    }
+    None
+}
+
+pub fn extract_yaml_route_hints(
+    profile_id: &str,
+    updated_at: Option<String>,
+    yaml: &str,
+) -> Option<ProfileRouteHints> {
+    let mut value: Value = serde_yaml::from_str(yaml).ok()?;
+    let _ = value.apply_merge();
+    let root = value.as_mapping()?;
+    let declared_groups = root
+        .get(value_key("proxy-groups"))
+        .and_then(Value::as_sequence)
+        .map(|groups| {
+            groups
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .as_mapping()?
+                        .get(value_key("name"))?
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(ToOwned::to_owned)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let rule_strings = root
+        .get(value_key("rules"))
+        .and_then(Value::as_sequence)
+        .map(|rules| rules.iter().filter_map(Value::as_str).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let match_target = parse_match_rule_target(rule_strings);
+    Some(ProfileRouteHints {
+        profile_id: profile_id.to_owned(),
+        updated_at,
+        declared_groups,
+        match_target,
+    })
+}
+
 struct SourceDefinitions {
     root: Mapping,
     leaves: Vec<(String, String)>,
@@ -350,6 +419,36 @@ impl ProfileStore {
             rule_lines: definitions.rules,
             unverified_providers: unverified,
         })
+    }
+
+    pub fn active_route_hints(&self) -> Option<ProfileRouteHints> {
+        let profile_id = self.active_profile()?;
+        self.route_hints(profile_id)
+    }
+
+    pub fn route_hints(&self, profile_id: &str) -> Option<ProfileRouteHints> {
+        let updated_at = self
+            .profile(profile_id)
+            .ok()
+            .and_then(|profile| profile.updated_at.clone());
+        let runtime_yaml = fs::read_to_string(self.runtime_yaml_path(profile_id)).ok();
+        let using_runtime = runtime_yaml.is_some();
+        let yaml = runtime_yaml.or_else(|| self.raw_yaml(profile_id).ok())?;
+        let mut hints = extract_yaml_route_hints(profile_id, updated_at, &yaml)?;
+        if !using_runtime {
+            let editable = self.rules_for_profile(profile_id);
+            if !editable.is_empty() {
+                if let Some(target) = parse_match_rule_target(
+                    editable
+                        .iter()
+                        .filter(|rule| rule.enabled)
+                        .map(|rule| rule.line.as_str()),
+                ) {
+                    hints.match_target = Some(target);
+                }
+            }
+        }
+        Some(hints)
     }
 
     fn cached_proxy_definitions(&self, path: Option<&str>) -> Option<Value> {
