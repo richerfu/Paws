@@ -3050,6 +3050,7 @@ impl CoreHandle {
                 route: &route,
                 metadata: &metadata,
             },
+            meow_tunnel::rule_ir::DemandGate::ALL,
         ) {
             LazyMatchOutcome::Matched(matched) => Some((
                 matched.rule_index,

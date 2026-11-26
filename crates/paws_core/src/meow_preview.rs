@@ -112,6 +112,7 @@ impl<'a> MeowPreviewLoader<'a> {
         .map_err(construction)?;
         config.proxies = rebuilt.proxies;
         config.rules = rebuilt.rules;
+        config.sub_rules = rebuilt.sub_rules;
         config.proxy_providers = rebuilt.proxy_providers;
         config.rule_providers = rebuilt.rule_providers;
         config.dialer_registry = rebuilt.dialer_registry;

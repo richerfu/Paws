@@ -51,10 +51,9 @@ See `docs/native-engines-build.md` for source revisions and build commands.
 Redistribution of a HAP containing `libsingbox.so` must include the matching
 sing-box source, bridge source, and GPL-3.0-or-later license notice.
 
-The Rust native engine uses unmodified [meow-rs at
-`52d75ec0fe7eefcc427639ed2bb7ea242dc2781f`](https://github.com/meow-rs/meow-rs/commit/52d75ec0fe7eefcc427639ed2bb7ea242dc2781f)
-under the MIT license, reported as `0.29.0+52d75ec`. This revision includes
-fixes newer than the v0.29.0 release tag. All former meow-rs vendor copies and
+The Rust native engine uses unmodified [meow-rs `v0.30.0`
+(`8e4e948464656380f46f3a98cb168fc35d7708db`)](https://github.com/meow-rs/meow-rs/commit/8e4e948464656380f46f3a98cb168fc35d7708db)
+under the MIT license, reported as `0.30.0`. All former meow-rs vendor copies and
 Cargo patches have been removed; see [vendor/README.md](vendor/README.md).
 The GeoSite category decoder in `paws_engine_go` is adapted from meow-rs.
 Its original MIT notice is included at

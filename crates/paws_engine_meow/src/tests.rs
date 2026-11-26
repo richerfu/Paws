@@ -259,9 +259,12 @@ async fn unprotected_service_start_fails_before_binding_any_endpoint() {
 async fn selection_port_changes_the_actual_meow_group_and_reports_current_state() {
     let management = new_management();
     let config = meow_config::load_config_from_str("proxy-groups:\n  - name: group\n    type: select\n    proxies: [DIRECT, REJECT]\nrules:\n  - MATCH,group\n").await.unwrap();
-    management
-        .tunnel
-        .update_routing(config.proxies, config.rules, config.dialer_registry);
+    management.tunnel.update_routing(
+        config.proxies,
+        config.rules,
+        config.sub_rules,
+        config.dialer_registry,
+    );
     management.activate().await.unwrap();
     management
         .select_proxy("group", Some("REJECT"))

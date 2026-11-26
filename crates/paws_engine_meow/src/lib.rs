@@ -1,6 +1,6 @@
 //! meow-rs translation at the packet-stack boundary.
 /// Version and source revision of the packaged meow-rs engine.
-pub const VERSION: &str = "0.29.0+52d75ec";
+pub const VERSION: &str = "0.30.0";
 mod memory;
 #[cfg(test)]
 mod tests;

@@ -195,7 +195,7 @@ export function fixture(): UiState {
     about: {
       appVersion: "test",
       coreVersion: "test",
-      meowRsVersion: "0.29.0+52d75ec",
+      meowRsVersion: "0.30.0",
       mihomoVersion: "1.10.0",
       singBoxVersion: "1.13.21",
       rustVersion: "1.90",

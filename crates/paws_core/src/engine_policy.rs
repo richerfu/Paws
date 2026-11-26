@@ -252,7 +252,7 @@ fn diagnostic_runtime(
 }
 fn engine_version(engine: VpnEngine) -> &'static str {
     match engine {
-        VpnEngine::Meow => "meow-rs 0.29.0+52d75ec / OHOS socket bridge 3",
+        VpnEngine::Meow => "meow-rs 0.30.0 / OHOS socket bridge 3",
         VpnEngine::SingBox => "sing-box 1.13.21 / TinyPaws OpenHarmony bridge 2",
         _ => "mihomo 1.10.0",
     }
