@@ -722,8 +722,8 @@ fn udp_session_map_retains_touched_sessions_and_evicts_idle_ones() {
         local,
         remote: idle_remote,
     };
-    let active_session = UdpTunSession::new(Arc::new(NoopPacketConn));
-    let idle_session = UdpTunSession::new(Arc::new(NoopPacketConn));
+    let active_session = UdpTunSession::new(Arc::new(NoopPacketConn), active_remote);
+    let idle_session = UdpTunSession::new(Arc::new(NoopPacketConn), idle_remote);
     sessions.insert(active_key, active_session.clone());
     sessions.insert(idle_key, idle_session.clone());
 
@@ -745,14 +745,24 @@ fn udp_response_reader_forwards_packets_and_removes_session_on_read_error() {
         let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(172, 19, 0, 1)), 40123);
         let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 10)), 443);
         let key = UdpSessionKey { local, remote };
+        let flush_rx = sessions.subscribe_flush();
         let conn = Arc::new(ScriptedPacketConn::new(vec![
             ScriptedPacketRead::Packet(b"udp-reply".to_vec(), remote),
             ScriptedPacketRead::Error("udp conn closed"),
         ]));
-        sessions.insert(key, UdpTunSession::new(conn.clone()));
+        sessions.insert(key, UdpTunSession::new(conn.clone(), remote));
         let (reply_tx, mut reply_rx) = mpsc::unbounded_channel();
 
-        read_udp_responses(key, local, conn, sessions.clone(), reply_tx).await;
+        read_udp_responses(
+            key,
+            local,
+            remote,
+            conn,
+            sessions.clone(),
+            reply_tx,
+            flush_rx,
+        )
+        .await;
 
         let reply = reply_rx.try_recv().expect("forwarded udp reply");
         assert_eq!(reply.data, b"udp-reply");
@@ -1209,4 +1219,103 @@ async fn hostname_recovery_is_generic_and_mapped_tls_handles_fragmentation() {
             assert_eq!(received, expected);
         }
     }
+}
+
+struct BlockingFakeIpPacketConn {
+    closed: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+    writes: Arc<Mutex<Vec<SocketAddr>>>,
+    reply_once: Mutex<Option<(Vec<u8>, SocketAddr)>>,
+}
+
+#[async_trait::async_trait]
+impl ProxyPacketConn for BlockingFakeIpPacketConn {
+    async fn read_packet(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr), EngineError> {
+        let next = self.reply_once.lock().unwrap().take();
+        if let Some((payload, addr)) = next {
+            buf[..payload.len()].copy_from_slice(&payload);
+            return Ok((payload.len(), addr));
+        }
+        self.notify.notified().await;
+        Err(EngineError::InvalidConfig("closed".to_owned()))
+    }
+
+    async fn write_packet(&self, buf: &[u8], addr: &SocketAddr) -> Result<usize, EngineError> {
+        self.writes.lock().unwrap().push(*addr);
+        Ok(buf.len())
+    }
+
+    fn local_addr(&self) -> Result<SocketAddr, EngineError> {
+        Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+    }
+
+    fn close(&self) -> Result<(), EngineError> {
+        self.closed.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn udp_session_map_close_all_terminates_active_readers_and_rewrites_fake_ip_replies() {
+    let sessions = UdpSessionMap::default();
+    let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(172, 19, 0, 2)), 51000);
+    let fake_remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 18, 0, 10)), 443);
+    let real_target = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
+    let key = UdpSessionKey {
+        local,
+        remote: fake_remote,
+    };
+    let closed = Arc::new(AtomicBool::new(false));
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let conn: Arc<dyn ProxyPacketConn> = Arc::new(BlockingFakeIpPacketConn {
+        closed: Arc::clone(&closed),
+        notify: Arc::new(Notify::new()),
+        writes: Arc::clone(&writes),
+        reply_once: Mutex::new(Some((b"quic-pong".to_vec(), real_target))),
+    });
+    let flush_rx = sessions.subscribe_flush();
+    sessions.insert(key, UdpTunSession::new(Arc::clone(&conn), real_target));
+    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel();
+    let reader = tokio::spawn(read_udp_responses(
+        key,
+        local,
+        real_target,
+        Arc::clone(&conn),
+        sessions.clone(),
+        reply_tx.clone(),
+        flush_rx,
+    ));
+
+    let reply = tokio::time::timeout(Duration::from_secs(1), reply_rx.recv())
+        .await
+        .unwrap()
+        .expect("fake-ip UDP reply");
+    assert_eq!(reply.data, b"quic-pong");
+    assert_eq!(reply.local, local);
+    assert_eq!(
+        reply.remote, fake_remote,
+        "replies from resolved real IP must be rewritten back to client's fake-IP"
+    );
+
+    handle_udp_datagram(
+        direct_mode_tunnel(),
+        DnsTable::default(),
+        sessions.clone(),
+        reply_tx,
+        Arc::new(Mutex::new(Vec::new())),
+        b"quic-keepalive".to_vec(),
+        local,
+        fake_remote,
+    )
+    .await;
+    assert_eq!(writes.lock().unwrap().as_slice(), &[real_target]);
+
+    assert_eq!(sessions.close_all(), 1);
+    assert!(closed.load(Ordering::SeqCst));
+    assert!(sessions.get(&key).is_none());
+    tokio::time::timeout(Duration::from_secs(1), reader)
+        .await
+        .expect("UDP reader task must exit promptly on session flush")
+        .unwrap();
 }

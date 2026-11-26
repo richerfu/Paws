@@ -140,6 +140,7 @@ struct RunningTask {
     stats: Arc<SharedStats>,
     dns_table: DnsTable,
     dns_cache: DnsResponseCache,
+    udp_sessions: UdpSessionMap,
 }
 
 impl RunningTask {
@@ -212,9 +213,11 @@ impl TunSession {
         let task_shutdown = shutdown.clone();
         let dns_table = DnsTable::default();
         let dns_cache = DnsResponseCache::default();
+        let udp_sessions = UdpSessionMap::default();
         let dns_hijacking = options.dns_hijacking;
         let task_dns_table = dns_table.clone();
         let task_dns_cache = dns_cache.clone();
+        let task_udp_sessions = udp_sessions.clone();
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         *self
             .state
@@ -243,6 +246,7 @@ impl TunSession {
                 dns_hijacking,
                 task_dns_table,
                 task_dns_cache,
+                task_udp_sessions,
             ))
             .catch_unwind()
             .await;
@@ -272,6 +276,7 @@ impl TunSession {
                 stats,
                 dns_table,
                 dns_cache,
+                udp_sessions,
             });
         Ok(generation)
     }
@@ -395,6 +400,16 @@ impl TunSession {
             task.dns_cache.clear();
         }
         Ok(())
+    }
+
+    pub fn close_udp_sessions(&self) -> Result<usize, PawsError> {
+        let task = self
+            .task
+            .lock()
+            .map_err(|_| PawsError::Core("vpn task lock poisoned".to_owned()))?;
+        Ok(task
+            .as_ref()
+            .map_or(0, |task| task.udp_sessions.close_all()))
     }
 }
 

@@ -358,3 +358,50 @@ async fn management_revoke_cancels_a_real_hanging_provider_request_before_draini
         .unwrap()
         .unwrap();
 }
+
+#[tokio::test]
+async fn urltest_selection_revives_dead_member_and_close_connections_flushes_udp() {
+    let raw = meow_config::parse_raw_yaml(
+        "proxies:\n  - {name: node-a, type: socks5, server: 127.0.0.1, port: 1080}\n  - {name: node-b, type: socks5, server: 127.0.0.1, port: 1081}\nproxy-groups:\n  - name: auto\n    type: url-test\n    proxies: [node-a, node-b]\n    url: http://127.0.0.1:1/generate_204\n    interval: 3600\nrules:\n  - MATCH,auto\n",
+    )
+    .unwrap();
+    let config = meow_config::build_config(raw, None).await.unwrap();
+    let tunnel = meow_tunnel::Tunnel::new_with_slot(config.dns.resolver_slot.clone());
+    tunnel.set_dialer_registry(config.provider_dialer_registry);
+    tunnel.update_routing(
+        config.proxies,
+        config.rules,
+        config.sub_rules,
+        config.dialer_registry,
+    );
+
+    tunnel.proxy("node-a").unwrap().health().record_delay(25);
+    tunnel.proxy("node-b").unwrap().health().record_delay(0);
+    assert!(!tunnel.proxy("node-b").unwrap().alive());
+    assert_eq!(
+        tunnel.proxy("auto").unwrap().current().as_deref(),
+        Some("node-a")
+    );
+
+    let udp_watch = tunnel.inner().udp_flush_watch();
+    assert!(!udp_watch.is_flushed());
+
+    let management = Arc::new(MeowManagement::new(
+        tunnel,
+        paws_vpn::TunSession::default(),
+        config.proxy_providers,
+        config.rule_providers,
+    ));
+    management.activate().await.unwrap();
+
+    management
+        .select_proxy("auto", Some("node-b"))
+        .await
+        .unwrap();
+    let selected = management.proxy_selection("auto").await.unwrap();
+    assert_eq!(selected.selected.as_deref(), Some("node-b"));
+    assert_eq!(selected.fixed.as_deref(), Some("node-b"));
+
+    management.close_connections(None).await.unwrap();
+    assert!(udp_watch.is_flushed());
+}

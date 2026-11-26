@@ -429,24 +429,56 @@ pub(super) fn platform_ipc_error(error: platform_ipc::PlatformIpcError) -> PawsE
 
 // Apply cancellation on the process that owns the tunnel as well as the UI
 // process. Existing TCP/UDP sessions retain their original outbound otherwise.
-pub(super) fn close_connections_after_route_change(state: &mut CoreState, reason: &str) {
+pub(super) fn close_connections_after_route_change(
+    state: &mut CoreState,
+    vpn: &TunSession,
+    reason: &str,
+) {
+    let tun_udp_closed = vpn.close_udp_sessions().unwrap_or(0);
     if let Some(tunnel) = &state.tunnel {
         let count = tunnel.statistics().active_connection_count();
         tunnel.statistics().close_all_connections();
+        let meow_udp_closed = tunnel.close_all_udp_sessions();
+        tunnel.resolver().reset_connections();
+        meow_dns::reset_pooled_connections();
+        tunnel.resolver().clear_cache();
+        let udp_total = tun_udp_closed + meow_udp_closed;
+        let message = if udp_total > 0 {
+            format!(
+                "route change ({reason}): closed {count} existing connections and {udp_total} UDP sessions"
+            )
+        } else {
+            format!("route change ({reason}): closed {count} existing connections")
+        };
+        state.logs.push(info_log(message));
+    } else if tun_udp_closed > 0 {
         state.logs.push(info_log(format!(
-            "route change ({reason}): closed {count} existing connections"
+            "route change ({reason}): closed {tun_udp_closed} UDP sessions"
         )));
     }
 }
 
-pub(super) fn apply_platform_proxy_selections(state: &mut CoreState, control: &PlatformVpnControl) {
-    let current_profile = state.profiles.active_profile();
+pub(super) fn apply_platform_proxy_selections(
+    state: &mut CoreState,
+    vpn: &TunSession,
+    control: &PlatformVpnControl,
+) {
+    let current_profile = state.profiles.active_profile().map(ToOwned::to_owned);
     if control
         .active_profile
         .as_deref()
-        .is_some_and(|profile_id| current_profile != Some(profile_id))
+        .is_some_and(|profile_id| current_profile.as_deref() != Some(profile_id))
     {
         return;
+    }
+    if let Some(profile_id) = control
+        .active_profile
+        .as_deref()
+        .or(current_profile.as_deref())
+    {
+        let _ = state
+            .profiles
+            .sync_selected_proxies_in_memory(profile_id, control.proxy_selections.clone());
     }
     let Some(tunnel) = state.tunnel.clone() else {
         return;
@@ -467,19 +499,32 @@ pub(super) fn apply_platform_proxy_selections(state: &mut CoreState, control: &P
             }
             continue;
         }
-        if group.current().as_deref() == Some(proxy_name.as_str())
+        let already_applied = group.current().as_deref() == Some(proxy_name.as_str())
+            && (!selection.can_unfix()
+                || selection.fixed().as_deref() == Some(proxy_name.as_str()));
+        if already_applied
             || !group
                 .members()
                 .is_some_and(|members| members.iter().any(|member| member == proxy_name))
         {
             continue;
         }
+        if selection.can_unfix() {
+            if let Some(members) = group.member_proxies() {
+                if let Some(member) = members
+                    .into_iter()
+                    .find(|member| member.name() == proxy_name)
+                {
+                    member.health().set_alive(true);
+                }
+            }
+        }
         selection.force_set(Some(proxy_name));
         changed = true;
     }
     drop(route);
     if changed {
-        close_connections_after_route_change(state, "platform proxy synchronization");
+        close_connections_after_route_change(state, vpn, "platform proxy synchronization");
         refresh_proxy_groups_preserving_order(state, &tunnel);
         state.logs.push(info_log(
             "proxy selections synchronized from platform control",

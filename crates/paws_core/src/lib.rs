@@ -2525,12 +2525,18 @@ impl CoreHandle {
                 "mihomo preparation requested for a meow VPN session".to_owned(),
             ));
         }
+        let is_extension = self
+            .platform_ipc()?
+            .is_some_and(|platform| !platform.is_ui());
         let remote_control = self
             .platform_ipc()?
             .and_then(|platform| platform.read_remote().ok().flatten())
             .and_then(|envelope| envelope.control);
         let (root, profile_id, mode, selections, runtime_yaml, services) = {
             let mut state = self.lock_state()?;
+            if is_extension {
+                let _ = state.profiles.refresh_from_disk();
+            }
             self.sync_platform_vpn_state_locked(&mut state);
             ensure_platform_attempt_active(&state, attempt_id)?;
             let profile_id = state
@@ -2549,6 +2555,11 @@ impl CoreHandle {
             let selections = control
                 .map(|control| control.proxy_selections)
                 .unwrap_or(state.profiles.selected_proxies(&profile_id)?);
+            if is_extension {
+                let _ = state
+                    .profiles
+                    .sync_selected_proxies_in_memory(&profile_id, selections.clone());
+            }
             (
                 state.profiles.root().to_path_buf(),
                 profile_id,
@@ -2620,12 +2631,18 @@ impl CoreHandle {
                 "sing-box preparation requested for another VPN engine".to_owned(),
             ));
         }
+        let is_extension = self
+            .platform_ipc()?
+            .is_some_and(|platform| !platform.is_ui());
         let remote_control = self
             .platform_ipc()?
             .and_then(|platform| platform.read_remote().ok().flatten())
             .and_then(|envelope| envelope.control);
         let (root, profile_id, mode, selections, runtime_yaml, services) = {
             let mut state = self.lock_state()?;
+            if is_extension {
+                let _ = state.profiles.refresh_from_disk();
+            }
             self.sync_platform_vpn_state_locked(&mut state);
             ensure_platform_attempt_active(&state, attempt_id)?;
             let profile_id = state
@@ -2644,6 +2661,11 @@ impl CoreHandle {
             let selections = control
                 .map(|control| control.proxy_selections)
                 .unwrap_or(state.profiles.selected_proxies(&profile_id)?);
+            if is_extension {
+                let _ = state
+                    .profiles
+                    .sync_selected_proxies_in_memory(&profile_id, selections.clone());
+            }
             (
                 state.profiles.root().to_path_buf(),
                 profile_id,
@@ -3010,8 +3032,14 @@ impl CoreHandle {
     /// treated as authorization to continue into TUN creation.
     pub async fn prepare_platform_vpn(&self, attempt_id: &str) -> Result<bool, PawsError> {
         let _operation_guard = self.vpn_operation_lock.lock().await;
+        let is_extension = self
+            .platform_ipc()?
+            .is_some_and(|platform| !platform.is_ui());
         {
             let mut state = self.lock_state()?;
+            if is_extension {
+                let _ = state.profiles.refresh_from_disk();
+            }
             self.sync_platform_vpn_state_locked(&mut state);
             ensure_platform_attempt_active(&state, attempt_id)?;
         }
@@ -4668,6 +4696,11 @@ impl CoreHandle {
         }
         let reload_started = Instant::now();
         let tun_stats = self.vpn.stats();
+        let extension_ipc = self.platform_ipc()?.filter(|platform| !platform.is_ui());
+        let extension_remote_control = extension_ipc
+            .as_ref()
+            .and_then(|platform| platform.read_remote().ok().flatten())
+            .and_then(|envelope| envelope.control);
         let (
             runtime_yaml,
             runtime_path,
@@ -4680,7 +4713,20 @@ impl CoreHandle {
             expected_config_revision,
             preview_owner,
         ) = {
-            let state = self.lock_state()?;
+            let mut state = self.lock_state()?;
+            if extension_ipc.is_some() {
+                let _ = state.profiles.refresh_from_disk();
+                self.sync_platform_vpn_state_locked(&mut state);
+                if let Some(control) = extension_remote_control.filter(|control| {
+                    control.active_profile.is_none()
+                        || control.active_profile.as_deref() == Some(profile_id)
+                }) {
+                    state.mode = control.mode;
+                    let _ = state
+                        .profiles
+                        .sync_selected_proxies_in_memory(profile_id, control.proxy_selections);
+                }
+            }
             let same_profile = state.profiles.active_profile() == Some(profile_id);
             let preserve_existing_order = same_profile && !state.proxy_groups.is_empty();
             let vpn_options = state.profiles.vpn_options_for_profile(profile_id)?;
@@ -4883,7 +4929,7 @@ impl CoreHandle {
             tunnel.set_mode(mode_to_tunnel(mode));
         }
         if mode_changed {
-            close_connections_after_route_change(&mut state, "mode switch");
+            close_connections_after_route_change(&mut state, &self.vpn, "mode switch");
         }
         state
             .logs
@@ -4933,6 +4979,16 @@ impl CoreHandle {
         let selection = group
             .selection()
             .ok_or_else(|| PawsError::Core(format!("{group_name} is not selectable")))?;
+        if selection.can_unfix() {
+            if let Some(members) = group.member_proxies() {
+                if let Some(member) = members
+                    .into_iter()
+                    .find(|member| member.name() == proxy_name)
+                {
+                    member.health().set_alive(true);
+                }
+            }
+        }
         selection.set(proxy_name).await.map_err(|err| {
             PawsError::Core(format!("cannot select {proxy_name} in {group_name}: {err}"))
         })?;
@@ -5003,7 +5059,7 @@ impl CoreHandle {
             format!("selected {proxy_name} in {group_name}")
         };
         state.logs.push(info_log(message));
-        close_connections_after_route_change(&mut state, "proxy selection");
+        close_connections_after_route_change(&mut state, &self.vpn, "proxy selection");
         self.publish_config_and_resource_change_locked(&mut state);
         Ok(())
     }
@@ -7072,8 +7128,16 @@ impl CoreHandle {
     }
 
     fn sync_platform_vpn_control_locked(&self, state: &mut CoreState, control: PlatformVpnControl) {
+        if self
+            .platform_ipc()
+            .ok()
+            .flatten()
+            .is_some_and(|platform| !platform.is_ui())
+        {
+            let _ = state.profiles.refresh_from_disk();
+        }
         invalidate_exit_location(state);
-        apply_platform_proxy_selections(state, &control);
+        apply_platform_proxy_selections(state, &self.vpn, &control);
         let global_proxy = if control.mode == RuntimeMode::Global {
             match apply_global_proxy_policy(state, control.global_proxy.as_deref(), false) {
                 Ok(global_proxy) => global_proxy,
@@ -7099,7 +7163,7 @@ impl CoreHandle {
             if let Some(tunnel) = &state.tunnel {
                 tunnel.set_mode(mode_to_tunnel(control.mode));
             }
-            close_connections_after_route_change(state, "platform mode synchronization");
+            close_connections_after_route_change(state, &self.vpn, "platform mode synchronization");
             state.logs.push(info_log(format!(
                 "mode synchronized from platform control: {}",
                 control.mode.as_str()

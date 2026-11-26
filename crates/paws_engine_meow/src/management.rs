@@ -408,16 +408,28 @@ impl EngineManagement for MeowManagement {
             .selection()
             .ok_or_else(|| self.error("proxy selection", "group is not selectable"))?;
         if let Some(proxy) = proxy {
+            if selection.can_unfix() {
+                if let Some(members) = group.member_proxies() {
+                    if let Some(member) = members.into_iter().find(|member| member.name() == proxy)
+                    {
+                        member.health().set_alive(true);
+                    }
+                }
+            }
             selection
                 .set(proxy)
                 .await
-                .map_err(|error| self.error("proxy selection", error))
+                .map_err(|error| self.error("proxy selection", error))?;
         } else if selection.can_unfix() {
             selection.force_set(None);
-            Ok(())
         } else {
-            Err(self.error("proxy selection", "group cannot be unfixed"))
+            return Err(self.error("proxy selection", "group cannot be unfixed"));
         }
+        drop(route);
+        self.tunnel.resolver().reset_connections();
+        meow_dns::reset_pooled_connections();
+        self.tunnel.resolver().clear_cache();
+        Ok(())
     }
     async fn proxy_selection(
         &self,
@@ -495,6 +507,8 @@ impl EngineManagement for MeowManagement {
             self.tunnel.statistics().close_connection(id);
         } else {
             self.tunnel.statistics().close_all_connections();
+            self.tunnel.close_all_udp_sessions();
+            let _ = self.vpn.close_udp_sessions();
         }
         Ok(())
     }

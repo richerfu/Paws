@@ -12,6 +12,7 @@ pub(super) async fn run_netstack_vpn(
     dns_hijacking: bool,
     dns_table: DnsTable,
     dns_cache: DnsResponseCache,
+    udp_sessions: UdpSessionMap,
 ) -> io::Result<()> {
     // lwIP owns process-global C state. Serialize teardown and recreation so
     // a quick VPN reconnect can never leave two stacks mutating it together.
@@ -31,7 +32,6 @@ pub(super) async fn run_netstack_vpn(
         return Ok(());
     }
 
-    let udp_sessions = UdpSessionMap::default();
     let flow_tasks: FlowTasks = Arc::new(Mutex::new(Vec::new()));
     let sniffer = HarmonyTcpSniffer::from_tunnel(tunnel.clone()).map(Arc::new);
     let runtime = match stack_kind {
@@ -733,13 +733,23 @@ pub(super) struct UdpSessionKey {
 #[derive(Clone)]
 pub(super) struct UdpTunSession {
     conn: Arc<dyn ProxyPacketConn>,
+    target: SocketAddr,
     pub(super) last_activity_ms: Arc<AtomicU64>,
 }
 
+impl std::fmt::Debug for UdpTunSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UdpTunSession")
+            .field("target", &self.target)
+            .finish()
+    }
+}
+
 impl UdpTunSession {
-    pub(super) fn new(conn: Arc<dyn ProxyPacketConn>) -> Self {
+    pub(super) fn new(conn: Arc<dyn ProxyPacketConn>, target: SocketAddr) -> Self {
         Self {
             conn,
+            target,
             last_activity_ms: Arc::new(AtomicU64::new(monotonic_ms())),
         }
     }
@@ -755,9 +765,20 @@ impl UdpTunSession {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone)]
 pub(super) struct UdpSessionMap {
     sessions: Arc<Mutex<HashMap<UdpSessionKey, UdpTunSession>>>,
+    flush_tx: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for UdpSessionMap {
+    fn default() -> Self {
+        let (flush_tx, _) = tokio::sync::watch::channel(0);
+        Self {
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            flush_tx,
+        }
+    }
 }
 
 impl UdpSessionMap {
@@ -774,10 +795,34 @@ impl UdpSessionMap {
         }
     }
 
-    pub(super) fn remove(&self, key: &UdpSessionKey) {
+    pub(super) fn remove_if_conn(&self, key: &UdpSessionKey, conn: &Arc<dyn ProxyPacketConn>) {
         if let Ok(mut sessions) = self.sessions.lock() {
-            sessions.remove(key);
+            if sessions
+                .get(key)
+                .is_some_and(|existing| Arc::ptr_eq(&existing.conn, conn))
+            {
+                sessions.remove(key);
+            }
         }
+    }
+
+    pub(super) fn subscribe_flush(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.flush_tx.subscribe()
+    }
+
+    pub(super) fn close_all(&self) -> usize {
+        let drained = self
+            .sessions
+            .lock()
+            .map(|mut sessions| std::mem::take(&mut *sessions))
+            .unwrap_or_default();
+        self.flush_tx
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+        let count = drained.len();
+        for (_, session) in drained {
+            let _ = session.conn.close();
+        }
+        count
     }
 
     pub(super) fn retain_active(&self, idle_timeout: Duration) {
@@ -806,29 +851,45 @@ pub(super) async fn handle_udp_datagram(
     let key = UdpSessionKey { local, remote };
     if let Some(session) = sessions.get(&key) {
         session.touch();
-        if session.conn.write_packet(&data, &remote).await.is_err() {
-            sessions.remove(&key);
+        if session
+            .conn
+            .write_packet(&data, &session.target)
+            .await
+            .is_err()
+        {
+            sessions.remove_if_conn(&key, &session.conn);
         }
         return;
     }
 
+    let flush_rx = sessions.subscribe_flush();
     let mut metadata = udp_metadata_for_datagram(local, remote, &dns_table);
     let Ok(conn) = tunnel.open_udp(&mut metadata).await else {
         return;
     };
+    if flush_rx.has_changed().unwrap_or(false) {
+        let _ = conn.close();
+        return;
+    }
     let Some(dst_ip) = metadata.dst_ip else {
+        let _ = conn.close();
         return;
     };
     let dst_addr = SocketAddr::new(dst_ip, metadata.dst_port);
     if conn.write_packet(&data, &dst_addr).await.is_err() {
+        let _ = conn.close();
+        return;
+    }
+    if flush_rx.has_changed().unwrap_or(false) {
+        let _ = conn.close();
         return;
     }
 
-    let session = UdpTunSession::new(conn.clone());
+    let session = UdpTunSession::new(conn.clone(), dst_addr);
     sessions.insert(key, session);
 
     let handle = tokio::spawn(async move {
-        read_udp_responses(key, local, conn, sessions, reply_tx).await;
+        read_udp_responses(key, local, dst_addr, conn, sessions, reply_tx, flush_rx).await;
     });
     track_flow_task(&flow_tasks, handle);
 }
@@ -855,26 +916,46 @@ pub(super) fn udp_metadata_for_datagram(
 pub(super) async fn read_udp_responses(
     key: UdpSessionKey,
     local: SocketAddr,
+    target: SocketAddr,
     conn: Arc<dyn ProxyPacketConn>,
     sessions: UdpSessionMap,
     reply_tx: mpsc::UnboundedSender<UdpReply>,
+    mut flush_rx: tokio::sync::watch::Receiver<u64>,
 ) {
     let mut buffer = vec![0_u8; UDP_RESPONSE_BUFFER_SIZE];
     loop {
-        match conn.read_packet(&mut buffer).await {
+        let read = tokio::select! {
+            biased;
+            changed = flush_rx.changed() => {
+                let _ = conn.close();
+                if changed.is_ok() {
+                    sessions.remove_if_conn(&key, &conn);
+                }
+                return;
+            }
+            result = conn.read_packet(&mut buffer) => result,
+        };
+        match read {
             Ok((size, remote)) if size > 0 => {
                 if let Some(session) = sessions.get(&key) {
-                    session.touch();
+                    if Arc::ptr_eq(&session.conn, &conn) {
+                        session.touch();
+                    }
                 }
+                let reply_remote = if key.remote.ip() != target.ip() {
+                    SocketAddr::new(key.remote.ip(), remote.port())
+                } else {
+                    remote
+                };
                 let _ = reply_tx.send(UdpReply {
                     data: buffer[..size].to_vec(),
                     local,
-                    remote,
+                    remote: reply_remote,
                 });
             }
             Ok(_) => {}
             Err(_) => {
-                sessions.remove(&key);
+                sessions.remove_if_conn(&key, &conn);
                 return;
             }
         }

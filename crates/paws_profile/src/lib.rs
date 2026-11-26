@@ -812,6 +812,35 @@ impl ProfileStore {
         if upload_delta == 0 && download_delta == 0 {
             return Ok(());
         }
+        self.profile(profile_id)?;
+        let index_path = self.root.join("profiles.json");
+        if let Ok(content) = fs::read_to_string(&index_path) {
+            if let Ok(mut index) = serde_json::from_str::<StoreIndex>(&content) {
+                if validate_store_index(&self.root, &index).is_ok() {
+                    if let Some((updated_upload, updated_download)) = index
+                        .profiles
+                        .iter_mut()
+                        .find(|item| item.id == profile_id)
+                        .map(|disk_profile| {
+                            disk_profile.upload_bytes =
+                                disk_profile.upload_bytes.saturating_add(upload_delta);
+                            disk_profile.download_bytes =
+                                disk_profile.download_bytes.saturating_add(download_delta);
+                            (disk_profile.upload_bytes, disk_profile.download_bytes)
+                        })
+                    {
+                        let json = serde_json::to_string_pretty(&index)
+                            .map_err(|err| PawsError::InvalidJson(err.to_string()))?;
+                        atomic_write(index_path, json.as_bytes())?;
+                        if let Some(mem_profile) = self.profiles.get_mut(profile_id) {
+                            mem_profile.upload_bytes = updated_upload;
+                            mem_profile.download_bytes = updated_download;
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+        }
         let mut staged = self.clone();
         let profile = staged
             .profiles
@@ -1166,6 +1195,51 @@ impl ProfileStore {
             .selected_proxies
             .insert(group_name.into(), proxy_name.into());
         self.commit_staged(staged)
+    }
+
+    pub fn sync_selected_proxies_in_memory(
+        &mut self,
+        profile_id: &str,
+        selected_proxies: BTreeMap<String, String>,
+    ) -> Result<(), PawsError> {
+        self.ensure_available()?;
+        let profile = self
+            .profiles
+            .get_mut(profile_id)
+            .ok_or_else(|| PawsError::ProfileNotFound(profile_id.to_owned()))?;
+        profile.selected_proxies = selected_proxies;
+        Ok(())
+    }
+
+    pub fn refresh_from_disk(&mut self) -> Result<bool, PawsError> {
+        self.ensure_available()?;
+        let index_path = self.root.join("profiles.json");
+        let content = match fs::read_to_string(&index_path) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(PawsError::Core(format!(
+                    "cannot read profile store index {}: {error}",
+                    index_path.display()
+                )))
+            }
+        };
+        let index: StoreIndex = serde_json::from_str(&content).map_err(|error| {
+            PawsError::InvalidJson(format!("{}: {error}", index_path.display()))
+        })?;
+        validate_store_index(&self.root, &index)?;
+        self.active_profile = index.active_profile;
+        self.profiles = index
+            .profiles
+            .into_iter()
+            .map(|profile| (profile.id.clone(), profile))
+            .collect();
+        self.rules = index
+            .rules
+            .into_iter()
+            .map(|rule| (rule.id.clone(), rule))
+            .collect();
+        Ok(true)
     }
 
     pub fn raw_yaml(&self, profile_id: &str) -> Result<String, PawsError> {
