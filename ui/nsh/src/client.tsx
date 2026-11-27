@@ -1,4 +1,4 @@
-import { batch, cleanup, signal, type Signal, nativeComponent } from "nsh";
+import { batch, cleanup, host, signal, type Signal, nativeComponent } from "nsh";
 import type {
   CoreRequest,
   CoreResult,
@@ -8,8 +8,53 @@ import type {
   Preferences,
   VpnConfirmation,
 } from "./model";
-import { CommittedStateError, DomainStore } from "./domain-store";
+import {
+  CommittedStateError,
+  DomainStore,
+  type InitialDomainProjection,
+} from "./domain-store";
 import { commandDomains } from "./command-data";
+
+const DEFAULT_PREFERENCES: Preferences = {
+  language: "system",
+  theme: "system",
+  advanced: false,
+  systemLocale: "zh-CN",
+};
+
+function readInitialPreferences(): Preferences {
+  const raw = host?.params?.preferences;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ...DEFAULT_PREFERENCES };
+  }
+  const object = raw as Record<string, unknown>;
+  const language =
+    object.language === "system" ||
+    object.language === "zh_cn" ||
+    object.language === "en"
+      ? object.language
+      : DEFAULT_PREFERENCES.language;
+  const theme =
+    object.theme === "system" ||
+    object.theme === "light" ||
+    object.theme === "dark"
+      ? object.theme
+      : DEFAULT_PREFERENCES.theme;
+  const advanced =
+    typeof object.advanced === "boolean"
+      ? object.advanced
+      : DEFAULT_PREFERENCES.advanced;
+  const systemLocale =
+    typeof object.systemLocale === "string" && object.systemLocale.length > 0
+      ? object.systemLocale
+      : DEFAULT_PREFERENCES.systemLocale;
+  return { language, theme, advanced, systemLocale };
+}
+
+function readInitialDomains(): readonly InitialDomainProjection[] {
+  const raw = host?.params?.initialDomains;
+  return Array.isArray(raw) ? (raw as InitialDomainProjection[]) : [];
+}
 
 const Gateway = nativeComponent<
   { request?: CoreRequest },
@@ -41,21 +86,13 @@ export class CoreClient {
   private readonly view = {} as UiState;
   readonly state = (): UiState | undefined =>
     this.domains.has(["config", "status"]) ? this.view : undefined;
-  readonly preferences = signal<Preferences>(
-    {
-      language: "system",
-      theme: "system",
-      advanced: false,
-      systemLocale: "zh-CN",
-    },
-    {
-      equals: (previous, next) =>
-        previous.language === next.language &&
-        previous.theme === next.theme &&
-        previous.advanced === next.advanced &&
-        previous.systemLocale === next.systemLocale,
-    },
-  );
+  readonly preferences = signal<Preferences>(readInitialPreferences(), {
+    equals: (previous, next) =>
+      previous.language === next.language &&
+      previous.theme === next.theme &&
+      previous.advanced === next.advanced &&
+      previous.systemLocale === next.systemLocale,
+  });
   readonly request: Signal<CoreRequest | undefined> = signal<CoreRequest>();
   readonly pending = signal(0);
   readonly pendingRequests = signal<CoreRequest[]>([]);
@@ -92,6 +129,7 @@ export class CoreClient {
       (message) => this.error.set(message),
       stateTimeoutMs,
     );
+    this.domains.seed(readInitialDomains());
     const fields: { [D in keyof DomainData]?: (keyof UiState)[] } = {
       config: [
         "activeProfile",
@@ -102,6 +140,7 @@ export class CoreClient {
       ],
       status: [
         "vpnSessionId",
+        "vpnConnectedAt",
         "vpnLifecycle",
         "engineLoaded",
         "activeEngine",
@@ -157,50 +196,58 @@ export class CoreClient {
     this.acceptReceived(value.id);
     clearTimeout(pending.timer);
     this.waiting.delete(value.id);
-    if (value.id === this.vpnRequestId) this.vpnOperation.set(undefined);
-    if (value.id === this.vpnUnconfirmed()?.requestId) {
-      this.vpnUnconfirmed.set(undefined);
-      if (pending.expired) {
-        if (!value.ok)
-          this.error.set(value.error || "The VPN operation failed");
-        else this.error.set("");
-      }
-    }
-    const confirmation = value.data as VpnConfirmation | undefined;
-    if (
-      pending.request.command === "vpn.confirm" &&
+    const hasBarrier =
       value.ok &&
-      confirmation &&
-      confirmation.requestId === this.vpnUnconfirmed()?.requestId
-    ) {
+      !value.stateRefreshError &&
+      !!value.barrier &&
+      !pending.request.command.startsWith("state.");
+    if (hasBarrier) this.settling.add(pending);
+    batch(() => {
+      if (value.id === this.vpnRequestId) this.vpnOperation.set(undefined);
+      if (value.id === this.vpnUnconfirmed()?.requestId) {
+        this.vpnUnconfirmed.set(undefined);
+        if (pending.expired) {
+          if (!value.ok)
+            this.error.set(value.error || "The VPN operation failed");
+          else this.error.set("");
+        }
+      }
+      const confirmation = value.data as VpnConfirmation | undefined;
       if (
-        confirmation.status === "succeeded" ||
-        confirmation.status === "failed"
-      )
-        this.acceptResult({
-          id: confirmation.requestId,
-          ok: confirmation.status === "succeeded",
-          data: null,
-          error: confirmation.error,
-        });
-      else if (confirmation.status === "unavailable")
+        pending.request.command === "vpn.confirm" &&
+        value.ok &&
+        confirmation &&
+        confirmation.requestId === this.vpnUnconfirmed()?.requestId
+      ) {
+        if (
+          confirmation.status === "succeeded" ||
+          confirmation.status === "failed"
+        )
+          this.acceptResult({
+            id: confirmation.requestId,
+            ok: confirmation.status === "succeeded",
+            data: null,
+            error: confirmation.error,
+          });
+        else if (confirmation.status === "unavailable")
+          this.error.set(
+            confirmation.error ||
+              "The original operation receipt is unavailable. Stop and resynchronize.",
+          );
+      }
+      const recovered =
+        pending.request.command !== "vpn.recover" ||
+        (confirmation?.status === "succeeded" &&
+          confirmation.requestId === pending.request.payload.requestId);
+      if (value.id === this.vpnRequestId && value.ok && recovered)
+        this.vpnUnconfirmed.set(undefined);
+      if (pending.request.command === "vpn.recover" && value.ok && !recovered)
         this.error.set(
-          confirmation.error ||
-            "The original operation receipt is unavailable. Stop and resynchronize.",
+          confirmation?.error ||
+            "The stop operation is unconfirmed. Confirm it or retry recovery.",
         );
-    }
-    const recovered =
-      pending.request.command !== "vpn.recover" ||
-      (confirmation?.status === "succeeded" &&
-        confirmation.requestId === pending.request.payload.requestId);
-    if (value.id === this.vpnRequestId && value.ok && recovered)
-      this.vpnUnconfirmed.set(undefined);
-    if (pending.request.command === "vpn.recover" && value.ok && !recovered)
-      this.error.set(
-        confirmation?.error ||
-          "The stop operation is unconfirmed. Confirm it or retry recovery.",
-      );
-    this.updatePending();
+      this.updatePending();
+    });
     if (value.ok && value.stateRefreshError) {
       this.domains.retry();
       pending.resolve({
@@ -208,15 +255,9 @@ export class CoreClient {
         stateRefreshError: new CommittedStateError(value.stateRefreshError)
           .message,
       });
-    } else if (
-      value.ok &&
-      value.barrier &&
-      !pending.request.command.startsWith("state.")
-    ) {
-      this.settling.add(pending);
-      this.updatePending();
+    } else if (hasBarrier) {
       void this.domains
-        .waitFor(value.barrier)
+        .waitFor(value.barrier!)
         .then(
           () => {
             if (!this.disposed) pending.resolve({ data: value.data });
@@ -326,11 +367,13 @@ export class CoreClient {
           const pending = this.waiting.get(id);
           if (!pending) return;
           pending.expired = true;
-          if (pending.action && id === this.vpnRequestId) {
-            this.vpnOperation.set(undefined);
-            this.vpnUnconfirmed.set({ requestId: id, action: pending.action });
-          }
-          this.updatePending();
+          batch(() => {
+            if (pending.action && id === this.vpnRequestId) {
+              this.vpnOperation.set(undefined);
+              this.vpnUnconfirmed.set({ requestId: id, action: pending.action });
+            }
+            this.updatePending();
+          });
           reject(
             new Error(
               pending.action
@@ -364,13 +407,20 @@ export class CoreClient {
           !value.expired && !value.request.command.startsWith("state."),
       )
       .map((value) => value.request);
-    this.pendingRequests.set(requests);
-    // A decision preview has its own page-local lifetime/loading state. It
-    // remains tracked and receives its receipt without blocking real edits.
-    this.pending.set(
-      requests.filter((request) => request.command !== "engines.decision")
-        .length,
-    );
+    const nextCount = requests.filter(
+      (request) =>
+        request.command !== "engines.decision" &&
+        request.command !== "proxies.select" &&
+        request.command !== "proxies.unfix",
+    ).length;
+    batch(() => {
+      const previous = this.pendingRequests();
+      const sameRequests =
+        previous.length === requests.length &&
+        previous.every((item, index) => item === requests[index]);
+      if (!sameRequests) this.pendingRequests.set(requests);
+      this.pending.set(nextCount);
+    });
   }
 
   /** Native fact: this request entered an actual platform VPN effect. */
@@ -386,16 +436,18 @@ export class CoreClient {
     pending.action = value.action;
     if (value.requestId < this.vpnRequestId) return;
     this.vpnRequestId = value.requestId;
-    if (pending.expired) {
-      this.vpnOperation.set(undefined);
-      this.vpnUnconfirmed.set({
-        requestId: value.requestId,
-        action: value.action,
-      });
-    } else {
-      this.vpnUnconfirmed.set(undefined);
-      this.vpnOperation.set(value.action);
-    }
+    batch(() => {
+      if (pending.expired) {
+        this.vpnOperation.set(undefined);
+        this.vpnUnconfirmed.set({
+          requestId: value.requestId,
+          action: value.action,
+        });
+      } else {
+        this.vpnUnconfirmed.set(undefined);
+        this.vpnOperation.set(value.action);
+      }
+    });
   }
 
   /** Receipt ACK means the host observed the prop; operation completion is independent. */

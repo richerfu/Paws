@@ -2344,6 +2344,7 @@ async fn watchdog_orphan_cleanup_requires_confirmed_stop_and_dead_exact_owner() 
                 engine: None,
                 app_http_proxy: None,
                 controller_endpoint: None,
+                connected_at_ms: None,
                 updated_at: 7,
             }),
         );
@@ -2879,6 +2880,7 @@ fn older_platform_frame_does_not_refresh_remote_liveness() {
             engine: None,
             app_http_proxy: None,
             controller_endpoint: None,
+            connected_at_ms: None,
             updated_at: 19,
         }),
     );
@@ -2950,6 +2952,7 @@ fn live_platform_frame_cannot_ack_connection_cleanup() {
             engine: None,
             app_http_proxy: None,
             controller_endpoint: None,
+            connected_at_ms: None,
             updated_at: 1,
         }),
     );
@@ -3011,6 +3014,7 @@ fn terminal_platform_attempt_cannot_be_revived_by_a_late_running_frame() {
                 engine: None,
                 app_http_proxy: None,
                 controller_endpoint: None,
+                connected_at_ms: None,
                 updated_at: 1,
             }),
         );
@@ -5953,7 +5957,24 @@ async fn refresh_all_profiles_continues_after_single_failure() {
 
     without_test_geodata(&core, &good_id);
     core.reload_config(&good_id).await.unwrap();
-    core.refresh_all_profiles().await.unwrap();
+    assert!(
+        core.refresh_all_profiles()
+            .await
+            .unwrap()
+            .active_config_changed
+    );
+    let tunnel = core.lock_state().unwrap().tunnel.clone().unwrap();
+    assert!(
+        !core
+            .refresh_all_profiles()
+            .await
+            .unwrap()
+            .active_config_changed
+    );
+    assert!(Arc::ptr_eq(
+        tunnel.inner(),
+        core.lock_state().unwrap().tunnel.as_ref().unwrap().inner()
+    ));
 
     let good_yaml = core.profile_raw_yaml(&good_id).unwrap();
     let bad_yaml = core.profile_raw_yaml(&bad_id).unwrap();
@@ -6100,7 +6121,23 @@ async fn subscription_userinfo_header_updates_profile_summary() {
         Some("https://example.test/support")
     );
 
-    core.refresh_profile(&profile_id).await.unwrap();
+    let tunnel = core.lock_state().unwrap().tunnel.clone().unwrap();
+    let revision = core.command_context().unwrap().config_revision;
+    assert!(
+        !core
+            .refresh_profile(&profile_id)
+            .await
+            .unwrap()
+            .active_config_changed
+    );
+    assert!(Arc::ptr_eq(
+        tunnel.inner(),
+        core.lock_state().unwrap().tunnel.as_ref().unwrap().inner()
+    ));
+    assert!(
+        core.command_context().unwrap().config_revision > revision,
+        "metadata still invalidates stale editors and updates profile cards"
+    );
     let snapshot = core.snapshot().unwrap();
     let profile = snapshot
         .profiles
@@ -7080,7 +7117,7 @@ async fn spawn_profile_refresh_http_server(good_body: String) -> (String, String
         .unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        for _ in 0..2 {
+        for _ in 0..4 {
             let Ok((mut stream, _)) = listener.accept().await else {
                 break;
             };
@@ -7796,5 +7833,280 @@ async fn checked_vpn_settings_recheck_readonly_fields_inside_the_transaction() {
         before.config_revision
     );
     assert_eq!(std::fs::read(root.join("profiles.json")).unwrap(), index);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+async fn spawn_counting_socks5_relay() -> (
+    u16,
+    Arc<std::sync::atomic::AtomicUsize>,
+    tokio::task::JoinHandle<()>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hits_clone = Arc::clone(&hits);
+    let handle = tokio::spawn(async move {
+        while let Ok((mut client, _)) = listener.accept().await {
+            hits_clone.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let mut header = [0_u8; 2];
+                if client.read_exact(&mut header).await.is_err() || header[0] != 0x05 {
+                    return;
+                }
+                let mut methods = vec![0_u8; usize::from(header[1])];
+                if client.read_exact(&mut methods).await.is_err() {
+                    return;
+                }
+                if client.write_all(&[0x05, 0x00]).await.is_err() {
+                    return;
+                }
+                let mut req = [0_u8; 4];
+                if client.read_exact(&mut req).await.is_err() || req[1] != 0x01 {
+                    return;
+                }
+                let target = match req[3] {
+                    0x01 => {
+                        let mut ip = [0_u8; 4];
+                        let mut port = [0_u8; 2];
+                        if client.read_exact(&mut ip).await.is_err()
+                            || client.read_exact(&mut port).await.is_err()
+                        {
+                            return;
+                        }
+                        std::net::SocketAddr::from((ip, u16::from_be_bytes(port)))
+                    }
+                    0x03 => {
+                        let mut len = [0_u8; 1];
+                        if client.read_exact(&mut len).await.is_err() {
+                            return;
+                        }
+                        let mut host = vec![0_u8; usize::from(len[0])];
+                        let mut port = [0_u8; 2];
+                        if client.read_exact(&mut host).await.is_err()
+                            || client.read_exact(&mut port).await.is_err()
+                        {
+                            return;
+                        }
+                        let Ok(host_str) = std::str::from_utf8(&host) else {
+                            return;
+                        };
+                        let Ok(ip) = host_str.parse::<std::net::IpAddr>() else {
+                            return;
+                        };
+                        std::net::SocketAddr::new(ip, u16::from_be_bytes(port))
+                    }
+                    _ => return,
+                };
+                let Ok(mut upstream) = tokio::net::TcpStream::connect(target).await else {
+                    return;
+                };
+                if client
+                    .write_all(&[0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0])
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+            });
+        }
+    });
+    (port, hits, handle)
+}
+
+async fn spawn_local_tcp_dns_server(answer_ip: [u8; 4]) -> (u16, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                loop {
+                    let mut len_buf = [0_u8; 2];
+                    if stream.read_exact(&mut len_buf).await.is_err() {
+                        break;
+                    }
+                    let msg_len = usize::from(u16::from_be_bytes(len_buf));
+                    let mut query = vec![0_u8; msg_len];
+                    if stream.read_exact(&mut query).await.is_err() || query.len() < 12 {
+                        break;
+                    }
+                    let mut pos = 12;
+                    while pos < query.len() && query[pos] != 0 {
+                        pos += 1 + usize::from(query[pos]);
+                    }
+                    let question_end = (pos + 5).min(query.len());
+                    let mut resp = query[..question_end].to_vec();
+                    resp[2] = 0x81;
+                    resp[3] = 0x80;
+                    resp[6..8].copy_from_slice(&1_u16.to_be_bytes());
+                    resp[8..12].copy_from_slice(&[0, 0, 0, 0]);
+                    resp.extend_from_slice(&[
+                        0xc0, 0x0c, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x3c, 0x00, 0x04,
+                    ]);
+                    resp.extend_from_slice(&answer_ip);
+                    let out_len = (resp.len() as u16).to_be_bytes();
+                    if stream.write_all(&out_len).await.is_err()
+                        || stream.write_all(&resp).await.is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    (port, handle)
+}
+
+#[tokio::test]
+async fn rule_mode_dns_detour_tracks_runtime_proxy_group_selection_in_meow() {
+    let root = std::env::temp_dir().join(format!("paws-core-dns-detour-{}", now_unix_nanos()));
+    let (port_a, hits_a, relay_a) = spawn_counting_socks5_relay().await;
+    let (port_b, hits_b, relay_b) = spawn_counting_socks5_relay().await;
+    let (dns_port, dns_server) = spawn_local_tcp_dns_server([93, 184, 216, 34]).await;
+
+    let yaml = format!(
+        "proxies:\n  - {{name: node-a, type: socks5, server: 127.0.0.1, port: {port_a}}}\n  - {{name: node-b, type: socks5, server: 127.0.0.1, port: {port_b}}}\nproxy-groups:\n  - name: Proxy\n    type: select\n    proxies: [node-a, node-b]\ndns:\n  enable: true\n  ipv6: false\n  nameserver:\n    - tcp://127.0.0.1:{dns_port}#Proxy\nrules:\n  - MATCH,Proxy\n"
+    );
+    let core = CoreHandle::new_with_profile_root(&root);
+    let id = core
+        .import_profile_from_content("DNSDetour", "test", &yaml, None)
+        .await
+        .unwrap();
+    core.activate_profile(&id).await.unwrap();
+    core.reload_config_for_purpose(&id, controller::MeowLoadPurpose::Runtime)
+        .await
+        .unwrap();
+
+    let tunnel = core.lock_state().unwrap().tunnel.clone().unwrap();
+    let first_ip = tunnel
+        .resolver()
+        .resolve_ip_real("one.example.test")
+        .await
+        .expect("first detoured DNS lookup");
+    assert_eq!(first_ip.to_string(), "93.184.216.34");
+    assert!(hits_a.load(Ordering::SeqCst) >= 1);
+    assert_eq!(hits_b.load(Ordering::SeqCst), 0);
+
+    core.select_proxy("Proxy", "node-b").await.unwrap();
+    let second_ip = tunnel
+        .resolver()
+        .resolve_ip_real("two.example.test")
+        .await
+        .expect("second detoured DNS lookup after node switch");
+    assert_eq!(second_ip.to_string(), "93.184.216.34");
+    assert!(
+        hits_b.load(Ordering::SeqCst) >= 1,
+        "Rule-mode DNS #Proxy detour must dial through newly selected node-b"
+    );
+
+    relay_a.abort();
+    relay_b.abort();
+    dns_server.abort();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn extension_reload_and_traffic_accounting_preserve_rule_mode_proxy_selection() {
+    let root = std::env::temp_dir().join(format!("paws-core-ext-selection-{}", now_unix_nanos()));
+    let yaml = "proxies:\n  - {name: node-a, type: socks5, server: 127.0.0.1, port: 1080}\n  - {name: node-b, type: socks5, server: 127.0.0.1, port: 1081}\nproxy-groups:\n  - name: Proxy\n    type: select\n    proxies: [node-a, node-b]\nrules:\n  - MATCH,Proxy\n";
+    let ui_core = CoreHandle::new_with_profile_root(&root);
+    let id = ui_core
+        .import_profile_from_content("ExtSync", "test", yaml, None)
+        .await
+        .unwrap();
+    ui_core.activate_profile(&id).await.unwrap();
+
+    let mut unsynced_ext_store = ProfileStore::open(&root).unwrap();
+    let ext_core = CoreHandle::new_with_profile_root(&root);
+    ext_core
+        .reload_config_for_purpose(&id, controller::MeowLoadPurpose::Runtime)
+        .await
+        .unwrap();
+
+    ui_core.select_proxy("Proxy", "node-b").await.unwrap();
+
+    // Even if Extension traffic polling fires before platform control sync,
+    // disk `selected_proxies` written by UI must not be clobbered.
+    unsynced_ext_store
+        .add_profile_traffic(&id, 512, 1024)
+        .unwrap();
+
+    let udp_watch = ext_core
+        .lock_state()
+        .unwrap()
+        .tunnel
+        .as_ref()
+        .unwrap()
+        .inner()
+        .udp_flush_watch();
+    assert!(!udp_watch.is_flushed());
+
+    {
+        let mut ext_state = ext_core.lock_state().unwrap();
+        ext_core.sync_platform_vpn_control_locked(
+            &mut ext_state,
+            PlatformVpnControl {
+                mode: RuntimeMode::Rule,
+                global_proxy: None,
+                active_profile: Some(id.clone()),
+                proxy_selections: BTreeMap::from([("Proxy".to_owned(), "node-b".to_owned())]),
+                updated_at: now_unix_nanos(),
+            },
+        );
+        let current = ext_state
+            .tunnel
+            .as_ref()
+            .unwrap()
+            .proxy("Proxy")
+            .unwrap()
+            .current();
+        assert_eq!(current.as_deref(), Some("node-b"));
+        assert!(
+            udp_watch.is_flushed(),
+            "platform proxy synchronization must flush active UDP sessions"
+        );
+        ext_state
+            .profiles
+            .add_profile_traffic(&id, 1024, 2048)
+            .unwrap();
+    }
+
+    let reopened = ProfileStore::open(&root).unwrap();
+    assert_eq!(
+        reopened
+            .selected_proxies(&id)
+            .unwrap()
+            .get("Proxy")
+            .map(String::as_str),
+        Some("node-b"),
+        "Extension traffic accounting must not overwrite UI proxy selection on disk"
+    );
+    assert_eq!(reopened.profile(&id).unwrap().upload_bytes, 1536);
+
+    ext_core
+        .reload_config_for_purpose(&id, controller::MeowLoadPurpose::Runtime)
+        .await
+        .unwrap();
+    let after_reload = ext_core
+        .lock_state()
+        .unwrap()
+        .tunnel
+        .as_ref()
+        .unwrap()
+        .proxy("Proxy")
+        .unwrap()
+        .current();
+    assert_eq!(
+        after_reload.as_deref(),
+        Some("node-b"),
+        "Extension Meow runtime reload must preserve Rule-mode proxy selection"
+    );
+
     let _ = std::fs::remove_dir_all(root);
 }

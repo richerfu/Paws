@@ -16,12 +16,12 @@ import {
   platform,
   reduceMotion,
   safeArea,
+  safeAreaInsets,
 } from "nsh";
-import { BackHandler } from "nsh/mobile";
+import { titleBar } from "nsh/desktop";
 import {
   Tab,
   Tabs as BaseTabs,
-  createNavStack,
   NavPage,
   NavStack,
 } from "nsh/base";
@@ -32,7 +32,6 @@ import {
   Actions,
   Badge,
   Loading,
-  control,
   Alert,
   confirm,
   Icon,
@@ -40,19 +39,23 @@ import {
   palette,
   radius,
   spacing,
+  Tabs,
   translator,
   type AppContext,
   type Page,
   useLifetime,
   useApp,
+  RouteLayout,
   RouteOwner,
 } from "./components";
 import { feedbackStyle } from "./motion";
 import { chrome, focusRing } from "./theme";
 import {
   DesktopNavigation,
-  desktopPrimary,
+  desktopShortcuts,
   desktopGroupTitle,
+  isSettingsSection,
+  type SettingsSection,
 } from "./desktop-navigation";
 import { Dashboard, DnsDiagnostics, Traffic } from "./pages/overview";
 import { Profiles } from "./pages/profiles";
@@ -82,36 +85,36 @@ import { pageDomains } from "./page-data";
 import { PageError } from "./page-error";
 import { isChinese } from "./locale";
 import type { DomainInput } from "./model";
-import { workspaceLayout } from "./layout";
+import { workspaceLayout, workspaceLayoutEquals } from "./layout";
 import { Workspaces } from "./workspaces";
 import { ActivityDetail } from "./pages/activity";
 import { ObjectMenu } from "./object-menu";
 
 const primary: { page: Page; zh: string; en: string; icon: IconName }[] = [
-  { page: "dashboard", zh: "首页", en: "Home", icon: "house" },
+  { page: "dashboard", zh: "概览", en: "Overview", icon: "layout-dashboard" },
   { page: "profiles", zh: "订阅", en: "Subscriptions", icon: "rss" },
   { page: "traffic", zh: "流量", en: "Traffic", icon: "activity" },
   { page: "tools", zh: "设置", en: "Settings", icon: "settings" },
 ];
 const titles: Record<Page, [string, string]> = {
-  dashboard: ["首页", "Home"],
+  dashboard: ["概览", "Overview"],
   profiles: ["订阅", "Subscriptions"],
   "profile-detail": ["订阅详情", "Subscription details"],
-  proxies: ["代理节点", "Proxy nodes"],
+  proxies: ["节点", "Proxies"],
   "proxy-group": ["分组节点", "Group members"],
   traffic: ["流量", "Traffic"],
   "dns-diagnostics": ["DNS 诊断", "DNS diagnostics"],
   tools: ["设置", "Settings"],
-  settings: ["网络设置", "Network settings"],
+  settings: ["网络", "Network"],
   appearance: [...COPY["page-tr-001"]],
-  connections: ["连接与请求", "Connections & requests"],
-  requests: ["连接与请求", "Connections & requests"],
+  connections: ["连接", "Connections"],
+  requests: ["连接", "Connections"],
   "activity-detail": ["连接详情", "Connection details"],
-  resources: ["资源与规则", "Resources & rules"],
+  resources: ["规则", "Rules"],
   logs: ["日志", "Logs"],
   diagnostics: [...COPY["diagnostics-title"]],
   "advanced-diagnostics": ["高级诊断", "Advanced diagnostics"],
-  backups: ["备份与恢复", "Backup & restore"],
+  backups: [...COPY["backup-title"]],
   converter: [...COPY["page-tr-002"]],
   about: ["关于", "About"],
   privacy: [...COPY["page-tr-003"]],
@@ -135,7 +138,8 @@ export function pageMeasure(page: Page, wide: boolean): number {
     return 1120;
   if (["traffic", "converter", "diagnostics"].includes(page)) return 1120;
   if (page === "dns-diagnostics") return platform.desktop ? 720 : 640;
-  if (page === "backups") return platform.desktop ? 1120 : 640;
+  if (["settings", "appearance", "backups", "about"].includes(page))
+    return platform.desktop ? 720 : 640;
   if (["requests", "connections", "resources", "logs"].includes(page))
     return 1180;
   return platform.desktop ? 720 : 640;
@@ -162,10 +166,19 @@ export function PawsApp(props: {
   cleanup(() => notifications.dispose());
   type Route = { name: Page; query?: string };
   const workspaces = new Workspaces<Route>("dashboard", { name: "dashboard" });
-  const nav = createNavStack<Route>(workspaces.routes());
   const sidebarExpanded = signal<boolean | undefined>();
-  const layout = () => workspaceLayout(windowSize().width - safeArea().left - safeArea().right,
-    platform.desktop, sidebarExpanded(), fontScale(), pageMeasure(page(), platform.desktop || windowSize().width >= 840));
+  // Shell-level layout never depends on the active page's max-width, so route
+  // switches cannot trigger layout invalidations across retained pages.
+  const layout = computed(
+    () =>
+      workspaceLayout(
+        windowSize().width - safeArea().left - safeArea().right,
+        platform.desktop,
+        sidebarExpanded(),
+        fontScale(),
+      ),
+    { equals: workspaceLayoutEquals },
+  );
   const overlays = signal(0);
   const alive = useLifetime(),
     importIntent = signal(0),
@@ -178,7 +191,7 @@ export function PawsApp(props: {
     resourceSequence = 0;
   const logRecording = signal(false),
     logRecordingIntent = signal(0);
-  const route = () => nav.routes()[nav.routes().length - 1],
+  const route = () => workspaces.route(),
     page = () => route().name;
   const requestNavigation = (action: () => void) => {
     if (overlays() > 0) return;
@@ -205,21 +218,28 @@ export function PawsApp(props: {
   const switchWorkspace = (next: Page) => {
     if (workspaces.root === next) return;
     requestNavigation(() => {
-    nav.setRoutes(workspaces.switch(next, () => ({ name: next })));
+      workspaces.switch(next, () => ({ name: next }));
+    });
+  };
+  const switchSettingsSection = (next: SettingsSection) => {
+    if (page() === next) return;
+    requestNavigation(() => {
+      if (workspaces.depth() > 1) workspaces.replace({ name: next });
+      else workspaces.switch(next, () => ({ name: next }));
     });
   };
   const navigate = (next: Page, query?: string) =>
     requestNavigation(() => {
       if (primary.some((item) => item.page === next) && !query)
-        nav.setRoutes(workspaces.switch(next, () => ({ name: next })));
-      else nav.setRoutes(workspaces.push({ name: next, query }));
+        workspaces.switch(next, () => ({ name: next }));
+      else workspaces.push({ name: next, query });
     });
   const back = () =>
     requestNavigation(() => {
-      if (workspaces.depth > 1) nav.setRoutes(workspaces.back());
+      if (workspaces.depth() > 1) workspaces.back();
       else {
         const parent = parentPage(page());
-        if (parent) nav.setRoutes(workspaces.switch(parent, () => ({ name: parent })));
+        if (parent) workspaces.switch(parent, () => ({ name: parent }));
       }
     });
   const t = translator(props.client);
@@ -285,12 +305,8 @@ export function PawsApp(props: {
     switchActivity: (mode) => {
       if (mode === page()) return;
       requestNavigation(() => {
-        if (workspaces.depth > 1)
-          nav.setRoutes(workspaces.replace({ name: mode }));
-        else
-          nav.setRoutes(
-            workspaces.switch(mode, () => ({ name: mode })),
-          );
+        if (workspaces.depth() > 1) workspaces.replace({ name: mode });
+        else workspaces.switch(mode, () => ({ name: mode }));
       });
     },
     layout,
@@ -307,7 +323,7 @@ export function PawsApp(props: {
     },
   };
   const wide = () => layout().sidebar;
-  const depth = () => { route(); return workspaces.depth; };
+  const depth = () => workspaces.depth();
   const canBack = () =>
     depth() > 1 || (!wide() && !!parentPage(page()));
   const group = () =>
@@ -324,23 +340,11 @@ export function PawsApp(props: {
   effect(() => {
     setColorScheme(theme());
   });
-  const stopHardwareBack = BackHandler.on("press", () => {
-    if (overlays() > 0) return false;
-    if (!canBack()) return false;
-    back();
-    return true;
-  });
-  cleanup(() => {
-    stopHardwareBack();
-  });
   if (platform.desktop) {
-    for (let index = 0; index < desktopPrimary.length; index++)
+    for (const shortcut of desktopShortcuts)
       cleanup(
-        keymap.bind(`mod+${index + 1}`, () =>
-          switchWorkspace(desktopPrimary[index].page),
-        ),
+        keymap.bind(shortcut.key, () => switchWorkspace(shortcut.page)),
       );
-    cleanup(keymap.bind("mod+,", () => switchWorkspace("appearance")));
     cleanup(
       keymap.bind("mod+b", () => sidebarExpanded.set(!layout().expanded)),
     );
@@ -355,6 +359,9 @@ export function PawsApp(props: {
     });
   }
   const Shell = () => {
+    const insets = safeAreaInsets();
+    const showBottomTabs = () =>
+      !wide() && depth() === 1 && !parentPage(page());
     const content = (
       <>
         <If when={props.embeddedGateway !== false}>
@@ -397,9 +404,15 @@ export function PawsApp(props: {
           </If>
           <View style={{ flex: 1, minWidth: 0 }}>
             <View
+              desktop={platform.desktop ? { windowDrag: true } : undefined}
               style={{
                 minHeight: Math.max(
-                  wide() ? chrome.toolbar : chrome.header,
+                  wide()
+                    ? Math.max(
+                        chrome.toolbar,
+                        platform.desktop ? titleBar().height : 0,
+                      )
+                    : chrome.header,
                   density.line(24) * Math.max(1, fontScale()) + spacing.md,
                 ),
                 borderBottomWidth: 1,
@@ -411,22 +424,31 @@ export function PawsApp(props: {
               <View
                 style={{
                   width: "100%",
-                  maxWidth: wide() ? undefined : pageMeasure(page(), false),
-                  paddingHorizontal: wide() ? layout().inset : spacing.lg,
+                  maxWidth: wide() ? undefined : 640,
+                  paddingLeft:
+                    (wide() ? layout().inset : spacing.lg) +
+                    (!wide() && platform.desktop ? titleBar().left : 0),
+                  paddingRight:
+                    (wide() ? layout().inset : spacing.lg) +
+                    (platform.desktop ? titleBar().right : 0),
                   flexDirection: "row",
                   alignItems: "center",
                   gap: 8,
                 }}
               >
                 <If when={canBack()}>
-                  <IconButton
-                    id="nav-back"
-                    icon="arrow-left"
-                    label={ui.t("返回", "Back")}
-                    onPress={back}
-                  />
+                  <View
+                    desktop={platform.desktop ? { windowDrag: false } : undefined}
+                  >
+                    <IconButton
+                      id="nav-back"
+                      icon="arrow-left"
+                      label={ui.t("返回", "Back")}
+                      onPress={back}
+                    />
+                  </View>
                 </If>
-                <If when={platform.desktop && !canBack()}>
+                <If when={platform.desktop && !canBack() && !!desktopGroupTitle(page())}>
                   <View
                     style={{
                       flexDirection: "row",
@@ -442,7 +464,7 @@ export function PawsApp(props: {
                         color: palette().muted,
                       }}
                     >
-                      {ui.t(...desktopGroupTitle(page()))}
+                      {desktopGroupTitle(page()) ? ui.t(...desktopGroupTitle(page())!) : ""}
                     </Text>
                     <Icon
                       name="chevron-right"
@@ -466,9 +488,23 @@ export function PawsApp(props: {
                       : -0.2,
                   }}
                 >
-                  {ui.t(...titles[page()])}
+                  {wide() && isSettingsSection(page())
+                    ? ui.t("设置", "Settings")
+                    : page() === "proxy-group" && ui.query()
+                      ? ui.query().toUpperCase() === "GLOBAL"
+                        ? ui.t("全局节点", "Global nodes")
+                        : ui.query()
+                      : ui.t(...titles[page()])}
                 </Text>
-                <If when={wide() && page() === "dashboard"}>
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                    flexShrink: 0,
+                  }}
+                >
+                  <If when={wide() && page() === "dashboard"}>
                   <Action
                     small
                     secondary
@@ -482,6 +518,14 @@ export function PawsApp(props: {
                 </If>
                 <If when={page() === "profiles"}>
                   <If when={platform.desktop}>
+                    <Action
+                      id="open-converter"
+                      small
+                      secondary
+                      icon="link"
+                      label={ui.t("转换", "Convert")}
+                      onPress={() => navigate("converter")}
+                    />
                     <Action
                       id="refresh-profiles"
                       small
@@ -501,7 +545,7 @@ export function PawsApp(props: {
                     <Action
                       id="add-profile"
                       small
-                      primary
+                      secondary
                       icon="plus"
                       label={ui.t("添加订阅…", "Add subscription…")}
                       onPress={() => importIntent.set(importIntent() + 1)}
@@ -530,6 +574,12 @@ export function PawsApp(props: {
                             ]),
                           run: () => void refreshProfiles(),
                         },
+                        {
+                          id: "open-converter",
+                          icon: "link",
+                          label: ui.t("订阅转换", "Converter"),
+                          run: () => navigate("converter"),
+                        },
                       ]}
                       row={(trigger) => trigger}
                     />
@@ -544,10 +594,18 @@ export function PawsApp(props: {
                     loading={proxyDelayLoading()}
                     disabled={
                       proxyDelayLoading() ||
-                      !props.client.domains.fresh(["proxies"])
+                      !props.client.domains.has(["proxies"]) ||
+                      !!props.client.domains.error(["proxies"]) ||
+                      (!props.client.domains.fresh(["proxies"]) &&
+                        !props.client.isPending("proxies.select") &&
+                        !props.client.isPending("proxies.unfix"))
                     }
                     onPress={() => {
-                      if (proxyDelayLoading()) return;
+                      if (
+                        proxyDelayLoading() ||
+                        !props.client.domains.fresh(["proxies"])
+                      )
+                        return;
                       proxyDelayLoading.set(true);
                       void (async () => {
                         try {
@@ -770,7 +828,7 @@ export function PawsApp(props: {
                     <Action
                       id="add-rule"
                       small
-                      primary
+                      secondary
                       icon="plus"
                       label={ui.t("添加规则…", "Add rule…")}
                       disabled={
@@ -806,7 +864,7 @@ export function PawsApp(props: {
                         {
                           id: "lookup-rule",
                           icon: "search",
-                          label: ui.t("规则查询", "Rule lookup"),
+                          label: ui.t("规则查询…", "Rule lookup…"),
                           disabled: !props.client.domains.fresh(
                             pageDomains("resources"),
                           ),
@@ -821,6 +879,7 @@ export function PawsApp(props: {
                     />
                   </If>
                 </If>
+                </View>
               </View>
             </View>
             <If when={props.client.vpnUnconfirmed()}>
@@ -902,131 +961,243 @@ export function PawsApp(props: {
               </View>
             </If>
             <If when={props.client.state()}>
-              <NavStack state={nav} style={{ flex: 1 }}>
-                {(current) => {
-                  const content = (
-                    <View
-                      style={{ flex: 1, backgroundColor: palette().background }}
-                    >
+              <If when={wide() && isSettingsSection(page())}>
+                <View
+                  testID="settings-section-bar"
+                  style={{
+                    width: "100%",
+                    maxWidth: pageMeasure("settings", true),
+                    alignSelf: "center",
+                    paddingHorizontal: layout().inset,
+                    paddingTop: spacing.md,
+                    paddingBottom: spacing.xs,
+                  }}
+                >
+                  <Tabs
+                    idPrefix="settings-section"
+                    inline={platform.desktop}
+                    value={page()}
+                    options={[
+                      { value: "settings", label: ui.t("网络", "Network") },
+                      { value: "appearance", label: ui.t("外观", "Appearance") },
+                      { value: "backups", label: ui.t("备份", "Backups") },
+                      { value: "about", label: ui.t("关于", "About") },
+                    ]}
+                    onChange={(next) =>
+                      switchSettingsSection(next as SettingsSection)
+                    }
+                  />
+                </View>
+              </If>
+              <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
+                <Each of={workspaces.entries()} key={(entry) => entry.key}>
+                  {(entry) => {
+                    const active = () => workspaces.active() === entry().key;
+                    return (
                       <View
+                        accessibilityElementsHidden={!active()}
                         style={{
-                          flex: 1,
-                          width: "100%",
-                          maxWidth:
-                            current.name === "editor"
-                              ? undefined
-                              : pageMeasure(current.name, wide()),
-                          alignSelf: "center",
+                          position: "absolute",
+                          top: 0,
+                          right: 0,
+                          bottom: 0,
+                          left: 0,
+                          visibility: active() ? "visible" : "hidden",
+                          pointerEvents: active() ? "auto" : "none",
                         }}
                       >
-                        <RouteOwner.Provider value={current}>
-                          <PageData domains={pageDomains(current.name)}>
-                            <If when={current.name === "dashboard"}>
-                              <Dashboard />
-                            </If>
-                            <If when={current.name === "profiles"}>
-                              <Profiles />
-                            </If>
-                            <If when={current.name === "profile-detail"}>
-                              <Profiles profileId={current.query} />
-                            </If>
-                            <If when={current.name === "editor"}>
-                              <ProfileEditor profileId={current.query || ""} />
-                            </If>
-                            <If when={current.name === "proxies"}>
-                              <Proxies />
-                            </If>
-                            <If when={current.name === "proxy-group"}>
-                              <Proxies groupKey={current.query} />
-                            </If>
-                            <If when={current.name === "traffic"}>
-                              <Traffic />
-                            </If>
-                            <If when={current.name === "dns-diagnostics"}>
-                              <DnsDiagnostics />
-                            </If>
-                            <If when={current.name === "connections"}>
-                              <Activity />
-                            </If>
-                            <If when={current.name === "requests"}>
-                              <Activity history />
-                            </If>
-                            <If when={current.name === "activity-detail"}>
-                              <ActivityDetail identity={current.query || ""} />
-                            </If>
-                            <If when={current.name === "resources"}>
-                              <Resources />
-                            </If>
-                            <If when={current.name === "tools"}>
-                              <Tools />
-                            </If>
-                            <If when={current.name === "settings"}>
-                              <Settings />
-                            </If>
-                            <If when={current.name === "appearance"}>
-                              <Appearance />
-                            </If>
-                            <If when={current.name === "logs"}>
-                              <Logs />
-                            </If>
-                            <If when={current.name === "diagnostics"}>
-                              <Diagnostics />
-                            </If>
-                            <If when={current.name === "advanced-diagnostics"}>
-                              <AdvancedDiagnostics />
-                            </If>
-                            <If when={current.name === "backups"}>
-                              <Backups />
-                            </If>
-                            <If when={current.name === "about"}>
-                              <About />
-                            </If>
-                            <If when={current.name === "privacy"}>
-                              <Privacy />
-                            </If>
-                            <If when={current.name === "converter"}>
-                              <Converter />
-                            </If>
-                          </PageData>
-                        </RouteOwner.Provider>
+                        <NavStack state={entry().nav} style={{ flex: 1 }}>
+                          {(current, index) => {
+                            const routeLayout = computed(
+                              () =>
+                                workspaceLayout(
+                                  windowSize().width -
+                                    safeArea().left -
+                                    safeArea().right,
+                                  platform.desktop,
+                                  sidebarExpanded(),
+                                  fontScale(),
+                                  pageMeasure(
+                                    current.name,
+                                    platform.desktop ||
+                                      windowSize().width >= 840,
+                                  ),
+                                ),
+                              { equals: workspaceLayoutEquals },
+                            );
+                            const content = (
+                              <View
+                                style={{
+                                  flex: 1,
+                                  backgroundColor: palette().background,
+                                }}
+                              >
+                                <View
+                                  style={{
+                                    flex: 1,
+                                    width: "100%",
+                                    maxWidth:
+                                      current.name === "editor"
+                                        ? undefined
+                                        : pageMeasure(current.name, wide()),
+                                    alignSelf: "center",
+                                  }}
+                                >
+                                  <RouteLayout.Provider value={routeLayout}>
+                                    <RouteOwner.Provider value={current}>
+                                      <PageData
+                                        domains={pageDomains(current.name)}
+                                      >
+                                        <If when={current.name === "dashboard"}>
+                                          <Dashboard />
+                                        </If>
+                                        <If when={current.name === "profiles"}>
+                                          <Profiles />
+                                        </If>
+                                        <If
+                                          when={
+                                            current.name === "profile-detail"
+                                          }
+                                        >
+                                          <Profiles profileId={current.query} />
+                                        </If>
+                                        <If when={current.name === "editor"}>
+                                          <ProfileEditor
+                                            profileId={current.query || ""}
+                                          />
+                                        </If>
+                                        <If when={current.name === "proxies"}>
+                                          <Proxies />
+                                        </If>
+                                        <If
+                                          when={current.name === "proxy-group"}
+                                        >
+                                          <Proxies groupKey={current.query} />
+                                        </If>
+                                        <If when={current.name === "traffic"}>
+                                          <Traffic />
+                                        </If>
+                                        <If
+                                          when={
+                                            current.name === "dns-diagnostics"
+                                          }
+                                        >
+                                          <DnsDiagnostics />
+                                        </If>
+                                        <If
+                                          when={current.name === "connections"}
+                                        >
+                                          <Activity />
+                                        </If>
+                                        <If when={current.name === "requests"}>
+                                          <Activity history />
+                                        </If>
+                                        <If
+                                          when={
+                                            current.name === "activity-detail"
+                                          }
+                                        >
+                                          <ActivityDetail
+                                            identity={current.query || ""}
+                                          />
+                                        </If>
+                                        <If when={current.name === "resources"}>
+                                          <Resources />
+                                        </If>
+                                        <If when={current.name === "tools"}>
+                                          <Tools />
+                                        </If>
+                                        <If when={current.name === "settings"}>
+                                          <Settings />
+                                        </If>
+                                        <If
+                                          when={current.name === "appearance"}
+                                        >
+                                          <Appearance />
+                                        </If>
+                                        <If when={current.name === "logs"}>
+                                          <Logs />
+                                        </If>
+                                        <If
+                                          when={current.name === "diagnostics"}
+                                        >
+                                          <Diagnostics />
+                                        </If>
+                                        <If
+                                          when={
+                                            current.name ===
+                                            "advanced-diagnostics"
+                                          }
+                                        >
+                                          <AdvancedDiagnostics />
+                                        </If>
+                                        <If when={current.name === "backups"}>
+                                          <Backups />
+                                        </If>
+                                        <If when={current.name === "about"}>
+                                          <About />
+                                        </If>
+                                        <If when={current.name === "privacy"}>
+                                          <Privacy />
+                                        </If>
+                                        <If when={current.name === "converter"}>
+                                          <Converter />
+                                        </If>
+                                      </PageData>
+                                    </RouteOwner.Provider>
+                                  </RouteLayout.Provider>
+                                </View>
+                              </View>
+                            );
+                            const screenCanBack = () =>
+                              index() > 0 ||
+                              (active() && !wide() && !!parentPage(current.name));
+                            return (
+                              <NavPage
+                                style={{
+                                  backgroundColor: palette().background,
+                                }}
+                                headerVisible={false}
+                                animation={
+                                  reduceMotion() ||
+                                  platform.desktop ||
+                                  index() === 0
+                                    ? "none"
+                                    : "default"
+                                }
+                                title={ui.t(...titles[current.name])}
+                                popOnBack={!screenCanBack()}
+                                onBackPress={() => {
+                                  if (
+                                    active() &&
+                                    current === route() &&
+                                    overlays() === 0 &&
+                                    canBack()
+                                  )
+                                    back();
+                                }}
+                              >
+                                {content}
+                              </NavPage>
+                            );
+                          }}
+                        </NavStack>
                       </View>
-                    </View>
-                  );
-                  return (
-                    <NavPage
-                      style={{ backgroundColor: palette().background }}
-                      headerVisible={false}
-                      animation={
-                        reduceMotion()
-                          ? "none"
-                          : platform.desktop
-                            ? "fade"
-                            : parentPage(current.name)
-                              ? "default"
-                              : "fade"
-                      }
-                      title={ui.t(...titles[current.name])}
-                      popOnBack={false}
-                      onBackPress={() => {
-                        if (current === route() && overlays() === 0 && canBack()) back();
-                      }}
-                    >
-                      {content}
-                    </NavPage>
-                  );
-                }}
-              </NavStack>
+                    );
+                  }}
+                </Each>
+              </View>
             </If>
           </View>
         </View>
-        <If when={!wide() && depth() === 1 && !parentPage(page())}>
+        <If when={showBottomTabs()}>
           <BaseTabs
             testID="bottom-navigation"
             style={{
-              minHeight: chrome.bottom,
               flexDirection: "row",
               paddingHorizontal: spacing.sm,
-              paddingVertical: spacing.xxs,
+              paddingTop: spacing.xs,
+              paddingBottom: Math.max(spacing.xs, insets().bottom),
               gap: spacing.xxs,
               backgroundColor: palette().background,
               borderTopWidth: 1,
@@ -1040,12 +1211,12 @@ export function PawsApp(props: {
                   selected={group() === tab().page}
                   accessibilityLabel={ui.t(tab().zh, tab().en)}
                   onPress={() => switchWorkspace(tab().page)}
-                  focusStyle={focusRing()}
+                  focusVisibleStyle={focusRing()}
                   hoverStyle={{ backgroundColor: palette().hover }}
                   activeStyle={{ backgroundColor: palette().soft }}
                   style={{
                     flex: 1,
-                    minHeight: 52,
+                    minHeight: 44,
                     alignItems: "center",
                     justifyContent: "center",
                     gap: 2,
@@ -1056,9 +1227,9 @@ export function PawsApp(props: {
                 >
                   <View
                     style={{
-                      width: 48,
-                      height: 28,
-                      borderRadius: 14,
+                      width: 44,
+                      height: 22,
+                      borderRadius: 11,
                       borderCurve: "continuous",
                       alignItems: "center",
                       justifyContent: "center",
@@ -1078,8 +1249,8 @@ export function PawsApp(props: {
                   <Text
                     maxFontSizeMultiplier={1.2}
                     style={{
-                      fontSize: density.font(12),
-                      lineHeight: density.line(16),
+                      fontSize: density.font(11),
+                      lineHeight: density.line(14),
                       color:
                         group() === tab().page
                           ? palette().text
@@ -1105,7 +1276,7 @@ export function PawsApp(props: {
           flex: 1,
           backgroundColor: palette().background,
           paddingTop: "env(safe-area-inset-top)",
-          paddingBottom: "env(safe-area-inset-bottom)",
+          paddingBottom: showBottomTabs() ? 0 : "env(safe-area-inset-bottom)",
           paddingLeft: "env(safe-area-inset-left)",
           paddingRight: "env(safe-area-inset-right)",
         }}
@@ -1124,8 +1295,23 @@ export function PawsApp(props: {
 }
 
 function PageData(props: { domains: DomainInput[]; children?: JSX.Element }) {
-  const ui = useApp(), owner = RouteOwner() || ui.route();
-  const error = () => ui.route() === owner ? ui.client.domains.error(props.domains) : "";
+  const ui = useApp(),
+    owner = RouteOwner() || ui.route();
+  const error = () =>
+    ui.route() === owner ? ui.client.domains.error(props.domains) : "";
+  // Avoid flashing a 1-frame loading spinner while fast local domain queries
+  // settle on first entry to a page.
+  const showLoading = signal(false);
+  effect(() => {
+    if (ui.client.domains.has(props.domains) || error()) {
+      showLoading.set(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      showLoading.set(true);
+    }, 120);
+    cleanup(() => clearTimeout(timer));
+  });
   return (
     <>
       <If
@@ -1139,7 +1325,9 @@ function PageData(props: { domains: DomainInput[]; children?: JSX.Element }) {
               gap: density.space(12),
             }}
           >
-            <If when={!error()}><Loading text={ui.t("正在读取页面数据…", "Loading page data…")} /></If>
+            <If when={!error() && showLoading()}>
+              <Loading text={ui.t("正在读取页面数据…", "Loading page data…")} />
+            </If>
             <If when={error()}>
               <PageError text={error()} />
             </If>

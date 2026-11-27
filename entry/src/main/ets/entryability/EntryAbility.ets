@@ -6,8 +6,9 @@ import {
   Want,
 } from "@kit.AbilityKit";
 import { i18n } from "@kit.LocalizationKit";
+import { deviceInfo } from "@kit.BasicServicesKit";
 import { hilog } from "@kit.PerformanceAnalysisKit";
-import { initLogging } from "@nsh/ohos";
+import { initLogging } from "@nsh/harmonyos";
 import window from "@ohos.window";
 import pawsUi from "libpaws_ui.so";
 import { describeError } from "../common/Errors";
@@ -223,10 +224,15 @@ export default class EntryAbility extends UIAbility {
     initLogging();
     const win = await windowStage.getMainWindow();
     this.hostServices?.attachMainWindow(win);
-    try {
-      await win.setWindowLayoutFullScreen(true);
-    } catch (err) {
-      hilog.info(LOG_DOMAIN, LOG_TAG, "full-screen layout skipped %{public}s", describeError(err));
+    const isPcDevice = deviceInfo.deviceType === "2in1";
+    if (!isPcDevice) {
+      try {
+        await win.setWindowLayoutFullScreen(true);
+      } catch (err) {
+        hilog.info(LOG_DOMAIN, LOG_TAG, "full-screen layout skipped %{public}s", describeError(err));
+      }
+    } else {
+      hilog.info(LOG_DOMAIN, LOG_TAG, "2in1 desktop window skips phone full-screen layout");
     }
     for (const type of [
       window.AvoidAreaType.TYPE_SYSTEM,

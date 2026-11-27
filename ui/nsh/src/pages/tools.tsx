@@ -1,5 +1,5 @@
 import { density, surfaceFinish, typography } from "../theme";
-import { platform, Scroll, signal, Text, View } from "nsh";
+import { batch, platform, Scroll, signal, Text, View } from "nsh";
 import {
   Action,
   Actions,
@@ -33,13 +33,12 @@ import { COPY } from "../product-copy";
 import { PageError } from "../page-error";
 import type { IconName } from "../icons";
 import { connectionState } from "../connection-state";
+import { isManualSelector } from "../proxy-groups";
 
 type Tool = {
   page: Page;
   zh: string;
   en: string;
-  descriptionZh?: string;
-  descriptionEn?: string;
   icon: IconName;
 };
 const sections: { zh: string; en: string; rows: Tool[] }[] = [
@@ -49,18 +48,14 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
     rows: [
       {
         page: "settings",
-        zh: "网络设置",
-        en: "Network settings",
-        descriptionZh: "VPN、DNS、端口",
-        descriptionEn: "VPN, DNS and ports",
+        zh: COPY["nav-settings"][0],
+        en: COPY["nav-settings"][1],
         icon: "sliders-horizontal",
       },
       {
         page: "appearance",
         zh: COPY["page-tr-001"][0],
         en: COPY["page-tr-001"][1],
-        descriptionZh: "语言与主题",
-        descriptionEn: "Language and theme",
         icon: "palette",
       },
     ],
@@ -71,26 +66,20 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
     rows: [
       {
         page: "connections",
-        zh: "连接与请求",
-        en: "Connections & requests",
-        descriptionZh: "活动连接与请求历史",
-        descriptionEn: "Active connections and request history",
+        zh: COPY["nav-connections"][0],
+        en: COPY["nav-connections"][1],
         icon: "list-filter",
       },
       {
         page: "resources",
-        zh: "资源与规则",
-        en: "Resources & rules",
-        descriptionZh: "分流规则与外部规则集",
-        descriptionEn: "Routing rules and external rule sets",
+        zh: COPY["nav-resources"][0],
+        en: COPY["nav-resources"][1],
         icon: "layers",
       },
       {
         page: "logs",
-        zh: "日志",
-        en: "Logs",
-        descriptionZh: "实时日志与按天归档",
-        descriptionEn: "Live logs and daily archives",
+        zh: COPY["nav-logs"][0],
+        en: COPY["nav-logs"][1],
         icon: "file-text",
       },
     ],
@@ -103,14 +92,12 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
         page: "diagnostics",
         zh: COPY["diagnostics-title"][0],
         en: COPY["diagnostics-title"][1],
-        descriptionZh: "连接状态与探测",
-        descriptionEn: "Connection status and probes",
         icon: "shield-check",
       },
       {
         page: "backups",
-        zh: "备份与恢复",
-        en: "Backup & restore",
+        zh: COPY["backup-title"][0],
+        en: COPY["backup-title"][1],
         icon: "download",
       },
       {
@@ -121,8 +108,8 @@ const sections: { zh: string; en: string; rows: Tool[] }[] = [
       },
       {
         page: "about",
-        zh: "关于",
-        en: "About",
+        zh: COPY["nav-about"][0],
+        en: COPY["nav-about"][1],
         icon: "info",
       },
     ],
@@ -149,11 +136,6 @@ export function Tools() {
                       id={`tool-${tool().page}`}
                       icon={tool().icon}
                       title={ui.t(tool().zh, tool().en)}
-                      subtitle={
-                        tool().descriptionZh
-                          ? ui.t(tool().descriptionZh!, tool().descriptionEn!)
-                          : undefined
-                      }
                       divider={index() + 1 < section().rows.length}
                       chevron
                       onPress={() => ui.navigate(tool().page)}
@@ -187,9 +169,8 @@ export function Diagnostics() {
   if (typeof prefilled === "string") {
     ui.viewState?.delete("diagnostics.prefillUrl");
   }
-  const group = signal(
-      ui.client.domains.data("summary")!.groups[0]?.name || "",
-    ),
+  const probeRoute = signal("current"),
+    group = signal(""),
     url = signal(
       typeof prefilled === "string" && prefilled
         ? prefilled
@@ -197,18 +178,21 @@ export function Diagnostics() {
     ),
     watch = signal<Watch>({ enabled: false, group: "", url: "" }),
     health = signal<Health | null>(null),
-    result = signal("");
+    result = signal(""),
+    resultError = signal("");
   const resultSession = signal(""), resultTime = signal("");
   const busy = () => ["diagnostics.probe", "diagnostics.watchSet", "diagnostics.watchGet"].some((command) => ui.client.isPending(command));
   let changed = typeof prefilled === "string" && prefilled.length > 0;
   const loadWatch = async () => {
     const value = await ui.client.run<Watch>("diagnostics.watchGet");
     if (alive() && value) {
-      watch.set(value);
-      if (!changed) {
-        if (value.group) group.set(value.group);
-        if (value.url) url.set(value.url);
-      }
+      batch(() => {
+        watch.set(value);
+        if (!changed) {
+          if (value.group) group.set(value.group);
+          if (value.url) url.set(value.url);
+        }
+      });
     }
   };
   const loadHealth = async (notify = false) => {
@@ -226,14 +210,14 @@ export function Diagnostics() {
     ui.client.domains
       .data("summary")!
       .groups.map((group) => ({ value: group.name, label: group.name }));
+  const selectedNode = () => {
+    const entry = ui.client.domains.data("summary")!.groups.find((entry) => entry.name === group());
+    return entry?.effectiveSelectedNode || entry?.selected || ui.t("未知", "Unknown");
+  };
   const selector = () =>
     ui.client.domains
       .data("summary")!
-      .groups.some(
-        (entry) =>
-          entry.name === group() &&
-          entry.groupType.toLowerCase() === "selector",
-      );
+      .groups.some((entry) => entry.name === group() && isManualSelector(entry));
   const validUrl = () => /^https:\/\/[^/?#@\s]+(?:\/[^?#\s]*)?$/.test(url());
   const saveWatch = async (enabled: boolean) => {
     const value = await ui.client.run<Watch>(
@@ -247,7 +231,15 @@ export function Diagnostics() {
   };
   const probe = async () => {
     if (busy()) return;
-    const submittedGroup = group(), submittedUrl = url(), session = current().vpnSessionId;
+    const submittedGroup = probeRoute() === "group" ? group() : undefined,
+      submittedUrl = url(), session = current().vpnSessionId,
+      target = submittedGroup
+        ? `${submittedGroup} → ${selectedNode()}`
+        : ui.t("当前连接（遵循当前模式和分流规则）", "Current connection (current mode and rules)");
+    batch(() => {
+      result.set("");
+      resultError.set("");
+    });
     const value = await ui.client.run<{ delay: number; sessionId: string }>(
       "diagnostics.probe",
       {
@@ -255,10 +247,13 @@ export function Diagnostics() {
         url: submittedUrl,
       },
     );
-    if (alive() && value && session === current().vpnSessionId) {
-      result.set(`${value.delay} ms · ${submittedGroup} · ${submittedUrl}`);
-      resultSession.set(value.sessionId);
-      resultTime.set(new Date().toISOString());
+    if (alive() && session === current().vpnSessionId) {
+      batch(() => {
+        result.set(`${value ? `${value.delay} ms · ` : ""}${target} · ${submittedUrl}`);
+        resultError.set(value ? "" : ui.client.error() || ui.t("探测失败，请重试。", "Probe failed. Please retry."));
+        resultSession.set(value?.sessionId || session || "");
+        resultTime.set(new Date().toISOString());
+      });
     }
   };
   const checkTone = (state: string) =>
@@ -283,23 +278,17 @@ export function Diagnostics() {
     health()?.engine === current().activeEngine
       ? health()
       : null;
-  const recoveryCard = (
-    <Card
-      title={ui.t("自动恢复", "Automatic recovery")}
-      subtitle={ui.t(
-        "持续检测目标服务，在符合策略时尝试恢复连接。",
-        "Watch the target service and recover according to the saved policy.",
-      )}
-    >
+  const renderRecoveryCard = () => (
+    <Card title={ui.t("自动恢复", "Automatic recovery")}>
       <Toggle
         label={ui.t("启用自动恢复", "Enable recovery")}
         description={ui.t(
-          "仅支持手动 Selector 策略组。",
-          "Available for manual Selector groups.",
+          "仅支持手动 Selector 策略组",
+          "Manual Selector groups only",
         )}
         value={watch().enabled}
         disabled={
-          busy() || (!watch().enabled && (!selector() || !validUrl()))
+          busy() || (!watch().enabled && (probeRoute() !== "group" || !selector() || !validUrl()))
         }
         onChange={(enabled) => void saveWatch(enabled)}
       />
@@ -310,6 +299,7 @@ export function Diagnostics() {
           label={ui.t("保存当前探测目标", "Save current target")}
           disabled={
             busy() ||
+            probeRoute() !== "group" ||
             !selector() ||
             !validUrl() ||
             (watch().group === group() && watch().url === url())
@@ -317,11 +307,11 @@ export function Diagnostics() {
           onPress={() => void saveWatch(true)}
         />
       </If>
-      <If when={!selector()}>
+      <If when={probeRoute() !== "group" || !selector()}>
         <Hint
           text={ui.t(
-            "请选择手动 Selector 分组以启用自动恢复。",
-            "Select a manual Selector group to enable recovery.",
+            "请切换到指定策略组检测，并选择手动 Selector 分组来设置自动恢复。",
+            "Choose a specific manual Selector group to configure recovery.",
           )}
         />
       </If>
@@ -460,7 +450,7 @@ export function Diagnostics() {
                 />
               </If>
             </Card>
-            <If when={layout().overview}>{recoveryCard}</If>
+            <If when={layout().overview}>{renderRecoveryCard()}</If>
           </View>
           <View
             style={{
@@ -470,23 +460,39 @@ export function Diagnostics() {
               gap: spacing.section,
             }}
           >
-            <Card
-              title={ui.t("目标服务探测", "Target service probe")}
-              subtitle={ui.t(
-                "通过指定代理组发送 HTTPS 探测，不改变分组选择。",
-                "Probe an HTTPS target through a group without changing its selection.",
-              )}
-            >
+            <Card title={ui.t("目标服务探测", "Target service probe")}>
               <Select
-                label={ui.t("策略组", "Proxy group")}
-                value={group()}
-                options={options()}
+                label={ui.t("检测路径", "Probe route")}
+                value={probeRoute()}
+                options={[
+                  { value: "current", label: ui.t("当前连接", "Current connection") },
+                  { value: "group", label: ui.t("指定策略组", "Specific proxy group") },
+                ]}
                 disabled={busy()}
-                onChange={(value) => {
-                  changed = true;
-                  group.set(value);
-                }}
+                onChange={(value) => probeRoute.set(value)}
               />
+              <If when={probeRoute() === "group"}>
+                <Select
+                  label={ui.t("策略组", "Proxy group")}
+                  value={group()}
+                  options={options()}
+                  disabled={busy()}
+                  onChange={(value) => {
+                    changed = true;
+                    group.set(value);
+                  }}
+                />
+                <Detail
+                  label={ui.t("当前选择", "Current selection")}
+                  value={group() ? `${group()} → ${selectedNode()}` : ui.t("请选择策略组", "Select a proxy group")}
+                />
+                <Hint
+                  text={ui.t(
+                    "仅检测该组的当前选择，不代表规则模式下的实际出口。套餐信息等占位节点通常无法连接。",
+                    "Tests only this group's selection, which may differ from rule-based routing. Subscription information placeholders usually cannot connect.",
+                  )}
+                />
+              </If>
               <Select
                 label={ui.t("预设目标", "Target preset")}
                 value={
@@ -547,7 +553,7 @@ export function Diagnostics() {
                     : ui.t("请先连接 VPN", "Connect VPN first")
                 }
                 disabled={
-                  busy() || !current().vpnRunning || !group() || !validUrl()
+                  busy() || !current().vpnRunning || (probeRoute() === "group" && !group()) || !validUrl()
                 }
                 onPress={() => void probe()}
               />
@@ -556,15 +562,19 @@ export function Diagnostics() {
                   tone={
                     resultSession() === current().vpnSessionId &&
                     current().vpnRunning
-                      ? "success"
+                      ? resultError() ? "danger" : "success"
                       : "neutral"
                   }
                   label={ui.t("最近探测", "Last probe")}
                   value={`${result()}\n${resultTime()}\n${resultSession() === current().vpnSessionId && current().vpnRunning ? ui.t("当前会话", "Current session") : ui.t("历史会话结果", "Previous session result")}`}
                 />
               </If>
+              <If when={resultError()}>
+                <Hint danger text={ui.t("目标探测失败，请检查上方检测路径、所选节点及目标网址。", "Target probe failed. Check the route, selected node and target URL above.")} />
+                <PageError id="diagnostics-probe-error" text={resultError()} />
+              </If>
             </Card>
-            <If when={!layout().overview}>{recoveryCard}</If>
+            <If when={!layout().overview}>{renderRecoveryCard()}</If>
           </View>
         </View>
       </Body>
@@ -596,8 +606,8 @@ export function AdvancedDiagnostics() {
         <Card
           title={ui.t("域名 DoH 策略", "Domain DoH policy")}
           subtitle={ui.t(
-            "通过所选策略组的 Cloudflare DoH 解析指定域名及其子域名。",
-            "Resolve domains and subdomains with Cloudflare DoH through the selected group.",
+            "通过所选策略组的 Cloudflare DoH 解析",
+            "Resolve with Cloudflare DoH via the selected group",
           )}
         >
           <Select
@@ -619,8 +629,8 @@ export function AdvancedDiagnostics() {
           />
           <Hint
             text={ui.t(
-              "用逗号分隔多个域名。保留其他 DNS 设置，并重新加载当前 VPN 配置。",
-              "Separate domains with commas. Other DNS settings are preserved; the active VPN is reloaded.",
+              "用逗号分隔多个域名",
+              "Separate domains with commas",
             )}
           />
           <Action
@@ -645,8 +655,8 @@ export function AdvancedDiagnostics() {
         <Card
           title={ui.t("脱敏诊断报告", "Redacted diagnostic report")}
           subtitle={ui.t(
-            "导出前请检查报告内容。报告不包含订阅密钥。",
-            "Review the report before exporting. Subscription secrets are excluded.",
+            "不包含订阅密钥",
+            "Subscription secrets are excluded",
           )}
         >
           <Action
@@ -768,14 +778,7 @@ export function Backups() {
               minWidth: 0,
             }}
           >
-            <Card
-              title={ui.t("本地备份", "Local backup")}
-              subtitle={ui.t(
-                "导出完整配置，或从备份文件恢复配置副本。",
-                "Export the full configuration, or restore profile copies from a backup file.",
-              )}
-            >
-              <Hint text={ui.t("导出配置", "Export configuration")} />
+            <Card title={ui.t("本地备份", "Local backup")}>
               <Hint
                 text={ui.t(
                   "备份包含订阅地址、覆写与节点密钥，请妥善保管。",
@@ -791,7 +794,6 @@ export function Backups() {
                 onPress={() => void exportBackup()}
               />
               <Separator />
-              <Hint text={ui.t("从文件恢复", "Restore from file")} />
               <Hint
                 text={ui.t(
                   "恢复时新建配置副本，保留当前配置与连接状态。",
@@ -818,8 +820,8 @@ export function Backups() {
             <Card
               title={ui.t("WebDAV 备份", "WebDAV backup")}
               subtitle={ui.t(
-                "账号与密码仅保存在当前页面内存中。点击上传或下载时才会连接服务器。",
-                "Credentials remain in this page’s memory. The server is contacted only when uploading or downloading.",
+                "凭据仅保存在当前页面内存中",
+                "Credentials remain in memory only",
               )}
             >
               <Field
@@ -833,12 +835,6 @@ export function Backups() {
                 label={ui.t("用户名", "Username")}
                 value={username()}
                 onChange={(text) => username.set(text)}
-              />
-              <Hint
-                text={ui.t(
-                  "填写完整的 HTTPS 文件地址。上传会创建新的备份，下载会恢复配置副本。",
-                  "Enter the complete HTTPS file URL. Upload creates a new backup; download restores profile copies.",
-                )}
               />
               <If when={url() && !validUrl()}>
                 <Hint
@@ -1038,13 +1034,7 @@ export function About() {
           </Card>
         </View>
         <View testID="about-ack-section">
-          <Card
-            title={ui.t("开源致谢", "Open source acknowledgements")}
-            subtitle={ui.t(
-              "感谢以下开源项目。各组件遵循各自的开源许可证。",
-              "Thanks to these projects. Each component is distributed under its own license.",
-            )}
-          >
+          <Card title={ui.t("开源致谢", "Open source acknowledgements")}>
             {renderComponent(
               "Native Shell",
               undefined,
@@ -1093,13 +1083,7 @@ export function About() {
           </Card>
         </View>
         <View testID="about-privacy-section">
-          <Card
-            title={ui.t("隐私与数据", "Privacy and data")}
-            subtitle={ui.t(
-              "隐私策略、出口 IP 查询和第三方服务说明",
-              "Privacy policy, exit IP lookup and third-party services",
-            )}
-          >
+          <Card title={ui.t("隐私与数据", "Privacy and data")}>
             <Action
               id="about-privacy"
               secondary
@@ -1149,13 +1133,7 @@ export function Privacy() {
             )}
           </Each>
         </Card>
-        <Card
-          title={ui.t("出口 IP 服务", "Exit IP services")}
-          subtitle={ui.t(
-            "连接后使用以下服务查询出口 IP，点击查看服务文档。",
-            "These services determine the exit IP after connecting. Open their documentation for details.",
-          )}
-        >
+        <Card title={ui.t("出口 IP 服务", "Exit IP services")}>
           <Each of={about().exitIpServices}>
             {(service) => (
               <ExternalLink

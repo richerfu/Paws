@@ -419,7 +419,14 @@ pub(super) fn tunnel_from_config_for(
 ) -> Tunnel {
     let tunnel = Tunnel::new_with_slot(config.dns.resolver_slot.clone());
     tunnel.set_dialer_registry(config.provider_dialer_registry);
-    tunnel.update_routing(config.proxies, config.rules, config.dialer_registry);
+    tunnel.set_dns_outbound_cell(config.provider_dns_cell);
+    tunnel.set_selection_backing(config.selection);
+    tunnel.update_routing(
+        config.proxies,
+        config.rules,
+        config.sub_rules,
+        config.dialer_registry,
+    );
     tunnel.set_mode(mode_to_tunnel(mode));
     if purpose == MeowLoadPurpose::Runtime {
         tunnel.spawn_background_tasks();
@@ -452,6 +459,16 @@ pub(super) fn restore_proxy_selections(
             .members()
             .is_some_and(|members| members.iter().any(|member| member == proxy_name))
         {
+            if selection.can_unfix() {
+                if let Some(members) = group.member_proxies() {
+                    if let Some(member) = members
+                        .into_iter()
+                        .find(|member| member.name() == proxy_name)
+                    {
+                        member.health().set_alive(true);
+                    }
+                }
+            }
             selection.force_set(Some(proxy_name));
         }
     }

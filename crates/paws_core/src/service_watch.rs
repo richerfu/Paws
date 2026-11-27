@@ -42,11 +42,13 @@ impl CoreHandle {
                     "Probe requires an HTTPS URL without credentials/query".into(),
                 ));
             }
-            if !state
-                .proxy_groups
-                .iter()
-                .any(|g| g.name == policy.group && g.group_type.eq_ignore_ascii_case("selector"))
-            {
+            if !state.proxy_groups.iter().any(|g| {
+                g.name == policy.group
+                    && matches!(
+                        g.group_type.to_ascii_lowercase().as_str(),
+                        "selector" | "select"
+                    )
+            }) {
                 return Err(PawsError::Core(
                     "Service recovery requires a manual Selector group".into(),
                 ));
@@ -140,7 +142,14 @@ pub(super) async fn service_watch_loop(weak: std::sync::Weak<CoreHandle>) {
         )
         .await
         {
-            Ok(Ok(group)) if group.group_type.eq_ignore_ascii_case("selector") => group,
+            Ok(Ok(group))
+                if matches!(
+                    group.group_type.to_ascii_lowercase().as_str(),
+                    "selector" | "select"
+                ) =>
+            {
+                group
+            }
             _ => continue,
         };
         if core

@@ -21,8 +21,9 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     results = []
     # NSH Gallery sizes by input method: touch (Phone, Pad) and pointer (desktop).
-    touch = dict(button=40, field=46, select=44, line=18)
-    pointer = dict(button=28, field=28, select=32, line=16)
+    # Gallery fieldSize: 32pt pointer (level with Select), 46pt touch.
+    touch = dict(button=40, field=46, select=44, line=20)
+    pointer = dict(button=28, field=32, select=32, line=18)
     for name, platform, width, height, tier in [
         ('phone', 'ios', 390, 844, touch),
         ('small-phone', 'ios', 320, 844, touch),

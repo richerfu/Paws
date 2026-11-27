@@ -67,6 +67,16 @@ The presentation bridge uses `{id, command, payload}`. Responses are
 including explicit `null`. Unknown commands and invalid payloads fail.
 Errors must never be reported as successful empty data.
 
+`diagnostics.probe` defaults to current routing when `group` is omitted. Core
+requires a running VPN and captures its app HTTP ingress; the engine's current
+mode and rules choose proxy or DIRECT. There is no host-direct fallback. The
+HTTPS request has an eight-second timeout, accepts only 2xx, does not follow
+redirects or consume target bodies, and rejects results across session/config
+changes. An explicit `group` retains native group URL testing. The UI separates
+these choices, shows the group's selected node, and does not let a saved recovery
+policy silently select group testing. Group failures distinguish target URL
+failure from a stopped engine session without exposing raw controller bodies.
+
 The aggregate runtime snapshot transport from Core to the UI has been removed.
 The host queries fourteen typed domains required by the active page and observes
 lightweight change events. Preferences use a separate event, not a fifteenth
@@ -114,6 +124,13 @@ Mode changes use the same conditional reconfiguration path: sing-box compiles
 mode-dependent rules, so updating a presentation flag alone cannot change its
 running route policy. Editing an inactive profile or restoring inactive backup
 copies does not request a restart of the active profile.
+Subscription refreshes report whether they actually changed the active
+configuration, including persistent user overrides. Refresh timestamps, usage,
+expiry, comments, formatting and mapping order alone do not reload the engine
+or request a restart. They still advance the editor revision and refresh the
+profile cards. Manual, batch and bootstrap refreshes use this transaction
+result instead of treating any editor revision change as a VPN change; an
+inactive subscription's update or failure cannot restart the active VPN.
 An explicit user Stop claims the current owner through the platform intent
 queue and is not conditional on a configuration revision. A concurrent save
 must not cancel Stop; the intent fence still prevents it from stopping a later

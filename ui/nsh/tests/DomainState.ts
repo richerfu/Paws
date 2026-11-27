@@ -97,8 +97,19 @@ export async function domainStateTrace(): Promise<void> {
       "unrequested telemetry changed static configuration or fabricated traffic data",
     );
 
+    let configFlashes = 0;
+    const configFresh = computed(() => {
+      const value = client.domains.fresh(["config", "status"]);
+      if (!value) configFlashes++;
+      return value;
+    });
+    assert(configFresh(), "critical domains were not fresh before switching pages");
     client.domains.setPage(["profiles"]);
     await turn();
+    assert(
+      configFresh() && configFlashes === 0,
+      "switching pages flashed continuously subscribed critical domains to not-fresh",
+    );
     const profiles = client.state()!.profiles;
     state = {
       ...state,
@@ -372,6 +383,83 @@ export async function domainStateTrace(): Promise<void> {
       client.state()!.configRevision === currentConfig && client.domains.has(["about"]),
       "late departed response changed current state",
     );
+
+    // Scoped proxy selection must keep global client.pending() at 0 and transition
+    // waiting -> settling atomically without dropping pendingRequests() to empty.
+    client.domains.setPage(["proxies"]);
+    await turn();
+    let heldSelectCommand: CoreRequest | undefined;
+    const heldSelectQueries: { request: CoreRequest; reply: DomainQueryResult }[] = [];
+    host.onCommand = (request) => {
+      if (request.command === "proxies.select") {
+        heldSelectCommand = request;
+        return;
+      }
+      host.reply(request, null);
+    };
+    host.onQuery = (request, reply) => {
+      if (reply.domain === "proxies" || reply.domain === "config") {
+        heldSelectQueries.push({ request, reply });
+        return true;
+      }
+      return false;
+    };
+    let selectActive = false;
+    let selectTransitions = 0;
+    let maxGlobalPendingDuringSelect = 0;
+    let droppedBeforeBarrier = false;
+    let barrierReleased = false;
+    effect(() => {
+      const pending = client.isPending("proxies.select");
+      const globalPending = client.pending();
+      if (selectActive) {
+        maxGlobalPendingDuringSelect = Math.max(
+          maxGlobalPendingDuringSelect,
+          globalPending,
+        );
+        if (!pending && !barrierReleased) droppedBeforeBarrier = true;
+      }
+      if (pending !== selectActive) {
+        selectActive = pending;
+        selectTransitions++;
+      }
+    });
+    const selectPromise = client.run("proxies.select", {
+      group: "Proxy",
+      name: "Test node",
+    });
+    await turn();
+    assert(
+      heldSelectCommand &&
+        client.isPending("proxies.select") &&
+        client.pending() === 0,
+      "proxies.select did not stay scoped to pendingRequests without raising global pending",
+    );
+    state = {
+      ...state,
+      revision: state.revision + 1,
+      configRevision: state.configRevision + 1,
+    };
+    host.reply(heldSelectCommand, true, ["config", "proxies"]);
+    await turn();
+    assert(
+      !droppedBeforeBarrier &&
+        client.isPending("proxies.select") &&
+        client.pending() === 0 &&
+        heldSelectQueries.length > 0,
+      "acceptResult bounced pendingRequests to empty between waiting and settling",
+    );
+    barrierReleased = true;
+    for (const item of heldSelectQueries) host.reply(item.request, item.reply);
+    await turn();
+    await selectPromise;
+    assert(
+      !client.isPending("proxies.select") &&
+        maxGlobalPendingDuringSelect === 0 &&
+        selectTransitions === 2,
+      `expected exactly 1 enter + 1 exit transition for proxies.select (got ${selectTransitions}, maxGlobal=${maxGlobalPendingDuringSelect})`,
+    );
+
     console.log(
       "PASS: query interests, generations, coalescing, loading and committed-result barriers preserve state without aggregate pushes",
     );

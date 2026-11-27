@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage matching Ability sources inside Paws without changing sibling checkouts."""
+"""Stage matching Ability and @nsh/harmonyos ArkTS sources inside Paws without changing sibling checkouts."""
 import os
 import hashlib
 import json
@@ -11,11 +11,14 @@ from nsh_build_inputs import resolve_inputs
 ROOT = Path(__file__).resolve().parents[1]
 inputs = resolve_inputs()
 source = Path(inputs['abilityRoot'])
+harmonyos_root = Path(inputs['harmonyosRoot']) if 'harmonyosRoot' in inputs else Path(inputs['nshRoot'])
+nsh_arkts = (
+    harmonyos_root / 'crates/nsh-platform-harmonyos/arkts'
+    if 'harmonyosRoot' in inputs
+    else harmonyos_root / 'crates/nsh-platform-ohos/arkts'
+)
 destination = ROOT / 'target/ohos/arkts-deps'
-packages = {'ability': source / 'native_ability',
-            'nsh': Path(inputs['nshRoot']) / 'crates/nsh-platform-ohos/arkts'}
-packages.update({name: source / 'plugins' / name for name in (
-    'resource', 'clipboard', 'window', 'url', 'files', 'accessibility', 'webview')})
+packages = {'ability': source / 'native_ability', 'nsh': nsh_arkts}
 if destination.exists():
     for stale in destination.iterdir():
         if stale.name not in packages:
@@ -23,7 +26,7 @@ if destination.exists():
 har_inputs = []
 for name, path in packages.items():
     if not (path / 'oh-package.json5').is_file():
-        raise SystemExit(f'Matching Ability package is unavailable: {path}')
+        raise SystemExit(f'Matching ArkTS package is unavailable: {path}')
     target = destination / name
     if target.exists():
         shutil.rmtree(target)
@@ -33,6 +36,10 @@ for name, path in packages.items():
     manifest.write_text(
         manifest.read_text()
         .replace('"@ohos-rs/ability": "workspace:*"', '"@ohos-rs/ability": "file:../ability"')
+        .replace(
+            '"libnsh_platform_harmonyos.so": "file:./src/main/cpp/types/libnsh_platform_harmonyos"',
+            '"libnsh_platform_harmonyos.so": "file:../../../../entry/src/main/cpp/types/libnsh_platform_harmonyos"',
+        )
         .replace(
             '"libnsh_platform_ohos.so": "file:./src/main/cpp/types/libnsh_platform_ohos"',
             '"libnsh_platform_ohos.so": "file:../../../../entry/src/main/cpp/types/libnsh_platform_ohos"',
@@ -62,5 +69,7 @@ for name, path in packages.items():
 sidecar = {'format': 'Paws-matching-ArkTS-sources-v1', 'nsh': inputs['nsh'],
            'ability': inputs['ability'], 'abilityDependencySource': inputs.get('abilityDependencySource'),
            'packages': har_inputs}
+if 'harmonyos' in inputs:
+    sidecar['harmonyos'] = inputs['harmonyos']
 (ROOT / 'target/ohos/arkts-source-inputs.json').write_text(json.dumps(sidecar, indent=2) + '\n')
 print(destination)

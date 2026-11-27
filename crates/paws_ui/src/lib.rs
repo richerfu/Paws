@@ -806,6 +806,20 @@ pub fn query_ui_preferences() -> Result<String> {
     serde_json::to_string(&preferences).map_err(|error| Error::from_reason(error.to_string()))
 }
 
+/// Reads one explicitly requested domain from local in-memory core state
+/// without contacting live engine controllers. Hosts use this alongside
+/// `query_ui_preferences()` to populate cold-start `host.params` before Frame 1;
+/// live gateway subscriptions still reconcile afterwards.
+#[napi]
+pub fn query_local_runtime_domain(domain_json: String) -> Result<String> {
+    let key: paws_core::RuntimeDomainKey = serde_json::from_str(&domain_json)
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    let projection = paws_core::shared_core()
+        .query_runtime_domain(key)
+        .map_err(to_napi_error)?;
+    serde_json::to_string(&projection).map_err(|error| Error::from_reason(error.to_string()))
+}
+
 #[napi]
 pub fn query_active_vpn_options() -> Result<String> {
     paws_core::shared_core()

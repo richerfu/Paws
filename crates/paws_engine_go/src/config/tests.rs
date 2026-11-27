@@ -469,3 +469,36 @@ rules: ['MATCH,Proxy']
         .unwrap()
     );
 }
+
+#[test]
+fn sing_box_synthesizes_selectable_global_group_for_global_mode() {
+    let result = render_sing_box_runtime_json(
+        SOURCE,
+        RuntimeMode::Global,
+        &BTreeMap::from([("GLOBAL".into(), "node".into())]),
+        &VpnOptions::default(),
+        &public_services(),
+    )
+    .unwrap();
+    assert_eq!(result.group_count, 1);
+    let config: Value = serde_json::from_str(&result.config_json).unwrap();
+    let global = config["outbounds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|outbound| outbound["tag"] == "GLOBAL")
+        .expect("synthetic GLOBAL paws-group");
+    assert_eq!(global["type"], "paws-group");
+    assert_eq!(global["kind"], "select");
+    assert_eq!(global["default"], "node");
+    assert_eq!(global["include_all_proxies"], true);
+    assert_eq!(global["include_all_providers"], true);
+    assert_eq!(global["outbounds"], json!(["direct", "Proxy"]));
+    let global_rule = config["route"]["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|rule| rule["clash_mode"] == "global")
+        .expect("global mode route rule");
+    assert_eq!(global_rule["outbound"], "GLOBAL");
+}

@@ -301,10 +301,13 @@ def build_manifest(root, hap_mode, native_profile, environment=None):
         'sourceCommitAtBuild': _command_output(['git', 'rev-parse', 'HEAD'], root),
         'sourceDirty': bool(_command_output(['git', 'status', '--porcelain=v1', '-z', '--untracked-files=normal'], root)),
     }
-    if 'libnsh_platform_ohos.so' in libraries:
+    if 'libnsh_platform_harmonyos.so' in libraries or 'libnsh_platform_ohos.so' in libraries:
         try:
             sources = json.loads((root / 'target/ohos/nsh-source-inputs.json').read_text())
-            identities = {name: sources[name] for name in ('nsh', 'ability')}
+            identity_names = ['nsh', 'ability']
+            if 'harmonyos' in sources:
+                identity_names.append('harmonyos')
+            identities = {name: sources[name] for name in identity_names}
             for identity in identities.values():
                 if (len(identity['revision']) != 40 or type(identity['dirty']) is not bool
                         or len(identity['worktreeSha256']) != 64
@@ -325,7 +328,7 @@ def build_manifest(root, hap_mode, native_profile, environment=None):
             arkts_path = root / 'target/ohos/arkts-source-inputs.json'
             if arkts_path.is_file():
                 arkts = json.loads(arkts_path.read_text())
-                if any(arkts[name] != identities[name] for name in ('nsh', 'ability')):
+                if any(arkts.get(name) != identities[name] for name in identity_names):
                     raise ValueError('ArkTS HAR sources differ from the compiled NSH source identities')
                 manifest['uiRuntime']['arktsSources'] = {
                     'manifestSha256': sha(arkts_path),

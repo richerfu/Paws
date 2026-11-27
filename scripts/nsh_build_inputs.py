@@ -1,4 +1,4 @@
-"""Record the local NSH SDK, native bindings and application capability sources."""
+"""Record the local NSH SDK, HarmonyOS backend and application capability sources."""
 import argparse
 import hashlib
 import json
@@ -11,12 +11,21 @@ ROOT = Path(__file__).resolve().parents[1]
 APPLICATION_ABILITY_REVISION = 'b65502500b820a570496f3798c931d12d3b71d39'
 
 
-def default_nsh_root():
-    """Locate the immutable local checkout selected for this application."""
-    revision = (ROOT / 'scripts/nsh-revision').read_text().strip()
+def _pinned_revision(filename):
+    revision = (ROOT / filename).read_text().strip()
     if len(revision) != 40 or any(character not in '0123456789abcdef' for character in revision):
-        raise ValueError('scripts/nsh-revision must contain one complete commit SHA')
-    return ROOT / 'target/nsh-checkouts' / revision
+        raise ValueError(f'{filename} must contain one complete commit SHA')
+    return revision
+
+
+def default_nsh_root():
+    """Locate the immutable local NSH checkout selected for this application."""
+    return ROOT / 'target/nsh-checkouts' / _pinned_revision('scripts/nsh-revision')
+
+
+def default_harmonyos_root():
+    """Locate the immutable local nsh-platform-harmonyos checkout selected for this application."""
+    return ROOT / 'target/nsh-harmonyos-checkouts' / _pinned_revision('scripts/nsh-harmonyos-revision')
 
 
 def default_ability_root():
@@ -68,8 +77,18 @@ def linked_git_ability(nsh, dependency, explicit):
 def resolve_inputs():
     selected = os.environ.get('NSH_ROOT')
     nsh = (Path(selected) if selected else default_nsh_root()).resolve(strict=True)
+    harmonyos_selected = os.environ.get('NSH_HARMONYOS_ROOT')
+    if harmonyos_selected:
+        harmonyos = Path(harmonyos_selected).resolve(strict=True)
+    elif not selected and (ROOT / 'scripts/nsh-harmonyos-revision').is_file():
+        harmonyos = default_harmonyos_root().resolve(strict=True)
+    else:
+        harmonyos = None
     manifest = tomllib.loads((nsh / 'Cargo.toml').read_text())
+    harmonyos_manifest = tomllib.loads((harmonyos / 'Cargo.toml').read_text()) if harmonyos else None
     dependency = manifest.get('workspace', {}).get('dependencies', {}).get('openharmony-ability')
+    if dependency is None and harmonyos_manifest:
+        dependency = harmonyos_manifest.get('workspace', {}).get('dependencies', {}).get('openharmony-ability')
     ability_path = dependency.get('path') if dependency else None
     explicit = os.environ.get('NSH_ABILITY_ROOT')
     linked_ability = (nsh / ability_path).resolve(strict=True).parents[1] if ability_path else None
@@ -95,7 +114,7 @@ def resolve_inputs():
     if not (ability / 'native_ability/oh-package.json5').is_file():
         raise ValueError('The selected Ability checkout has no native_ability package')
 
-    def identity(path, cargo_checkout=False, sdk_inputs=False):
+    def identity(path, cargo_checkout=False, sdk_subdir=None):
         git = ['git', '-c', 'core.fsmonitor=false', '-C', str(path)]
         revision = subprocess.check_output([*git, 'rev-parse', 'HEAD'], text=True, timeout=30).strip()
         status = subprocess.check_output([*git, 'status', '--porcelain=v1', '--untracked-files=normal'], timeout=30)
@@ -119,8 +138,8 @@ def resolve_inputs():
                     for chunk in iter(lambda: stream.read(1 << 20), b''):
                         digest.update(chunk)
         result = {'revision': revision, 'dirty': dirty, 'worktreeSha256': ''}
-        if sdk_inputs:
-            port = path / 'crates/nsh-platform-ohos'
+        if sdk_subdir:
+            port = path / sdk_subdir
             files = []
             generated = {'target', 'dist', 'build', 'oh_modules', 'node_modules', '.hvigor', '.cxx', '.nsh', '__pycache__'}
             for directory, children, names in os.walk(port):
@@ -131,7 +150,7 @@ def resolve_inputs():
                 files.extend(current / name for name in names if name != '.DS_Store')
             sdk_digest = hashlib.sha256(b'Paws-NSH-OHOS-source-v1\0')
             ignored = set(subprocess.check_output([*git, 'ls-files', '-z', '--others', '--ignored',
-                '--exclude-standard', '--', 'crates/nsh-platform-ohos'], timeout=30).split(b'\0'))
+                '--exclude-standard', '--', sdk_subdir], timeout=30).split(b'\0'))
             for filename in sorted(files):
                 relative = os.fsencode(filename.relative_to(path))
                 sdk_digest.update(relative + b'\0')
@@ -149,26 +168,39 @@ def resolve_inputs():
         result['worktreeSha256'] = digest.hexdigest()
         return result
 
-    nsh_identity, ability_identity = identity(nsh, sdk_inputs=True), identity(ability, cargo_checkout=bool(git_source))
-    result = {'nshRoot': str(nsh), 'abilityRoot': str(ability), 'nsh': nsh_identity, 'ability': ability_identity,
-              'nshRevision': nsh_identity['revision'] + ('+dirty' if nsh_identity['dirty'] else '')}
+    nsh_subdir = None if harmonyos else 'crates/nsh-platform-ohos'
+    nsh_identity = identity(nsh, sdk_subdir=nsh_subdir)
+    ability_identity = identity(ability, cargo_checkout=bool(git_source))
+    harmonyos_identity = identity(harmonyos, sdk_subdir='crates/nsh-platform-harmonyos') if harmonyos else None
+    revision_owner = harmonyos_identity if harmonyos_identity is not None else nsh_identity
+    result = {
+        'nshRoot': str(nsh),
+        'abilityRoot': str(ability),
+        'nsh': nsh_identity,
+        'ability': ability_identity,
+        'nshRevision': revision_owner['revision'] + ('+dirty' if revision_owner['dirty'] else ''),
+    }
+    if harmonyos is not None:
+        result['harmonyosRoot'] = str(harmonyos)
+        result['harmonyos'] = harmonyos_identity
     if dependency is None:
         result['hostModel'] = 'native-ui-context'
     # Development SDKs may override released bindings with local sources. Their
-    # contents are build inputs too, even when NSH's own HEAD has not changed.
+    # contents are build inputs too, even when HEAD has not changed.
     path_dependencies = {}
-    for packages in manifest.get('patch', {}).values():
-        for name, options in packages.items():
-            if not isinstance(options, dict) or 'path' not in options:
-                continue
-            package = (nsh / options['path']).resolve(strict=True)
-            root = Path(subprocess.check_output(
-                ['git', '-c', 'core.fsmonitor=false', '-C', str(package), 'rev-parse', '--show-toplevel'],
-                text=True, timeout=30).strip()).resolve(strict=True)
-            key = str(root)
-            if key not in path_dependencies:
-                path_dependencies[key] = {'root': key, 'identity': identity(root), 'packages': {}}
-            path_dependencies[key]['packages'][name] = str(package)
+    for workspace_root, workspace_manifest in ((nsh, manifest), *(([(harmonyos, harmonyos_manifest)] if harmonyos else []))):
+        for packages in workspace_manifest.get('patch', {}).values():
+            for name, options in packages.items():
+                if not isinstance(options, dict) or 'path' not in options:
+                    continue
+                package = (workspace_root / options['path']).resolve(strict=True)
+                root = Path(subprocess.check_output(
+                    ['git', '-c', 'core.fsmonitor=false', '-C', str(package), 'rev-parse', '--show-toplevel'],
+                    text=True, timeout=30).strip()).resolve(strict=True)
+                key = str(root)
+                if key not in path_dependencies:
+                    path_dependencies[key] = {'root': key, 'identity': identity(root), 'packages': {}}
+                path_dependencies[key]['packages'][name] = str(package)
     if path_dependencies:
         result['pathDependencies'] = [path_dependencies[key] for key in sorted(path_dependencies)]
     if git_source:
@@ -177,8 +209,11 @@ def resolve_inputs():
 
 
 def verify_source_identity(recorded, current):
-    """Reject missing fingerprints and any changes to either checked-out source tree."""
-    for name in ('nsh', 'ability'):
+    """Reject missing fingerprints and any changes to any checked-out source tree."""
+    required = ['nsh', 'ability']
+    if 'harmonyos' in current:
+        required.append('harmonyos')
+    for name in required:
         if not recorded.get(name, {}).get('worktreeSha256'):
             raise ValueError('NSH SDK has no recorded worktree digest; rebuild before reuse')
     if {key: recorded.get(key) for key in current} != current:
@@ -187,7 +222,7 @@ def verify_source_identity(recorded, current):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--field', choices=('nshRoot', 'abilityRoot', 'nshRevision'))
+    parser.add_argument('--field', choices=('nshRoot', 'harmonyosRoot', 'abilityRoot', 'nshRevision'))
     args = parser.parse_args()
     values = resolve_inputs()
     print(values[args.field] if args.field else json.dumps(values, indent=2))

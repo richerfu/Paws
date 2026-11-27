@@ -1,6 +1,6 @@
 //! meow-rs translation at the packet-stack boundary.
 /// Version and source revision of the packaged meow-rs engine.
-pub const VERSION: &str = "0.29.0+52d75ec";
+pub const VERSION: &str = "0.30.0";
 mod memory;
 #[cfg(test)]
 mod tests;
@@ -137,15 +137,24 @@ impl EngineTunnel for MeowTunnel {
     ) -> Result<Arc<dyn PacketConnection>, EngineError> {
         let inner = self.tunnel.inner().clone();
         let mut meta = metadata(flow);
+        if matches!(
+            inner.pre_handle_metadata(&mut meta),
+            meow_tunnel::tunnel::PreHandleVerdict::Drop
+        ) {
+            return Err(backend_error(
+                "route UDP",
+                "unmapped fake-IP or invalid destination host",
+            ));
+        }
         inner.pre_resolve(&mut meta).await;
+        inner.resolve_udp_dst(&mut meta).await;
         flow.dst_ip = meta.dst_ip;
         let target = inner
             .resolve_proxy(&meta)
             .await
             .ok_or_else(|| backend_error("route UDP", "no route target"))?;
-        let packet = target
-            .adapter
-            .dial_udp(&meta)
+        let packet = inner
+            .dial_udp(target.adapter.as_ref(), &meta)
             .await
             .map_err(|error| backend_error("dial UDP", error))?;
         Ok(Arc::new(Packet(packet)))

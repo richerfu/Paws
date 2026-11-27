@@ -35,12 +35,17 @@ outside presentation. See [the three-layer architecture](nsh-three-layer-archite
   enlarging the painted control. Header titles use 17-point text. Text rows grow
   with font scale. Long values wrap or have a complete details view, and
   comparable numbers use tabular figures.
-- Desktop always uses its own workspace: a 232-point scrolling sidebar (28-point
-  items), or a 64-point icon rail (36-point tiles) in a narrow window, with
-  tooltips and keyboard focus. The brand block is 40 points tall without a
-  divider; the content toolbar is 54 points, and the Phone header is 52 points. Root destinations are direct switches; Back belongs to nested
-  tasks. The mobile Settings hub and duplicate request-history link are absent
-  from the desktop sidebar.
+- Desktop always uses its own workspace: a 232-point scrolling sidebar (9 concise
+  noun destinations in one `<Tabs>` list: 4 unheaded primary workspaces, 4 `Network`
+  items, and a bottom-pinned `Settings` entry; 28-point rows with 1-point selected
+  border and `400`/`500` weight contrast), or a 64-point icon rail (36-point tiles,
+  `panel-left` expand toggle) in a narrow window, with tooltips and single-Tab-stop
+  arrow-key focus. The brand block is 40 points tall without a divider; the content
+  toolbar is 54 points, and the Phone header is 52 points. Root destinations are
+  direct switches; Back belongs to nested tasks. Wide-screen `Settings` hosts
+  `Network`, `Appearance`, `Backups`, and `About` via top segmented tabs, while
+  `Converter` opens from the `Subscriptions` toolbar. The mobile Settings hub and
+  duplicate request-history link are absent from the desktop sidebar.
 - Overview renders all policy groups directly without truncation or collapse on
   every platform; wide viewports separate the status column (connection hero,
   node summary and speed) and the full policy-group column. Desktop nodes use a
@@ -105,8 +110,8 @@ still animate on the native thread.
 Menus, dialogs and navigation use their native lifecycle. Notifications and
 floating-button docking honor reduced motion, including when it changes.
 
-Desktop shortcuts are Mod+1–4 for Overview, Subscriptions, Proxy nodes and Traffic,
-Mod+, for appearance and
+Desktop shortcuts are Mod+1–8 for Overview, Subscriptions, Proxies, Traffic,
+Connections, Rules, Logs and Diagnostics, Mod+, for unified Settings, and
 Mod+R for refresh. The active YAML editor owns Mod+S (save), Mod+F (find) and
 Mod+Shift+R (reload with its discard guard). Native menus, radio groups and
 dialogs own their keyboard traversal, focus and Escape behavior.

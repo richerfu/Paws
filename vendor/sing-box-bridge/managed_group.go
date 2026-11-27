@@ -225,6 +225,9 @@ func (g *pawsManagedGroup) Now() string {
 	return g.choose(g.owner.providers.current.Load(), M.Socksaddr{}, false)
 }
 func (g *pawsManagedGroup) Fixed() *string {
+	if g.options.Kind == "select" {
+		return nil
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.fixed == "" {

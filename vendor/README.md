@@ -1,9 +1,8 @@
 # Native engine integrations
 
-All meow-rs packages use the unmodified Git revision
-[`52d75ec0fe7eefcc427639ed2bb7ea242dc2781f`](https://github.com/meow-rs/meow-rs/commit/52d75ec0fe7eefcc427639ed2bb7ea242dc2781f).
-Its declared version is 0.29.0, and it includes post-`v0.29.0` OpenHarmony and
-transport fixes. Paws reports `0.29.0+52d75ec` to distinguish it from the tag.
+All meow-rs packages use the unmodified `v0.30.0` Git revision
+[`8e4e948464656380f46f3a98cb168fc35d7708db`](https://github.com/meow-rs/meow-rs/commit/8e4e948464656380f46f3a98cb168fc35d7708db),
+reported as `0.30.0`.
 
 There are no meow-rs copies in this directory and no Cargo patch table. The
 nine former `meow-*` forks have been removed. OpenHarmony socket protection,

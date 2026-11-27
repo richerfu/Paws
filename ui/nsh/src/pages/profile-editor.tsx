@@ -1,5 +1,6 @@
 import { density, surfaceFinish } from "../theme";
 import {
+  batch,
   cleanup,
   computed,
   effect,
@@ -9,13 +10,15 @@ import {
   Text,
   View,
 } from "nsh";
-import { Editor, type EditorRef, type EditorSearchResult } from "nsh/base";
 import {
   Action,
   Actions,
   Alert,
   askConfirmation,
   Badge,
+  Editor,
+  type EditorRef,
+  type EditorSearchResult,
   Field,
   Hint,
   IconButton,
@@ -79,31 +82,40 @@ export function ProfileEditor(props: { profileId: string }) {
     if (busy()) return;
     const generation = ++loadGeneration,
       revision = ui.client.state()!.configRevision;
-    operation.set("load");
-    error.set("");
+    batch(() => {
+      operation.set("load");
+      error.set("");
+    });
     const value = await ui.client.run<string>("profiles.read", {
       profileId: props.profileId,
     });
     if (!alive() || generation !== loadGeneration) return;
-    operation.set("");
     if (value === undefined) {
-      error.set(
-        ui.client.error() ||
-          ui.t("读取配置失败，请重试。", "Unable to read the profile. Retry."),
-      );
+      batch(() => {
+        operation.set("");
+        error.set(
+          ui.client.error() ||
+            ui.t("读取配置失败，请重试。", "Unable to read the profile. Retry."),
+        );
+      });
       return;
     }
     const normalized = value.replace(/\r\n?/g, "\n");
-    text.set(normalized);
-    original.set(normalized);
-    baseline.set(revision);
     edits.edit();
-    loaded.set(true);
+    batch(() => {
+      operation.set("");
+      text.set(normalized);
+      original.set(normalized);
+      baseline.set(revision);
+      loaded.set(true);
+    });
   };
   const save = async () => {
     if (busy() || !loaded() || conflict() || !text().trim()) return;
-    operation.set("save");
-    error.set("");
+    batch(() => {
+      operation.set("save");
+      error.set("");
+    });
     const content = text(),
       ticket = edits.ticket();
     const result = await ui.client.run(
@@ -116,34 +128,43 @@ export function ProfileEditor(props: { profileId: string }) {
       ui.t("配置已保存", "Profile saved"),
     );
     if (!alive()) return;
-    operation.set("");
     if (result === undefined) {
-      error.set(
-        ui.client.error() ||
-          ui.t("保存失败，请重试。", "Unable to save the profile. Retry."),
-      );
+      batch(() => {
+        operation.set("");
+        error.set(
+          ui.client.error() ||
+            ui.t("保存失败，请重试。", "Unable to save the profile. Retry."),
+        );
+      });
       return;
     }
-    if (edits.unchangedSince(ticket)) {
-      original.set(content);
-      baseline.set(ui.client.state()!.configRevision);
-      // A committed save with a failed follow-up read stays visible, so its
-      // warning cannot be mistaken for an unsaved/retryable mutation.
-      if (!ui.client.warning()) ui.back();
-    }
+    batch(() => {
+      operation.set("");
+      if (edits.unchangedSince(ticket)) {
+        original.set(content);
+        baseline.set(ui.client.state()!.configRevision);
+      }
+    });
+    // A committed save with a failed follow-up read stays visible, so its
+    // warning cannot be mistaken for an unsaved/retryable mutation.
+    if (edits.unchangedSince(ticket) && !ui.client.warning()) ui.back();
   };
   const validate = async () => {
     if (busy() || !loaded() || !text().trim()) return;
-    operation.set("validate");
-    error.set("");
+    batch(() => {
+      operation.set("validate");
+      error.set("");
+    });
     const result = await ui.client.run(
       "profiles.validate",
       { content: text() },
       ui.t("配置校验通过", "Configuration is valid"),
     );
     if (!alive()) return;
-    operation.set("");
-    if (result === undefined) error.set(ui.client.error());
+    batch(() => {
+      operation.set("");
+      if (result === undefined) error.set(ui.client.error());
+    });
   };
   const reload = async () => {
     if (busy()) return;
@@ -268,9 +289,11 @@ export function ProfileEditor(props: { profileId: string }) {
               label={ui.t("还原", "Reset")}
               disabled={busy() || !dirty()}
               onPress={() => {
-                text.set(original());
                 edits.edit();
-                error.set("");
+                batch(() => {
+                  text.set(original());
+                  error.set("");
+                });
               }}
             />
           </Actions>
@@ -412,9 +435,11 @@ export function ProfileEditor(props: { profileId: string }) {
           accessibilityLabel={ui.t("YAML 配置编辑器", "YAML profile editor")}
           value={text()}
           onChange={(event) => {
-            text.set(event.value);
             edits.edit();
-            error.set("");
+            batch(() => {
+              text.set(event.value);
+              error.set("");
+            });
           }}
           language="yaml"
           tabSize={2}

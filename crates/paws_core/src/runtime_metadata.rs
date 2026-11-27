@@ -112,8 +112,84 @@ pub(super) use paws_engine_meow::proxy_groups_snapshot as proxy_groups_from_tunn
 pub(super) fn refresh_proxy_groups_preserving_order(state: &mut CoreState, tunnel: &Tunnel) {
     let mut refreshed = proxy_groups_from_tunnel(tunnel);
     preserve_proxy_group_member_order(&state.proxy_groups, &mut refreshed);
+    order_proxy_groups_for_state(state, &mut refreshed);
     state.proxy_groups = refreshed;
     persist_runtime_ui_cache_best_effort(state);
+}
+
+pub(super) fn ensure_active_route_hints(
+    state: &mut CoreState,
+) -> Option<&paws_profile::ProfileRouteHints> {
+    let Some(profile_id) = state.profiles.active_profile().map(ToOwned::to_owned) else {
+        state.route_hints = None;
+        return None;
+    };
+    let updated_at = state
+        .profiles
+        .profile(&profile_id)
+        .ok()
+        .and_then(|profile| profile.updated_at.clone());
+    let stale = state
+        .route_hints
+        .as_ref()
+        .is_none_or(|hints| hints.profile_id != profile_id || hints.updated_at != updated_at);
+    if stale {
+        state.route_hints = state.profiles.route_hints(&profile_id);
+    }
+    state.route_hints.as_ref()
+}
+
+pub(super) fn order_groups_by_declared_names<T>(
+    declared: &[String],
+    groups: &mut [T],
+    name_of: impl Fn(&T) -> &str,
+) {
+    if declared.is_empty() {
+        groups.sort_by_key(|group| usize::from(name_of(group).eq_ignore_ascii_case("GLOBAL")));
+        return;
+    }
+    let positions = declared
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.as_str(), index))
+        .collect::<std::collections::HashMap<_, _>>();
+    groups.sort_by_key(|group| {
+        let name = name_of(group);
+        if let Some(&index) = positions.get(name) {
+            (0usize, index)
+        } else if name.eq_ignore_ascii_case("GLOBAL") {
+            (2usize, usize::MAX)
+        } else {
+            (1usize, 0usize)
+        }
+    });
+}
+
+fn declared_group_names_for_state(state: &mut CoreState) -> Vec<String> {
+    if let Some(hints) = ensure_active_route_hints(state) {
+        if !hints.declared_groups.is_empty() {
+            return hints.declared_groups.clone();
+        }
+    }
+    state
+        .proxy_groups
+        .iter()
+        .filter(|group| !group.name.eq_ignore_ascii_case("GLOBAL"))
+        .map(|group| group.name.clone())
+        .collect()
+}
+
+pub(super) fn order_proxy_groups_for_state(state: &mut CoreState, groups: &mut [ProxyGroup]) {
+    let declared = declared_group_names_for_state(state);
+    order_groups_by_declared_names(&declared, groups, |group| &group.name);
+}
+
+pub(super) fn order_group_summaries_for_state(
+    state: &mut CoreState,
+    groups: &mut [paws_engine::EngineGroupSummary],
+) {
+    let declared = declared_group_names_for_state(state);
+    order_groups_by_declared_names(&declared, groups, |group| &group.name);
 }
 
 pub(super) fn preserve_proxy_group_member_order(

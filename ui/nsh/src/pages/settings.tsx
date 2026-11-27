@@ -151,23 +151,27 @@ export function Settings() {
       if (decision === "reload") reset();
     });
   });
-  const changeVpn = (value: Partial<VpnOptions>) => {
-    vpn.set({ ...vpn(), ...value });
-    mark("vpn");
-  };
-  const changePorts = (value: Partial<NetworkPorts>) => {
-    ports.set({ ...ports(), ...value });
-    mark("network");
-  };
-  const changeController = (value: Partial<ControllerAccess>) => {
-    controller.set({ ...controller(), ...value });
-    mark("network");
-  };
+  const changeVpn = (value: Partial<VpnOptions>) =>
+    batch(() => {
+      vpn.set({ ...vpn(), ...value });
+      mark("vpn");
+    });
+  const changePorts = (value: Partial<NetworkPorts>) =>
+    batch(() => {
+      ports.set({ ...ports(), ...value });
+      mark("network");
+    });
+  const changeController = (value: Partial<ControllerAccess>) =>
+    batch(() => {
+      controller.set({ ...controller(), ...value });
+      mark("network");
+    });
   const enginePreview = signal(""),
     previewReasons = signal(""),
     previewBusy = signal(false),
     previewFailed = signal(false);
   let previewGeneration = 0;
+  let settledPreviewKey = "";
   effect(() => {
     if (ui.route() !== route) {
       previewGeneration++;
@@ -177,9 +181,11 @@ export function Settings() {
     const engine = vpn().engine,
       revision = current().configRevision,
       active = current().activeProfile;
-    const generation = ++previewGeneration;
+    const key = `${engine}\0${revision}\0${active || ""}`;
     untracked(() => {
       if (!active) {
+        settledPreviewKey = "";
+        previewGeneration++;
         batch(() => {
           previewBusy.set(false);
           enginePreview.set("");
@@ -188,6 +194,11 @@ export function Settings() {
         });
         return;
       }
+      if (settledPreviewKey === key && !previewFailed()) {
+        previewBusy.set(false);
+        return;
+      }
+      const generation = ++previewGeneration;
       previewBusy.set(true);
       void ui.client
         .send<{ selected: string; reasons?: string[] }>("engines.decision", {
@@ -200,12 +211,14 @@ export function Settings() {
             vpn().engine === engine &&
             current().activeProfile === active &&
             current().configRevision === revision
-          )
+          ) {
+            settledPreviewKey = key;
             batch(() => {
               enginePreview.set(value.selected);
               previewFailed.set(false);
               previewReasons.set(value.reasons?.join("\n") || "");
             });
+          }
         })
         .catch((error) => {
           if (
@@ -214,12 +227,14 @@ export function Settings() {
             vpn().engine === engine &&
             current().activeProfile === active &&
             current().configRevision === revision
-          )
+          ) {
+            settledPreviewKey = "";
             batch(() => {
               enginePreview.set("");
               previewFailed.set(true);
               previewReasons.set(String(error));
             });
+          }
         })
         .finally(() => {
           if (alive() && generation === previewGeneration)
@@ -298,14 +313,16 @@ export function Settings() {
         result !== undefined &&
         ui.client.domains.fresh(["config"])
       ) {
-        if (edits[section].unchangedSince(ticket))
-          dirty.update((previous) => {
-            const next = new Set(previous);
-            next.delete(section);
-            return next;
-          });
-        baseline.set(current().configRevision);
-        conflict.set(false);
+        batch(() => {
+          if (edits[section].unchangedSince(ticket))
+            dirty.update((previous) => {
+              const next = new Set(previous);
+              next.delete(section);
+              return next;
+            });
+          baseline.set(current().configRevision);
+          conflict.set(false);
+        });
       }
     } catch (error) {
       ui.client.error.set(
@@ -391,19 +408,9 @@ export function Settings() {
               </Actions>
             </View>
           </If>
-          <Card
-            title={ui.t("VPN 基础", "VPN basics")}
-            subtitle={ui.t(
-              "运行中的 VPN 会在保存后请求重连",
-              "Saving requests a reconnect for the running VPN",
-            )}
-          >
+          <Card title={ui.t("VPN 基础", "VPN basics")}>
             <Toggle
               label={ui.t("DNS 劫持", "DNS hijacking")}
-              description={ui.t(
-                "将应用的 DNS 请求交由 VPN 处理。",
-                "Handle application DNS requests through the VPN.",
-              )}
               value={vpn().dnsHijacking}
               onChange={(dnsHijacking) => changeVpn({ dnsHijacking })}
               disabled={
@@ -492,22 +499,12 @@ export function Settings() {
               }
               onChange={(stack) => changeVpn({ stack })}
             />
-            <Hint
-              text={ui.t(
-                "仅对 meow-rs 生效；mihomo 与 sing-box 使用内置系统或混合 TUN 栈。",
-                "Applies to meow-rs only; mihomo and sing-box use built-in system or mixed TUN stacks.",
-              )}
-            />
             <Field
               id="vpn-mtu"
               label="MTU"
               value={mtu()}
               placeholder="1500"
               numeric
-              description={ui.t(
-                "允许 1280–65535 的整数。",
-                "An integer from 1280 to 65535.",
-              )}
               error={
                 dirty().has("vpn") && !validMtu()
                   ? ui.t(
@@ -576,8 +573,8 @@ export function Settings() {
             />
             <Hint
               text={ui.t(
-                "应用白名单和绕过名单只能设置一项；多个包名用逗号分隔。",
-                "Set either an allow list or a bypass list. Separate package names with commas.",
+                "白名单与绕过名单二选一，逗号分隔",
+                "Use either allow or bypass list, comma-separated",
               )}
             />
             <Actions>
@@ -615,21 +612,49 @@ export function Settings() {
                 }
               />
             </Actions>
-
+            <Separator />
+            <Actions>
+              <If when={dirty().has("vpn")}>
+                <Action
+                  secondary
+                  small
+                  label={ui.t("重置", "Reset")}
+                  disabled={ui.client.pending() > 0}
+                  onPress={() => {
+                    const state = current();
+                    batch(() => {
+                      vpn.set({ ...state.vpnOptions });
+                      mtu.set(String(state.vpnOptions.mtu));
+                      dirty.update((previous) => {
+                        const next = new Set(previous);
+                        next.delete("vpn");
+                        return next;
+                      });
+                    });
+                  }}
+                />
+              </If>
+              <Action
+                primary
+                id="save-vpn"
+                loading={ui.client.isPending("settings.vpn")}
+                label={ui.t("保存 VPN 设置", "Save VPN settings")}
+                disabled={
+                  blocked() ||
+                  !dirty().has("vpn") ||
+                  !validMtu() ||
+                  !!(
+                    vpn().trustedApplications?.length &&
+                    vpn().blockedApplications?.length
+                  )
+                }
+                onPress={() => void save("vpn")}
+              />
+            </Actions>
           </Card>
-          <Card
-            title={ui.t("网络端口与控制器", "Network ports and controller")}
-            subtitle={ui.t(
-              "默认端口为 7890 和 9090；端口范围 1024–65535，且不能相同",
-              "Defaults: 7890 and 9090. Ports must be distinct integers from 1024 to 65535.",
-            )}
-          >
+          <Card title={ui.t("网络端口与控制器", "Network ports and controller")}>
             <Toggle
               label={ui.t("启用混合代理服务", "Enable mixed proxy service")}
-              description={ui.t(
-                "仅在 VPN 已连接时监听代理端口",
-                "Listen on the proxy port only while VPN is connected",
-              )}
               value={ports().mixedEnabled}
               onChange={(mixedEnabled) => changePorts({ mixedEnabled })}
             />
@@ -654,10 +679,6 @@ export function Settings() {
             <Separator />
             <Toggle
               label={ui.t("启用 Controller 服务", "Enable controller service")}
-              description={ui.t(
-                "仅在 VPN 已连接时监听控制端口",
-                "Listen on the controller port only while VPN is connected",
-              )}
               value={ports().controllerEnabled}
               onChange={(controllerEnabled) =>
                 changePorts({ controllerEnabled })
@@ -721,15 +742,21 @@ export function Settings() {
                 }
               />
             </If>
-
+            <Separator />
+            <Actions>
+              <Action
+                primary
+                id="save-network"
+                loading={ui.client.isPending("settings.network")}
+                label={ui.t("保存网络设置", "Save network settings")}
+                disabled={
+                  blocked() || !dirty().has("network") || !validNetwork()
+                }
+                onPress={() => void save("network")}
+              />
+            </Actions>
           </Card>
-          <Card
-            title="DNS"
-            subtitle={ui.t(
-              "每行一个地址，策略格式为 matcher = upstream",
-              "One address per line; policy format: matcher = upstream",
-            )}
-          >
+          <Card title="DNS">
             <Field
               label={ui.t("上游 DNS", "Upstream DNS")}
               value={dnsServers()}
@@ -764,51 +791,34 @@ export function Settings() {
               height={104}
               placeholder="geosite:cn=223.5.5.5,119.29.29.29"
             />
-
+            <Separator />
+            <Actions>
+              <Action
+                primary
+                id="save-dns"
+                loading={ui.client.isPending("settings.dns")}
+                label={ui.t("保存 DNS 设置", "Save DNS settings")}
+                disabled={
+                  blocked() || !dirty().has("dns") || !dnsServers().trim()
+                }
+                onPress={() => void save("dns")}
+              />
+            </Actions>
           </Card>
         </If>
       </Body>
     </Scroll>
-    <If when={profile()}>
+    <If when={profile() && dirty().size > 0}>
       <FormFooter>
-        <Hint text={ui.t("各分区独立保存。保存当前配置可能重新连接 VPN；失败会保留草稿。", "Sections save independently. Saving the active profile may reconnect VPN; failed saves keep drafts.")} />
+        <Hint text={ui.t("有未保存变更", "Unsaved changes")} />
         <Actions align="start">
-            <Action
-              primary
-              id="save-vpn"
-              loading={ui.client.isPending("settings.vpn")}
-              label={ui.t("保存 VPN 设置", "Save VPN settings")}
-              disabled={
-                blocked() ||
-                !dirty().has("vpn") ||
-                !validMtu() ||
-                !!(
-                  vpn().trustedApplications?.length &&
-                  vpn().blockedApplications?.length
-                )
-              }
-              onPress={() => void save("vpn")}
-            />
-            <Action
-              primary
-              id="save-network"
-              loading={ui.client.isPending("settings.network")}
-              label={ui.t("保存网络设置", "Save network settings")}
-              disabled={
-                blocked() || !dirty().has("network") || !validNetwork()
-              }
-              onPress={() => void save("network")}
-            />
-            <Action
-              primary
-              id="save-dns"
-              loading={ui.client.isPending("settings.dns")}
-              label={ui.t("保存 DNS 设置", "Save DNS settings")}
-              disabled={
-                blocked() || !dirty().has("dns") || !dnsServers().trim()
-              }
-              onPress={() => void save("dns")}
-            />
+          <Action
+            secondary
+            small
+            label={ui.t("放弃全部未保存草稿", "Discard all unsaved drafts")}
+            disabled={ui.client.pending() > 0}
+            onPress={reset}
+          />
         </Actions>
       </FormFooter>
     </If>
@@ -839,12 +849,6 @@ export function Appearance() {
               }
             />
           </ListSurface>
-          <Hint
-            text={ui.t(
-              "选择界面语言；跟随系统会响应系统语言变化",
-              "Choose the interface language or follow system settings.",
-            )}
-          />
         </View>
         <View style={{ gap: spacing.sm }}>
           <SectionHeader title={ui.t("主题", "Theme")} />
@@ -863,12 +867,6 @@ export function Appearance() {
               }
             />
           </ListSurface>
-          <Hint
-            text={ui.t(
-              "切换浅色、深色或跟随系统；修改会立即生效",
-              "Choose light, dark or follow the system appearance.",
-            )}
-          />
         </View>
       </Body>
     </Scroll>

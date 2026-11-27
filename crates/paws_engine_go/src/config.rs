@@ -751,10 +751,6 @@ pub fn render_sing_box_runtime_json(
         }));
     }
     let group_count = group_names.len();
-    outbounds.push(serde_json::json!({"type":"direct","tag":"direct"}));
-    outbounds.push(serde_json::json!({"type":"block","tag":"block"}));
-    // Declaration order is policy: a BTreeSet must never choose the first
-    // group alphabetically, and MATCH must stay in the source rule position.
     let final_outbound = group_names
         .first()
         .cloned()
@@ -769,13 +765,50 @@ pub fn render_sing_box_runtime_json(
             "GLOBAL selection names an unknown target".into(),
         ));
     }
+    let global_outbound = if let Some(existing) = group_names
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case("GLOBAL"))
+    {
+        existing.clone()
+    } else {
+        let mut global_members = vec!["direct".to_owned()];
+        if global_target == "block" {
+            global_members.push("block".to_owned());
+        }
+        global_members.extend(group_names.iter().cloned());
+        outbounds.push(serde_json::json!({
+            "type": "paws-group",
+            "tag": "GLOBAL",
+            "kind": "select",
+            "outbounds": global_members,
+            "use": [],
+            "default": global_target,
+            "url": serde_json::Value::Null,
+            "interval": 300,
+            "timeout": 5000,
+            "tolerance": 50,
+            "lazy": true,
+            "strategy": "consistent-hashing",
+            "include_all_proxies": true,
+            "include_all_providers": true,
+            "filter": serde_json::Value::Null,
+            "exclude_filter": serde_json::Value::Null,
+            "exclude_type": serde_json::Value::Null,
+            "expected_status": serde_json::Value::Null,
+            "disable_udp": false,
+            "interrupt_exist_connections": false,
+        }));
+        "GLOBAL".to_owned()
+    };
+    outbounds.push(serde_json::json!({"type":"direct","tag":"direct"}));
+    outbounds.push(serde_json::json!({"type":"block","tag":"block"}));
     let mut route_rules = vec![serde_json::json!({"action":"sniff"})];
     if options.dns_hijacking {
         route_rules.push(serde_json::json!({"port":53,"action":"hijack-dns"}));
         route_rules.push(serde_json::json!({"protocol":"dns","action":"hijack-dns"}));
     }
     route_rules.push(serde_json::json!({"clash_mode":"direct","outbound":"direct"}));
-    route_rules.push(serde_json::json!({"clash_mode":"global","outbound":global_target}));
+    route_rules.push(serde_json::json!({"clash_mode":"global","outbound":global_outbound}));
     let rules = match yaml_field(root, "rules") {
         None => Vec::new(),
         Some(value) => value

@@ -1,4 +1,4 @@
-import { cleanup, Scroll, signal, View } from "nsh";
+import { batch, cleanup, Scroll, signal, View } from "nsh";
 import {
   Action,
   Actions,
@@ -86,9 +86,11 @@ export function Converter() {
         );
         return;
       }
-      longUrl.set(url);
-      generatedFrom.set(submitted);
-      shortUrl.set("");
+      batch(() => {
+        longUrl.set(url);
+        generatedFrom.set(submitted);
+        shortUrl.set("");
+      });
       await state.save();
       if (alive())
         copy(
@@ -113,8 +115,10 @@ export function Converter() {
       const previous = draft();
       await state.parse(parseUrl());
       if (alive() && draft() !== previous) {
-        longUrl.set("");
-        shortUrl.set("");
+        batch(() => {
+          longUrl.set("");
+          shortUrl.set("");
+        });
         await state.save();
       }
     });
@@ -217,13 +221,7 @@ export function Converter() {
                   change({ advanced: value === "advanced" });
                 }}
               />
-              <Card
-                title={ui.t("转换规则", "Conversion rules")}
-                subtitle={ui.t(
-                  "兼容 sub-web 的订阅转换规则；生成链接后可导入 Clash。",
-                  "Subscription conversion compatible with sub-web. Generate a link to import into Clash.",
-                )}
-              >
+              <Card title={ui.t("转换规则", "Conversion rules")}>
                 <Field
                   label={ui.t("订阅或节点链接", "Subscription or node links")}
                   value={draft()!.source_sub_url}
@@ -353,13 +351,7 @@ export function Converter() {
                       }
                     />
                   </Card>
-                  <Card
-                    title={ui.t("过滤", "Filter")}
-                    subtitle={ui.t(
-                      "按节点名称包含或排除，支持正则。",
-                      "Include or exclude nodes by name; regular expressions are supported.",
-                    )}
-                  >
+                  <Card title={ui.t("过滤", "Filter")}>
                     <Field
                       label={ui.t("包含节点", "Include nodes")}
                       value={draft()!.include_remarks}
@@ -409,23 +401,23 @@ export function Converter() {
                               "append_type",
                               "附加节点类型",
                               "Append node type",
-                              "append_type",
-                              "append_type",
+                              "",
+                              "",
                             ],
                             [
                               "scv",
                               "跳过证书验证",
                               "Skip certificate verification",
-                              "scv",
-                              "scv",
+                              "",
+                              "",
                             ],
-                            ["udp", "启用 UDP", "Enable UDP", "udp", "udp"],
+                            ["udp", "启用 UDP", "Enable UDP", "", ""],
                             [
                               "tfo",
                               "TCP Fast Open",
                               "TCP Fast Open",
-                              "tfo",
-                              "tfo",
+                              "",
+                              "",
                             ],
                           ],
                         },
@@ -433,27 +425,27 @@ export function Converter() {
                           zh: "筛选、排序与规则",
                           en: "Filtering, sorting and rules",
                           options: [
-                            ["sort", "排序节点", "Sort nodes", "sort", "sort"],
+                            ["sort", "排序节点", "Sort nodes", "", ""],
                             [
                               "fdn",
                               "过滤非法节点",
                               "Filter invalid nodes",
-                              "fdn",
-                              "fdn",
+                              "",
+                              "",
                             ],
                             [
                               "expand",
                               "展开规则",
                               "Expand rules",
-                              "expand",
-                              "expand",
+                              "",
+                              "",
                             ],
                             [
                               "insert",
                               "插入默认节点",
                               "Insert default nodes",
-                              "insert / insert_url",
-                              "insert / insert_url",
+                              "",
+                              "",
                             ],
                           ],
                         },
@@ -465,22 +457,22 @@ export function Converter() {
                               "surge_doh",
                               "Surge DoH",
                               "Surge DoH",
-                              "surge.doh",
-                              "surge.doh",
+                              "",
+                              "",
                             ],
                             [
                               "clash_doh",
                               "Clash DoH",
                               "Clash DoH",
-                              "clash.doh",
-                              "clash.doh",
+                              "",
+                              "",
                             ],
                             [
                               "new_name",
                               "Clash 新字段",
                               "New Clash field names",
-                              "new_name",
-                              "new_name",
+                              "",
+                              "",
                             ],
                           ],
                         },
@@ -496,7 +488,11 @@ export function Converter() {
                                   insetRow
                                   divider={index() < group().options.length - 1}
                                   label={ui.t(option()[1], option()[2])}
-                                  description={ui.t(option()[3], option()[4])}
+                                  description={
+                                    option()[3]
+                                      ? ui.t(option()[3], option()[4])
+                                      : undefined
+                                  }
                                   disabled={busy()}
                                   value={
                                     !!draft()![option()[0] as keyof ConverterDraft]
@@ -531,16 +527,10 @@ export function Converter() {
               <Card
                 title={ui.t("生成结果", "Generated result")}
                 subtitle={ui.t(
-                  "生成操作只构造转换地址，访问时会将订阅地址发送给转换服务。",
-                  "Generation builds a URL. Opening it sends the subscription URLs to the conversion service.",
+                  "访问时会将订阅地址发送给转换服务",
+                  "Opening the link sends subscription URLs to the conversion service",
                 )}
               >
-                <Hint
-                  text={ui.t(
-                    "转换设置在离开时自动保存；生成结果仅保留在本次会话。",
-                    "Conversion settings save automatically when leaving. Generated results last for this session.",
-                  )}
-                />
                 <If when={stale()}>
                   <Alert
                     tone="warning"
@@ -622,13 +612,7 @@ export function Converter() {
                   }
                 />
               </Card>
-              <Card
-                title={ui.t("从长链或短链解析", "Parse a long or short URL")}
-                subtitle={ui.t(
-                  "解析已有转换地址，将规则载入当前表单。",
-                  "Load conversion settings from an existing URL.",
-                )}
-              >
+              <Card title={ui.t("从长链或短链解析", "Parse a long or short URL")}>
                 <Field
                   label={ui.t("转换地址", "Conversion URL")}
                   value={parseUrl()}

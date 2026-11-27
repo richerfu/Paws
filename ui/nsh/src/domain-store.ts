@@ -18,9 +18,10 @@ type Entry = {
   phase: Signal<Phase>;
   error: Signal<string>;
   version: Signal<number>;
+  appliedGeneration: Signal<number>;
   observation: Signal<DomainQueryResult["observation"]>;
   target: number;
-  appliedGeneration: number;
+  freshTarget: number;
   flight?: Promise<void>;
   failedGeneration?: number;
 };
@@ -115,6 +116,42 @@ const booleans = new Set([
   "controllerRunning",
 ]);
 const counts = new Set(["profileCount", "globalNodeCount", "nodeCount", "groupCount"]);
+const optionalNullableNumbers: Partial<Record<DomainName, string[]>> = {
+  status: ["vpnConnectedAt"],
+  summary: ["primarySelectedDelayMs", "globalSelectedDelayMs"],
+};
+const optionalNullableStrings: Partial<Record<DomainName, string[]>> = {
+  summary: ["primarySelectedGroup"],
+};
+
+function deepEqual(previous: unknown, next: unknown): boolean {
+  if (Object.is(previous, next)) return true;
+  if (
+    !previous ||
+    !next ||
+    typeof previous !== "object" ||
+    typeof next !== "object"
+  )
+    return false;
+  if (Array.isArray(previous) || Array.isArray(next)) {
+    if (!Array.isArray(previous) || !Array.isArray(next)) return false;
+    if (previous.length !== next.length) return false;
+    for (let index = 0; index < previous.length; index++) {
+      if (!deepEqual(previous[index], next[index])) return false;
+    }
+    return true;
+  }
+  const prevObj = previous as Record<string, unknown>;
+  const nextObj = next as Record<string, unknown>;
+  const prevKeys = Object.keys(prevObj);
+  const nextKeys = Object.keys(nextObj);
+  if (prevKeys.length !== nextKeys.length) return false;
+  for (const key of prevKeys) {
+    if (!Object.prototype.hasOwnProperty.call(nextObj, key)) return false;
+    if (!deepEqual(prevObj[key], nextObj[key])) return false;
+  }
+  return true;
+}
 
 function validateData(domain: DomainName, data: unknown): void {
   if (!data || typeof data !== "object" || Array.isArray(data))
@@ -150,6 +187,22 @@ function validateData(domain: DomainName, data: unknown): void {
     if (!present || !valid)
       throw new Error(`Invalid ${domain} query: ${present ? "invalid" : "missing"} ${key}`);
   }
+  for (const key of optionalNullableNumbers[domain] || []) {
+    if (!Object.prototype.hasOwnProperty.call(object, key)) continue;
+    const value = object[key];
+    if (
+      value !== undefined &&
+      value !== null &&
+      (typeof value !== "number" || !Number.isFinite(value) || value < 0)
+    )
+      throw new Error(`Invalid ${domain} query: invalid ${key}`);
+  }
+  for (const key of optionalNullableStrings[domain] || []) {
+    if (!Object.prototype.hasOwnProperty.call(object, key)) continue;
+    const value = object[key];
+    if (value !== undefined && value !== null && typeof value !== "string")
+      throw new Error(`Invalid ${domain} query: invalid ${key}`);
+  }
 }
 
 /** A receipt can be committed even when its subsequent view query fails. */
@@ -160,6 +213,11 @@ export class CommittedStateError extends Error {
     );
   }
 }
+
+export type InitialDomainProjection<D extends DomainName = DomainName> = Omit<
+  DomainQueryResult<D>,
+  "generation"
+>;
 
 /** One active interest set; events invalidate keys and never carry domain data. */
 export class DomainStore {
@@ -198,6 +256,42 @@ export class DomainStore {
       this.schedule();
     }
   }
+  /** Seeds cold-start projections from host launch params before Frame 1 mounts.
+   * Leaves version and appliedGeneration unset so live gateway subscribe/query
+   * still reconciles and fences imperative mutations until confirmed. */
+  seed(projections: readonly InitialDomainProjection[]): void {
+    if (this.disposed || !Array.isArray(projections) || !projections.length) return;
+    batch(() => {
+      for (const value of projections) {
+        if (
+          !value ||
+          typeof value !== "object" ||
+          !(value.domain in fields) ||
+          (value.groupKey !== undefined && typeof value.groupKey !== "string") ||
+          !revision(value.revision) ||
+          !revision(value.configRevision)
+        )
+          continue;
+        try {
+          validateData(value.domain, value.data);
+        } catch {
+          continue;
+        }
+        const entry = this.entry({
+          domain: value.domain,
+          ...(value.groupKey !== undefined ? { groupKey: value.groupKey } : {}),
+        });
+        if (entry.data() || entry.version() >= 0) continue;
+        this.apply(entry, { ...value, generation: 0 });
+        if (value.observation !== undefined) entry.observation.set(value.observation);
+        entry.phase.set("ready");
+        this.latestRevision.set(Math.max(this.latestRevision(), value.revision));
+        if (value.domain === "config") {
+          this.configRevision.set(Math.max(this.configRevision(), value.configRevision));
+        }
+      }
+    });
+  }
   setPage(inputs: DomainInput[]): void {
     this.page = inputs.map(normalize);
     this.schedule();
@@ -221,8 +315,8 @@ export class DomainStore {
       const entry = this.entry(normalize(input));
       return (
         entry.phase() === "ready" &&
-        entry.appliedGeneration === this.generation &&
-        entry.version() >= entry.target
+        entry.appliedGeneration() === this.generation &&
+        entry.version() >= entry.freshTarget
       );
     });
   }
@@ -238,7 +332,7 @@ export class DomainStore {
         this.fresh(["config"]) &&
         !!entry.data() &&
         entry.phase() !== "error" &&
-        entry.appliedGeneration === this.generation &&
+        entry.appliedGeneration() === this.generation &&
         this.profilesConfigRevision === this.configRevision()
       );
     });
@@ -268,19 +362,30 @@ export class DomainStore {
       this.schedule(true);
       return;
     }
-    for (const input of inputs || [...this.interests.values()]) {
-      const entry = this.entry(normalize(input));
-      entry.failedGeneration = undefined;
-      entry.appliedGeneration = -1;
-      entry.error.set("");
-      if (this.interests.has(domainKey(entry.interest))) {
-        entry.phase.set("loading");
-        this.query(entry);
+    const toQuery: Entry[] = [];
+    batch(() => {
+      for (const input of inputs || [...this.interests.values()]) {
+        const entry = this.entry(normalize(input));
+        entry.failedGeneration = undefined;
+        entry.appliedGeneration.set(-1);
+        entry.error.set("");
+        if (this.interests.has(domainKey(entry.interest))) {
+          entry.phase.set("loading");
+          toQuery.push(entry);
+        }
       }
-    }
+    });
+    for (const entry of toQuery) this.query(entry);
   }
 
   changed(value: StateChanged): void {
+    this.applyChanged(value);
+  }
+
+  private applyChanged(
+    value: StateChanged,
+    silentContinuous?: ReadonlySet<string>,
+  ): void {
     if (
       this.disposed ||
       value.generation !== this.generation ||
@@ -288,24 +393,48 @@ export class DomainStore {
       !Array.isArray(value.changes)
     )
       return;
-    for (const change of value.changes) {
-      if (
-        !change ||
-        !(change.domain in fields) ||
-        !revision(change.revision) ||
-        (change.groupKey !== undefined && typeof change.groupKey !== "string")
-      )
-        continue;
-      const entry = this.entry(change),
-        key = domainKey(change);
-      if (!this.interests.has(key)) continue;
-      entry.target = Math.max(entry.target, change.revision);
-      if (entry.appliedGeneration !== this.generation || entry.version() < entry.target) {
-        entry.failedGeneration = undefined;
-        entry.phase.set("loading");
-        this.query(entry);
+    const toQuery: Entry[] = [];
+    batch(() => {
+      for (const change of value.changes) {
+        if (
+          !change ||
+          !(change.domain in fields) ||
+          !revision(change.revision) ||
+          (change.groupKey !== undefined && typeof change.groupKey !== "string")
+        )
+          continue;
+        const entry = this.entry(change),
+          key = domainKey(change);
+        if (!this.interests.has(key)) continue;
+        entry.target = Math.max(entry.target, change.revision);
+        if (silentContinuous?.has(key) && entry.data() && entry.phase() === "ready") {
+          // Continuously subscribed domain whose subscribe receipt carries a newer
+          // global revision (e.g., from background telemetry ticks): silently catch
+          // up version in the background without flashing controls to loading.
+          entry.failedGeneration = undefined;
+          entry.appliedGeneration.set(this.generation);
+          if (entry.version() < entry.target) toQuery.push(entry);
+          continue;
+        }
+        entry.freshTarget = Math.max(entry.freshTarget, change.revision);
+        if (
+          entry.data() &&
+          entry.phase() === "ready" &&
+          entry.version() >= entry.target
+        ) {
+          entry.failedGeneration = undefined;
+          entry.appliedGeneration.set(this.generation);
+        } else if (
+          entry.appliedGeneration() !== this.generation ||
+          entry.version() < entry.target
+        ) {
+          entry.failedGeneration = undefined;
+          entry.phase.set("loading");
+          toQuery.push(entry);
+        }
       }
-    }
+    });
+    for (const entry of toQuery) this.query(entry);
     this.checkBarriers();
   }
 
@@ -320,19 +449,29 @@ export class DomainStore {
         reject(new CommittedStateError("The requested state did not arrive in time"));
       }, this.timeoutMs);
       this.barriers.add(pending);
-      for (const required of pending.required) {
-        if (!required || !(required.domain in fields) || !revision(required.revision)) {
-          this.finishBarrier(pending, new CommittedStateError("Invalid domain revision"));
-          return;
+      const toQuery: Entry[] = [];
+      let invalid = false;
+      batch(() => {
+        for (const required of pending.required) {
+          if (!required || !(required.domain in fields) || !revision(required.revision)) {
+            invalid = true;
+            return;
+          }
+          if (!this.interests.has(domainKey(required))) continue;
+          const entry = this.entry(required);
+          entry.target = Math.max(entry.target, required.revision);
+          entry.freshTarget = Math.max(entry.freshTarget, required.revision);
+          if (!this.fresh([entry.interest]) && entry.failedGeneration !== this.generation) {
+            entry.phase.set("loading");
+            toQuery.push(entry);
+          }
         }
-        if (!this.interests.has(domainKey(required))) continue;
-        const entry = this.entry(required);
-        entry.target = Math.max(entry.target, required.revision);
-        if (!this.fresh([entry.interest]) && entry.failedGeneration !== this.generation) {
-          entry.phase.set("loading");
-          this.query(entry);
-        }
+      });
+      if (invalid) {
+        this.finishBarrier(pending, new CommittedStateError("Invalid domain revision"));
+        return;
       }
+      for (const entry of toQuery) this.query(entry);
       this.checkBarriers();
     });
   }
@@ -351,8 +490,9 @@ export class DomainStore {
         error: signal(""),
         observation: signal<DomainQueryResult["observation"]>(),
         version: signal(-1),
+        appliedGeneration: signal(-1),
         target: 0,
-        appliedGeneration: -1,
+        freshTarget: 0,
       };
       this.entries.set(key, value);
     }
@@ -373,12 +513,14 @@ export class DomainStore {
   }
   private reconcile(): void {
     if (this.disposed) return;
+    const prevInterests = this.interests;
+    const prevGeneration = this.generation;
     const desired = new Map<string, DomainInterest>();
     for (const interest of [...critical, ...this.page, ...[...this.leases.values()].flat()])
       desired.set(domainKey(interest), interest);
     const same =
-      desired.size === this.interests.size &&
-      [...desired.keys()].every((key) => this.interests.has(key));
+      desired.size === prevInterests.size &&
+      [...desired.keys()].every((key) => prevInterests.has(key));
     this.interests = desired;
     this.checkBarriers(); // A departed page cannot hold a committed command indefinitely.
     if (
@@ -391,33 +533,54 @@ export class DomainStore {
     const generation = ++this.generation;
     this.subscribedGeneration = -1;
     this.subscribingGeneration = generation;
-    this.subscriptionError.set("");
-    for (const interest of desired.values()) {
-      const entry = this.entry(interest);
-      entry.failedGeneration = undefined;
-      entry.phase.set("loading");
-      entry.error.set("");
-    }
+    const continuousKeys = new Set<string>();
+    batch(() => {
+      this.subscriptionError.set("");
+      for (const [key, interest] of desired.entries()) {
+        const entry = this.entry(interest);
+        entry.failedGeneration = undefined;
+        entry.error.set("");
+        const continuousFresh =
+          prevInterests.has(key) &&
+          entry.phase() === "ready" &&
+          entry.appliedGeneration() === prevGeneration &&
+          entry.version() >= entry.freshTarget &&
+          !!entry.data();
+        if (continuousFresh) {
+          // Continuously subscribed and up-to-date: carry freshness across the
+          // subscription change so shared controls never flash dimmed.
+          continuousKeys.add(key);
+          entry.appliedGeneration.set(generation);
+        } else if (!entry.data() || entry.phase() === "error") {
+          entry.phase.set("loading");
+        }
+        // Revisited cached entries keep phase === "ready" during the subscribe
+        // handshake (avoiding UI flicker) while leaving appliedGeneration stale
+        // so imperative writes remain fenced until subscribe confirms revision.
+      }
+    });
     void this.send<StateChanged>("state.subscribe", { generation, domains: [...desired.values()] })
       .then((value) => {
         if (this.disposed || this.generation !== generation) return;
         if (!value || value.generation !== generation || !Array.isArray(value.changes))
           throw new Error("Invalid state subscription receipt");
         this.subscribedGeneration = generation;
-        this.changed(value);
+        this.applyChanged(value, continuousKeys);
         for (const interest of desired.values()) this.query(this.entry(interest));
       })
       .catch((error) => {
         if (this.disposed || this.generation !== generation) return;
         const message = error instanceof Error ? error.message : String(error);
-        this.subscriptionError.set(message);
-        this.reportError(message);
-        for (const interest of desired.values()) {
-          const entry = this.entry(interest);
-          entry.failedGeneration = generation;
-          entry.phase.set("error");
-          entry.error.set(message);
-        }
+        batch(() => {
+          this.subscriptionError.set(message);
+          this.reportError(message);
+          for (const interest of desired.values()) {
+            const entry = this.entry(interest);
+            entry.failedGeneration = generation;
+            entry.phase.set("error");
+            entry.error.set(message);
+          }
+        });
         this.checkBarriers();
       });
   }
@@ -433,7 +596,7 @@ export class DomainStore {
     )
       return;
     if (
-      entry.appliedGeneration === this.generation &&
+      entry.appliedGeneration() === this.generation &&
       entry.version() >= entry.target &&
       entry.data()
     ) {
@@ -464,9 +627,10 @@ export class DomainStore {
         if (value.domain === "config" && value.configRevision < this.configRevision()) return;
         batch(() => {
           if (value.revision > entry.version() || !entry.data()) this.apply(entry, value);
-          entry.observation.set(value.observation);
+          if (!deepEqual(entry.observation(), value.observation))
+            entry.observation.set(value.observation);
           entry.version.set(value.revision);
-          entry.appliedGeneration = generation;
+          entry.appliedGeneration.set(generation);
           entry.error.set("");
           entry.phase.set("ready");
           this.latestRevision.set(Math.max(this.latestRevision(), value.revision));
@@ -481,10 +645,12 @@ export class DomainStore {
         )
           return;
         const message = error instanceof Error ? error.message : String(error);
-        entry.failedGeneration = generation;
-        entry.phase.set("error");
-        entry.error.set(message);
-        this.reportError(message);
+        batch(() => {
+          entry.failedGeneration = generation;
+          entry.phase.set("error");
+          entry.error.set(message);
+          this.reportError(message);
+        });
       })
       .finally(() => {
         entry.flight = undefined;
@@ -496,44 +662,34 @@ export class DomainStore {
   }
 
   private apply(entry: Entry, value: DomainQueryResult): void {
-    if (value.domain === "summary") {
-      const previous = entry.data() as DomainData["summary"] | undefined,
-        next = value.data as DomainData["summary"];
-      if (
-        previous &&
-        fields.summary
-          .filter((key) => key !== "groups")
-          .every(
-            (key) => previous[key as keyof typeof previous] === next[key as keyof typeof next],
-          ) &&
-        previous.groups.length === next.groups.length &&
-        previous.groups.every((group, index) => {
-          const nextGroup = next.groups[index];
-          return (
-            group.name === nextGroup.name &&
-            group.groupType === nextGroup.groupType &&
-            group.selected === nextGroup.selected &&
-            group.fixed === nextGroup.fixed &&
-            group.memberCount === nextGroup.memberCount &&
-            group.effectiveSelectedNode === nextGroup.effectiveSelectedNode
-          );
-        })
-      )
-        return;
-    }
     if (value.domain !== "profiles") {
+      const previous = entry.data();
+      if (previous !== undefined && deepEqual(previous, value.data)) return;
       entry.data.set(value.data);
       return;
     }
     const incoming = (value.data as DomainData["profiles"]).profiles;
-    this.profileUsage.set(
-      new Map(
-        incoming.map((profile) => [
-          profile.id,
-          { uploadBytes: profile.uploadBytes, downloadBytes: profile.downloadBytes },
-        ]),
-      ),
-    );
+    const prevUsage = this.profileUsage();
+    const usageChanged =
+      prevUsage.size !== incoming.length ||
+      incoming.some((profile) => {
+        const existing = prevUsage.get(profile.id);
+        return (
+          !existing ||
+          existing.uploadBytes !== profile.uploadBytes ||
+          existing.downloadBytes !== profile.downloadBytes
+        );
+      });
+    if (usageChanged) {
+      this.profileUsage.set(
+        new Map(
+          incoming.map((profile) => [
+            profile.id,
+            { uploadBytes: profile.uploadBytes, downloadBytes: profile.downloadBytes },
+          ]),
+        ),
+      );
+    }
     if (this.profilesConfigRevision === value.configRevision && entry.data()) return;
     this.profilesConfigRevision = value.configRevision;
     const profiles: Profile[] = incoming.map((profile) => {

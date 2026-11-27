@@ -9,10 +9,13 @@ import { translator, useLifetime } from "../src/components";
 import { vpnIntentTrace } from "./VpnIntent";
 import {
   effectiveGroupLeaf,
+  primarySelectedGroup,
   primarySelectedGroupLeaf,
   groupMembers,
   proxyGroupSummary,
   groupSelectionMode,
+  isManualSelector,
+  selectableGroup,
 } from "../src/proxy-groups";
 import { rulePreview } from "../src/manual-rule";
 import { parentPage } from "../src/app";
@@ -119,6 +122,31 @@ mount(() => {
       primarySelectedGroupLeaf(nested) === "Test node",
     "selected subgroup did not resolve to the effective node",
   );
+  const nonAsciiPolicyGroups = [
+    {
+      name: "♻️自动选择",
+      groupType: "URLTest",
+      selected: "🇯🇵日本东京02",
+      proxies: [{ name: "🇯🇵日本东京02", proxyType: "Shadowsocks", selected: true }],
+    },
+    {
+      name: "🚀 节点选择",
+      groupType: "Selector",
+      selected: "🇺🇸美国节点",
+      proxies: [{ name: "🇺🇸美国节点", proxyType: "URLTest", selected: true }],
+    },
+    {
+      name: "🇺🇸美国节点",
+      groupType: "URLTest",
+      selected: "🇺🇸美国洛杉矶01",
+      proxies: [{ name: "🇺🇸美国洛杉矶01", proxyType: "Shadowsocks", selected: true }],
+    },
+  ];
+  assert(
+    primarySelectedGroup(nonAsciiPolicyGroups)?.name === "🚀 节点选择" &&
+      primarySelectedGroupLeaf(nonAsciiPolicyGroups) === "🇺🇸美国洛杉矶01",
+    "manual selector did not win over automatic subgroup when Proxy group name is absent",
+  );
   assert(
     effectiveGroupLeaf(
       [
@@ -163,6 +191,14 @@ mount(() => {
   assert(
     groupSelectionMode({ ...initial.proxyGroups[0], fixed: undefined, groupType: "Selector" }) ===
       "manual" &&
+      groupSelectionMode({ ...initial.proxyGroups[0], fixed: undefined, groupType: "select" }) ===
+        "manual" &&
+      isManualSelector({ groupType: "select" }) &&
+      isManualSelector({ groupType: "Selector" }) &&
+      selectableGroup({ groupType: "select" }) &&
+      selectableGroup({ groupType: "url-test" }) &&
+      selectableGroup({ groupType: "fallback" }) &&
+      !selectableGroup({ groupType: "load-balance" }) &&
       groupSelectionMode({
         ...initial.proxyGroups[0],
         fixed: undefined,

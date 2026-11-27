@@ -1,4 +1,4 @@
-import { signal } from "nsh";
+import { batch, signal } from "nsh";
 import type { CoreClient } from "./client";
 import { DraftEdits } from "./draft";
 
@@ -49,8 +49,10 @@ export class ConverterDraftState {
     const current = this.draft();
     if (!current) return;
     this.edits.edit();
-    this.draft.set({ ...current, ...patch });
-    this.dirty.set(true);
+    batch(() => {
+      this.draft.set({ ...current, ...patch });
+      this.dirty.set(true);
+    });
   }
 
   async load(): Promise<void> {
@@ -59,12 +61,14 @@ export class ConverterDraftState {
     this.loading.set(true);
     const value = await this.client.run<ConverterDraft>("converter.loadDraft");
     if (!this.owner.alive()) return;
-    this.loading.set(false);
-    if (value && this.edits.unchangedSince(ticket)) {
-      this.draft.set(value);
-      this.initialized.set(true);
-      this.dirty.set(false);
-    }
+    batch(() => {
+      this.loading.set(false);
+      if (value && this.edits.unchangedSince(ticket)) {
+        this.draft.set(value);
+        this.initialized.set(true);
+        this.dirty.set(false);
+      }
+    });
   }
 
   async parse(input: string): Promise<void> {
@@ -76,9 +80,11 @@ export class ConverterDraftState {
       return;
     }
     this.edits.edit();
-    this.draft.set(value);
-    this.initialized.set(true);
-    this.dirty.set(true);
+    batch(() => {
+      this.draft.set(value);
+      this.initialized.set(true);
+      this.dirty.set(true);
+    });
   }
 
   async save(): Promise<void> {

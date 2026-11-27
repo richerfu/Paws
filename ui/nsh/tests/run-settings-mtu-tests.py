@@ -122,7 +122,7 @@ def main():
     assert not stage.exists(), f"Refusing to overwrite existing owned test copy: {stage}"
     before = hashes()
     shutil.copytree(UI, stage, ignore=shutil.ignore_patterns(".nsh", "__pycache__"))
-    components = stage / "src/components.tsx"
+    components = stage / "src/ui/field.tsx"
     source = components.read_text()
     old = "          onChange={(event) => props.onChange(event.value)}\n"
     new = '''          onChange={props.id === "vpn-mtu"
@@ -132,7 +132,7 @@ def main():
     assert source.count(old) == 1, "Field Input handler registration span changed; refusing broad instrumentation"
     original_components_sha = digest(components)
     components.write_text(source.replace(old, new, 1) + REGISTER)
-    assert digest(UI / "src/components.tsx") == original_components_sha
+    assert digest(UI / "src/ui/field.tsx") == original_components_sha
     nav = ["nav-tools", "tool-settings"]
     results = [
         run(args.nsh_bin.resolve(), stage, args.output_dir, "same-value-stays-clean",

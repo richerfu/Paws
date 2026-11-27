@@ -259,7 +259,7 @@ def payload_from_hap(hap, manifest):
         if bundle is None or digest(bundle) != bundle_proof.get('packagedSha256') \
                 or bundle_proof.get('matchesCompiledBundle') is not True:
             raise ValueError('Normal packaged PawsApp bundle proof mismatch')
-        if not {'libpaws_ui.so', 'libnsh_platform_ohos.so', 'libclash.so', 'libsingbox.so'}.issubset(libraries):
+        if not {'libpaws_ui.so', 'libnsh_platform_harmonyos.so', 'libclash.so', 'libsingbox.so'}.issubset(libraries):
             raise ValueError('Normal HAP is missing an engine or UI runtime library')
         return module['app']['bundleName'], libraries, rawfiles
 
@@ -329,7 +329,7 @@ def prepare(repo, stage, hap, manifest_path, nonce, fixture_host='127.0.0.1', ht
         # OHPM may materialize this lock after source attestation. It is a
         # derived resolution input, never an attested source file. Allow only
         # this exact known extra and bind its bytes separately to the stage.
-        if package['name'] == '@nsh/ohos' and set(actual) - set(expected) == {'oh-package-lock.json5'}:
+        if package['name'] in ('@nsh/harmonyos', '@nsh/ohos') and set(actual) - set(expected) == {'oh-package-lock.json5'}:
             lock = (relative / 'oh-package-lock.json5').as_posix()
             derived_har_inputs[lock] = current[lock]
             actual.pop('oh-package-lock.json5')

@@ -79,6 +79,14 @@ export declare function preparePlatformVpnHandoff(attemptId: string): string
 
 export declare function queryActiveVpnOptions(): string
 
+/**
+  * Reads one explicitly requested domain from local in-memory core state
+  * without contacting live engine controllers. Hosts use this alongside
+  * `query_ui_preferences()` to populate cold-start `host.params` before Frame 1;
+  * live gateway subscriptions still reconcile afterwards.
+  */
+export declare function queryLocalRuntimeDomain(domainJson: string): string
+
 export declare function queryUiPreferences(): string
 
 export declare function queryVpnSpeed(): string

@@ -1,5 +1,6 @@
 import { density, typography } from "../theme";
 import {
+  batch,
   computed,
   fontScale,
   effect,
@@ -79,8 +80,10 @@ export function Resources() {
   let afterLookup: RuleContext | undefined;
   const closeLookup = () => {
     lookupGeneration++;
-    lookupOpen.set(false);
-    lookupBusy.set(false);
+    batch(() => {
+      lookupOpen.set(false);
+      lookupBusy.set(false);
+    });
   };
   effect(() => {
     const intent = ui.resourceIntent();
@@ -89,8 +92,10 @@ export function Resources() {
       untracked(() => {
         if (!ui.consumeResourceIntent(intent.id)) return;
         if (intent.kind === "lookup") {
-          lookupResult.set(undefined);
-          lookupOpen.set(true);
+          batch(() => {
+            lookupResult.set(undefined);
+            lookupOpen.set(true);
+          });
         } else manual.set({});
       });
   });
@@ -151,8 +156,10 @@ export function Resources() {
       query: lookup(),
     });
     if (alive() && lookupOpen() && lookupGeneration === ticket) {
-      lookupBusy.set(false);
-      if (result !== undefined) lookupResult.set(result);
+      batch(() => {
+        lookupBusy.set(false);
+        if (result !== undefined) lookupResult.set(result);
+      });
     }
   };
   const addFromLookup = () => {
@@ -209,63 +216,29 @@ export function Resources() {
     ...rules().map((rule) => ({ key: `rule:${rule.id}`, kind: "rule", rule })),
     ...(rules().length ? [] : [{ key: "rules-empty", kind: "rules-empty" }]),
   ];
-  const rows = computed<Row[]>(() => [
+  const wideRuleRows = computed<Row[]>(() => [
     { key: "summary", kind: "summary" },
-    ...(wide()
-      ? section() === "rules"
-        ? ruleRows()
-        : resourceRows()
-      : [...resourceRows(), ...ruleRows()]),
+    ...ruleRows(),
   ]);
-  return (
-    <View
-      style={{
-        flex: 1,
-        paddingHorizontal:
-          windowSize().width >= 840 ? density.space(24) : density.space(16),
-        paddingTop:
-          windowSize().width >= 840 ? density.space(24) : density.space(16),
-      }}
-    >
-      <If when={wide()}>
-        <View style={{ marginBottom: density.space(12) }}>
-          <Tabs
-            idPrefix="resources-section"
-            value={section()}
-            inline
-            options={[
-              {
-                value: "rules",
-                label: ui.t("配置规则", "Profile rules"),
-                count: current().rules.length,
-              },
-              {
-                value: "resources",
-                label: "Provider / GeoData",
-                count: current().providers.length + current().geodata.length,
-              },
-            ]}
-            onChange={(value) => section.set(value as "rules" | "resources")}
-          />
-        </View>
-      </If>
-      <View style={{ marginBottom: density.space(12) }}>
-        <SearchField
-          label={ui.t("搜索资源", "Search resources")}
-          placeholder={ui.t(
-            "输入资源名、规则、路径、类型或状态",
-            "Search resource, rule, path, type or status",
-          )}
-          value={query()}
-          onChange={(text) => query.set(text)}
-        />
-      </View>
+  const wideResourceRows = computed<Row[]>(() => [
+    { key: "summary", kind: "summary" },
+    ...resourceRows(),
+  ]);
+  const compactRows = computed<Row[]>(() => [
+    { key: "summary", kind: "summary" },
+    ...resourceRows(),
+    ...ruleRows(),
+  ]);
+  const renderResourceList = (
+    listRows: () => Row[],
+    testID: () => string | undefined,
+  ) => (
       <List
-        testID="resources-list"
+        testID={testID()}
         bounces={false}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
-        each={rows()}
+        each={listRows()}
         keyExtractor={(row) => row.key}
         estimatedItemSize={112}
         style={{ flex: 1 }}
@@ -361,7 +334,7 @@ export function Resources() {
               <View
                 role="button"
                 accessibilityLabel={row().file!.name}
-                focusStyle={focusRing()}
+                focusVisibleStyle={focusRing(0)}
                 hoverStyle={{ backgroundColor: palette().hover }}
                 activeStyle={{ backgroundColor: palette().soft }}
                 onPress={() => geodata.set(row().file)}
@@ -465,10 +438,6 @@ export function Resources() {
                   "当前订阅没有 Provider",
                   "This subscription has no providers",
                 )}
-                text={ui.t(
-                  "分享链接订阅通常只包含节点；Provider 需由 Clash YAML 显式声明",
-                  "Link subscriptions usually contain nodes only; providers must be declared in Clash YAML.",
-                )}
               />
             </If>
             <If when={row().kind === "rules-header"}>
@@ -539,6 +508,89 @@ export function Resources() {
           </>
         )}
       </List>
+  );
+  return (
+    <View
+      style={{
+        flex: 1,
+        paddingHorizontal:
+          windowSize().width >= 840 ? density.space(24) : density.space(16),
+        paddingTop:
+          windowSize().width >= 840 ? density.space(24) : density.space(16),
+      }}
+    >
+      <If when={wide()}>
+        <View style={{ marginBottom: density.space(12) }}>
+          <Tabs
+            idPrefix="resources-section"
+            value={section()}
+            inline
+            options={[
+              {
+                value: "rules",
+                label: ui.t("配置规则", "Profile rules"),
+                count: current().rules.length,
+              },
+              {
+                value: "resources",
+                label: "Provider / GeoData",
+                count: current().providers.length + current().geodata.length,
+              },
+            ]}
+            onChange={(value) => section.set(value as "rules" | "resources")}
+          />
+        </View>
+      </If>
+      <View style={{ marginBottom: density.space(12) }}>
+        <SearchField
+          label={ui.t("搜索资源", "Search resources")}
+          placeholder={ui.t(
+            "输入资源名、规则、路径、类型或状态",
+            "Search resource, rule, path, type or status",
+          )}
+          value={query()}
+          onChange={(text) => query.set(text)}
+        />
+      </View>
+      <If
+        when={wide()}
+        else={renderResourceList(compactRows, () => "resources-list")}
+      >
+        <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
+          <View
+            accessibilityElementsHidden={section() !== "rules"}
+            style={{
+              position: "absolute",
+              top: 0,
+              right: 0,
+              bottom: 0,
+              left: 0,
+              visibility: section() === "rules" ? "visible" : "hidden",
+              pointerEvents: section() === "rules" ? "auto" : "none",
+            }}
+          >
+            {renderResourceList(wideRuleRows, () =>
+              section() === "rules" ? "resources-list" : undefined,
+            )}
+          </View>
+          <View
+            accessibilityElementsHidden={section() !== "resources"}
+            style={{
+              position: "absolute",
+              top: 0,
+              right: 0,
+              bottom: 0,
+              left: 0,
+              visibility: section() === "resources" ? "visible" : "hidden",
+              pointerEvents: section() === "resources" ? "auto" : "none",
+            }}
+          >
+            {renderResourceList(wideResourceRows, () =>
+              section() === "resources" ? "resources-list" : undefined,
+            )}
+          </View>
+        </View>
+      </If>
       <If when={orderDraft()}>
         <View style={{ paddingVertical: density.space(12), gap: density.space(8), borderTopWidth: 1, borderTopColor: palette().border }}>
           <Hint danger={orderConflict()} text={orderConflict() ? ui.t("配置已变化，无法提交旧顺序。放弃预览后重新排列。", "Configuration changed. Discard this preview and reorder the current rules.") : ui.t("规则顺序预览，尚未保存。", "Rule order preview; not saved yet.")} />
@@ -594,12 +646,6 @@ export function Resources() {
               )}
             </List>
           </View>
-          <Hint
-            text={ui.t(
-              "此列表来自当前运行内核；配置规则可在资源列表中编辑。",
-              "This list comes from the running engine. Edit profile rules in the resource list.",
-            )}
-          />
         </Dialog>
       </If>
       <If when={selectedRule()}>
@@ -655,8 +701,8 @@ export function Resources() {
         <Dialog
           title={ui.t("规则查询", "Rule lookup")}
           description={ui.t(
-            "用共享规则编译器预览当前配置的域名或 IP 匹配，不代表运行内核的实际连接判定。",
-            "Preview the current profile with the shared rule compiler; this is not an observed routing decision from the running engine.",
+            "预览当前配置的规则匹配结果",
+            "Preview rule matching for the active profile",
           )}
           onClose={closeLookup}
           afterClose={() => {
@@ -686,8 +732,10 @@ export function Resources() {
             disabled={lookupBusy()}
             onChange={(text) => {
               lookupGeneration++;
-              lookup.set(text);
-              lookupResult.set(undefined);
+              batch(() => {
+                lookup.set(text);
+                lookupResult.set(undefined);
+              });
             }}
           />
           <If when={current().mode !== "rule"}>
@@ -1039,7 +1087,7 @@ function RuleRow(props: {
             role="button"
             accessibilityLabel={ui.t("查看完整规则", "View complete rule")}
             onPress={props.onDetails}
-            focusStyle={focusRing()}
+            focusVisibleStyle={focusRing(0)}
             hoverStyle={{ backgroundColor: palette().hover }}
             activeStyle={{ backgroundColor: palette().soft }}
             style={{
@@ -1167,7 +1215,7 @@ function ProviderCard(props: { provider: Provider; onDetails: () => void }) {
           <View
             role="button"
             onPress={props.onDetails}
-            focusStyle={focusRing()}
+            focusVisibleStyle={focusRing(0)}
             hoverStyle={{ backgroundColor: palette().hover }}
             activeStyle={{ backgroundColor: palette().soft }}
             accessibilityLabel={provider().name}

@@ -633,7 +633,7 @@ func (p *pawsSingRuntime) groupSummaries() []pawsGroupSummary {
 	for _, name := range p.groupOrder {
 		group := p.groups[name]
 		selected := group.Now()
-		result = append(result, pawsGroupSummary{name, group.options.Kind, &selected, group.Fixed(), len(group.members(p.providers.current.Load())), p.delay(selected)})
+		result = append(result, pawsGroupSummary{name, group.ClashType(), &selected, group.Fixed(), len(group.members(p.providers.current.Load())), p.delay(selected)})
 	}
 	return result
 }
@@ -643,7 +643,7 @@ func (p *pawsSingRuntime) group(name string) (pawsProxyGroup, error) {
 		return pawsProxyGroup{}, errors.New("group not found")
 	}
 	selected := group.Now()
-	result := pawsProxyGroup{Name: name, GroupType: group.options.Kind, Selected: &selected, Fixed: group.Fixed(), Proxies: []pawsProxyItem{}}
+	result := pawsProxyGroup{Name: name, GroupType: group.ClashType(), Selected: &selected, Fixed: group.Fixed(), Proxies: []pawsProxyItem{}}
 	for _, tag := range group.All() {
 		proxy, ok := p.manager.Outbound(tag)
 		if !ok {

@@ -30,6 +30,7 @@ use tracing_subscriber::prelude::*;
 use tracing_subscriber::Layer;
 
 mod app_http;
+mod connection_probe;
 mod controller;
 mod diagnostics;
 mod engine;
@@ -64,6 +65,7 @@ pub use runtime_domain::{RuntimeDomain, RuntimeDomainKey, RuntimeDomainProjectio
 #[cfg(test)]
 use test_projection::RuntimeSnapshot;
 mod subscription;
+pub use subscription::ProfileRefreshOutcome;
 mod telemetry;
 mod webdav;
 
@@ -163,6 +165,7 @@ struct PlatformVpnState {
     engine: Option<VpnEngine>,
     app_http_proxy: Option<AppHttpProxyEndpoint>,
     controller_endpoint: Option<paws_engine::EngineControllerEndpoint>,
+    connected_at_ms: Option<u64>,
     updated_at: u128,
 }
 
@@ -226,6 +229,7 @@ struct CoreState {
     engine_loaded: bool,
     platform_vpn_starting: bool,
     platform_vpn_running: bool,
+    platform_vpn_connected_at_ms: Option<u64>,
     platform_vpn_engine: Option<VpnEngine>,
     platform_vpn_intent_epoch: u64,
     platform_os_stop_epoch: u64,
@@ -264,6 +268,7 @@ struct CoreState {
     runtime_ui_cache_writes_enabled: bool,
     mode: RuntimeMode,
     profiles: ProfileStore,
+    route_hints: Option<paws_profile::ProfileRouteHints>,
     tunnel: Option<Tunnel>,
     meow_runtime_ready: bool,
     sniffer_config: SnifferConfig,
@@ -415,6 +420,7 @@ fn sample_runtime_resources(state: &mut CoreState) -> bool {
         // every second.
         let mut refreshed = proxy_groups_from_tunnel(&tunnel);
         preserve_proxy_group_member_order(&state.proxy_groups, &mut refreshed);
+        runtime_metadata::order_proxy_groups_for_state(state, &mut refreshed);
         state.proxy_groups = refreshed;
     }
     if let Some(runtime) = state.meow_runtime.as_ref() {
@@ -450,9 +456,17 @@ fn active_profile_settings(
 impl Default for CoreState {
     fn default() -> Self {
         let profiles = ProfileStore::open_default_or_unavailable();
-        let proxy_groups = load_runtime_ui_cache(&profiles)
+        let route_hints = profiles.active_route_hints();
+        let mut proxy_groups = load_runtime_ui_cache(&profiles)
             .map(|cache| cache.proxy_groups)
             .unwrap_or_default();
+        if let Some(hints) = route_hints.as_ref() {
+            runtime_metadata::order_groups_by_declared_names(
+                &hints.declared_groups,
+                &mut proxy_groups,
+                |group| &group.name,
+            );
+        }
         let mut logs = RecordedLogBuffer::new(profiles.root());
         let geodata = profiles.geodata_files();
         let (vpn_options, controller_access, network_ports) = active_profile_settings(&profiles)
@@ -482,6 +496,7 @@ impl Default for CoreState {
             engine_loaded: false,
             platform_vpn_starting: false,
             platform_vpn_running: false,
+            platform_vpn_connected_at_ms: None,
             platform_vpn_engine: None,
             platform_vpn_intent_epoch: 0,
             platform_os_stop_epoch: 0,
@@ -516,6 +531,7 @@ impl Default for CoreState {
             runtime_ui_cache_writes_enabled: true,
             mode: RuntimeMode::Rule,
             profiles,
+            route_hints,
             tunnel: None,
             meow_runtime_ready: false,
             sniffer_config: SnifferConfig::default(),
@@ -830,9 +846,17 @@ impl CoreHandle {
         let log_root = profiles.root().to_path_buf();
         log_recording::set_recording_enabled(&log_root, true)
             .expect("enable log recording for core tests");
-        let proxy_groups = load_runtime_ui_cache(&profiles)
+        let route_hints = profiles.active_route_hints();
+        let mut proxy_groups = load_runtime_ui_cache(&profiles)
             .map(|cache| cache.proxy_groups)
             .unwrap_or_default();
+        if let Some(hints) = route_hints.as_ref() {
+            runtime_metadata::order_groups_by_declared_names(
+                &hints.declared_groups,
+                &mut proxy_groups,
+                |group| &group.name,
+            );
+        }
         let geodata = profiles.geodata_files();
         let mut logs = RecordedLogBuffer::new(log_root);
         let (vpn_options, controller_access, network_ports) = active_profile_settings(&profiles)
@@ -863,6 +887,7 @@ impl CoreHandle {
                 engine_loaded: false,
                 platform_vpn_starting: false,
                 platform_vpn_running: false,
+                platform_vpn_connected_at_ms: None,
                 platform_vpn_engine: None,
                 platform_vpn_intent_epoch: 0,
                 platform_os_stop_epoch: 0,
@@ -897,6 +922,7 @@ impl CoreHandle {
                 runtime_ui_cache_writes_enabled: true,
                 mode: RuntimeMode::Rule,
                 profiles,
+                route_hints,
                 tunnel: None,
                 meow_runtime_ready: false,
                 sniffer_config: SnifferConfig::default(),
@@ -1803,7 +1829,10 @@ impl CoreHandle {
         })
     }
 
-    pub async fn refresh_profile(&self, profile_id: &str) -> Result<(), PawsError> {
+    pub async fn refresh_profile(
+        &self,
+        profile_id: &str,
+    ) -> Result<ProfileRefreshOutcome, PawsError> {
         let (subscription_url, expected_config_revision) = {
             let state = self.lock_state()?;
             (
@@ -1842,13 +1871,22 @@ impl CoreHandle {
         profile_id: &str,
         url: &str,
         expected_config_revision: u64,
-    ) -> Result<(), PawsError> {
+    ) -> Result<ProfileRefreshOutcome, PawsError> {
         let prepared = self.prepare_profile_refresh_from_url(url).await?;
         let _reload_guard = self.config_reload_lock.lock().await;
-        let (checkpoint, active) = {
+        let (checkpoint, active, previous_config) = {
             let mut state = self.lock_state()?;
             Self::ensure_config_revision_locked(&state, expected_config_revision)?;
             let checkpoint = state.profiles.checkpoint_profile(profile_id)?;
+            let active = state.profiles.active_profile() == Some(profile_id);
+            let previous_config = if active && state.engine_loaded {
+                Some(ProfileRefreshConfiguration::capture(
+                    &state.profiles,
+                    profile_id,
+                )?)
+            } else {
+                None
+            };
             state
                 .profiles
                 .replace_profile_content_with_subscription_metadata(
@@ -1857,36 +1895,55 @@ impl CoreHandle {
                     prepared.subscription_user_info,
                     prepared.subscription_metadata,
                 )?;
-            (
-                checkpoint,
-                state.profiles.active_profile() == Some(profile_id),
-            )
+            (checkpoint, active, previous_config)
         };
+        let mut outcome = ProfileRefreshOutcome::default();
         if active {
-            if let Err(primary) = self.reload_config_inner(profile_id).await {
-                let (error, rollback_succeeded) = self
-                    .rollback_profile_after_failure(profile_id, checkpoint, primary)
-                    .await;
-                if !rollback_succeeded {
-                    let mut state = self.lock_state()?;
-                    self.publish_config_and_resource_change_locked(&mut state);
+            let result = async {
+                let changed = {
+                    let state = self.lock_state()?;
+                    previous_config.as_ref()
+                        != Some(&ProfileRefreshConfiguration::capture(
+                            &state.profiles,
+                            profile_id,
+                        )?)
+                };
+                // Release the old YAML tree before constructing a new engine
+                // configuration for large subscriptions.
+                drop(previous_config);
+                if changed {
+                    self.reload_config_inner(profile_id).await?;
                 }
-                return Err(error);
+                Ok::<_, PawsError>(changed)
+            }
+            .await;
+            match result {
+                Ok(changed) => outcome.active_config_changed = changed,
+                Err(primary) => {
+                    let (error, rollback_succeeded) = self
+                        .rollback_profile_after_failure(profile_id, checkpoint, primary)
+                        .await;
+                    if !rollback_succeeded {
+                        let mut state = self.lock_state()?;
+                        self.publish_config_and_resource_change_locked(&mut state);
+                    }
+                    return Err(error);
+                }
             }
         }
         let mut state = self.lock_state()?;
         state
             .logs
             .push(info_log(format!("profile refreshed: {profile_id}")));
-        if active {
+        if outcome.active_config_changed {
             self.publish_config_and_resource_change_locked(&mut state);
         } else {
             self.publish_runtime_change_locked(&mut state, true, false);
         }
-        Ok(())
+        Ok(outcome)
     }
 
-    pub async fn refresh_all_profiles(&self) -> Result<(), PawsError> {
+    pub async fn refresh_all_profiles(&self) -> Result<ProfileRefreshOutcome, PawsError> {
         let profiles: Vec<ProfileSummary> = {
             let state = self.lock_state()?;
             state
@@ -1901,16 +1958,20 @@ impl CoreHandle {
             state
                 .logs
                 .push(info_log("profile refresh skipped: no subscriptions"));
-            return Ok(());
+            return Ok(ProfileRefreshOutcome::default());
         }
 
+        let mut outcome = ProfileRefreshOutcome::default();
         let total = profiles.len();
         let mut succeeded = 0usize;
         let mut failed = 0usize;
         let mut last_error = None;
         for profile in profiles {
             match self.refresh_profile(&profile.id).await {
-                Ok(()) => succeeded += 1,
+                Ok(refreshed) => {
+                    succeeded += 1;
+                    outcome.active_config_changed |= refreshed.active_config_changed;
+                }
                 Err(error) => {
                     failed += 1;
                     last_error = Some(error.to_string());
@@ -1933,10 +1994,10 @@ impl CoreHandle {
                 last_error.unwrap_or_else(|| "unknown error".to_owned())
             )));
         }
-        Ok(())
+        Ok(outcome)
     }
 
-    pub async fn refresh_due_profiles(&self) -> Result<(), PawsError> {
+    pub async fn refresh_due_profiles(&self) -> Result<ProfileRefreshOutcome, PawsError> {
         let profiles = {
             let state = self.lock_state()?;
             state.profiles.due_subscription_summaries()
@@ -1946,16 +2007,20 @@ impl CoreHandle {
             state.logs.push(info_log(
                 "profile due refresh skipped: no due subscriptions",
             ));
-            return Ok(());
+            return Ok(ProfileRefreshOutcome::default());
         }
 
+        let mut outcome = ProfileRefreshOutcome::default();
         let total = profiles.len();
         let mut succeeded = 0usize;
         let mut failed = 0usize;
         let mut last_error = None;
         for profile in profiles {
             match self.refresh_profile(&profile.id).await {
-                Ok(()) => succeeded += 1,
+                Ok(refreshed) => {
+                    succeeded += 1;
+                    outcome.active_config_changed |= refreshed.active_config_changed;
+                }
                 Err(error) => {
                     failed += 1;
                     last_error = Some(error.to_string());
@@ -1978,7 +2043,7 @@ impl CoreHandle {
                 last_error.unwrap_or_else(|| "unknown error".to_owned())
             )));
         }
-        Ok(())
+        Ok(outcome)
     }
 
     pub async fn activate_profile(&self, profile_id: &str) -> Result<(), PawsError> {
@@ -2061,6 +2126,7 @@ impl CoreHandle {
             if was_active && next_active.is_none() {
                 state.tunnel = None;
                 state.meow_runtime = None;
+                state.route_hints = None;
                 state.proxy_groups.clear();
                 state.providers.clear();
                 state.runtime_rules.clear();
@@ -2480,12 +2546,18 @@ impl CoreHandle {
                 "mihomo preparation requested for a meow VPN session".to_owned(),
             ));
         }
+        let is_extension = self
+            .platform_ipc()?
+            .is_some_and(|platform| !platform.is_ui());
         let remote_control = self
             .platform_ipc()?
             .and_then(|platform| platform.read_remote().ok().flatten())
             .and_then(|envelope| envelope.control);
         let (root, profile_id, mode, selections, runtime_yaml, services) = {
             let mut state = self.lock_state()?;
+            if is_extension {
+                let _ = state.profiles.refresh_from_disk();
+            }
             self.sync_platform_vpn_state_locked(&mut state);
             ensure_platform_attempt_active(&state, attempt_id)?;
             let profile_id = state
@@ -2504,6 +2576,11 @@ impl CoreHandle {
             let selections = control
                 .map(|control| control.proxy_selections)
                 .unwrap_or(state.profiles.selected_proxies(&profile_id)?);
+            if is_extension {
+                let _ = state
+                    .profiles
+                    .sync_selected_proxies_in_memory(&profile_id, selections.clone());
+            }
             (
                 state.profiles.root().to_path_buf(),
                 profile_id,
@@ -2575,12 +2652,18 @@ impl CoreHandle {
                 "sing-box preparation requested for another VPN engine".to_owned(),
             ));
         }
+        let is_extension = self
+            .platform_ipc()?
+            .is_some_and(|platform| !platform.is_ui());
         let remote_control = self
             .platform_ipc()?
             .and_then(|platform| platform.read_remote().ok().flatten())
             .and_then(|envelope| envelope.control);
         let (root, profile_id, mode, selections, runtime_yaml, services) = {
             let mut state = self.lock_state()?;
+            if is_extension {
+                let _ = state.profiles.refresh_from_disk();
+            }
             self.sync_platform_vpn_state_locked(&mut state);
             ensure_platform_attempt_active(&state, attempt_id)?;
             let profile_id = state
@@ -2599,6 +2682,11 @@ impl CoreHandle {
             let selections = control
                 .map(|control| control.proxy_selections)
                 .unwrap_or(state.profiles.selected_proxies(&profile_id)?);
+            if is_extension {
+                let _ = state
+                    .profiles
+                    .sync_selected_proxies_in_memory(&profile_id, selections.clone());
+            }
             (
                 state.profiles.root().to_path_buf(),
                 profile_id,
@@ -2965,8 +3053,14 @@ impl CoreHandle {
     /// treated as authorization to continue into TUN creation.
     pub async fn prepare_platform_vpn(&self, attempt_id: &str) -> Result<bool, PawsError> {
         let _operation_guard = self.vpn_operation_lock.lock().await;
+        let is_extension = self
+            .platform_ipc()?
+            .is_some_and(|platform| !platform.is_ui());
         {
             let mut state = self.lock_state()?;
+            if is_extension {
+                let _ = state.profiles.refresh_from_disk();
+            }
             self.sync_platform_vpn_state_locked(&mut state);
             ensure_platform_attempt_active(&state, attempt_id)?;
         }
@@ -3005,6 +3099,7 @@ impl CoreHandle {
                 route: &route,
                 metadata: &metadata,
             },
+            meow_tunnel::rule_ir::DemandGate::ALL,
         ) {
             LazyMatchOutcome::Matched(matched) => Some((
                 matched.rule_index,
@@ -3282,6 +3377,7 @@ impl CoreHandle {
         state.platform_vpn_cleanup_complete = false;
         state.platform_vpn_starting = true;
         state.platform_vpn_running = false;
+        state.platform_vpn_connected_at_ms = None;
         state.platform_vpn_engine = None;
         state.platform_network_protected = false;
         state.platform_network_protect_error = None;
@@ -4621,6 +4717,11 @@ impl CoreHandle {
         }
         let reload_started = Instant::now();
         let tun_stats = self.vpn.stats();
+        let extension_ipc = self.platform_ipc()?.filter(|platform| !platform.is_ui());
+        let extension_remote_control = extension_ipc
+            .as_ref()
+            .and_then(|platform| platform.read_remote().ok().flatten())
+            .and_then(|envelope| envelope.control);
         let (
             runtime_yaml,
             runtime_path,
@@ -4633,7 +4734,20 @@ impl CoreHandle {
             expected_config_revision,
             preview_owner,
         ) = {
-            let state = self.lock_state()?;
+            let mut state = self.lock_state()?;
+            if extension_ipc.is_some() {
+                let _ = state.profiles.refresh_from_disk();
+                self.sync_platform_vpn_state_locked(&mut state);
+                if let Some(control) = extension_remote_control.filter(|control| {
+                    control.active_profile.is_none()
+                        || control.active_profile.as_deref() == Some(profile_id)
+                }) {
+                    state.mode = control.mode;
+                    let _ = state
+                        .profiles
+                        .sync_selected_proxies_in_memory(profile_id, control.proxy_selections);
+                }
+            }
             let same_profile = state.profiles.active_profile() == Some(profile_id);
             let preserve_existing_order = same_profile && !state.proxy_groups.is_empty();
             let vpn_options = state.profiles.vpn_options_for_profile(profile_id)?;
@@ -4779,6 +4893,25 @@ impl CoreHandle {
             .profiles
             .write_runtime_yaml(profile_id, &runtime_yaml)?;
         state.profiles.set_active(profile_id)?;
+        let updated_at = state
+            .profiles
+            .profile(profile_id)
+            .ok()
+            .and_then(|profile| profile.updated_at.clone());
+        let mut route_hints =
+            paws_profile::extract_yaml_route_hints(profile_id, updated_at, &runtime_yaml);
+        if let Some(hints) = route_hints.as_mut() {
+            if let Some(target) = paws_profile::parse_match_rule_target(
+                runtime_rules
+                    .iter()
+                    .filter(|rule| rule.enabled)
+                    .map(|rule| rule.line.as_str()),
+            ) {
+                hints.match_target = Some(target);
+            }
+        }
+        state.route_hints = route_hints;
+        runtime_metadata::order_proxy_groups_for_state(&mut state, &mut proxy_groups);
         state.meow_runtime = Some(meow_runtime);
         if !state.platform_vpn_running {
             state.controller_diagnostics = ControllerDiagnostics::default();
@@ -4836,7 +4969,7 @@ impl CoreHandle {
             tunnel.set_mode(mode_to_tunnel(mode));
         }
         if mode_changed {
-            close_connections_after_route_change(&mut state, "mode switch");
+            close_connections_after_route_change(&mut state, &self.vpn, "mode switch");
         }
         state
             .logs
@@ -4886,6 +5019,16 @@ impl CoreHandle {
         let selection = group
             .selection()
             .ok_or_else(|| PawsError::Core(format!("{group_name} is not selectable")))?;
+        if selection.can_unfix() {
+            if let Some(members) = group.member_proxies() {
+                if let Some(member) = members
+                    .into_iter()
+                    .find(|member| member.name() == proxy_name)
+                {
+                    member.health().set_alive(true);
+                }
+            }
+        }
         selection.set(proxy_name).await.map_err(|err| {
             PawsError::Core(format!("cannot select {proxy_name} in {group_name}: {err}"))
         })?;
@@ -4956,7 +5099,7 @@ impl CoreHandle {
             format!("selected {proxy_name} in {group_name}")
         };
         state.logs.push(info_log(message));
-        close_connections_after_route_change(&mut state, "proxy selection");
+        close_connections_after_route_change(&mut state, &self.vpn, "proxy selection");
         self.publish_config_and_resource_change_locked(&mut state);
         Ok(())
     }
@@ -6655,6 +6798,13 @@ impl CoreHandle {
     }
 
     fn persist_platform_vpn_state_locked(&self, state: &mut CoreState) -> Result<(), PawsError> {
+        if state.platform_vpn_running {
+            state
+                .platform_vpn_connected_at_ms
+                .get_or_insert_with(now_unix_millis);
+        } else {
+            state.platform_vpn_connected_at_ms = None;
+        }
         // SystemTime can have coarser resolution than nanoseconds on device.
         // Starting and running may otherwise receive the same timestamp, and
         // the receiver would permanently discard the terminal state because
@@ -6859,6 +7009,7 @@ impl CoreHandle {
             state.platform_extension_owner_pid = remote.extension_owner_pid;
             state.platform_extension_owner_start_time = remote.extension_owner_start_time;
             state.platform_vpn_cleanup_complete = remote.cleanup_complete;
+            state.platform_vpn_connected_at_ms = None;
             attempt_matches = true;
         }
 
@@ -6956,6 +7107,14 @@ impl CoreHandle {
             state.platform_network_protected = remote.network_protected;
             state.platform_network_protect_error = remote.network_protect_error;
             state.platform_vpn_engine = remote.engine.filter(|_| remote.running);
+            state.platform_vpn_connected_at_ms = if state.platform_vpn_running {
+                remote
+                    .connected_at_ms
+                    .or(state.platform_vpn_connected_at_ms)
+                    .or_else(|| Some(now_unix_millis()))
+            } else {
+                None
+            };
             state.platform_controller_endpoint =
                 remote.controller_endpoint.filter(|_| remote.running);
             state.platform_app_http_proxy = if remote.running {
@@ -7009,8 +7168,16 @@ impl CoreHandle {
     }
 
     fn sync_platform_vpn_control_locked(&self, state: &mut CoreState, control: PlatformVpnControl) {
+        if self
+            .platform_ipc()
+            .ok()
+            .flatten()
+            .is_some_and(|platform| !platform.is_ui())
+        {
+            let _ = state.profiles.refresh_from_disk();
+        }
         invalidate_exit_location(state);
-        apply_platform_proxy_selections(state, &control);
+        apply_platform_proxy_selections(state, &self.vpn, &control);
         let global_proxy = if control.mode == RuntimeMode::Global {
             match apply_global_proxy_policy(state, control.global_proxy.as_deref(), false) {
                 Ok(global_proxy) => global_proxy,
@@ -7036,7 +7203,7 @@ impl CoreHandle {
             if let Some(tunnel) = &state.tunnel {
                 tunnel.set_mode(mode_to_tunnel(control.mode));
             }
-            close_connections_after_route_change(state, "platform mode synchronization");
+            close_connections_after_route_change(state, &self.vpn, "platform mode synchronization");
             state.logs.push(info_log(format!(
                 "mode synchronized from platform control: {}",
                 control.mode.as_str()
